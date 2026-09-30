@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
+import { parseSemanticRequestPatch } from "../src/context/semantic-compaction.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import type { SubagentControl } from "../src/subagents/types.js";
 import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
 import {
   CreateFileTool,
-  CompactContextTool,
   DeleteFileTool,
   ReadFileTool,
   ReadImageTool,
@@ -16,10 +16,7 @@ import {
   BuiltinToolSource,
   ToolCatalog,
 } from "../src/tools/index.js";
-import {
-  WorkspaceManager,
-  captureWorkspaceSnapshot,
-} from "../src/workspace/index.js";
+import { WorkspaceManager, captureWorkspaceSnapshot } from "../src/workspace/index.js";
 import { getEasyCodeHome } from "../src/prompt-bundle/index.js";
 import { WorkspacePathGuard } from "../src/workspace/path-guard.js";
 import { describe, it } from "./harness.js";
@@ -34,11 +31,7 @@ async function withWorkspace(run: (root: string, manager: WorkspaceManager) => P
   }
 }
 
-function context(
-  root: string,
-  mode: ToolContext["mode"] = "code",
-  overrides: Partial<ToolContext> = {},
-): ToolContext {
+function context(root: string, mode: ToolContext["mode"] = "code", overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     workspaceRoot: root,
     mode,
@@ -59,24 +52,32 @@ function compactContextV2Input() {
       sourceMessageIndex: 8,
       text: "Continue the authentication fix.",
     },
-    activeConstraints: [{
-      sourceMessageIndex: 9,
-      text: "  Do not change the public API.  ",
-    }],
-    technicalDecisions: [{
-      decision: "Keep authorization at the Runtime boundary.",
-      evidenceRefIds: ["file-runtime"],
-    }],
-    filesAndChanges: [{
-      path: "src/runtime/agent.ts",
-      status: "read",
-      summary: "Runtime owns capability enforcement.",
-      evidenceRefIds: ["file-runtime"],
-    }],
-    verifiedResults: [{
-      result: "The focused authorization test passed.",
-      evidenceRefIds: ["test-auth"],
-    }],
+    activeConstraints: [
+      {
+        sourceMessageIndex: 9,
+        text: "  Do not change the public API.  ",
+      },
+    ],
+    technicalDecisions: [
+      {
+        decision: "Keep authorization at the Runtime boundary.",
+        evidenceRefIds: ["file-runtime"],
+      },
+    ],
+    filesAndChanges: [
+      {
+        path: "src/runtime/agent.ts",
+        status: "read",
+        summary: "Runtime owns capability enforcement.",
+        evidenceRefIds: ["file-runtime"],
+      },
+    ],
+    verifiedResults: [
+      {
+        result: "The focused authorization test passed.",
+        evidenceRefIds: ["test-auth"],
+      },
+    ],
     errorsAndBlockers: [],
     pendingWork: ["Implement the remaining validation."],
     currentWork: "Designing Compaction Summary V2.",
@@ -86,14 +87,18 @@ function compactContextV2Input() {
       { id: "test-auth", kind: "test", reference: "authorization focused test" },
     ],
     intentLedger: {
-      userCorrections: [{
-        sourceMessageIndex: 9,
-        text: "Do not change the public API.",
-      }],
-      supersededRequests: [{
-        sourceMessageIndex: 3,
-        text: "Use the earlier draft schema.",
-      }],
+      userCorrections: [
+        {
+          sourceMessageIndex: 9,
+          text: "Do not change the public API.",
+        },
+      ],
+      supersededRequests: [
+        {
+          sourceMessageIndex: 3,
+          text: "Use the earlier draft schema.",
+        },
+      ],
     },
     coverageCheck: {
       coveredMessageIndices: [3, 8, 9],
@@ -114,10 +119,7 @@ describe("workspace file tools", () => {
     const home = path.dirname(getEasyCodeHome());
     const guard = new WorkspacePathGuard(home);
     const relative = path.relative(home, path.join(getEasyCodeHome(), "active.json"));
-    assert.throws(
-      () => guard.normalizeRelative(relative),
-      /official EASY CODE Runtime resources/iu,
-    );
+    assert.throws(() => guard.normalizeRelative(relative), /official EASY CODE Runtime resources/iu);
   });
   it("exports the workspace tools and runtime context tool", async () => {
     await withWorkspace(async (_root, manager) => {
@@ -143,7 +145,6 @@ describe("workspace file tools", () => {
           "cancel_command",
           "manage_tasks",
           "propose_plan",
-          "compact_context",
           "recall_context",
           "search_context",
           "read_memory",
@@ -163,7 +164,10 @@ describe("workspace file tools", () => {
       const second = await source.listTools();
       assert.equal(first, second);
       assert.equal(first.filter((tool) => tool.name === "submit_task_result").length, 1);
-      assert.equal(first.some((tool) => tool.name === "manage_subagents"), false);
+      assert.equal(
+        first.some((tool) => tool.name === "manage_subagents"),
+        false,
+      );
     });
   });
 
@@ -171,14 +175,19 @@ describe("workspace file tools", () => {
     await withWorkspace(async (_root, manager) => {
       const source = new BuiltinToolSource({
         workspace: manager,
-        limits: { ...defaultRuntimeLimits(), subagentFollowUpMaxChars: 1024,
-          subagentParentMessageMaxChars: 2048 },
+        limits: { ...defaultRuntimeLimits(), subagentFollowUpMaxChars: 1024, subagentParentMessageMaxChars: 2048 },
         subagentControl: {} as SubagentControl,
         parentMessage: {
-          binding: { agentId: "subagent_00000000-0000-4000-8000-000000000001",
-            childThreadId: "thread_child", parentThreadId: "thread_parent",
-            taskId: "task_1", taskTitle: "Task" },
-          post: () => { throw new Error("unused"); },
+          binding: {
+            agentId: "subagent_00000000-0000-4000-8000-000000000001",
+            childThreadId: "thread_child",
+            parentThreadId: "thread_parent",
+            taskId: "task_1",
+            taskTitle: "Task",
+          },
+          post: () => {
+            throw new Error("unused");
+          },
         },
       });
       const tools = await source.listTools();
@@ -186,8 +195,11 @@ describe("workspace file tools", () => {
       const send = tools.find((tool) => tool.name === "send_parent_message");
       assert.ok(manage?.inputSchema);
       assert.ok(send?.inputSchema);
-      const followUp = manage.inputSchema.parse({ action: "follow_up",
-        agentId: "subagent_00000000-0000-4000-8000-000000000001", message: "f".repeat(3000) }) as { message: string };
+      const followUp = manage.inputSchema.parse({
+        action: "follow_up",
+        agentId: "subagent_00000000-0000-4000-8000-000000000001",
+        message: "f".repeat(3000),
+      }) as { message: string };
       const parentMessage = send.inputSchema.parse({ message: "p".repeat(3000) }) as { message: string };
       assert.equal(followUp.message.length, 1024);
       assert.equal(parentMessage.message.length, 2048);
@@ -200,23 +212,27 @@ describe("workspace file tools", () => {
       const resources = new ThreadResourceStore(dataDir);
       const documents = new ThreadDocumentService(new DocumentConverter(dataDir), resources);
       const online = new ToolCatalog();
-      online.registerSource(new BuiltinToolSource({
-        workspace: manager,
-        threadResourceStore: resources,
-        threadDocumentService: documents,
-      }));
+      online.registerSource(
+        new BuiltinToolSource({
+          workspace: manager,
+          threadResourceStore: resources,
+          threadDocumentService: documents,
+        }),
+      );
       const onlineNames = (await online.snapshot()).tools.map((tool) => tool.name);
       assert.equal(onlineNames.includes("web_search"), true);
       assert.equal(onlineNames.includes("fetch_webpage"), true);
       await online.close();
 
       const offline = new ToolCatalog();
-      offline.registerSource(new BuiltinToolSource({
-        workspace: manager,
-        threadResourceStore: resources,
-        threadDocumentService: documents,
-        includePublicWebTools: false,
-      }));
+      offline.registerSource(
+        new BuiltinToolSource({
+          workspace: manager,
+          threadResourceStore: resources,
+          threadDocumentService: documents,
+          includePublicWebTools: false,
+        }),
+      );
       const offlineNames = (await offline.snapshot()).tools.map((tool) => tool.name);
       assert.equal(offlineNames.includes("web_search"), false);
       assert.equal(offlineNames.includes("fetch_webpage"), false);
@@ -241,8 +257,7 @@ describe("workspace file tools", () => {
               id: "image_00000000-0000-4000-8000-000000000000",
               label: "Image #1",
               mediaType: "image/png",
-              storageKey:
-                "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000000.png",
+              storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000000.png",
               sha256: "0".repeat(64),
               byteSize: 11,
               width: 1,
@@ -255,94 +270,39 @@ describe("workspace file tools", () => {
       assert.equal(result.ok, true);
       assert.equal(attachedPath, path.join(manager.root, "diagram.png"));
       assert.equal(result.imageAttachments?.[0]?.label, "Image #1");
-      assert.equal(
-        Object.prototype.hasOwnProperty.call(result.data as object, "storageKey"),
-        false,
-      );
+      assert.equal(Object.prototype.hasOwnProperty.call(result.data as object, "storageKey"), false);
     });
   });
 
-  it("accepts a semantic handoff without delegating Runtime facts or committing context", async () => {
-    const tool = new CompactContextTool();
-    const input = { currentWork: "Communication investigation unfinished", nextStep: "Trace the receiver", hypotheses: ["A local bridge may be involved"] };
-    const accepted = await tool.execute(
-      input,
-      context(process.cwd()),
-    );
-    const rejected = await tool.execute(
-      { summary: "", extra: true },
-      context(process.cwd()),
-    );
-
-    assert.equal(tool.mutating, false);
-    assert.equal(accepted.ok, true);
-    const persisted = JSON.parse(accepted.contextCompaction?.summary ?? "{}") as {
-      formatVersion?: number;
-      activeConstraints?: Array<{ sourceMessageIndex: number; text: string }>;
+  it("validates internal semantic handoffs without registering a model tool", () => {
+    const input = {
+      currentWork: "Communication investigation unfinished",
+      nextStep: "Trace the receiver",
+      hypotheses: ["A local bridge may be involved"],
     };
-    assert.deepEqual(persisted, input);
-    assert.equal(accepted.contextCompaction?.formatVersion, 3);
-    assert.deepEqual(accepted.data, { formatVersion: 3 });
-    assert.match(accepted.summary, /Runtime has not committed/);
-    const modelVisibleResult = JSON.stringify({
-      summary: accepted.summary,
-      data: accepted.data,
-    });
-    assert.doesNotMatch(modelVisibleResult, /coveredMessageIndices|userCorrections/u);
-    assert.equal(rejected.ok, false);
+    assert.deepEqual(parseSemanticRequestPatch(input), input);
+    assert.throws(() => parseSemanticRequestPatch({ summary: "", extra: true }));
   });
 
-  it("publishes one small provider-neutral semantic schema without self-certification flags", () => {
-    const parameters = new CompactContextTool().definition.function.parameters;
-    const serialized = JSON.stringify(parameters);
-    const root = parameters as {
-      additionalProperties?: boolean;
-      required?: string[];
-      properties?: Record<string, unknown>;
-    };
-
-    assert.equal(root.additionalProperties, false);
-    assert.equal(root.properties?.coverageCheck, undefined);
-    assert.equal(root.properties?.intentLedger, undefined);
-    assert.ok(root.properties?.currentWork);
-    assert.ok(root.properties?.nextStep);
-    assert.equal(root.properties?.summary, undefined);
-    assert.equal(root.properties?.analysis, undefined);
-    assert.doesNotMatch(serialized, /"(?:oneOf|anyOf|allOf)"/u);
-    assert.doesNotMatch(serialized, /<\/?[A-Za-z]/u);
-  });
-
-  it("rejects malformed V2 coverage and exact-source fields", async () => {
-    const tool = new CompactContextTool();
+  it("rejects retired V2 coverage and exact-source fields in internal handoffs", () => {
     const unsorted = compactContextV2Input();
     unsorted.coverageCheck.coveredMessageIndices = [8, 3, 9];
     const whitespaceConstraint = compactContextV2Input();
     whitespaceConstraint.activeConstraints[0]!.text = "   ";
-    const extraField = {
-      ...compactContextV2Input(),
-      analysis: "unbounded private reasoning",
-    };
-
     for (const invalid of [
       { summary: "legacy model-facing input is no longer accepted" },
       unsorted,
       whitespaceConstraint,
-      extraField,
-    ]) {
-      const result = await tool.execute(invalid, context(process.cwd()));
-      assert.equal(result.ok, false);
-      assert.equal(result.contextCompaction, undefined);
-    }
+      { ...compactContextV2Input(), analysis: "unbounded private reasoning" },
+    ])
+      assert.throws(() => parseSemanticRequestPatch(invalid));
   });
 
   it("reads a line range and tracks the full-file SHA-256 version", async () => {
     await withWorkspace(async (root, manager) => {
       await writeFile(path.join(root, "sample.txt"), "one\r\ntwo\r\nthree\r\n", "utf8");
       const tool = new ReadFileTool(manager);
-      const result = await tool.execute(
-        { path: "sample.txt", startLine: 2, endLine: 3 },
-        context(root),
-      );
+      const result = await tool.execute({ path: "sample.txt", startLine: 2, endLine: 3 }, context(root));
 
       assert.equal(result.ok, true);
       const data = result.data as {
@@ -396,7 +356,10 @@ describe("workspace file tools", () => {
       assert.equal(manifest?.files.has("external-change.txt"), false);
 
       const reconciled = await manager.fullConsistencyCheck();
-      assert.deepEqual(reconciled.created.map((entry) => entry.path), ["external-change.txt"]);
+      assert.deepEqual(
+        reconciled.created.map((entry) => entry.path),
+        ["external-change.txt"],
+      );
     });
   });
 
@@ -488,14 +451,34 @@ describe("workspace file tools", () => {
         for (const commandExecutionMode of ["manual", "auto_approve", "unrestricted"] as const) {
           const ctx = context(root, "code", { commandExecutionMode, isUnrestrictedHostAccessActive: () => true });
           assert.equal((await new ReadFileTool(manager).execute({ path: target }, ctx)).ok, false);
-          assert.equal((await new CreateFileTool(manager).execute({ path: path.join(hostRoot, "new.txt"), content: "no" }, ctx)).ok, false);
-          assert.equal((await new UpdateFileTool(manager).execute({ path: target, expectedHash: "0".repeat(64), edits: [{ oldText: "user", newText: "model" }] }, ctx)).ok, false);
-          assert.equal((await new DeleteFileTool(manager).execute({ path: target, expectedHash: "0".repeat(64) }, ctx)).ok, false);
+          assert.equal(
+            (await new CreateFileTool(manager).execute({ path: path.join(hostRoot, "new.txt"), content: "no" }, ctx))
+              .ok,
+            false,
+          );
+          assert.equal(
+            (
+              await new UpdateFileTool(manager).execute(
+                { path: target, expectedHash: "0".repeat(64), edits: [{ oldText: "user", newText: "model" }] },
+                ctx,
+              )
+            ).ok,
+            false,
+          );
+          assert.equal(
+            (await new DeleteFileTool(manager).execute({ path: target, expectedHash: "0".repeat(64) }, ctx)).ok,
+            false,
+          );
         }
         assert.equal(await readFile(target, "utf8"), "user content");
-        assert.equal(manager.getChangeSet().some(change => path.isAbsolute(change.path)), false);
+        assert.equal(
+          manager.getChangeSet().some((change) => path.isAbsolute(change.path)),
+          false,
+        );
       });
-    } finally { await rm(hostRoot, { recursive: true, force: true }); }
+    } finally {
+      await rm(hostRoot, { recursive: true, force: true });
+    }
   });
 
   it("does not return host content when dangerous access is revoked during a read", async () => {
@@ -535,10 +518,7 @@ describe("workspace file tools", () => {
       const results = await Promise.all([
         read.execute({ path: ".git" }, context(root)),
         read.execute({ path: ".GIT" }, context(root)),
-        create.execute(
-          { path: "nested/.GiT/config", content: "[core]\n" },
-          context(root),
-        ),
+        create.execute({ path: "nested/.GiT/config", content: "[core]\n" }, context(root)),
         update.execute(
           {
             path: "nested/.gIt/config",
@@ -547,10 +527,7 @@ describe("workspace file tools", () => {
           },
           context(root),
         ),
-        remove.execute(
-          { path: "nested/.GIT/config", expectedHash: "0".repeat(64) },
-          context(root),
-        ),
+        remove.execute({ path: "nested/.GIT/config", expectedHash: "0".repeat(64) }, context(root)),
       ]);
 
       for (const result of results) {

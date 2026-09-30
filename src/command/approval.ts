@@ -7,50 +7,93 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 export const MAX_COMMAND_APPROVAL_PREFIXES = 128;
 export const MAX_COMMAND_APPROVAL_PREFIX_CHARS = 16_384;
 
-const UNSAFE_PREFIX_CHARACTERS =
-  /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u;
+const UNSAFE_PREFIX_CHARACTERS = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u;
 
 const NETWORK_PREFIX = "network:v1:";
 const ONCE_PREFIX = "once:v1:";
-interface NetworkPrefix { executable: string; args: string[]; digest: string }
-
-function decodeNetworkPrefix(value: string, platform: NodeJS.Platform): NetworkPrefix {
-  const parsed = JSON.parse(Buffer.from(value.slice(NETWORK_PREFIX.length), "base64url").toString("utf8")) as NetworkPrefix;
-  if (!parsed || Object.keys(parsed).sort().join(",") !== "args,digest,executable" ||
-      typeof parsed.executable !== "string" || parsed.executable.startsWith(NETWORK_PREFIX) ||
-      typeof parsed.digest !== "string" || !/^[a-f0-9]{64}$/u.test(parsed.digest) || !Array.isArray(parsed.args) || parsed.args.length > 16 ||
-      parsed.args.some(a => typeof a !== "string" || a.length > 256 || UNSAFE_PREFIX_CHARACTERS.test(a))) {
-    throw new Error("Invalid network approval prefix");
-  }
-  return { executable: parsed.executable === "tool:fetch_artifact" ? parsed.executable : normalizeCommandApprovalPrefix(parsed.executable, platform),
-    args: parsed.args, digest: parsed.digest };
+interface NetworkPrefix {
+  executable: string;
+  args: string[];
+  digest: string;
 }
 
-export function networkCommandApprovalPrefix(executable: string, args: string[], digest: string,
-  platform: NodeJS.Platform = process.platform): string {
-  return normalizeCommandApprovalPrefix(NETWORK_PREFIX + Buffer.from(JSON.stringify({ executable, args, digest })).toString("base64url"), platform);
+function decodeNetworkPrefix(value: string, platform: NodeJS.Platform): NetworkPrefix {
+  const parsed = JSON.parse(
+    Buffer.from(value.slice(NETWORK_PREFIX.length), "base64url").toString("utf8"),
+  ) as NetworkPrefix;
+  if (
+    !parsed ||
+    Object.keys(parsed).sort().join(",") !== "args,digest,executable" ||
+    typeof parsed.executable !== "string" ||
+    parsed.executable.startsWith(NETWORK_PREFIX) ||
+    typeof parsed.digest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(parsed.digest) ||
+    !Array.isArray(parsed.args) ||
+    parsed.args.length > 16 ||
+    parsed.args.some((a) => typeof a !== "string" || a.length > 256 || UNSAFE_PREFIX_CHARACTERS.test(a))
+  ) {
+    throw new Error("Invalid network approval prefix");
+  }
+  return {
+    executable:
+      parsed.executable === "tool:fetch_artifact"
+        ? parsed.executable
+        : normalizeCommandApprovalPrefix(parsed.executable, platform),
+    args: parsed.args,
+    digest: parsed.digest,
+  };
+}
+
+export function networkCommandApprovalPrefix(
+  executable: string,
+  args: string[],
+  digest: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return normalizeCommandApprovalPrefix(
+    NETWORK_PREFIX + Buffer.from(JSON.stringify({ executable, args, digest })).toString("base64url"),
+    platform,
+  );
 }
 
 export function canGrantCommandPrefix(prefix: string): boolean {
   if (prefix.startsWith(ONCE_PREFIX)) return false;
-  if (isCommandGrant(prefix)) { try { normalizeCommandApprovalPrefix(prefix); return true; } catch { return false; } }
+  if (isCommandGrant(prefix)) {
+    try {
+      normalizeCommandApprovalPrefix(prefix);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   // UI labels may be noncanonical; the application validates before persisting
   // an actual grant. Encoded network capabilities must parse here.
   if (!prefix.startsWith(NETWORK_PREFIX)) return reusableExecutableGrant(prefix);
-  try { normalizeCommandApprovalPrefix(prefix); return prefix.startsWith(NETWORK_PREFIX) || reusableExecutableGrant(prefix); }
-  catch { return false; }
+  try {
+    normalizeCommandApprovalPrefix(prefix);
+    return prefix.startsWith(NETWORK_PREFIX) || reusableExecutableGrant(prefix);
+  } catch {
+    return false;
+  }
 }
 
 export function formatCommandApprovalPrefix(prefix: string): string {
-  if (prefix.startsWith(ONCE_PREFIX)) return "one invocation only (worker executable identity is not available for a reusable grant)";
-  if (isCommandGrant(prefix)) { const v = decodeCommandGrant(prefix); return redactSensitiveInformation(`${JSON.stringify([v.executable, ...(v.exact ? [] : v.args)])} (${v.exact ? `exact argv SHA256=${v.args[0]}` : "argv prefix"}; ${v.scope}; cwd=${JSON.stringify(v.cwd)}; network=${v.network}; script contents may change)`); }
+  if (prefix.startsWith(ONCE_PREFIX))
+    return "one invocation only (worker executable identity is not available for a reusable grant)";
+  if (isCommandGrant(prefix)) {
+    const v = decodeCommandGrant(prefix);
+    return redactSensitiveInformation(
+      `${JSON.stringify([v.executable, ...(v.exact ? [] : v.args)])} (${v.exact ? `exact argv SHA256=${v.args[0]}` : "argv prefix"}; ${v.scope}; cwd=${JSON.stringify(v.cwd)}; network=${v.network}; script contents may change)`,
+    );
+  }
   if (!prefix.startsWith(NETWORK_PREFIX)) return JSON.stringify([prefix]);
   const decoded = decodeNetworkPrefix(prefix, process.platform);
   return `${JSON.stringify([decoded.executable, ...decoded.args])} (network prefix: includes downloads, uploads and remote changes; same executable bytes)`;
 }
 
 export function commandPrefixApprovalLabel(prefix: string): string {
-  if (isCommandGrant(prefix)) return `Yes, allow this permission prefix for this Thread and its children: ${formatCommandApprovalPrefix(prefix)}`;
+  if (isCommandGrant(prefix))
+    return `Yes, allow this permission prefix for this Thread and its children: ${formatCommandApprovalPrefix(prefix)}`;
   return prefix.startsWith(NETWORK_PREFIX)
     ? `Yes, authorize this network prefix for the Thread: ${formatCommandApprovalPrefix(prefix)}`
     : `Yes, authorize this exact executable for the Thread: ${formatCommandApprovalPrefix(prefix)}`;
@@ -70,10 +113,7 @@ function approvalPlatform(platform: NodeJS.Platform): CommandApprovalPlatform {
  * would introduce a TOCTOU race and make journal recovery depend on the file
  * still being present.
  */
-export function normalizeCommandApprovalPrefix(
-  value: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
+export function normalizeCommandApprovalPrefix(value: string, platform: NodeJS.Platform = process.platform): string {
   if (
     typeof value !== "string" ||
     value.length === 0 ||
@@ -89,9 +129,13 @@ export function normalizeCommandApprovalPrefix(
     if (!/^once:v1:[a-f0-9]{64}$/u.test(value)) throw new Error("Invalid one-shot approval identity");
     return value;
   }
-  if (isCommandGrant(value)) { decodeCommandGrant(value); return value; }
+  if (isCommandGrant(value)) {
+    decodeCommandGrant(value);
+    return value;
+  }
   if (value.startsWith(NETWORK_PREFIX)) {
-    const normalized = NETWORK_PREFIX + Buffer.from(JSON.stringify(decodeNetworkPrefix(value, platform))).toString("base64url");
+    const normalized =
+      NETWORK_PREFIX + Buffer.from(JSON.stringify(decodeNetworkPrefix(value, platform))).toString("base64url");
     if (normalized.length > MAX_COMMAND_APPROVAL_PREFIX_CHARS) throw new Error("Network approval prefix is too long");
     return normalized;
   }
@@ -147,14 +191,20 @@ export function isCommandApprovalPrefixGranted(
   const approved = validateCommandApprovalPrefixes(prefixes, platform);
   const candidate = normalizeCommandApprovalPrefix(commandPrefix, platform);
   if (candidate.startsWith(ONCE_PREFIX)) return false;
-  if (isCommandGrant(candidate)) return approved.filter(isCommandGrant).some(p => commandGrantMatches(p, candidate));
+  if (isCommandGrant(candidate)) return approved.filter(isCommandGrant).some((p) => commandGrantMatches(p, candidate));
   if (candidate.startsWith(NETWORK_PREFIX)) {
     const requested = decodeNetworkPrefix(candidate, platform);
-    return approved.filter(p => p.startsWith(NETWORK_PREFIX)).some(p => {
-      const grant = decodeNetworkPrefix(p, platform);
-      return grant.executable === requested.executable && grant.digest === requested.digest &&
-        grant.args.length <= requested.args.length && grant.args.every((arg, i) => arg === requested.args[i]);
-    });
+    return approved
+      .filter((p) => p.startsWith(NETWORK_PREFIX))
+      .some((p) => {
+        const grant = decodeNetworkPrefix(p, platform);
+        return (
+          grant.executable === requested.executable &&
+          grant.digest === requested.digest &&
+          grant.args.length <= requested.args.length &&
+          grant.args.every((arg, i) => arg === requested.args[i])
+        );
+      });
   }
   return reusableExecutableGrant(candidate) && approved.some((prefix) => prefix === candidate);
 }
@@ -168,7 +218,8 @@ export function grantCommandApprovalPrefix(
   const approved = validateCommandApprovalPrefixes(prefixes, platform);
   const candidate = normalizeCommandApprovalPrefix(commandPrefix, platform);
   if (candidate.startsWith(ONCE_PREFIX)) throw new Error("This command allows one-shot approval only");
-  if (!isCommandGrant(candidate) && !candidate.startsWith(NETWORK_PREFIX) && !reusableExecutableGrant(candidate)) throw new Error("Shells, interpreters and package managers require per-invocation approval");
+  if (!isCommandGrant(candidate) && !candidate.startsWith(NETWORK_PREFIX) && !reusableExecutableGrant(candidate))
+    throw new Error("Shells, interpreters and package managers require per-invocation approval");
   if (approved.some((prefix) => prefix === candidate)) return approved;
   if (approved.length >= MAX_COMMAND_APPROVAL_PREFIXES) {
     throw new Error(`Command approval prefix limit is ${MAX_COMMAND_APPROVAL_PREFIXES}`);

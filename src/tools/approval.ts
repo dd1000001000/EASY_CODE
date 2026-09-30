@@ -13,7 +13,9 @@ export interface ToolApprovalIdentity {
 
 /** Bind a reusable grant to the concrete operation and the catalog contract, never a dispatcher alone. */
 export function toolApprovalIdentity(
-  tool: Readonly<AgentTool>, input: unknown, binding: Readonly<ToolCatalogBinding> | undefined,
+  tool: Readonly<AgentTool>,
+  input: unknown,
+  binding: Readonly<ToolCatalogBinding> | undefined,
   workspaceRoot: string,
 ): ToolApprovalIdentity {
   if (!binding) throw new Error(`Tool ${tool.name} has no catalog binding for approval`);
@@ -42,8 +44,10 @@ export function toolApprovalIdentity(
 }
 
 export function validateToolApprovalGrants(value: unknown): string[] {
-  if (!Array.isArray(value) || !value.every((item) =>
-    typeof item === "string" && /^sha256:[a-f0-9]{64}$/u.test(item))) {
+  if (
+    !Array.isArray(value) ||
+    !value.every((item) => typeof item === "string" && /^sha256:[a-f0-9]{64}$/u.test(item))
+  ) {
     throw new Error("Invalid tool approval grants");
   }
   return [...new Set(value)];

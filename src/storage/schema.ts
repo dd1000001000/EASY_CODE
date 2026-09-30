@@ -519,9 +519,9 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
 ];
 
 export function initializeCurrentSchema(db: SqliteDatabase): void {
-  const objects = db.prepare<[], { name: string }>(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-  ).all();
+  const objects = db
+    .prepare<[], { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .all();
   if (objects.length === 0) {
     db.transaction(() => {
       for (const section of CURRENT_SCHEMA_SECTIONS) db.exec(section.sql);
@@ -535,9 +535,11 @@ export function initializeCurrentSchema(db: SqliteDatabase): void {
       "Unsupported EASY CODE development database. Remove the local data directory and create a new task.",
     );
   }
-  const identity = db.prepare<[], { schema_version: number; schema_id: string }>(
-    "SELECT schema_version, schema_id FROM easy_code_schema",
-  ).get();
+  const identity = db
+    .prepare<[], { schema_version: number; schema_id: string }>(
+      "SELECT schema_version, schema_id FROM easy_code_schema",
+    )
+    .get();
   const userVersion = db.pragma("user_version", { simple: true });
   if (
     identity?.schema_version !== CURRENT_SCHEMA_VERSION ||

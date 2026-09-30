@@ -1,17 +1,7 @@
-import {
-  create,
-  insertMultiple,
-  search,
-  type Orama,
-  type WhereCondition,
-} from "@orama/orama";
+import { create, insertMultiple, search, type Orama, type WhereCondition } from "@orama/orama";
 
 import type { EasyCodeStorage } from "../storage/database.js";
-import type {
-  LongTermMemory,
-  LongTermMemoryCategory,
-  LongTermMemoryScope,
-} from "../core/types.js";
+import type { LongTermMemory, LongTermMemoryCategory, LongTermMemoryScope } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 
 export interface EmbeddingProvider {
@@ -112,12 +102,7 @@ const MAX_BACKFILL_BATCH_SIZE = 64;
 const DEFAULT_SEARCH_LIMIT = 6;
 const MAX_SEARCH_LIMIT = 50;
 
-function boundedInteger(
-  value: number | undefined,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-): number {
+function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
   const resolved = value !== undefined && Number.isFinite(value) ? value : fallback;
   return Math.max(minimum, Math.min(Math.trunc(resolved), maximum));
 }
@@ -219,13 +204,9 @@ function checkedVector(vector: Float32Array, dimensions: number): Float32Array {
 
 export function embeddingModelKey(provider: EmbeddingProvider): string {
   assertProvider(provider);
-  return sha256(JSON.stringify([
-    provider.model,
-    provider.revision,
-    provider.dimension,
-    provider.pooling,
-    provider.version,
-  ]));
+  return sha256(
+    JSON.stringify([provider.model, provider.revision, provider.dimension, provider.pooling, provider.version]),
+  );
 }
 
 /**
@@ -251,11 +232,12 @@ export class MemoryVectorIndex {
     this.modelKey = embeddingModelKey(provider);
   }
 
-  close(): void { this.stopped = true; this.caches.clear(); }
+  close(): void {
+    this.stopped = true;
+    this.caches.clear();
+  }
 
-  async prepareEmbeddings(
-    contents: readonly string[],
-  ): Promise<readonly PreparedMemoryEmbedding[]> {
+  async prepareEmbeddings(contents: readonly string[]): Promise<readonly PreparedMemoryEmbedding[]> {
     if (contents.length === 0) return [];
     const cleaned = contents.map((content) => {
       if (typeof content !== "string" || content.length === 0) {
@@ -293,17 +275,16 @@ export class MemoryVectorIndex {
   ): void {
     this.assertPreparedForCurrentModel(prepared);
     const memory = this.storage.db
-      .prepare<[string], MemoryContentRow>(
-        "SELECT id, content FROM memories WHERE id = ?",
-      )
+      .prepare<[string], MemoryContentRow>("SELECT id, content FROM memories WHERE id = ?")
       .get(memoryId);
     if (!memory) throw new Error("Cannot store an embedding for a missing memory");
     if (sha256(memory.content) !== prepared.contentHash) {
       throw new Error("Memory content changed after its embedding was prepared");
     }
 
-    this.storage.db.prepare(
-      `INSERT INTO memory_embeddings(
+    this.storage.db
+      .prepare(
+        `INSERT INTO memory_embeddings(
          memory_id, model, revision, dimensions, pooling, embedding_version,
          content_hash, embedding, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -316,31 +297,30 @@ export class MemoryVectorIndex {
          content_hash = excluded.content_hash,
          embedding = excluded.embedding,
          updated_at = excluded.updated_at`,
-    ).run(
-      memory.id,
-      prepared.model,
-      prepared.revision,
-      prepared.dimensions,
-      prepared.pooling,
-      prepared.version,
-      prepared.contentHash,
-      prepared.embedding,
-      updatedAt,
-      updatedAt,
-    );
+      )
+      .run(
+        memory.id,
+        prepared.model,
+        prepared.revision,
+        prepared.dimensions,
+        prepared.pooling,
+        prepared.version,
+        prepared.contentHash,
+        prepared.embedding,
+        updatedAt,
+        updatedAt,
+      );
   }
 
   deleteEmbedding(memoryId: string): boolean {
-    return this.storage.db
-      .prepare<[string]>("DELETE FROM memory_embeddings WHERE memory_id = ?")
-      .run(memoryId).changes > 0;
+    return (
+      this.storage.db.prepare<[string]>("DELETE FROM memory_embeddings WHERE memory_id = ?").run(memoryId).changes > 0
+    );
   }
 
   getGeneration(workspaceId: string): number {
     const row = this.storage.db
-      .prepare<[string], { generation: number }>(
-        "SELECT generation FROM memory_vector_state WHERE workspace_id = ?",
-      )
+      .prepare<[string], { generation: number }>("SELECT generation FROM memory_vector_state WHERE workspace_id = ?")
       .get(workspaceKey(workspaceId));
     return row?.generation ?? 0;
   }
@@ -384,21 +364,20 @@ export class MemoryVectorIndex {
       firstResult ??= result;
       if (this.stopped) return firstResult;
       const generationAfter = this.getGeneration(workspaceId);
-      if (
-        result.embedded === 0 &&
-        result.skipped === 0 &&
-        generationBefore === generationAfter
-      ) {
+      if (result.embedded === 0 && result.skipped === 0 && generationBefore === generationAfter) {
         this.backfilledGenerations.set(workspaceId, generationAfter);
         return firstResult;
       }
     }
-    return firstResult ?? Object.freeze({
-      scanned: 0,
-      embedded: 0,
-      current: 0,
-      skipped: 0,
-    });
+    return (
+      firstResult ??
+      Object.freeze({
+        scanned: 0,
+        embedded: 0,
+        current: 0,
+        skipped: 0,
+      })
+    );
   }
 
   async search(
@@ -415,7 +394,9 @@ export class MemoryVectorIndex {
     for (let attempt = 0; attempt < MAX_CACHE_RETRIES; attempt += 1) {
       if (this.options.backgroundVectors) {
         if (!this.stopped && Date.now() >= this.retryAfter) {
-          void this.backfill(workspaceId).catch(() => { this.retryAfter = Date.now() + 60_000; });
+          void this.backfill(workspaceId).catch(() => {
+            this.retryAfter = Date.now() + 60_000;
+          });
         }
       } else await this.backfill(workspaceId);
       const index = await this.getCachedIndex(workspaceId);
@@ -440,7 +421,9 @@ export class MemoryVectorIndex {
         ...(options.category ? { category: { eq: options.category } } : {}),
         ...(options.status
           ? { status: { eq: options.status } }
-          : options.includeInactive === true ? {} : { status: { eq: "active" } }),
+          : options.includeInactive === true
+            ? {}
+            : { status: { eq: "active" } }),
       };
       const result = await search(index.database, {
         mode: "vector",
@@ -456,10 +439,14 @@ export class MemoryVectorIndex {
         this.invalidate(workspaceId);
         continue;
       }
-      return Object.freeze(result.hits.map((hit) => Object.freeze({
-        id: hit.id,
-        score: hit.score,
-      })));
+      return Object.freeze(
+        result.hits.map((hit) =>
+          Object.freeze({
+            id: hit.id,
+            score: hit.score,
+          }),
+        ),
+      );
     }
     throw new Error("Memory vector index changed continuously during search");
   }
@@ -480,28 +467,26 @@ export class MemoryVectorIndex {
       )
       .all(workspaceId);
     const stale = rows.filter((row) => !this.isCurrentEmbedding(row));
-    const batchSize = boundedInteger(
-      options.batchSize,
-      DEFAULT_BACKFILL_BATCH_SIZE,
-      1,
-      MAX_BACKFILL_BATCH_SIZE,
-    );
+    const batchSize = boundedInteger(options.batchSize, DEFAULT_BACKFILL_BATCH_SIZE, 1, MAX_BACKFILL_BATCH_SIZE);
     let embedded = 0;
     let skipped = 0;
 
     for (let offset = 0; offset < stale.length; offset += batchSize) {
       const batch = stale.slice(offset, offset + batchSize);
       const prepared = await this.prepareEmbeddings(batch.map((row) => row.content));
-      if (this.stopped) return { scanned: rows.length, embedded, current: rows.length - stale.length,
-        skipped: stale.length - embedded };
+      if (this.stopped)
+        return {
+          scanned: rows.length,
+          embedded,
+          current: rows.length - stale.length,
+          skipped: stale.length - embedded,
+        };
       this.storage.db.transaction(() => {
         for (let index = 0; index < batch.length; index += 1) {
           const candidate = batch[index]!;
           const value = prepared[index]!;
           const current = this.storage.db
-            .prepare<[string], MemoryContentRow>(
-              "SELECT id, content FROM memories WHERE id = ?",
-            )
+            .prepare<[string], MemoryContentRow>("SELECT id, content FROM memories WHERE id = ?")
             .get(candidate.id);
           if (!current || sha256(current.content) !== value.contentHash) {
             skipped += 1;
@@ -637,14 +622,7 @@ export class MemoryVectorIndex {
     return this.storage.db.transaction(() => {
       const generation = this.getGeneration(workspaceId);
       const rows = this.storage.db
-        .prepare<[
-          string,
-          string,
-          string,
-          number,
-          string,
-          number,
-        ], IndexRow>(
+        .prepare<[string, string, string, number, string, number], IndexRow>(
           `SELECT m.id, m.workspace_id, m.scope, m.category, m.content, m.status,
                   e.content_hash, e.embedding
              FROM memories AS m

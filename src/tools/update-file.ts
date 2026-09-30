@@ -2,20 +2,10 @@ import { randomBytes } from "node:crypto";
 import { chmod, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import {
-  assertMatchingWorkspace,
-  assertWritableMode,
-  toolFailure,
-  toolSuccess,
-} from "./base.js";
+import { assertMatchingWorkspace, assertWritableMode, toolFailure, toolSuccess } from "./base.js";
 import {
   acquireHostFileMutationLock,
   assertHostFileMutationStillAllowed,
@@ -29,7 +19,10 @@ import { documentToolSchema } from "./metadata.js";
 
 export const textEditSchema = z
   .object({
-    oldText: z.string().min(1).max(1024 * 1024),
+    oldText: z
+      .string()
+      .min(1)
+      .max(1024 * 1024),
     newText: z.string().max(1024 * 1024),
     replaceAll: z.boolean().optional(),
   })
@@ -198,19 +191,23 @@ export class UpdateFileTool implements AgentTool {
         size: updatedBuffer.length,
       });
 
-      return toolSuccess(`Updated ${target.displayPath}`, {
-        path: target.displayPath,
-        beforeHash: currentHash,
-        contentHash: afterHash,
-        editsApplied: parsed.edits.length,
-        bytesWritten: updatedBuffer.length,
-      }, {
-        type: "file_diff",
-        operation: "update",
-        path: target.displayPath,
-        before: original,
-        after: updated,
-      });
+      return toolSuccess(
+        `Updated ${target.displayPath}`,
+        {
+          path: target.displayPath,
+          beforeHash: currentHash,
+          contentHash: afterHash,
+          editsApplied: parsed.edits.length,
+          bytesWritten: updatedBuffer.length,
+        },
+        {
+          type: "file_diff",
+          operation: "update",
+          path: target.displayPath,
+          before: original,
+          after: updated,
+        },
+      );
     } catch (error) {
       if (temporaryPath) {
         try {

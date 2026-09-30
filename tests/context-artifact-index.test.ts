@@ -58,19 +58,41 @@ describe("layered Thread context index", () => {
     try {
       const store = new ThreadStore(storage);
       const state = createState(store, "thread_large_source");
-      state.messages.push({ role: "assistant", content: "prefix ".repeat(18000) +
-        "\nUNIQUE_MIDDLE_WITNESS rollback protocol\n" + "suffix ".repeat(18000) });
-      const limits = { ...defaultRuntimeLimits(), artifactIndexBatchChars: 12000, artifactChunkChars: 1000, artifactChunkOverlapChars: 80 };
-      const index = new ContextArtifactIndex(storage, new KeywordEmbeddingProvider(), undefined, { limits, backgroundVectors: false });
+      state.messages.push({
+        role: "assistant",
+        content: "prefix ".repeat(18000) + "\nUNIQUE_MIDDLE_WITNESS rollback protocol\n" + "suffix ".repeat(18000),
+      });
+      const limits = {
+        ...defaultRuntimeLimits(),
+        artifactIndexBatchChars: 12000,
+        artifactChunkChars: 1000,
+        artifactChunkOverlapChars: 80,
+      };
+      const index = new ContextArtifactIndex(storage, new KeywordEmbeddingProvider(), undefined, {
+        limits,
+        backgroundVectors: false,
+      });
       const result = await index.checkpoint(WORKSPACE_ID, state);
       assert.ok(result.indexedChunks > 200);
-      const hits = await index.search(WORKSPACE_ID, state.threadId, "UNIQUE_MIDDLE_WITNESS", { beforeMessageIndex: 1, limit: 6 });
-      assert.ok(hits.some(hit => hit.content.includes("UNIQUE_MIDDLE_WITNESS")), "Middle beyond the old 96k source cap remains searchable");
-      const changed = new ContextArtifactIndex(storage, new KeywordEmbeddingProvider(), undefined, { limits: { ...limits, artifactChunkChars: 1400 }, backgroundVectors: false });
+      const hits = await index.search(WORKSPACE_ID, state.threadId, "UNIQUE_MIDDLE_WITNESS", {
+        beforeMessageIndex: 1,
+        limit: 6,
+      });
+      assert.ok(
+        hits.some((hit) => hit.content.includes("UNIQUE_MIDDLE_WITNESS")),
+        "Middle beyond the old 96k source cap remains searchable",
+      );
+      const changed = new ContextArtifactIndex(storage, new KeywordEmbeddingProvider(), undefined, {
+        limits: { ...limits, artifactChunkChars: 1400 },
+        backgroundVectors: false,
+      });
       const rebuilt = await changed.checkpoint(WORKSPACE_ID, state);
       assert.equal(rebuilt.indexedMessages, 1);
       assert.ok(rebuilt.indexedChunks < result.indexedChunks);
-    } finally { storage.close(); rmSync(dataDir, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
   it("indexes only the appended suffix and restores hybrid evidence after resume", async () => {
     const dataDir = temporaryDataDir();
@@ -122,12 +144,10 @@ describe("layered Thread context index", () => {
       // A fresh projection object simulates process resume. SQLite remains the
       // source of truth while its Orama cache is rebuilt lazily.
       const resumed = new ContextArtifactIndex(storage, provider);
-      const hits = await resumed.search(
-        WORKSPACE_ID,
-        state.threadId,
-        "How is the release deployed?",
-        { beforeMessageIndex: 3, limit: 4 },
-      );
+      const hits = await resumed.search(WORKSPACE_ID, state.threadId, "How is the release deployed?", {
+        beforeMessageIndex: 3,
+        limit: 4,
+      });
       assert.ok(hits.some((hit) => /blue-green deployment/iu.test(hit.content)));
       assert.ok(hits.some((hit) => hit.title === "Read src/schema.ts:1-2"));
       assert.match(renderRetrievedContext(hits), /content_hash=[a-f0-9]{64}/u);
@@ -173,37 +193,21 @@ describe("layered Thread context index", () => {
       await index.checkpoint(WORKSPACE_ID, stateA);
       await index.checkpoint(WORKSPACE_ID, stateB);
 
-      const hitsA = await index.search(
-        WORKSPACE_ID,
-        stateA.threadId,
-        "SQLite WAL",
-        { beforeMessageIndex: 1 },
-      );
+      const hitsA = await index.search(WORKSPACE_ID, stateA.threadId, "SQLite WAL", { beforeMessageIndex: 1 });
       assert.equal(hitsA.length, 1);
       assert.match(hitsA[0]?.content ?? "", /SQLite WAL/iu);
       assert.doesNotMatch(hitsA[0]?.content ?? "", /super-secret-value/u);
       assert.ok(vectorFailureCount >= 1);
 
-      await index.search(
-        WORKSPACE_ID,
-        stateA.threadId,
-        "SQLite WAL",
-        { beforeMessageIndex: 1 },
-      );
+      await index.search(WORKSPACE_ID, stateA.threadId, "SQLite WAL", { beforeMessageIndex: 1 });
       assert.equal(vectorFailureCount, 1);
 
-      const hitsB = await index.search(
-        WORKSPACE_ID,
-        stateB.threadId,
-        "SQLite WAL",
-        { beforeMessageIndex: 1 },
-      );
-      assert.equal(hitsB.some((hit) => /WAL checkpoints/iu.test(hit.content)), false);
+      const hitsB = await index.search(WORKSPACE_ID, stateB.threadId, "SQLite WAL", { beforeMessageIndex: 1 });
       assert.equal(
-        vectorFailureCount,
-        2,
-        "a vector failure in one private Thread must not disable another Thread",
+        hitsB.some((hit) => /WAL checkpoints/iu.test(hit.content)),
+        false,
       );
+      assert.equal(vectorFailureCount, 2, "a vector failure in one private Thread must not disable another Thread");
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -231,14 +235,18 @@ describe("layered Thread context index", () => {
       });
       await index.checkpoint(WORKSPACE_ID, state);
 
-      const hits = await index.search(
-        WORKSPACE_ID,
-        state.threadId,
-        "迁移",
-        { beforeMessageIndex: state.messages.length, limit: 4 },
+      const hits = await index.search(WORKSPACE_ID, state.threadId, "迁移", {
+        beforeMessageIndex: state.messages.length,
+        limit: 4,
+      });
+      assert.equal(
+        hits.some((hit) => hit.messageIndex === 0),
+        true,
       );
-      assert.equal(hits.some((hit) => hit.messageIndex === 0), true);
-      assert.equal(hits.some((hit) => /普通日志记录/u.test(hit.content)), false);
+      assert.equal(
+        hits.some((hit) => /普通日志记录/u.test(hit.content)),
+        false,
+      );
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -254,16 +262,18 @@ describe("layered Thread context index", () => {
         role: "assistant",
         content: "The command completed.",
         reasoning_content: "hidden reasoning",
-        tool_calls: [{
-          id: "call_sensitive",
-          type: "function",
-          function: {
-            name: "run_command",
-            arguments: JSON.stringify({
-              command: ["node", "--api-key", "secret-tool-call-argument"],
-            }),
+        tool_calls: [
+          {
+            id: "call_sensitive",
+            type: "function",
+            function: {
+              name: "run_command",
+              arguments: JSON.stringify({
+                command: ["node", "--api-key", "secret-tool-call-argument"],
+              }),
+            },
           },
-        }],
+        ],
       });
       state.commands.push({
         id: "command_sensitive",
@@ -280,9 +290,10 @@ describe("layered Thread context index", () => {
       const checkpoint = await index.checkpoint(WORKSPACE_ID, state);
       const rendered = renderContextCheckpoint(checkpoint.checkpoint);
       assert.doesNotMatch(rendered, /secret-command-argument/u);
-      const indexedAssistant = storage.db.prepare<[], { content: string }>(
-        "SELECT content FROM context_artifacts WHERE source_type = 'assistant'",
-      ).get()?.content ?? "";
+      const indexedAssistant =
+        storage.db
+          .prepare<[], { content: string }>("SELECT content FROM context_artifacts WHERE source_type = 'assistant'")
+          .get()?.content ?? "";
       assert.match(indexedAssistant, /Requested tools: run_command/u);
       assert.doesNotMatch(indexedAssistant, /secret-tool-call-argument/u);
       assert.doesNotMatch(rendered, /hidden reasoning/u);
@@ -338,11 +349,13 @@ describe("layered Thread context index", () => {
           revision: 1,
           title: "Migration plan",
           overview: "Preserve rollback compatibility while updating the schema.",
-          steps: [{
-            title: "Update migration",
-            description: "Change the migration implementation.",
-            verification: "Run the rollback tests.",
-          }],
+          steps: [
+            {
+              title: "Update migration",
+              description: "Change the migration implementation.",
+              verification: "Run the rollback tests.",
+            },
+          ],
           proposedByTurnId: "turn_plan",
           proposedAt: new Date().toISOString(),
         },
@@ -396,23 +409,22 @@ describe("layered Thread context index", () => {
       await index.search(WORKSPACE_ID, state.threadId, "disposable evidence", {
         beforeMessageIndex: state.messages.length,
       });
-      const embeddingCountBeforeDelete = storage.db.prepare<[], { count: number }>(
-        "SELECT COUNT(*) AS count FROM context_artifact_embeddings",
-      ).get()?.count ?? 0;
+      const embeddingCountBeforeDelete =
+        storage.db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM context_artifact_embeddings").get()
+          ?.count ?? 0;
       assert.ok(embeddingCountBeforeDelete > 0);
 
       assert.doesNotThrow(() => {
         storage.db.prepare("DELETE FROM threads WHERE id = ?").run(state.threadId);
       });
-      const artifactCount = storage.db.prepare<[], { count: number }>(
-        "SELECT COUNT(*) AS count FROM context_artifacts",
-      ).get()?.count ?? -1;
-      const vectorStateCount = storage.db.prepare<[], { count: number }>(
-        "SELECT COUNT(*) AS count FROM context_vector_state",
-      ).get()?.count ?? -1;
-      const embeddingCount = storage.db.prepare<[], { count: number }>(
-        "SELECT COUNT(*) AS count FROM context_artifact_embeddings",
-      ).get()?.count ?? -1;
+      const artifactCount =
+        storage.db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM context_artifacts").get()?.count ?? -1;
+      const vectorStateCount =
+        storage.db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM context_vector_state").get()?.count ??
+        -1;
+      const embeddingCount =
+        storage.db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM context_artifact_embeddings").get()
+          ?.count ?? -1;
       assert.equal(artifactCount, 0);
       assert.equal(vectorStateCount, 0);
       assert.equal(embeddingCount, 0);

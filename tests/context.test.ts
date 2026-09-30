@@ -29,7 +29,7 @@ function makeState(): SessionState {
     constraints: [],
     messages: Array.from({ length: 30 }, (_, index) => ({
       role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
-      content: `message-${index}-${"x".repeat(300)}`
+      content: `message-${index}-${"x".repeat(300)}`,
     })),
     filesRead: new Map(),
     changes: [],
@@ -38,7 +38,7 @@ function makeState(): SessionState {
     workingSummary: "",
     compactedMessageCount: 0,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 }
 
@@ -50,7 +50,7 @@ describe("ContextManager", () => {
       content: `rolling-message-${index}-${"x".repeat(1_000)}`,
     }));
     const manager = new ContextManager();
-    const boundary = manager.retrievalBoundary(state, 1_600_000);
+    const boundary = manager.retrievalBoundary(state);
     const context = manager.build({
       systemPrompt: "system",
       state,
@@ -58,8 +58,14 @@ describe("ContextManager", () => {
     });
 
     assert.equal(boundary, state.compactedMessageCount);
-    assert.equal(context.some((message) => message.content?.includes("rolling-message-0-")), true);
-    assert.equal(context.some((message) => message.content?.includes("rolling-message-359-")), true);
+    assert.equal(
+      context.some((message) => message.content?.includes("rolling-message-0-")),
+      true,
+    );
+    assert.equal(
+      context.some((message) => message.content?.includes("rolling-message-359-")),
+      true,
+    );
     assert.ok(contextChars(context) > MAX_ACTIVE_WORKING_SET_CHARS);
   });
 
@@ -68,12 +74,7 @@ describe("ContextManager", () => {
     const manager = new ContextManager();
     const systemPrompt = `system-${"s".repeat(1_200)}`;
     const reservedSystemPromptChars = 4_000;
-    const boundary = manager.retrievalBoundary(
-      state,
-      5_000,
-      systemPrompt,
-      reservedSystemPromptChars,
-    );
+    const boundary = manager.retrievalBoundary(state);
     const context = manager.build({
       systemPrompt,
       state,
@@ -96,12 +97,7 @@ describe("ContextManager", () => {
     const manager = new ContextManager();
     const maxContextChars = 4_096;
     const reservedSystemPromptChars = 25_000;
-    const boundary = manager.retrievalBoundary(
-      state,
-      maxContextChars,
-      "system",
-      reservedSystemPromptChars,
-    );
+    const boundary = manager.retrievalBoundary(state);
     assert.equal(boundary, state.compactedMessageCount);
     const context = manager.build({
       systemPrompt: "system",
@@ -132,10 +128,12 @@ describe("ContextManager", () => {
     assert.throws(() => activeWorkingSetCharBudget(0), /positive safe integer/u);
 
     const current = makeState();
-    current.messages = [{
-      role: "user",
-      content: "x".repeat(Math.floor(MAX_ACTIVE_WORKING_SET_CHARS * 0.8) - 32),
-    }];
+    current.messages = [
+      {
+        role: "user",
+        content: "x".repeat(Math.floor(MAX_ACTIVE_WORKING_SET_CHARS * 0.8) - 32),
+      },
+    ];
     const inspection = new ContextManager().inspect(current, 1_600_000);
     assert.equal(inspection.configuredBudgetChars, 1_600_000);
     assert.equal(inspection.budgetChars, MAX_ACTIVE_WORKING_SET_CHARS);
@@ -144,10 +142,12 @@ describe("ContextManager", () => {
 
   it("treats retrieval reservations as diagnostics, not actual provider occupancy", () => {
     const current = makeState();
-    current.messages = [{
-      role: "user",
-      content: "x".repeat(2_100 - 32),
-    }];
+    current.messages = [
+      {
+        role: "user",
+        content: "x".repeat(2_100 - 32),
+      },
+    ];
     const manager = new ContextManager();
 
     const generic = manager.inspect(current, 10_000);
@@ -177,11 +177,13 @@ describe("ContextManager", () => {
         role: "assistant",
         content: null,
         reasoning_content: `consumed-reasoning-${"r".repeat(4_000)}`,
-        tool_calls: [{
-          id: "call_consumed_read",
-          type: "function",
-          function: { name: "read_file", arguments: '{"path":"src/old.ts"}' },
-        }],
+        tool_calls: [
+          {
+            id: "call_consumed_read",
+            type: "function",
+            function: { name: "read_file", arguments: '{"path":"src/old.ts"}' },
+          },
+        ],
       },
       {
         role: "tool",
@@ -199,11 +201,13 @@ describe("ContextManager", () => {
         role: "assistant",
         content: null,
         reasoning_content: `active-tool-reasoning-${"a".repeat(500)}`,
-        tool_calls: [{
-          id: "call_active_read",
-          type: "function",
-          function: { name: "read_file", arguments: '{"path":"src/current.ts"}' },
-        }],
+        tool_calls: [
+          {
+            id: "call_active_read",
+            type: "function",
+            function: { name: "read_file", arguments: '{"path":"src/current.ts"}' },
+          },
+        ],
       },
       {
         role: "tool",
@@ -212,19 +216,21 @@ describe("ContextManager", () => {
         content: `active-result-${"n".repeat(3_000)}`,
       },
     ];
-    const tools: ToolDefinition[] = [{
-      type: "function",
-      function: {
-        name: "read_file",
-        description: "Read a workspace file.",
-        parameters: {
-          type: "object",
-          additionalProperties: false,
-          properties: { path: { type: "string" } },
-          required: ["path"],
+    const tools: ToolDefinition[] = [
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description: "Read a workspace file.",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
         },
       },
-    }];
+    ];
     const manager = new ContextManager();
     const messages = manager.build({
       systemPrompt: "Exact provider system prompt",
@@ -244,10 +250,7 @@ describe("ContextManager", () => {
     assert.equal(inspection.providerMessageChars, expectedMessageChars);
     assert.equal(inspection.providerToolDefinitionChars, expectedToolChars);
     assert.equal(inspection.providerInputChars, expectedMessageChars + expectedToolChars);
-    assert.equal(
-      inspection.pressure,
-      contextPressureLevel(inspection.providerInputChars / inspection.budgetChars),
-    );
+    assert.equal(inspection.pressure, contextPressureLevel(inspection.providerInputChars / inspection.budgetChars));
     assert.equal(inspection.durableHistoryChars, estimateMessagesChars(current.messages));
     assert.equal(inspection.durableActiveChars, inspection.durableHistoryChars);
     assert.equal(inspection.projectedActiveChars, inspection.durableActiveChars);
@@ -263,11 +266,13 @@ describe("ContextManager", () => {
       role: "assistant",
       content: null,
       reasoning_content: "推理".repeat(200),
-      tool_calls: [{
-        id: "call_pending",
-        type: "function",
-        function: { name: "read_file", arguments: "{}" },
-      }],
+      tool_calls: [
+        {
+          id: "call_pending",
+          type: "function",
+          function: { name: "read_file", arguments: "{}" },
+        },
+      ],
     });
     const manager = new ContextManager();
     const before = manager.estimateShortTermTokens(state);
@@ -284,15 +289,16 @@ describe("ContextManager", () => {
     const context = new ContextManager().build({
       systemPrompt: "system",
       state,
-      maxContextChars: 5_000
+      maxContextChars: 5_000,
     });
 
     assert.deepEqual(context[0], { role: "system", content: "system" });
-    assert.equal(context.some((message) => message.content?.includes("message-29")), true);
     assert.equal(
-      context.some((message) =>
-        message.content?.includes("Earlier messages are omitted"),
-      ),
+      context.some((message) => message.content?.includes("message-29")),
+      true,
+    );
+    assert.equal(
+      context.some((message) => message.content?.includes("Earlier messages are omitted")),
       false,
     );
     assert.equal(state.workingSummary, "");
@@ -302,7 +308,7 @@ describe("ContextManager", () => {
     const second = new ContextManager().build({
       systemPrompt: "system",
       state,
-      maxContextChars: 5_000
+      maxContextChars: 5_000,
     });
     assert.equal(state.workingSummary, "");
     assert.deepEqual(second, context);
@@ -326,11 +332,26 @@ describe("ContextManager", () => {
     });
 
     for (const context of [first, second]) {
-      assert.equal(context.some((message) => message.content?.includes(summary)), true);
-      assert.equal(context.some((message) => message.content?.includes("message-0-")), true);
-      assert.equal(context.some((message) => message.role === "assistant" && message.content?.includes("message-1-")), false);
-      assert.equal(context.some((message) => message.content?.includes("message-20-")), true);
-      assert.equal(context.some((message) => message.content?.includes("message-29-")), true);
+      assert.equal(
+        context.some((message) => message.content?.includes(summary)),
+        true,
+      );
+      assert.equal(
+        context.some((message) => message.content?.includes("message-0-")),
+        true,
+      );
+      assert.equal(
+        context.some((message) => message.role === "assistant" && message.content?.includes("message-1-")),
+        false,
+      );
+      assert.equal(
+        context.some((message) => message.content?.includes("message-20-")),
+        true,
+      );
+      assert.equal(
+        context.some((message) => message.content?.includes("message-29-")),
+        true,
+      );
       assert.ok(contextChars(context) > 5_000);
     }
     assert.equal(state.workingSummary, summary);
@@ -341,18 +362,11 @@ describe("ContextManager", () => {
     const state = makeState();
     const manager = new ContextManager();
     manager.applyModelCompaction(state, "First cumulative summary", 10);
-    manager.applyModelCompaction(
-      state,
-      "Second summary with api_key=super-secret-value and the latest decisions",
-      24,
-    );
+    manager.applyModelCompaction(state, "Second summary with api_key=super-secret-value and the latest decisions", 24);
 
     assert.equal(state.compactedMessageCount, 24);
     assert.doesNotMatch(state.workingSummary, /super-secret-value/u);
-    assert.throws(
-      () => manager.applyModelCompaction(state, "invalid backwards move", 23),
-      /boundary is invalid/u,
-    );
+    assert.throws(() => manager.applyModelCompaction(state, "invalid backwards move", 23), /boundary is invalid/u);
     assert.equal(state.compactedMessageCount, 24);
   });
 
@@ -374,16 +388,18 @@ describe("ContextManager", () => {
       return {
         role: "user" as const,
         content: `turn ${ordinal}`,
-        images: [{
-          id,
-          label: "Image #1",
-          mediaType: "image/png" as const,
-          storageKey: `attachments/00000000000000000000000000000000/${id}.png`,
-          sha256: String(ordinal).repeat(64).slice(0, 64),
-          byteSize: 68,
-          width: 1,
-          height: 1,
-        }],
+        images: [
+          {
+            id,
+            label: "Image #1",
+            mediaType: "image/png" as const,
+            storageKey: `attachments/00000000000000000000000000000000/${id}.png`,
+            sha256: String(ordinal).repeat(64).slice(0, 64),
+            byteSize: 68,
+            width: 1,
+            height: 1,
+          },
+        ],
       };
     });
 
@@ -393,7 +409,7 @@ describe("ContextManager", () => {
       maxContextChars: 50_000,
     });
     const ids = context.flatMap((message) =>
-      message.role === "user" ? message.images?.map((image) => image.id) ?? [] : [],
+      message.role === "user" ? (message.images?.map((image) => image.id) ?? []) : [],
     );
     assert.equal(ids.length, 7);
     assert.equal(ids[0]?.endsWith("000000000001"), true);
@@ -404,7 +420,7 @@ describe("ContextManager", () => {
     );
     assert.equal(
       state.messages.reduce(
-        (total, message) => total + (message.role === "user" ? message.images?.length ?? 0 : 0),
+        (total, message) => total + (message.role === "user" ? (message.images?.length ?? 0) : 0),
         0,
       ),
       7,
@@ -414,20 +430,24 @@ describe("ContextManager", () => {
   it("preserves image and request intact or reports insufficient capacity", () => {
     const state = makeState();
     const id = "image_00000000-0000-4000-8000-000000000099";
-    state.messages = [{
-      role: "user",
-      content: "latest-" + "x".repeat(20_000),
-      images: [{
-        id,
-        label: "Image #1",
-        mediaType: "image/png",
-        storageKey: `attachments/00000000000000000000000000000000/${id}.png`,
-        sha256: "9".repeat(64),
-        byteSize: 1_024,
-        width: 32,
-        height: 32,
-      }],
-    }];
+    state.messages = [
+      {
+        role: "user",
+        content: "latest-" + "x".repeat(20_000),
+        images: [
+          {
+            id,
+            label: "Image #1",
+            mediaType: "image/png",
+            storageKey: `attachments/00000000000000000000000000000000/${id}.png`,
+            sha256: "9".repeat(64),
+            byteSize: 1_024,
+            width: 32,
+            height: 32,
+          },
+        ],
+      },
+    ];
 
     const small = new ContextManager().build({ systemPrompt: "system", state, maxContextChars: 1_024 });
     assert.ok(contextChars(small) > 1_024);
@@ -447,24 +467,24 @@ describe("ContextManager", () => {
       return {
         role: "user" as const,
         content: `image turn ${ordinal}`,
-        images: [{
-          id,
-          label: "Image #1",
-          mediaType: "image/png" as const,
-          storageKey: `attachments/00000000000000000000000000000000/${id}.png`,
-          sha256: String(ordinal).repeat(64).slice(0, 64),
-          byteSize: 10 * 1024 * 1024,
-          width: 4_000,
-          height: 4_000,
-        }],
+        images: [
+          {
+            id,
+            label: "Image #1",
+            mediaType: "image/png" as const,
+            storageKey: `attachments/00000000000000000000000000000000/${id}.png`,
+            sha256: String(ordinal).repeat(64).slice(0, 64),
+            byteSize: 10 * 1024 * 1024,
+            width: 4_000,
+            height: 4_000,
+          },
+        ],
       };
     });
 
     const manager = new ContextManager();
     const context = manager.build({ systemPrompt: "system", state, maxContextChars: 50_000 });
-    const images = context.flatMap((message) =>
-      message.role === "user" ? message.images ?? [] : [],
-    );
+    const images = context.flatMap((message) => (message.role === "user" ? (message.images ?? []) : []));
     assert.equal(images.length, 2);
     assert.equal(images[0]?.id.endsWith("000000000002"), true);
     assert.equal(images[1]?.id.endsWith("000000000003"), true);

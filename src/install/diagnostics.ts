@@ -49,9 +49,7 @@ function commandLocations(
   const observed = new Map<string, CommandLocation>();
   for (const rawEntry of pathValue(options.env).split(path.delimiter)) {
     const trimmed = rawEntry.trim();
-    const directory = trimmed.startsWith('"') && trimmed.endsWith('"')
-      ? trimmed.slice(1, -1)
-      : trimmed;
+    const directory = trimmed.startsWith('"') && trimmed.endsWith('"') ? trimmed.slice(1, -1) : trimmed;
     if (!directory || !path.isAbsolute(directory)) continue;
     const key = normalizedDirectory(directory, options.platform);
     let location = observed.get(key);
@@ -69,9 +67,7 @@ function commandLocations(
 }
 
 /** Read-only PATH inspection used after npm reports an existing global shim. */
-export function inspectInstallPaths(
-  options: InstallPathDiagnosticOptions = {},
-): InstallPathDiagnostics {
+export function inspectInstallPaths(options: InstallPathDiagnosticOptions = {}): InstallPathDiagnostics {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const isFile = options.isFile ?? defaultIsFile;

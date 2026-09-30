@@ -41,11 +41,8 @@ describe("command timeout budget", () => {
 
   it("renders every limiting value for model-visible command summaries", () => {
     assert.equal(
-      formatCommandTimeoutBudget(
-        resolveCommandTimeoutBudget(1_800_000, 120_000, "workspace_exec"),
-      ),
-      "timeout requested=1800000ms, effective=120000ms, " +
-        "configured limit=120000ms, capability limit=900000ms",
+      formatCommandTimeoutBudget(resolveCommandTimeoutBudget(1_800_000, 120_000, "workspace_exec")),
+      "timeout requested=1800000ms, effective=120000ms, " + "configured limit=120000ms, capability limit=900000ms",
     );
   });
 

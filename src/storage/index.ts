@@ -1,6 +1,1 @@
-export {
-  createStorage,
-  workspaceIdFromRoot,
-  type EasyCodeStorage,
-} from "./database.js";
-
+export { createStorage, workspaceIdFromRoot, type EasyCodeStorage } from "./database.js";

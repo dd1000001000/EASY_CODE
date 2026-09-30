@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 
-import {
-  createProviderAttemptSignal,
-} from "../src/runtime/provider-attempt-signal.js";
+import { createProviderAttemptSignal } from "../src/runtime/provider-attempt-signal.js";
 import { describe, it } from "./harness.js";
 
 describe("provider attempt signal", () => {

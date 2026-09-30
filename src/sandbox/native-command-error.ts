@@ -17,7 +17,11 @@ export interface NativeTargetSpawnFailure {
 
 function errorText(error: NativeAppServerRequestError): string {
   let data = "";
-  try { data = JSON.stringify(error.data); } catch { /* The message remains usable if third-party data is malformed. */ }
+  try {
+    data = JSON.stringify(error.data);
+  } catch {
+    /* The message remains usable if third-party data is malformed. */
+  }
   return `${error.message}\n${data}`.slice(0, 16_384);
 }
 
@@ -44,23 +48,35 @@ function findField(value: unknown, names: readonly string[]): unknown {
 export function sandboxBoundaryResultFromError(error: unknown): NativeSandboxBoundaryResult | undefined {
   if (!(error instanceof NativeAppServerRequestError)) return undefined;
   const text = errorText(error);
-  if (!/(?:sandbox.{0,80}(?:denied|violation|not permitted)|(?:denied|violation).{0,80}sandbox)/isu.test(text)) return undefined;
+  if (!/(?:sandbox.{0,80}(?:denied|violation|not permitted)|(?:denied|violation).{0,80}sandbox)/isu.test(text))
+    return undefined;
   const structuredExit = findField(error.data, ["exitCode", "exit_code", "code"]);
-  const parsedExit = Number.isSafeInteger(structuredExit) ? Number(structuredExit) : Number(/exit code\s*[:=]?\s*(\d+)/iu.exec(text)?.[1] ?? 1);
+  const parsedExit = Number.isSafeInteger(structuredExit)
+    ? Number(structuredExit)
+    : Number(/exit code\s*[:=]?\s*(\d+)/iu.exec(text)?.[1] ?? 1);
   const stdout = findField(error.data, ["stdout", "standardOutput"]);
   const stderr = findField(error.data, ["stderr", "standardError"]);
   const destination = findField(error.data, ["path", "destination", "targetPath"]);
-  const access = /(?:delete|remove|unlink|rmdir)/iu.test(text) ? "delete" as const
-    : /(?:write|create|mkdir|rename|modify)/iu.test(text) ? "write" as const
-      : /(?:execute|exec|spawn)/iu.test(text) ? "execute" as const
-        : /(?:read|open|stat)/iu.test(text) ? "read" as const : "unknown" as const;
+  const access = /(?:delete|remove|unlink|rmdir)/iu.test(text)
+    ? ("delete" as const)
+    : /(?:write|create|mkdir|rename|modify)/iu.test(text)
+      ? ("write" as const)
+      : /(?:execute|exec|spawn)/iu.test(text)
+        ? ("execute" as const)
+        : /(?:read|open|stat)/iu.test(text)
+          ? ("read" as const)
+          : ("unknown" as const);
   return {
     exitCode: Number.isSafeInteger(parsedExit) && parsedExit > 0 ? parsedExit : 1,
     stdout: typeof stdout === "string" ? stdout : "",
     stderr: typeof stderr === "string" && stderr.length ? stderr : error.message,
-    event: { type: "sandbox_boundary_violation", access,
+    event: {
+      type: "sandbox_boundary_violation",
+      access,
       ...(typeof destination === "string" ? { destination: destination.slice(0, 4096) } : {}),
-      destinationCategory: "unknown", message: error.message.slice(0, 1200) },
+      destinationCategory: "unknown",
+      message: error.message.slice(0, 1200),
+    },
   };
 }
 

@@ -6,8 +6,21 @@ export class MacNativeBackend implements NativeBackendPlatform {
   readonly startupTimeoutMs: number;
   readonly cooperativeTermination = true;
   readonly sandboxManagedTimeout = false;
-  constructor(options: NativeBackendPlatformOptions) { this.startupTimeoutMs = options.limits.sandboxStartupPosixMs; }
-  createNetworkGate(options: CommandNetworkGateOptions) { return createCommandNetworkGate(options); }
-  async authorizedProxyPorts(existing?: readonly number[]) { return existing; }
-  async recoverCleanup(_root: string, _request: SandboxExecutionRequest, _ports: readonly number[] | undefined, error: unknown): Promise<void> { throw error; }
+  constructor(options: NativeBackendPlatformOptions) {
+    this.startupTimeoutMs = options.limits.sandboxStartupPosixMs;
+  }
+  createNetworkGate(options: CommandNetworkGateOptions) {
+    return createCommandNetworkGate(options);
+  }
+  async authorizedProxyPorts(existing?: readonly number[]) {
+    return existing;
+  }
+  async recoverCleanup(
+    _root: string,
+    _request: SandboxExecutionRequest,
+    _ports: readonly number[] | undefined,
+    error: unknown,
+  ): Promise<void> {
+    throw error;
+  }
 }

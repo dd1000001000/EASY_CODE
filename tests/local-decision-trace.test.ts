@@ -11,15 +11,31 @@ describe("local decision trace", () => {
     try {
       const input = "Original user request:\n修复登录\n\nMain agent completion summary:\n已修复登录";
       await appendLocalDecisionTrace(root, {
-        id: "decision_test", threadId: "thread_123", turnId: "turn_123",
-        challenged: false, challengeAlreadyUsed: false, appliedDecision: "RELEASE",
-        decision: { task: "delivery", input, inputTokens: 36, truncated: false,
-          optionOrder: ["RELEASE", "CHALLENGE"], scores: { RELEASE: 0.91, CHALLENGE: 0.09 },
-          decision: "RELEASE", modelSha256: "test-hash", device: "cpu" },
+        id: "decision_test",
+        threadId: "thread_123",
+        turnId: "turn_123",
+        challenged: false,
+        challengeAlreadyUsed: false,
+        appliedDecision: "RELEASE",
+        decision: {
+          task: "delivery",
+          input,
+          inputTokens: 36,
+          truncated: false,
+          optionOrder: ["RELEASE", "CHALLENGE"],
+          scores: { RELEASE: 0.91, CHALLENGE: 0.09 },
+          decision: "RELEASE",
+          modelSha256: "test-hash",
+          device: "cpu",
+        },
       });
       await appendLocalDecisionFallbackTrace(root, {
-        id: "decision_fallback", threadId: "thread_123", turnId: "turn_124",
-        task: "route", input: "Can you inspect this repository?", reason: "Python unavailable",
+        id: "decision_fallback",
+        threadId: "thread_123",
+        turnId: "turn_124",
+        task: "route",
+        input: "Can you inspect this repository?",
+        reason: "Python unavailable",
       });
       const data = await readFile(path.join(root, ".easycode", "decision-traces", "thread_123.jsonl"), "utf8");
       const [line, fallbackLine] = data.trim().split("\n");

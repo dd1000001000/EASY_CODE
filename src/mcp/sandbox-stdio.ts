@@ -37,7 +37,9 @@ export class SandboxedMcpStdioTransport implements Transport {
   private active = false;
   private closed = false;
 
-  get isActive(): boolean { return this.active && !this.closed; }
+  get isActive(): boolean {
+    return this.active && !this.closed;
+  }
 
   constructor(
     private readonly workspace: WorkspaceManager,
@@ -55,7 +57,10 @@ export class SandboxedMcpStdioTransport implements Transport {
       throw new Error("Command environment is quarantined; inspect sandbox cleanup before connecting an MCP server");
     }
     const resolved = await new CommandResolver(this.workspace).resolve({
-      program: this.config.command, args: this.config.args, cwd: this.config.cwd, intent: "run",
+      program: this.config.command,
+      args: this.config.args,
+      cwd: this.config.cwd,
+      intent: "run",
     });
     if (this.approvedExecutableHash && resolved.executableHash !== this.approvedExecutableHash) {
       throw new Error("MCP executable changed after approval; reconnect and approve the current binary");
@@ -73,7 +78,8 @@ export class SandboxedMcpStdioTransport implements Transport {
         bind: ensureSharedCommandNetworkGateServer,
       });
       proxyPorts = await lease.authorizedPorts();
-      if (!proxyPorts.includes(lease.port)) throw new Error("Windows sandbox setup is incomplete; run easy-code sandbox setup");
+      if (!proxyPorts.includes(lease.port))
+        throw new Error("Windows sandbox setup is incomplete; run easy-code sandbox setup");
     }
     const baseHome = nativeSandboxHome(this.dataDir);
     await mkdir(baseHome, { recursive: true, mode: 0o700 });
@@ -83,9 +89,9 @@ export class SandboxedMcpStdioTransport implements Transport {
     try {
       await service.initialize(this.limits.mcpStartupTimeoutMs);
       await assertProjectSandboxReady(service, this.limits.mcpStartupTimeoutMs);
-      this.stopNotifications = service.onNotification(notification => {
-        if (notification?.method !== "command/exec/outputDelta" ||
-            notification.params?.processId !== this.processId) return;
+      this.stopNotifications = service.onNotification((notification) => {
+        if (notification?.method !== "command/exec/outputDelta" || notification.params?.processId !== this.processId)
+          return;
         const encoded = notification.params?.deltaBase64;
         if (typeof encoded !== "string" || encoded.length > this.limits.mcpStdioMaxMessageBytes * 2) {
           this.onerror?.(new Error("MCP server emitted an oversized output delta"));
@@ -110,28 +116,39 @@ export class SandboxedMcpStdioTransport implements Transport {
       // CommandResolver already produced an argv-safe, hash-bound launch plan.
       // Reuse it unchanged so Windows .cmd/.bat, npx and PowerShell-backed MCP
       // launchers work without a second shell reconstruction here.
-      this.execution = service.request("command/exec", {
-        command: [target.executablePath, ...target.args],
-        cwd: resolved.cwdAbsolute,
-        env,
-        processId: this.processId,
-        streamStdin: true,
-        streamStdoutStderr: true,
-        disableOutputCap: true,
-        disableTimeout: true,
-        ...nativeProjectPermissionProfile(),
-      }, 24 * 60 * 60 * 1000).then<ExecutionEnd, ExecutionEnd>(
-        result => Number.isSafeInteger(result?.exitCode)
-          ? { confirmed: true, exitCode: result.exitCode }
-          : { confirmed: false, error: "Command response had no exit code" },
-        error => ({ confirmed: false, error: error instanceof Error ? error.message : String(error) }),
-      );
-      void this.execution.then(outcome => {
+      this.execution = service
+        .request(
+          "command/exec",
+          {
+            command: [target.executablePath, ...target.args],
+            cwd: resolved.cwdAbsolute,
+            env,
+            processId: this.processId,
+            streamStdin: true,
+            streamStdoutStderr: true,
+            disableOutputCap: true,
+            disableTimeout: true,
+            ...nativeProjectPermissionProfile(),
+          },
+          24 * 60 * 60 * 1000,
+        )
+        .then<ExecutionEnd, ExecutionEnd>(
+          (result) =>
+            Number.isSafeInteger(result?.exitCode)
+              ? { confirmed: true, exitCode: result.exitCode }
+              : { confirmed: false, error: "Command response had no exit code" },
+          (error) => ({ confirmed: false, error: error instanceof Error ? error.message : String(error) }),
+        );
+      void this.execution.then((outcome) => {
         if (this.closed) return;
-        this.onerror?.(new Error(outcome.confirmed
-          ? `MCP server exited (${outcome.exitCode})`
-          : `MCP server outcome is uncertain: ${outcome.error}`));
-        void this.close().catch(error => this.onerror?.(error instanceof Error ? error : new Error(String(error))));
+        this.onerror?.(
+          new Error(
+            outcome.confirmed
+              ? `MCP server exited (${outcome.exitCode})`
+              : `MCP server outcome is uncertain: ${outcome.error}`,
+          ),
+        );
+        void this.close().catch((error) => this.onerror?.(error instanceof Error ? error : new Error(String(error))));
       });
       // The exec response is deliberately deferred until exit. Probe the
       // connection-scoped process handle before handing transport to the SDK.
@@ -148,8 +165,11 @@ export class SandboxedMcpStdioTransport implements Transport {
         }
       }
     } catch (error) {
-      try { await this.close(); }
-      catch (cleanupError) { throw new AggregateError([error, cleanupError], "MCP startup and cleanup failed"); }
+      try {
+        await this.close();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "MCP startup and cleanup failed");
+      }
       throw error;
     }
   }
@@ -158,12 +178,18 @@ export class SandboxedMcpStdioTransport implements Transport {
     if (!this.active || !this.service || this.closed) throw new Error("MCP server is not connected");
     const line = serializeMessage(message);
     if (Buffer.byteLength(line) > this.limits.mcpStdioMaxMessageBytes) {
-      throw new Error(`MCP request exceeds the configured ${this.limits.mcpStdioMaxMessageBytes}-byte transport safety limit`);
+      throw new Error(
+        `MCP request exceeds the configured ${this.limits.mcpStdioMaxMessageBytes}-byte transport safety limit`,
+      );
     }
-    await this.service.request("command/exec/write", {
-      processId: this.processId,
-      deltaBase64: Buffer.from(line).toString("base64"),
-    }, WRITE_MS);
+    await this.service.request(
+      "command/exec/write",
+      {
+        processId: this.processId,
+        deltaBase64: Buffer.from(line).toString("base64"),
+      },
+      WRITE_MS,
+    );
   }
 
   async close(): Promise<void> {
@@ -182,9 +208,13 @@ export class SandboxedMcpStdioTransport implements Transport {
         try {
           outcome = await Promise.race([
             this.execution,
-            new Promise<undefined>(resolve => { timeout = setTimeout(() => resolve(undefined), 10_000); }),
+            new Promise<undefined>((resolve) => {
+              timeout = setTimeout(() => resolve(undefined), 10_000);
+            }),
           ]);
-        } finally { if (timeout) clearTimeout(timeout); }
+        } finally {
+          if (timeout) clearTimeout(timeout);
+        }
       }
       await service.close();
     }
@@ -205,20 +235,34 @@ export class SandboxedMcpStdioTransport implements Transport {
     const directory = path.dirname(filename);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     let handle: Awaited<ReturnType<typeof open>>;
-    try { handle = await open(filename, "wx", 0o600); }
-    catch (error) {
+    try {
+      handle = await open(filename, "wx", 0o600);
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
       throw error;
     }
     try {
-      await handle.writeFile(JSON.stringify({ version: 3, code: "mcp_cleanup_unknown",
-        workspace: this.workspace.root, backend: "native", reason, at: new Date().toISOString() }));
+      await handle.writeFile(
+        JSON.stringify({
+          version: 3,
+          code: "mcp_cleanup_unknown",
+          workspace: this.workspace.root,
+          backend: "native",
+          reason,
+          at: new Date().toISOString(),
+        }),
+      );
       await handle.sync();
-    } finally { await handle.close(); }
+    } finally {
+      await handle.close();
+    }
   }
 
   private quarantinePath(): string {
-    return path.join(this.dataDir, "command-quarantine",
-      `${this.workspace.projectId ?? workspaceIdFromRoot(this.workspace.root)}.json`);
+    return path.join(
+      this.dataDir,
+      "command-quarantine",
+      `${this.workspace.projectId ?? workspaceIdFromRoot(this.workspace.root)}.json`,
+    );
   }
 }

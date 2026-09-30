@@ -27,42 +27,84 @@ describe("Web tool detail targets", () => {
   });
 
   it("uses the executed command for a poll and has a safe fallback", () => {
-    assert.equal(show("poll_command", { commandId: "command_1" }, {
-      ...result, data: { executed: { program: "npm", args: ["test"] } },
-    })[0]?.value, "npm test");
+    assert.equal(
+      show(
+        "poll_command",
+        { commandId: "command_1" },
+        {
+          ...result,
+          data: { executed: { program: "npm", args: ["test"] } },
+        },
+      )[0]?.value,
+      "npm test",
+    );
     assert.equal(show("cancel_command", { commandId: "command_1" })[0]?.value, "Original command unavailable");
   });
 
   it("uses pre-change skill names and the requested scope", () => {
     assert.deepEqual(show("modify_skill", { name: "review-code", scope: "project" }), [
-      { label: "Skill", value: "review-code" }, { label: "Scope", value: "project" },
+      { label: "Skill", value: "review-code" },
+      { label: "Scope", value: "project" },
     ]);
   });
 
   it("resolves task and subagent titles", () => {
     assert.equal(show("manage_tasks", { action: "complete", taskId: "backend" })[1]?.value, "Inspect backend");
     assert.equal(show("manage_subagents", { action: "spawn", taskId: "backend" })[1]?.value, "Inspect backend");
-    assert.equal(show("submit_task_result", { outcome: "completed" }, {
-      ...result, data: { taskId: "backend", taskTitle: "Inspect backend" },
-    })[0]?.value, "Inspect backend");
+    assert.equal(
+      show(
+        "submit_task_result",
+        { outcome: "completed" },
+        {
+          ...result,
+          data: { taskId: "backend", taskTitle: "Inspect backend" },
+        },
+      )[0]?.value,
+      "Inspect backend",
+    );
   });
 
   it("shows the exact MCP server and invoked tool without arguments", () => {
-    const tool = { metadata: { identity: {
-      id: "mcp:robinhood:mcp_robinhood_catalog_call_123", sourceId: "mcp", displayName: "robinhood: catalog_call",
-    } } } as AgentTool;
-    assert.deepEqual(show("mcp_robinhood_catalog_call_123", {
-      name: "get_accounts", argumentsJson: '{"access_token":"secret"}',
-    }, result, tool), [
-      { label: "MCP server", value: "robinhood" }, { label: "MCP tool", value: "get_accounts" },
-    ]);
+    const tool = {
+      metadata: {
+        identity: {
+          id: "mcp:robinhood:mcp_robinhood_catalog_call_123",
+          sourceId: "mcp",
+          displayName: "robinhood: catalog_call",
+        },
+      },
+    } as AgentTool;
+    assert.deepEqual(
+      show(
+        "mcp_robinhood_catalog_call_123",
+        {
+          name: "get_accounts",
+          argumentsJson: '{"access_token":"secret"}',
+        },
+        result,
+        tool,
+      ),
+      [
+        { label: "MCP server", value: "robinhood" },
+        { label: "MCP tool", value: "get_accounts" },
+      ],
+    );
   });
 
   it("uses direct MCP identity rather than a same-named input field", () => {
-    const tool = { metadata: { identity: {
-      id: "mcp:robinhood:mcp_robinhood_get_accounts_123", sourceId: "mcp", displayName: "robinhood: Accounts",
-    } }, approvalTarget: () => ({ name: "get_accounts", label: "robinhood / get_accounts" }) } as unknown as AgentTool;
-    assert.equal(show("mcp_robinhood_get_accounts_123", { name: "misleading_argument" }, result, tool)[1]?.value,
-      "get_accounts");
+    const tool = {
+      metadata: {
+        identity: {
+          id: "mcp:robinhood:mcp_robinhood_get_accounts_123",
+          sourceId: "mcp",
+          displayName: "robinhood: Accounts",
+        },
+      },
+      approvalTarget: () => ({ name: "get_accounts", label: "robinhood / get_accounts" }),
+    } as unknown as AgentTool;
+    assert.equal(
+      show("mcp_robinhood_get_accounts_123", { name: "misleading_argument" }, result, tool)[1]?.value,
+      "get_accounts",
+    );
   });
 });

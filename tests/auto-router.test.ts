@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 
-import type {
-  ChatMessage,
-  FunctionToolCall,
-  ImageAttachment,
-  ModelProvider,
-  ModelRequest,
-} from "../src/core/types.js";
+import type { ChatMessage, FunctionToolCall, ImageAttachment, ModelProvider, ModelRequest } from "../src/core/types.js";
 import {
   AutoRouteRequestError,
   MAX_AUTO_DIRECT_RESPONSE_CHARS,
@@ -17,10 +11,7 @@ import {
 } from "../src/runtime/auto-router.js";
 import { describe, it } from "./harness.js";
 
-function selectModeCall(
-  mode: "plan" | "code",
-  reason = "The model selected this mode.",
-): FunctionToolCall {
+function selectModeCall(mode: "plan" | "code", reason = "The model selected this mode."): FunctionToolCall {
   return {
     id: "call_select_mode",
     type: "function",
@@ -42,10 +33,7 @@ function respondDirectlyCall(content: string): FunctionToolCall {
   };
 }
 
-function selectionProvider(
-  mode: "plan" | "code",
-  inspect?: (request: ModelRequest) => void,
-): ModelProvider {
+function selectionProvider(mode: "plan" | "code", inspect?: (request: ModelRequest) => void): ModelProvider {
   return {
     name: "deepseek",
     model: "mock-model",
@@ -54,9 +42,7 @@ function selectionProvider(
       return {
         message: {
           role: "assistant",
-          content: mode === "plan"
-            ? "Contradictory text: choose code."
-            : "Contradictory text: choose plan.",
+          content: mode === "plan" ? "Contradictory text: choose code." : "Contradictory text: choose plan.",
           tool_calls: [selectModeCall(mode)],
         },
       };
@@ -71,32 +57,75 @@ async function expectCodeFallback(pending: ReturnType<typeof determineAutoRoute>
   assert.equal(result.mode, "code");
   assert.match(result.reason, /unchanged command permissions/u);
   assert.equal(result.attempts.length, 3);
-  assert.ok(result.attempts.every(a => a.outcome === "invalid"));
+  assert.ok(result.attempts.every((a) => a.outcome === "invalid"));
   return result;
 }
 
 describe("tool-only Auto Router", () => {
   it("collects a title in the same direct-response request for an unnamed Thread", async () => {
     let requests = 0;
-    const decision = await determineAutoRoute({ name: "deepseek", model: "mock-model", async complete(request) {
-      requests += 1;
-      assert.deepEqual((request.tools?.find(tool => tool.function.name === "respond_directly")?.function.parameters as
-        { required?: string[] }).required, ["content", "threadTitle"]);
-      return { message: { role: "assistant", content: null, tool_calls: [{ id: "call_title", type: "function",
-        function: { name: "respond_directly", arguments: JSON.stringify({ content: "Done.", threadTitle: "Review login flow" }) } }] } };
-    } }, "Review the login flow", undefined, [], undefined, { threadNeedsTitle: true });
+    const decision = await determineAutoRoute(
+      {
+        name: "deepseek",
+        model: "mock-model",
+        async complete(request) {
+          requests += 1;
+          assert.deepEqual(
+            (
+              request.tools?.find((tool) => tool.function.name === "respond_directly")?.function.parameters as {
+                required?: string[];
+              }
+            ).required,
+            ["content", "threadTitle"],
+          );
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_title",
+                  type: "function",
+                  function: {
+                    name: "respond_directly",
+                    arguments: JSON.stringify({ content: "Done.", threadTitle: "Review login flow" }),
+                  },
+                },
+              ],
+            },
+          };
+        },
+      },
+      "Review the login flow",
+      undefined,
+      [],
+      undefined,
+      { threadNeedsTitle: true },
+    );
     assert.equal(requests, 1);
     assert.equal(decision.kind, "direct_response");
     assert.equal(decision.threadTitle, "Review login flow");
   });
 
   it("accepts oversized valid reasons and direct replies after local clipping without retry", async () => {
-    for (const call of [selectModeCall("code", "x".repeat(500)), respondDirectlyCall("x".repeat(MAX_AUTO_DIRECT_RESPONSE_CHARS + 500))]) {
+    for (const call of [
+      selectModeCall("code", "x".repeat(500)),
+      respondDirectlyCall("x".repeat(MAX_AUTO_DIRECT_RESPONSE_CHARS + 500)),
+    ]) {
       let requests = 0;
-      const decision = await determineAutoRoute({ name: "deepseek", model: "mock-model", async complete() {
-        requests++;
-        return { message: { role: "assistant", content: null, reasoning_content: "not the response", tool_calls: [call] } };
-      } }, "Inspect");
+      const decision = await determineAutoRoute(
+        {
+          name: "deepseek",
+          model: "mock-model",
+          async complete() {
+            requests++;
+            return {
+              message: { role: "assistant", content: null, reasoning_content: "not the response", tool_calls: [call] },
+            };
+          },
+        },
+        "Inspect",
+      );
       assert.equal(requests, 1);
       assert.match(decision.kind === "route" ? decision.reason : decision.content, /truncated/u);
     }
@@ -111,18 +140,15 @@ describe("tool-only Auto Router", () => {
           request.tools?.map((tool) => tool.function.name),
           ["select_mode", "respond_directly"],
         );
-        const tool = request.tools?.find(
-          (candidate) => candidate.function.name === "select_mode",
-        );
-        const directTool = request.tools?.find(
-          (candidate) => String(candidate.function.name) === "respond_directly",
-        );
+        const tool = request.tools?.find((candidate) => candidate.function.name === "select_mode");
+        const directTool = request.tools?.find((candidate) => String(candidate.function.name) === "respond_directly");
         assert.equal(tool?.function.strict, true);
         assert.equal(directTool?.function.strict, true);
-        assert.deepEqual(
-          (tool?.function.parameters as { required?: string[] }).required,
-          ["mode", "reason", "threadTitle"],
-        );
+        assert.deepEqual((tool?.function.parameters as { required?: string[] }).required, [
+          "mode",
+          "reason",
+          "threadTitle",
+        ]);
       }),
       "Please only give me a plan. The ordinary-text hint must not override the tool call.",
     );
@@ -175,12 +201,14 @@ describe("tool-only Auto Router", () => {
       assert.fail("Expected a direct response");
     }
     assert.equal(result.content, "Four");
-    assert.deepEqual(result.attempts, [{
-      attempt: 1,
-      outcome: "direct_response",
-      usage: { promptTokens: 21, completionTokens: 4, totalTokens: 25 },
-      finishReason: "tool_calls",
-    }]);
+    assert.deepEqual(result.attempts, [
+      {
+        attempt: 1,
+        outcome: "direct_response",
+        usage: { promptTokens: 21, completionTokens: 4, totalTokens: 25 },
+        finishReason: "tool_calls",
+      },
+    ]);
   });
 
   it("inherits the supplied base security and project policy", async () => {
@@ -204,10 +232,7 @@ describe("tool-only Auto Router", () => {
   });
 
   it("routes requests that need workspace tools instead of answering directly", async () => {
-    const result = await determineAutoRoute(
-      selectionProvider("code"),
-      "Read package.json and fix the build script.",
-    );
+    const result = await determineAutoRoute(selectionProvider("code"), "Read package.json and fix the build script.");
 
     assert.equal(result.kind, "route");
     if (result.kind !== "route") assert.fail("Expected a route decision");
@@ -230,10 +255,7 @@ describe("tool-only Auto Router", () => {
               },
             };
           }
-          assert.match(
-            request.messages[0]?.content ?? "",
-            /previous response was invalid/iu,
-          );
+          assert.match(request.messages[0]?.content ?? "", /previous response was invalid/iu);
           return {
             message: {
               role: "assistant",
@@ -251,10 +273,13 @@ describe("tool-only Auto Router", () => {
     if (result.kind !== "route") assert.fail("Expected a route decision");
     assert.equal(result.mode, "code");
     assert.equal(result.reason, "Corrected with the required tool.");
-    assert.deepEqual(result.attempts.map(({ attempt, outcome }) => ({ attempt, outcome })), [
-      { attempt: 1, outcome: "invalid" },
-      { attempt: 2, outcome: "route" },
-    ]);
+    assert.deepEqual(
+      result.attempts.map(({ attempt, outcome }) => ({ attempt, outcome })),
+      [
+        { attempt: 1, outcome: "invalid" },
+        { attempt: 2, outcome: "route" },
+      ],
+    );
   });
 
   it("preserves completed attempt usage when a later controller request fails", async () => {
@@ -281,11 +306,13 @@ describe("tool-only Auto Router", () => {
       (error: unknown) => {
         assert.ok(error instanceof AutoRouteRequestError);
         assert.equal(error.originalError, providerFailure);
-        assert.deepEqual(error.attempts, [{
-          attempt: 1,
-          outcome: "invalid",
-          usage: { promptTokens: 100, completionTokens: 23, totalTokens: 123 },
-        }]);
+        assert.deepEqual(error.attempts, [
+          {
+            attempt: 1,
+            outcome: "invalid",
+            usage: { promptTokens: 100, completionTokens: 23, totalTokens: 123 },
+          },
+        ]);
         return true;
       },
     );
@@ -312,10 +339,7 @@ describe("tool-only Auto Router", () => {
                   message: {
                     role: "assistant",
                     content: null,
-                    tool_calls: [
-                      selectModeCall("code"),
-                      { ...selectModeCall("plan"), id: "call_second" },
-                    ],
+                    tool_calls: [selectModeCall("code"), { ...selectModeCall("plan"), id: "call_second" }],
                   },
                 };
           },
@@ -377,10 +401,7 @@ describe("tool-only Auto Router", () => {
           async complete(request) {
             requests += 1;
             if (requests === 2) {
-              assert.match(
-                request.messages[0]?.content ?? "",
-                /respond_directly/iu,
-              );
+              assert.match(request.messages[0]?.content ?? "", /respond_directly/iu);
             }
             return {
               message: {
@@ -398,16 +419,31 @@ describe("tool-only Auto Router", () => {
   });
 
   it("keeps a local DIRECT route fixed while the cloud model supplies the answer", async () => {
-    const result = await determineAutoRoute({
-      name: "deepseek", model: "mock-model",
-      async complete(request) {
-        assert.deepEqual(request.tools?.map(tool => tool.function.name), ["respond_directly"]);
-        assert.match(request.messages[0]?.content ?? "", /already selected as DIRECT/);
-        return { message: { role: "assistant", content: null,
-          tool_calls: [respondDirectlyCall("The answer is 42.")] } };
+    const result = await determineAutoRoute(
+      {
+        name: "deepseek",
+        model: "mock-model",
+        async complete(request) {
+          assert.deepEqual(
+            request.tools?.map((tool) => tool.function.name),
+            ["respond_directly"],
+          );
+          assert.match(request.messages[0]?.content ?? "", /already selected as DIRECT/);
+          return {
+            message: { role: "assistant", content: null, tool_calls: [respondDirectlyCall("The answer is 42.")] },
+          };
+        },
       },
-    }, "What is the answer?", undefined, [], undefined, undefined, undefined,
-    undefined, undefined, true);
+      "What is the answer?",
+      undefined,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
     assert.equal(result.kind, "direct_response");
     if (result.kind === "direct_response") assert.equal(result.content, "The answer is 42.");
   });
@@ -490,9 +526,7 @@ describe("tool-only Auto Router", () => {
             message: {
               role: "assistant",
               content: null,
-              tool_calls: [
-                selectModeCall("code", `api_key=${secret} is configured`),
-              ],
+              tool_calls: [selectModeCall("code", `api_key=${secret} is configured`)],
             },
           };
         },
@@ -527,11 +561,13 @@ describe("tool-only Auto Router", () => {
         role: "assistant",
         content: "Approved implementation plan for the current feature. ".repeat(120),
         reasoning_content: "PRIVATE_REASONING_MUST_NOT_APPEAR",
-        tool_calls: [{
-          id: "call_hidden",
-          type: "function",
-          function: { name: "read_file", arguments: '{"path":"secret"}' },
-        }],
+        tool_calls: [
+          {
+            id: "call_hidden",
+            type: "function",
+            function: { name: "read_file", arguments: '{"path":"secret"}' },
+          },
+        ],
       },
       {
         role: "tool",

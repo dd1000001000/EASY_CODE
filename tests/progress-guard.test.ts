@@ -17,8 +17,7 @@ function failure(
   } = {},
 ): ProgressObservation {
   const suffix = String(ordinal).padStart(12, "0");
-  const commandId = options.commandId ??
-    `command_00000000-0000-4000-8000-${suffix}`;
+  const commandId = options.commandId ?? `command_00000000-0000-4000-8000-${suffix}`;
   return {
     schemaVersion: 1,
     sourceEventId: options.eventId ?? `event_failure_${ordinal}`,
@@ -155,9 +154,12 @@ describe("progress guard", () => {
   it("does not combine different failure signatures and clears a target after a verified pass", () => {
     let state = createProgressGuardState();
     state = foldProgressObservation(state, failure(1)).state;
-    state = foldProgressObservation(state, failure(2, {
-      outcomeKey: "sha256:" + "e".repeat(64),
-    })).state;
+    state = foldProgressObservation(
+      state,
+      failure(2, {
+        outcomeKey: "sha256:" + "e".repeat(64),
+      }),
+    ).state;
     const mixed = foldProgressObservation(state, failure(3));
     assert.equal(mixed.trigger, undefined);
     assert.equal(mixed.state.failureRuns.length, 2);
@@ -174,19 +176,30 @@ describe("progress guard", () => {
 
   it("does not combine identical command failures from different verification categories", () => {
     let state = createProgressGuardState();
-    state = foldProgressObservation(state, failure(1, {
-      verificationKind: "lint",
-    })).state;
-    state = foldProgressObservation(state, failure(2, {
-      verificationKind: "typecheck",
-    })).state;
-    const third = foldProgressObservation(state, failure(3, {
-      verificationKind: "lint",
-    }));
+    state = foldProgressObservation(
+      state,
+      failure(1, {
+        verificationKind: "lint",
+      }),
+    ).state;
+    state = foldProgressObservation(
+      state,
+      failure(2, {
+        verificationKind: "typecheck",
+      }),
+    ).state;
+    const third = foldProgressObservation(
+      state,
+      failure(3, {
+        verificationKind: "lint",
+      }),
+    );
 
     assert.equal(third.trigger, undefined);
     assert.equal(third.state.failureRuns.length, 2);
-    assert.equal(third.state.failureRuns.find((run) => run.verificationKind === "lint")
-      ?.verificationCycleIds.length, 2);
+    assert.equal(
+      third.state.failureRuns.find((run) => run.verificationKind === "lint")?.verificationCycleIds.length,
+      2,
+    );
   });
 });

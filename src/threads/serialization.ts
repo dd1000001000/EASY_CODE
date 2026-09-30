@@ -101,23 +101,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isContextSourceQuote(value: unknown): boolean {
-  return isRecord(value) &&
+  return (
+    isRecord(value) &&
     hasOnlyKeys(value, ["sourceMessageIndex", "text"]) &&
     Number.isSafeInteger(value.sourceMessageIndex) &&
     Number(value.sourceMessageIndex) >= 0 &&
     typeof value.text === "string" &&
     value.text.length > 0 &&
-    value.text.length <= 2_400;
+    value.text.length <= 2_400
+  );
 }
 
 function isContextIntentLedger(value: unknown): boolean {
-  return isRecord(value) &&
-    hasOnlyKeys(value, [
-      "latestRequest",
-      "activeConstraints",
-      "userCorrections",
-      "supersededRequests",
-    ]) &&
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["latestRequest", "activeConstraints", "userCorrections", "supersededRequests"]) &&
     isContextSourceQuote(value.latestRequest) &&
     Array.isArray(value.activeConstraints) &&
     value.activeConstraints.length <= 24 &&
@@ -127,34 +125,38 @@ function isContextIntentLedger(value: unknown): boolean {
     value.userCorrections.every(isContextSourceQuote) &&
     Array.isArray(value.supersededRequests) &&
     value.supersededRequests.length <= 32 &&
-    value.supersededRequests.every(isContextSourceQuote);
+    value.supersededRequests.every(isContextSourceQuote)
+  );
 }
 
-function isContextCompactionMetadata(
-  value: unknown,
-): value is ContextCompactionMetadata {
-  if (!isRecord(value) || !hasOnlyKeys(value, [
-    "formatVersion",
-    "sourceStartMessageIndex",
-    "sourceEndMessageIndex",
-    "compactedMessageCount",
-    "sourceHistoryHash",
-    "acceptedAt",
-    "beforeProjectedChars",
-    "afterProjectedChars",
-    "savedChars",
-    "savingsRatio",
-    "postCompactionUtilization",
-    "safeWaterlineReached",
-    "targetRatio",
-  ])) return false;
+function isContextCompactionMetadata(value: unknown): value is ContextCompactionMetadata {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "formatVersion",
+      "sourceStartMessageIndex",
+      "sourceEndMessageIndex",
+      "compactedMessageCount",
+      "sourceHistoryHash",
+      "acceptedAt",
+      "beforeProjectedChars",
+      "afterProjectedChars",
+      "savedChars",
+      "savingsRatio",
+      "postCompactionUtilization",
+      "safeWaterlineReached",
+      "targetRatio",
+    ])
+  )
+    return false;
   const beforeProjectedChars = Number(value.beforeProjectedChars);
   const afterProjectedChars = Number(value.afterProjectedChars);
   const savedChars = Number(value.savedChars);
   const savingsRatio = Number(value.savingsRatio);
   const postCompactionUtilization = Number(value.postCompactionUtilization);
   const targetRatio = value.targetRatio;
-  return value.formatVersion === 2 &&
+  return (
+    value.formatVersion === 2 &&
     Number.isSafeInteger(value.sourceStartMessageIndex) &&
     Number(value.sourceStartMessageIndex) >= 0 &&
     Number.isSafeInteger(value.sourceEndMessageIndex) &&
@@ -175,12 +177,18 @@ function isContextCompactionMetadata(
     beforeProjectedChars >= 0 &&
     afterProjectedChars >= 0 &&
     savedChars > 0 &&
-    Math.abs((beforeProjectedChars - afterProjectedChars) - savedChars) < 1e-6 &&
-    savingsRatio > 0 && savingsRatio <= 1 &&
-    postCompactionUtilization >= 0 && postCompactionUtilization <= 1 &&
-    typeof targetRatio === "number" && Number.isFinite(targetRatio) && targetRatio > 0 && targetRatio < 1 &&
+    Math.abs(beforeProjectedChars - afterProjectedChars - savedChars) < 1e-6 &&
+    savingsRatio > 0 &&
+    savingsRatio <= 1 &&
+    postCompactionUtilization >= 0 &&
+    postCompactionUtilization <= 1 &&
+    typeof targetRatio === "number" &&
+    Number.isFinite(targetRatio) &&
+    targetRatio > 0 &&
+    targetRatio < 1 &&
     typeof value.safeWaterlineReached === "boolean" &&
-    value.safeWaterlineReached === (postCompactionUtilization <= targetRatio);
+    value.safeWaterlineReached === postCompactionUtilization <= targetRatio
+  );
 }
 
 function cloneContextIntentLedger(
@@ -195,26 +203,26 @@ function cloneContextIntentLedger(
 }
 
 function isPromptBundleBinding(value: unknown): value is PromptBundleBinding {
-  if (!isRecord(value) || !hasOnlyKeys(value, [
-    "formatVersion",
-    "bundleVersion",
-    "bundleHash",
-    "manifestHash",
-    "toolCatalogHash",
-  ])) return false;
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["formatVersion", "bundleVersion", "bundleHash", "manifestHash", "toolCatalogHash"])
+  )
+    return false;
   const hash = /^sha256:[a-f0-9]{64}$/u;
-  return value.formatVersion === 1 &&
+  return (
+    value.formatVersion === 1 &&
     typeof value.bundleVersion === "string" &&
     /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(value.bundleVersion) &&
-    typeof value.bundleHash === "string" && hash.test(value.bundleHash) &&
-    typeof value.manifestHash === "string" && hash.test(value.manifestHash) &&
-    typeof value.toolCatalogHash === "string" && hash.test(value.toolCatalogHash);
+    typeof value.bundleHash === "string" &&
+    hash.test(value.bundleHash) &&
+    typeof value.manifestHash === "string" &&
+    hash.test(value.manifestHash) &&
+    typeof value.toolCatalogHash === "string" &&
+    hash.test(value.toolCatalogHash)
+  );
 }
 
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowed: readonly string[],
-): boolean {
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const keys = new Set(allowed);
   return Object.keys(value).every((key) => keys.has(key));
 }
@@ -233,23 +241,12 @@ export function isPlanReviewState(value: unknown): value is PlanReviewState {
   if (!hasOnlyKeys(value, ["status", "proposal", "feedback", "approvedAt"])) {
     return false;
   }
-  if (
-    value.status !== "awaiting_review" &&
-    value.status !== "approved_pending_execution"
-  ) {
+  if (value.status !== "awaiting_review" && value.status !== "approved_pending_execution") {
     return false;
   }
   const proposal = value.proposal;
   if (!isRecord(proposal)) return false;
-  if (!hasOnlyKeys(proposal, [
-    "id",
-    "revision",
-    "proposedByTurnId",
-    "proposedAt",
-    "title",
-    "overview",
-    "steps",
-  ])) {
+  if (!hasOnlyKeys(proposal, ["id", "revision", "proposedByTurnId", "proposedAt", "title", "overview", "steps"])) {
     return false;
   }
   if (
@@ -280,19 +277,13 @@ export function isPlanReviewState(value: unknown): value is PlanReviewState {
       return false;
     }
   }
-  if (
-    value.feedback !== undefined &&
-    !isSafePlanText(value.feedback, 4_000)
-  ) {
+  if (value.feedback !== undefined && !isSafePlanText(value.feedback, 4_000)) {
     return false;
   }
   if (value.approvedAt !== undefined && typeof value.approvedAt !== "string") {
     return false;
   }
-  if (
-    value.status === "approved_pending_execution" &&
-    typeof value.approvedAt !== "string"
-  ) {
+  if (value.status === "approved_pending_execution" && typeof value.approvedAt !== "string") {
     return false;
   }
   if (value.status === "awaiting_review" && value.approvedAt !== undefined) {
@@ -330,8 +321,7 @@ export function isChatMessage(value: unknown): value is ChatMessage {
     return (
       hasOnlyKeys(value, ["role", "content", "images"]) &&
       typeof value.content === "string" &&
-      (value.images === undefined ||
-        isImageAttachmentArray(value.images))
+      (value.images === undefined || isImageAttachmentArray(value.images))
     );
   }
   if (value.role === "tool") {
@@ -362,23 +352,15 @@ export function isChatMessage(value: unknown): value is ChatMessage {
       return false;
     }
     if (!isRecord(call.function)) return false;
-    return (
-      typeof call.function.name === "string" &&
-      typeof call.function.arguments === "string"
-    );
+    return typeof call.function.name === "string" && typeof call.function.arguments === "string";
   });
 }
 
 function isTurnSteeringEntry(value: unknown): value is TurnSteeringEntry {
-  if (!isRecord(value) || !hasOnlyKeys(value, [
-    "id",
-    "sequence",
-    "targetTurnId",
-    "message",
-    "queuedAt",
-    "source",
-    "senderThreadId",
-  ])) {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["id", "sequence", "targetTurnId", "message", "queuedAt", "source", "senderThreadId"])
+  ) {
     return false;
   }
   return (
@@ -414,8 +396,7 @@ function normalizedSteeringState(state: Readonly<SessionState>): {
     !Number.isSafeInteger(steeringWatermark) ||
     steeringWatermark < 0 ||
     steeringWatermark > steeringSequence ||
-    (state.steeringSealedTurnId !== undefined &&
-      !/^[A-Za-z0-9._-]{1,256}$/u.test(state.steeringSealedTurnId))
+    (state.steeringSealedTurnId !== undefined && !/^[A-Za-z0-9._-]{1,256}$/u.test(state.steeringSealedTurnId))
   ) {
     throw new Error("Invalid steering inbox in serialized session state");
   }
@@ -429,16 +410,11 @@ function normalizedSteeringState(state: Readonly<SessionState>): {
   return {
     pendingSteering: pendingSteering.map((entry) => ({
       ...entry,
-      message: deserializeChatMessage(serializeChatMessage(entry.message)) as Extract<
-        ChatMessage,
-        { role: "user" }
-      >,
+      message: deserializeChatMessage(serializeChatMessage(entry.message)) as Extract<ChatMessage, { role: "user" }>,
     })),
     steeringSequence,
     steeringWatermark,
-    ...(state.steeringSealedTurnId
-      ? { steeringSealedTurnId: state.steeringSealedTurnId }
-      : {}),
+    ...(state.steeringSealedTurnId ? { steeringSealedTurnId: state.steeringSealedTurnId } : {}),
   };
 }
 
@@ -481,39 +457,32 @@ export function deserializeChatMessages(serialized: string): ChatMessage[] {
 }
 
 function isFileVersion(value: unknown): value is FileVersion {
-  return isRecord(value) &&
+  return (
+    isRecord(value) &&
     hasOnlyKeys(value, ["path", "hash", "readAt"]) &&
     typeof value.path === "string" &&
     typeof value.hash === "string" &&
-    typeof value.readAt === "string";
+    typeof value.readAt === "string"
+  );
 }
 
 function isFileChangeRecord(value: unknown): value is FileChangeRecord {
-  return isRecord(value) &&
-    hasOnlyKeys(value, [
-      "path",
-      "operation",
-      "beforeHash",
-      "afterHash",
-      "source",
-      "status",
-      "timestamp",
-    ]) &&
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["path", "operation", "beforeHash", "afterHash", "source", "status", "timestamp"]) &&
     typeof value.path === "string" &&
-    ["create", "update", "delete", "generated", "deleted_by_command"].includes(
-      String(value.operation),
-    ) &&
+    ["create", "update", "delete", "generated", "deleted_by_command"].includes(String(value.operation)) &&
     (value.beforeHash === undefined || typeof value.beforeHash === "string") &&
     (value.afterHash === undefined || typeof value.afterHash === "string") &&
     (value.source === "file_tool" || value.source === "command") &&
-    ["applied", "verified", "conflict", "failed", "policy_violation"].includes(
-      String(value.status),
-    ) &&
-    typeof value.timestamp === "string";
+    ["applied", "verified", "conflict", "failed", "policy_violation"].includes(String(value.status)) &&
+    typeof value.timestamp === "string"
+  );
 }
 
 function isCommandAuditEntry(value: unknown): value is CommandAuditEntry {
-  return isRecord(value) &&
+  return (
+    isRecord(value) &&
     hasOnlyKeys(value, [
       "id",
       "program",
@@ -535,14 +504,9 @@ function isCommandAuditEntry(value: unknown): value is CommandAuditEntry {
     Array.isArray(value.args) &&
     value.args.every((argument) => typeof argument === "string") &&
     typeof value.cwd === "string" &&
-    [
-      "exited",
-      "timed_out",
-      "canceled",
-      "spawn_failed",
-      "policy_denied",
-      "sandbox_unavailable",
-    ].includes(String(value.status)) &&
+    ["exited", "timed_out", "canceled", "spawn_failed", "policy_denied", "sandbox_unavailable"].includes(
+      String(value.status),
+    ) &&
     (value.exitCode === null || Number.isInteger(value.exitCode)) &&
     typeof value.durationMs === "number" &&
     Number.isFinite(value.durationMs) &&
@@ -550,37 +514,39 @@ function isCommandAuditEntry(value: unknown): value is CommandAuditEntry {
     typeof value.timestamp === "string" &&
     typeof value.summary === "string" &&
     (value.sourceScopeKey === undefined || typeof value.sourceScopeKey === "string") &&
-    (value.outputEvidence === undefined || (
-      isRecord(value.outputEvidence) &&
-      hasOnlyKeys(value.outputEvidence, ["capturedOutputDigest", "stdoutTail", "stderrTail", "incomplete", "failureKind", "processStarted"]) &&
-      typeof value.outputEvidence.capturedOutputDigest === "string" &&
-      /^sha256:[a-f0-9]{64}$/u.test(value.outputEvidence.capturedOutputDigest) &&
-      typeof value.outputEvidence.stdoutTail === "string" && value.outputEvidence.stdoutTail.length <= 1_024 &&
-      typeof value.outputEvidence.stderrTail === "string" && value.outputEvidence.stderrTail.length <= 1_024 &&
-      typeof value.outputEvidence.incomplete === "boolean" &&
-      (value.outputEvidence.failureKind === undefined || typeof value.outputEvidence.failureKind === "string") &&
-      (value.outputEvidence.processStarted === undefined || typeof value.outputEvidence.processStarted === "boolean")
-    )) &&
+    (value.outputEvidence === undefined ||
+      (isRecord(value.outputEvidence) &&
+        hasOnlyKeys(value.outputEvidence, [
+          "capturedOutputDigest",
+          "stdoutTail",
+          "stderrTail",
+          "incomplete",
+          "failureKind",
+          "processStarted",
+        ]) &&
+        typeof value.outputEvidence.capturedOutputDigest === "string" &&
+        /^sha256:[a-f0-9]{64}$/u.test(value.outputEvidence.capturedOutputDigest) &&
+        typeof value.outputEvidence.stdoutTail === "string" &&
+        value.outputEvidence.stdoutTail.length <= 1_024 &&
+        typeof value.outputEvidence.stderrTail === "string" &&
+        value.outputEvidence.stderrTail.length <= 1_024 &&
+        typeof value.outputEvidence.incomplete === "boolean" &&
+        (value.outputEvidence.failureKind === undefined || typeof value.outputEvidence.failureKind === "string") &&
+        (value.outputEvidence.processStarted === undefined ||
+          typeof value.outputEvidence.processStarted === "boolean"))) &&
     (value.sourceAgentRole === undefined ||
       value.sourceAgentRole === "main_agent" ||
       value.sourceAgentRole === "subagent") &&
     (value.sourceAgentId === undefined || typeof value.sourceAgentId === "string") &&
-    (value.sourceTaskId === undefined || typeof value.sourceTaskId === "string");
+    (value.sourceTaskId === undefined || typeof value.sourceTaskId === "string")
+  );
 }
 
 function fileChangeIdentity(change: Readonly<FileChangeRecord>): string {
-  return [
-    change.timestamp,
-    change.path,
-    change.operation,
-    change.beforeHash ?? "",
-    change.afterHash ?? "",
-  ].join("|");
+  return [change.timestamp, change.path, change.operation, change.beforeHash ?? "", change.afterHash ?? ""].join("|");
 }
 
-function validateThreadCheckpointDelta(
-  value: unknown,
-): asserts value is SerializedThreadCheckpointDelta {
+function validateThreadCheckpointDelta(value: unknown): asserts value is SerializedThreadCheckpointDelta {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, [
@@ -614,16 +580,13 @@ function validateThreadCheckpointDelta(
         "goal",
         "constraints",
       ]) ||
-      (settings.mode !== undefined &&
-        !["plan", "auto", "code"].includes(String(settings.mode))) ||
+      (settings.mode !== undefined && !["plan", "auto", "code"].includes(String(settings.mode))) ||
       (settings.provider !== undefined && !isProviderIdentifier(settings.provider)) ||
       (settings.orchestrationEnabled !== undefined && typeof settings.orchestrationEnabled !== "boolean") ||
       (settings.model !== undefined && typeof settings.model !== "string") ||
       (settings.thinkingEffort !== undefined &&
         !THINKING_EFFORTS.includes(settings.thinkingEffort as ThinkingEffort)) ||
-      (settings.goal !== undefined &&
-        settings.goal !== null &&
-        typeof settings.goal !== "string") ||
+      (settings.goal !== undefined && settings.goal !== null && typeof settings.goal !== "string") ||
       (settings.constraints !== undefined &&
         (!Array.isArray(settings.constraints) ||
           !settings.constraints.every((constraint) => typeof constraint === "string")))
@@ -634,8 +597,7 @@ function validateThreadCheckpointDelta(
 
   if (
     value.messagesAppended !== undefined &&
-    (!Array.isArray(value.messagesAppended) ||
-      !value.messagesAppended.every(isChatMessage))
+    (!Array.isArray(value.messagesAppended) || !value.messagesAppended.every(isChatMessage))
   ) {
     throw new Error("Invalid messages in serialized thread checkpoint delta");
   }
@@ -679,8 +641,7 @@ function validateThreadCheckpointDelta(
     value.changesAppended !== undefined &&
     (!Array.isArray(value.changesAppended) ||
       !value.changesAppended.every(isFileChangeRecord) ||
-      new Set(value.changesAppended.map(fileChangeIdentity)).size !==
-        value.changesAppended.length)
+      new Set(value.changesAppended.map(fileChangeIdentity)).size !== value.changesAppended.length)
   ) {
     throw new Error("Invalid file changes in serialized thread checkpoint delta");
   }
@@ -689,8 +650,7 @@ function validateThreadCheckpointDelta(
     value.commandsAppended !== undefined &&
     (!Array.isArray(value.commandsAppended) ||
       !value.commandsAppended.every(isCommandAuditEntry) ||
-      new Set(value.commandsAppended.map((command) => command.id)).size !==
-        value.commandsAppended.length)
+      new Set(value.commandsAppended.map((command) => command.id)).size !== value.commandsAppended.length)
   ) {
     throw new Error("Invalid command audits in serialized thread checkpoint delta");
   }
@@ -708,8 +668,7 @@ function validateThreadCheckpointDelta(
       typeof compaction.workingSummary !== "string" ||
       !Number.isSafeInteger(compaction.compactedMessageCount) ||
       Number(compaction.compactedMessageCount) < 0 ||
-      (compaction.contextIntentLedger !== undefined &&
-        !isContextIntentLedger(compaction.contextIntentLedger)) ||
+      (compaction.contextIntentLedger !== undefined && !isContextIntentLedger(compaction.contextIntentLedger)) ||
       (compaction.contextCompactionMetadata !== undefined &&
         (!isContextCompactionMetadata(compaction.contextCompactionMetadata) ||
           compaction.contextIntentLedger === undefined ||
@@ -728,9 +687,7 @@ function validateThreadCheckpointDelta(
     throw new Error(`Thread checkpoint delta is not JSON-serializable: ${message}`);
   }
   if (Buffer.byteLength(serialized, "utf8") > MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES) {
-    throw new Error(
-      `Thread checkpoint delta exceeds ${MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES} bytes`,
-    );
+    throw new Error(`Thread checkpoint delta exceeds ${MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES} bytes`);
   }
 }
 
@@ -743,9 +700,7 @@ export function serializeThreadCheckpointDelta(
 }
 
 /** Validate and clone an incremental checkpoint read from the authoritative journal. */
-export function deserializeThreadCheckpointDelta(
-  value: unknown,
-): SerializedThreadCheckpointDelta {
+export function deserializeThreadCheckpointDelta(value: unknown): SerializedThreadCheckpointDelta {
   validateThreadCheckpointDelta(value);
   return {
     formatVersion: CURRENT_PROTOCOL.checkpointDelta,
@@ -754,33 +709,22 @@ export function deserializeThreadCheckpointDelta(
       ? {
           settings: {
             ...value.settings,
-            ...(value.settings.constraints
-              ? { constraints: [...value.settings.constraints] }
-              : {}),
+            ...(value.settings.constraints ? { constraints: [...value.settings.constraints] } : {}),
           },
         }
       : {}),
     ...(value.messagesAppended
       ? {
-          messagesAppended: deserializeChatMessages(
-            serializeChatMessages(value.messagesAppended),
-          ),
+          messagesAppended: deserializeChatMessages(serializeChatMessages(value.messagesAppended)),
         }
       : {}),
     ...(value.filesReadUpserted
       ? {
-          filesReadUpserted: value.filesReadUpserted.map(([filePath, version]) => [
-            filePath,
-            { ...version },
-          ]),
+          filesReadUpserted: value.filesReadUpserted.map(([filePath, version]) => [filePath, { ...version }]),
         }
       : {}),
-    ...(value.filesReadRemoved
-      ? { filesReadRemoved: [...value.filesReadRemoved] }
-      : {}),
-    ...(value.changesAppended
-      ? { changesAppended: value.changesAppended.map((change) => ({ ...change })) }
-      : {}),
+    ...(value.filesReadRemoved ? { filesReadRemoved: [...value.filesReadRemoved] } : {}),
+    ...(value.changesAppended ? { changesAppended: value.changesAppended.map((change) => ({ ...change })) } : {}),
     ...(value.commandsAppended
       ? {
           commandsAppended: value.commandsAppended.map((command) => ({
@@ -795,9 +739,7 @@ export function deserializeThreadCheckpointDelta(
             ...value.compaction,
             ...(value.compaction.contextIntentLedger
               ? {
-                  contextIntentLedger: cloneContextIntentLedger(
-                    value.compaction.contextIntentLedger,
-                  ),
+                  contextIntentLedger: cloneContextIntentLedger(value.compaction.contextIntentLedger),
                 }
               : {}),
             ...(value.compaction.contextCompactionMetadata
@@ -816,9 +758,7 @@ export function deserializeThreadCheckpointDelta(
 export function serializeSessionState(state: SessionState): SerializedSessionState {
   const steering = normalizedSteeringState(state);
   if (!state.promptBundle || !state.modelRegistryHash) {
-    throw new Error(
-      "Current session state requires immutable Prompt Bundle and model-registry bindings",
-    );
+    throw new Error("Current session state requires immutable Prompt Bundle and model-registry bindings");
   }
   return {
     formatVersion: CURRENT_PROTOCOL.sessionState,
@@ -831,9 +771,13 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     thinkingEffort: state.thinkingEffort,
     projectId: state.projectId ?? `project_${sha256(state.workspaceRoot).slice(0, 24)}`,
     workspaceRevision: state.workspaceRevision ?? 1,
-    workspaceFolders: state.workspaceFolders?.map(folder => ({ ...folder })) ?? [{
-      id: "folder_primary", key: "workspace", path: state.workspaceRoot,
-    }],
+    workspaceFolders: state.workspaceFolders?.map((folder) => ({ ...folder })) ?? [
+      {
+        id: "folder_primary",
+        key: "workspace",
+        path: state.workspaceRoot,
+      },
+    ],
     primaryWorkspaceFolderId: state.primaryWorkspaceFolderId ?? state.workspaceFolders?.[0]?.id ?? "folder_primary",
     workspaceRoot: state.workspaceRoot,
     promptBundle: { ...state.promptBundle },
@@ -842,35 +786,24 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     constraints: [...state.constraints],
     userMessageIndices: userRequirementIndices(state),
     messages: deserializeChatMessages(serializeChatMessages(state.messages)),
-    filesRead: [...state.filesRead.entries()].map(([filePath, version]) => [
-      filePath,
-      { ...version },
-    ]),
+    filesRead: [...state.filesRead.entries()].map(([filePath, version]) => [filePath, { ...version }]),
     changes: state.changes.map((change) => ({ ...change })),
     commands: state.commands.map((command) => ({
       ...command,
       args: [...command.args],
     })),
-    commandApprovalPrefixes: validateCommandApprovalPrefixes(
-      state.commandApprovalPrefixes,
-    ),
+    commandApprovalPrefixes: validateCommandApprovalPrefixes(state.commandApprovalPrefixes),
     toolApprovalGrants: validateToolApprovalGrants(state.toolApprovalGrants ?? []),
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
     pendingSteering: steering.pendingSteering,
     steeringSequence: steering.steeringSequence,
     steeringWatermark: steering.steeringWatermark,
-    ...(steering.steeringSealedTurnId
-      ? { steeringSealedTurnId: steering.steeringSealedTurnId }
-      : {}),
+    ...(steering.steeringSealedTurnId ? { steeringSealedTurnId: steering.steeringSealedTurnId } : {}),
     workingSummary: state.workingSummary,
     compactedMessageCount: state.compactedMessageCount,
-    ...(state.contextIntentLedger
-      ? { contextIntentLedger: cloneContextIntentLedger(state.contextIntentLedger) }
-      : {}),
-    ...(state.contextCompactionMetadata
-      ? { contextCompactionMetadata: { ...state.contextCompactionMetadata } }
-      : {}),
+    ...(state.contextIntentLedger ? { contextIntentLedger: cloneContextIntentLedger(state.contextIntentLedger) } : {}),
+    ...(state.contextCompactionMetadata ? { contextCompactionMetadata: { ...state.contextCompactionMetadata } } : {}),
     createdAt: state.createdAt,
     updatedAt: state.updatedAt,
   };
@@ -880,12 +813,44 @@ export function deserializeSessionState(value: unknown): SessionState {
   if (!isRecord(value)) throw new Error("Invalid serialized session state");
   requireCurrentProtocol("sessionState", value.formatVersion);
   if (
-    !hasOnlyKeys(value, ["formatVersion", "orchestrationEnabled", "threadId", "activeTurnId", "mode", "provider", "model",
-      "thinkingEffort", "projectId", "workspaceRevision", "workspaceFolders", "primaryWorkspaceFolderId", "workspaceRoot",
-      "promptBundle", "modelRegistryHash", "goal", "constraints", "userMessageIndices", "messages",
-      "filesRead", "changes", "commands", "commandApprovalPrefixes", "toolApprovalGrants", "taskGraph", "planReview", "pendingSteering",
-      "steeringSequence", "steeringWatermark", "steeringSealedTurnId", "workingSummary", "compactedMessageCount",
-      "contextIntentLedger", "contextCompactionMetadata", "createdAt", "updatedAt"]) ||
+    !hasOnlyKeys(value, [
+      "formatVersion",
+      "orchestrationEnabled",
+      "threadId",
+      "activeTurnId",
+      "mode",
+      "provider",
+      "model",
+      "thinkingEffort",
+      "projectId",
+      "workspaceRevision",
+      "workspaceFolders",
+      "primaryWorkspaceFolderId",
+      "workspaceRoot",
+      "promptBundle",
+      "modelRegistryHash",
+      "goal",
+      "constraints",
+      "userMessageIndices",
+      "messages",
+      "filesRead",
+      "changes",
+      "commands",
+      "commandApprovalPrefixes",
+      "toolApprovalGrants",
+      "taskGraph",
+      "planReview",
+      "pendingSteering",
+      "steeringSequence",
+      "steeringWatermark",
+      "steeringSealedTurnId",
+      "workingSummary",
+      "compactedMessageCount",
+      "contextIntentLedger",
+      "contextCompactionMetadata",
+      "createdAt",
+      "updatedAt",
+    ]) ||
     typeof value.orchestrationEnabled !== "boolean" ||
     typeof value.threadId !== "string" ||
     !["plan", "auto", "code"].includes(String(value.mode)) ||
@@ -893,12 +858,20 @@ export function deserializeSessionState(value: unknown): SessionState {
     typeof value.model !== "string" ||
     !THINKING_EFFORTS.includes(value.thinkingEffort as ThinkingEffort) ||
     typeof value.projectId !== "string" ||
-    !Number.isSafeInteger(value.workspaceRevision) || Number(value.workspaceRevision) < 1 ||
-    !Array.isArray(value.workspaceFolders) || value.workspaceFolders.length < 1 ||
-    !value.workspaceFolders.every(folder => isRecord(folder) && hasOnlyKeys(folder, ["id", "key", "path"]) &&
-      typeof folder.id === "string" && typeof folder.key === "string" && typeof folder.path === "string") ||
+    !Number.isSafeInteger(value.workspaceRevision) ||
+    Number(value.workspaceRevision) < 1 ||
+    !Array.isArray(value.workspaceFolders) ||
+    value.workspaceFolders.length < 1 ||
+    !value.workspaceFolders.every(
+      (folder) =>
+        isRecord(folder) &&
+        hasOnlyKeys(folder, ["id", "key", "path"]) &&
+        typeof folder.id === "string" &&
+        typeof folder.key === "string" &&
+        typeof folder.path === "string",
+    ) ||
     typeof value.primaryWorkspaceFolderId !== "string" ||
-    !value.workspaceFolders.some(folder => isRecord(folder) && folder.id === value.primaryWorkspaceFolderId) ||
+    !value.workspaceFolders.some((folder) => isRecord(folder) && folder.id === value.primaryWorkspaceFolderId) ||
     typeof value.workspaceRoot !== "string" ||
     !isPromptBundleBinding(value.promptBundle) ||
     typeof value.modelRegistryHash !== "string" ||
@@ -927,13 +900,11 @@ export function deserializeSessionState(value: unknown): SessionState {
     !Number.isInteger(value.compactedMessageCount) ||
     Number(value.compactedMessageCount) < 0 ||
     Number(value.compactedMessageCount) > value.messages.length ||
-    (value.contextIntentLedger !== undefined &&
-      !isContextIntentLedger(value.contextIntentLedger)) ||
+    (value.contextIntentLedger !== undefined && !isContextIntentLedger(value.contextIntentLedger)) ||
     (value.contextCompactionMetadata !== undefined &&
       (!isContextCompactionMetadata(value.contextCompactionMetadata) ||
         value.contextIntentLedger === undefined ||
-        Number(value.contextCompactionMetadata.compactedMessageCount) !==
-          Number(value.compactedMessageCount))) ||
+        Number(value.contextCompactionMetadata.compactedMessageCount) !== Number(value.compactedMessageCount))) ||
     typeof value.createdAt !== "string" ||
     typeof value.updatedAt !== "string"
   ) {
@@ -968,21 +939,15 @@ export function deserializeSessionState(value: unknown): SessionState {
   const steeringSequence = value.steeringSequence as number;
   const steeringWatermark = value.steeringWatermark as number;
   const pendingSteering = (value.pendingSteering as TurnSteeringEntry[]).map((entry) => ({
-        ...entry,
-        message: deserializeChatMessage(serializeChatMessage(entry.message)) as Extract<
-          ChatMessage,
-          { role: "user" }
-        >,
-      }));
+    ...entry,
+    message: deserializeChatMessage(serializeChatMessage(entry.message)) as Extract<ChatMessage, { role: "user" }>,
+  }));
   if (steeringWatermark > steeringSequence) {
     throw new Error("Invalid steering watermark in serialized session state");
   }
   let previousSteeringSequence = steeringWatermark;
   for (const entry of pendingSteering) {
-    if (
-      entry.sequence !== previousSteeringSequence + 1 ||
-      entry.sequence > steeringSequence
-    ) {
+    if (entry.sequence !== previousSteeringSequence + 1 || entry.sequence > steeringSequence) {
       throw new Error("Invalid steering FIFO sequence in serialized session state");
     }
     previousSteeringSequence = entry.sequence;
@@ -996,15 +961,13 @@ export function deserializeSessionState(value: unknown): SessionState {
   ) {
     throw new Error("Invalid user requirement provenance in serialized session state");
   }
-  const compactionMetadata = isContextCompactionMetadata(
-    value.contextCompactionMetadata,
-  )
+  const compactionMetadata = isContextCompactionMetadata(value.contextCompactionMetadata)
     ? value.contextCompactionMetadata
     : undefined;
   if (compactionMetadata) {
-    const sourceHistoryHash = `sha256:${sha256(serializeChatMessages(
-      messages.slice(0, compactionMetadata.sourceEndMessageIndex),
-    ))}`;
+    const sourceHistoryHash = `sha256:${sha256(
+      serializeChatMessages(messages.slice(0, compactionMetadata.sourceEndMessageIndex)),
+    )}`;
     if (sourceHistoryHash !== compactionMetadata.sourceHistoryHash) {
       throw new Error("Context compaction source history hash mismatch");
     }
@@ -1016,15 +979,16 @@ export function deserializeSessionState(value: unknown): SessionState {
     progressGuard: createProgressGuardState(),
     threadId: value.threadId,
     orchestrationEnabled: value.orchestrationEnabled as boolean,
-    activeTurnId:
-      typeof value.activeTurnId === "string" ? value.activeTurnId : undefined,
+    activeTurnId: typeof value.activeTurnId === "string" ? value.activeTurnId : undefined,
     mode: value.mode as SessionState["mode"],
     provider: value.provider as SessionState["provider"],
     model: value.model,
     thinkingEffort: value.thinkingEffort as ThinkingEffort,
     projectId: value.projectId,
     workspaceRevision: value.workspaceRevision as number,
-    workspaceFolders: (value.workspaceFolders as Array<{ id: string; key: string; path: string }>).map(folder => ({ ...folder })),
+    workspaceFolders: (value.workspaceFolders as Array<{ id: string; key: string; path: string }>).map((folder) => ({
+      ...folder,
+    })),
     primaryWorkspaceFolderId: value.primaryWorkspaceFolderId,
     workspaceRoot: value.workspaceRoot,
     promptBundle: { ...value.promptBundle },
@@ -1043,18 +1007,12 @@ export function deserializeSessionState(value: unknown): SessionState {
     })),
     commandApprovalPrefixes,
     toolApprovalGrants,
-    ...(isTaskGraph(value.taskGraph)
-      ? { taskGraph: cloneTaskGraph(value.taskGraph) }
-      : {}),
-    ...(isPlanReviewState(value.planReview)
-      ? { planReview: clonePlanReviewState(value.planReview) }
-      : {}),
+    ...(isTaskGraph(value.taskGraph) ? { taskGraph: cloneTaskGraph(value.taskGraph) } : {}),
+    ...(isPlanReviewState(value.planReview) ? { planReview: clonePlanReviewState(value.planReview) } : {}),
     pendingSteering,
     steeringSequence,
     steeringWatermark,
-    ...(typeof value.steeringSealedTurnId === "string"
-      ? { steeringSealedTurnId: value.steeringSealedTurnId }
-      : {}),
+    ...(typeof value.steeringSealedTurnId === "string" ? { steeringSealedTurnId: value.steeringSealedTurnId } : {}),
     workingSummary: value.workingSummary,
     compactedMessageCount: value.compactedMessageCount as number,
     ...(isContextIntentLedger(value.contextIntentLedger)

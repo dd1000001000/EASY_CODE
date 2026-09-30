@@ -31,20 +31,14 @@ function isRecord(value: unknown): value is UnknownRecord {
 }
 
 function compact<T extends UnknownRecord>(value: T): T {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  ) as T;
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
 }
 
 function snakeCase(value: string): string {
   return value.replace(/[A-Z]/gu, (character) => `_${character.toLowerCase()}`);
 }
 
-function assertOnlyKeys(
-  value: UnknownRecord,
-  allowed: ReadonlySet<string>,
-  scope: string,
-): void {
+function assertOnlyKeys(value: UnknownRecord, allowed: ReadonlySet<string>, scope: string): void {
   const unknown = Object.keys(value).filter((key) => !allowed.has(key));
   if (unknown.length) {
     throw new Error(`${scope} contains unsupported key(s): ${unknown.join(", ")}`);
@@ -62,15 +56,10 @@ function providerLayer(value: unknown, scope: string): ProviderConfigLayer {
   });
 }
 
-function limitsLayer(
-  value: unknown,
-  defaults: Readonly<RuntimeLimits>,
-): UnknownRecord | undefined {
+function limitsLayer(value: unknown, defaults: Readonly<RuntimeLimits>): UnknownRecord | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error("limits must be a TOML table");
-  const byExternalName = new Map(
-    Object.keys(defaults).map((key) => [snakeCase(key), key]),
-  );
+  const byExternalName = new Map(Object.keys(defaults).map((key) => [snakeCase(key), key]));
   // Previously configured follow-up counts must not block startup or revive the retired cap.
   const retired = "max_subagent_follow_ups";
   assertOnlyKeys(value, new Set([...byExternalName.keys(), retired]), "limits");
@@ -102,9 +91,20 @@ export function normalizeCurrentTomlConfig(
 ): EasyCodeConfigLayer {
   if (!isRecord(value)) throw new Error("Configuration root must be a TOML table");
   const topLevel = new Set([
-    "approval_model", "provider", "mode", "thinking_effort", "approval_policy",
-    "data_dir", "config_dir", "cache_dir", "limits", "orchestration_enabled",
-    "subagent_isolation", "worktree_base_mode", "worktree_root", "providers",
+    "approval_model",
+    "provider",
+    "mode",
+    "thinking_effort",
+    "approval_policy",
+    "data_dir",
+    "config_dir",
+    "cache_dir",
+    "limits",
+    "orchestration_enabled",
+    "subagent_isolation",
+    "worktree_base_mode",
+    "worktree_root",
+    "providers",
   ]);
   assertOnlyKeys(value, topLevel, "configuration");
 

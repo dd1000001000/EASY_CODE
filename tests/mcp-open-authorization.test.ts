@@ -10,16 +10,22 @@ describe("MCP authorization URL opening", () => {
       args: ["url.dll,FileProtocolHandler", url],
     });
     assert.deepEqual(authorizationOpenCommand(url, "darwin"), {
-      program: "/usr/bin/open", args: [url],
+      program: "/usr/bin/open",
+      args: [url],
     });
     assert.deepEqual(authorizationOpenCommand(url, "linux"), {
-      program: "/usr/bin/xdg-open", args: [url],
+      program: "/usr/bin/xdg-open",
+      args: [url],
     });
   });
 
   it("rejects executable, file, and non-loopback HTTP links", () => {
-    for (const url of ["file:///tmp/app", "javascript:alert(1)", "custom-app://authorize",
-      "http://example.com/authorize"]) {
+    for (const url of [
+      "file:///tmp/app",
+      "javascript:alert(1)",
+      "custom-app://authorize",
+      "http://example.com/authorize",
+    ]) {
       assert.throws(() => authorizationOpenCommand(url, "win32"), /HTTPS or loopback HTTP/u);
     }
   });

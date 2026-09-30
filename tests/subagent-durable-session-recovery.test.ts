@@ -3,31 +3,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type {
-  SessionState,
-  SubagentAssignmentSnapshot,
-  SubagentTaskReport,
-  ToolContext,
-} from "../src/core/types.js";
-import {
-  SubagentCoordinator,
-  type SubagentExecutionRequest,
-} from "../src/subagents/coordinator.js";
+import type { SessionState, SubagentAssignmentSnapshot, SubagentTaskReport, ToolContext } from "../src/core/types.js";
+import { SubagentCoordinator, type SubagentExecutionRequest } from "../src/subagents/coordinator.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { describe, it } from "./harness.js";
 
-type StandaloneAssignment = Extract<
-  SubagentAssignmentSnapshot,
-  { kind: "standalone" }
->;
+type StandaloneAssignment = Extract<SubagentAssignmentSnapshot, { kind: "standalone" }>;
 type DagAssignment = Extract<SubagentAssignmentSnapshot, { kind: "dag" }>;
 
 const CREATED_AT = "2026-08-28T12:00:00.000Z";
 
-function standaloneAssignment(
-  overrides: Partial<StandaloneAssignment> = {},
-): StandaloneAssignment {
+function standaloneAssignment(overrides: Partial<StandaloneAssignment> = {}): StandaloneAssignment {
   return {
     kind: "standalone",
     agentId: "subagent_00000000-0000-4000-8000-000000000301",
@@ -142,9 +129,7 @@ describe("durable child session recovery", () => {
         childRuns += 1;
         return {
           reason: "completed",
-          report: completedReport(
-            request.record.id === first.agentId ? first : second,
-          ),
+          report: completedReport(request.record.id === first.agentId ? first : second),
           changes: [],
           commands: [],
           presentations: [],
@@ -152,16 +137,22 @@ describe("durable child session recovery", () => {
       },
     });
 
-    coordinator.restore({
-      parentThreadId: "thread_parent_deferred_restore",
-      createdByTurnId: "turn_first_deferred_restore",
-      assignment: first,
-    }, { deferActivation: true });
-    coordinator.restore({
-      parentThreadId: "thread_parent_deferred_restore",
-      createdByTurnId: "turn_second_deferred_restore",
-      assignment: second,
-    }, { deferActivation: true });
+    coordinator.restore(
+      {
+        parentThreadId: "thread_parent_deferred_restore",
+        createdByTurnId: "turn_first_deferred_restore",
+        assignment: first,
+      },
+      { deferActivation: true },
+    );
+    coordinator.restore(
+      {
+        parentThreadId: "thread_parent_deferred_restore",
+        createdByTurnId: "turn_second_deferred_restore",
+        assignment: second,
+      },
+      { deferActivation: true },
+    );
     assert.equal(childRuns, 0);
 
     coordinator.activateRestored([first.agentId, second.agentId]);
@@ -193,11 +184,14 @@ describe("durable child session recovery", () => {
       },
     });
     const parentThreadId = "thread_parent_rollback_restore";
-    coordinator.restore({
-      parentThreadId,
-      createdByTurnId: "turn_rollback_restore",
-      assignment,
-    }, { deferActivation: true });
+    coordinator.restore(
+      {
+        parentThreadId,
+        createdByTurnId: "turn_rollback_restore",
+        assignment,
+      },
+      { deferActivation: true },
+    );
 
     coordinator.rollbackRestored([assignment.agentId]);
 
@@ -235,9 +229,7 @@ describe("durable child session recovery", () => {
 
       appendLifecycle(threads, state.threadId, "turn_observe_standalone", standalone, "observe");
       assert.deepEqual(
-        threads.unobservedSubagentAssignments(state.threadId).map(
-          (entry) => entry.assignment,
-        ),
+        threads.unobservedSubagentAssignments(state.threadId).map((entry) => entry.assignment),
         [dag],
       );
 
@@ -328,13 +320,7 @@ describe("durable child session recovery", () => {
           taskId: `task_binding_identity_${index}`,
           taskGraphId: `task_graph_binding_identity_${index}`,
         });
-        appendLifecycle(
-          threads,
-          state.threadId,
-          `turn_activate_binding_identity_${index}`,
-          assignment,
-          "activate",
-        );
+        appendLifecycle(threads, state.threadId, `turn_activate_binding_identity_${index}`, assignment, "activate");
         appendLifecycle(
           threads,
           state.threadId,
@@ -343,11 +329,7 @@ describe("durable child session recovery", () => {
           "observe",
         );
 
-        assert.throws(
-          () => threads.subagentAssignments(state.threadId),
-          /Invalid child observation/u,
-          name,
-        );
+        assert.throws(() => threads.subagentAssignments(state.threadId), /Invalid child observation/u, name);
       });
     } finally {
       storage.close();
@@ -483,10 +465,6 @@ describe("durable child session recovery", () => {
 
     assert.equal(childRuns, 0);
     assert.equal(coordinator.hasOutstanding("thread_parent_observed_restore"), false);
-    assert.equal(
-      coordinator.snapshot("thread_parent_observed_restore")[0]?.status,
-      "completed",
-    );
+    assert.equal(coordinator.snapshot("thread_parent_observed_restore")[0]?.status, "completed");
   });
-
 });

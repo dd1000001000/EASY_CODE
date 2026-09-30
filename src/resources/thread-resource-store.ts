@@ -22,12 +22,17 @@ function assertResourceId(value: string): void {
 }
 
 function safeFilename(value: string): string {
-  const normalized = path.basename(value.trim()).replace(/[\u0000-\u001f\u007f]/gu, " ").trim();
+  const normalized = path
+    .basename(value.trim())
+    .replace(/[\u0000-\u001f\u007f]/gu, " ")
+    .trim();
   if (!normalized || normalized === "." || normalized === "..") return "document";
   return normalized.slice(0, 240);
 }
 
-function resourceUri(id: string): string { return `${THREAD_RESOURCE_SCHEME}${id}/${CONTENT}`; }
+function resourceUri(id: string): string {
+  return `${THREAD_RESOURCE_SCHEME}${id}/${CONTENT}`;
+}
 
 export function parseThreadResourceUri(value: string): { id: string } | undefined {
   if (!value.startsWith(THREAD_RESOURCE_SCHEME)) return undefined;
@@ -39,8 +44,12 @@ export function parseThreadResourceUri(value: string): { id: string } | undefine
 export class ThreadResourceStore {
   private readonly threadsRoot: string;
 
-  constructor(dataDir: string, readonly maxBytes = DEFAULT_THREAD_RESOURCE_MAX_BYTES) {
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Thread resource byte limit must be a positive integer.");
+  constructor(
+    dataDir: string,
+    readonly maxBytes = DEFAULT_THREAD_RESOURCE_MAX_BYTES,
+  ) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+      throw new Error("Thread resource byte limit must be a positive integer.");
     this.threadsRoot = path.resolve(dataDir, "threads");
   }
 
@@ -60,7 +69,8 @@ export class ThreadResourceStore {
     for (const directory of [this.threadsRoot, threadRoot, resourcesRoot]) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const info = await lstat(directory);
-      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Refusing to use a linked Thread resource directory.");
+      if (!info.isDirectory() || info.isSymbolicLink())
+        throw new Error("Refusing to use a linked Thread resource directory.");
     }
     return realpath(resourcesRoot);
   }
@@ -71,7 +81,8 @@ export class ThreadResourceStore {
     try {
       for (const directory of [this.threadsRoot, threadRoot, resourcesRoot]) {
         const info = await lstat(directory);
-        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Refusing to use a linked Thread resource directory.");
+        if (!info.isDirectory() || info.isSymbolicLink())
+          throw new Error("Refusing to use a linked Thread resource directory.");
       }
       return await realpath(resourcesRoot);
     } catch (error) {
@@ -86,14 +97,25 @@ export class ThreadResourceStore {
     const rootInfo = await lstat(root);
     if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("Thread resource is unavailable.");
     const canonicalRoot = await realpath(root);
-    if (!canonicalRoot.startsWith(canonicalResources + path.sep)) throw new Error("Thread resource escaped its private directory.");
+    if (!canonicalRoot.startsWith(canonicalResources + path.sep))
+      throw new Error("Thread resource escaped its private directory.");
     const raw = JSON.parse(await readFile(path.join(root, METADATA), "utf8")) as Partial<ThreadResourceRecord>;
-    if (raw.version !== 1 || raw.threadId !== threadId || raw.id !== id || raw.uri !== resourceUri(id) ||
-        typeof raw.filename !== "string" || (raw.kind !== "document" && raw.kind !== "webpage") ||
-        typeof raw.mediaType !== "string" || typeof raw.byteSize !== "number" ||
-        typeof raw.contentSha256 !== "string" || typeof raw.totalLines !== "number" ||
-        (raw.sourceSha256 !== undefined && (typeof raw.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/u.test(raw.sourceSha256))) ||
-        typeof raw.createdAt !== "string") throw new Error("Thread resource metadata is invalid.");
+    if (
+      raw.version !== 1 ||
+      raw.threadId !== threadId ||
+      raw.id !== id ||
+      raw.uri !== resourceUri(id) ||
+      typeof raw.filename !== "string" ||
+      (raw.kind !== "document" && raw.kind !== "webpage") ||
+      typeof raw.mediaType !== "string" ||
+      typeof raw.byteSize !== "number" ||
+      typeof raw.contentSha256 !== "string" ||
+      typeof raw.totalLines !== "number" ||
+      (raw.sourceSha256 !== undefined &&
+        (typeof raw.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/u.test(raw.sourceSha256))) ||
+      typeof raw.createdAt !== "string"
+    )
+      throw new Error("Thread resource metadata is invalid.");
     return raw as ThreadResourceRecord;
   }
 
@@ -140,8 +162,13 @@ export class ThreadResourceStore {
         ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       };
       await writeFile(path.join(temporary, CONTENT), normalized, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      if (input.original) await writeFile(path.join(temporary, "original.bin"), input.original, { mode: 0o600, flag: "wx" });
-      await writeFile(path.join(temporary, METADATA), `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      if (input.original)
+        await writeFile(path.join(temporary, "original.bin"), input.original, { mode: 0o600, flag: "wx" });
+      await writeFile(path.join(temporary, METADATA), `${JSON.stringify(record, null, 2)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
       await rename(temporary, finalRoot);
       return this.toAttachment(record);
     } catch (error) {
@@ -164,20 +191,32 @@ export class ThreadResourceStore {
   async list(threadId: string): Promise<readonly ThreadResourceRecord[]> {
     const root = this.resourcesRoot(threadId);
     let entries;
-    try { entries = await readdir(root, { withFileTypes: true }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
     const records: ThreadResourceRecord[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory() || !RESOURCE_ID.test(entry.name)) continue;
-      try { records.push(await this.readRecord(threadId, entry.name)); } catch { /* Ignore incomplete private entries. */ }
+      try {
+        records.push(await this.readRecord(threadId, entry.name));
+      } catch {
+        /* Ignore incomplete private entries. */
+      }
     }
     return records.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  async findDocumentBySourceHash(threadId: string, sourceSha256: string): Promise<ThreadResourceAttachment | undefined> {
+  async findDocumentBySourceHash(
+    threadId: string,
+    sourceSha256: string,
+  ): Promise<ThreadResourceAttachment | undefined> {
     if (!/^[a-f0-9]{64}$/u.test(sourceSha256)) throw new Error("Invalid document source hash.");
-    const found = (await this.list(threadId)).find(record =>
-      record.kind === "document" && record.sourceSha256 === sourceSha256);
+    const found = (await this.list(threadId)).find(
+      (record) => record.kind === "document" && record.sourceSha256 === sourceSha256,
+    );
     return found ? this.toAttachment(found) : undefined;
   }
 
@@ -189,13 +228,22 @@ export class ThreadResourceStore {
     const filename = path.join(root, CONTENT);
     const canonicalRoot = await realpath(root);
     const canonicalFile = await realpath(filename);
-    if (path.dirname(canonicalFile) !== canonicalRoot || (await lstat(canonicalFile)).isSymbolicLink() || !(await stat(canonicalFile)).isFile()) {
+    if (
+      path.dirname(canonicalFile) !== canonicalRoot ||
+      (await lstat(canonicalFile)).isSymbolicLink() ||
+      !(await stat(canonicalFile)).isFile()
+    ) {
       throw new Error("Thread resource content escaped its private directory.");
     }
     return { record, path: canonicalFile };
   }
 
-  async readLines(threadId: string, uri: string, startLine: number, endLine: number): Promise<{ record: ThreadResourceRecord; lines: string[] }> {
+  async readLines(
+    threadId: string,
+    uri: string,
+    startLine: number,
+    endLine: number,
+  ): Promise<{ record: ThreadResourceRecord; lines: string[] }> {
     const target = await this.contentPath(threadId, uri);
     const lines: string[] = [];
     let line = 0;
@@ -207,7 +255,10 @@ export class ThreadResourceStore {
         if (line >= startLine && line <= endLine) lines.push(value);
         if (line >= endLine) break;
       }
-    } finally { reader.close(); stream.destroy(); }
+    } finally {
+      reader.close();
+      stream.destroy();
+    }
     // An empty Markdown resource still has one logical (empty) line because
     // totalLines is derived from splitting the normalized content on "\n".
     if (line === 0 && target.record.totalLines === 1 && startLine === 1) lines.push("");
@@ -216,8 +267,13 @@ export class ThreadResourceStore {
 
   private toAttachment(record: ThreadResourceRecord): ThreadResourceAttachment {
     return {
-      id: record.id, filename: record.filename, kind: record.kind, mediaType: record.mediaType,
-      uri: record.uri, byteSize: record.byteSize, createdAt: record.createdAt,
+      id: record.id,
+      filename: record.filename,
+      kind: record.kind,
+      mediaType: record.mediaType,
+      uri: record.uri,
+      byteSize: record.byteSize,
+      createdAt: record.createdAt,
       ...(record.sourceUrl ? { sourceUrl: record.sourceUrl } : {}),
     };
   }

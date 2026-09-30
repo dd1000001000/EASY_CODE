@@ -20,24 +20,19 @@ export class UnsupportedDevelopmentStateError extends Error {
   ) {
     super(
       `This task was created by an unsupported EASY CODE development format ` +
-      `(${boundary}=${String(received)}; current=${CURRENT_PROTOCOL[boundary]}). ` +
-      "The original files were preserved. Remove the local development data or create a new task.",
+        `(${boundary}=${String(received)}; current=${CURRENT_PROTOCOL[boundary]}). ` +
+        "The original files were preserved. Remove the local development data or create a new task.",
     );
     this.name = "UnsupportedDevelopmentStateError";
   }
 }
 
-export function requireCurrentProtocol(
-  boundary: keyof typeof CURRENT_PROTOCOL,
-  received: unknown,
-): void {
+export function requireCurrentProtocol(boundary: keyof typeof CURRENT_PROTOCOL, received: unknown): void {
   if (received !== CURRENT_PROTOCOL[boundary]) {
     throw new UnsupportedDevelopmentStateError(boundary, received);
   }
 }
 
-export function isUnsupportedDevelopmentState(
-  error: unknown,
-): error is UnsupportedDevelopmentStateError {
+export function isUnsupportedDevelopmentState(error: unknown): error is UnsupportedDevelopmentStateError {
   return error instanceof UnsupportedDevelopmentStateError;
 }

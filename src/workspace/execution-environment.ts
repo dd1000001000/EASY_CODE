@@ -29,10 +29,7 @@ import { assertNoUninstall } from "../install/ownership.js";
 import { CURRENT_PROTOCOL, requireCurrentProtocol } from "../protocol/versions.js";
 import { WorkspaceManager } from "./manager.js";
 import { WorkspacePathGuard } from "./path-guard.js";
-import {
-  assessWorktreePaths,
-  WorktreePathTooLongError,
-} from "./worktree-path-policy.js";
+import { assessWorktreePaths, WorktreePathTooLongError } from "./worktree-path-policy.js";
 
 const MAX_INCLUDED_FILES = 2_000;
 const MAX_INCLUDED_BYTES = 128 * 1024 * 1024;
@@ -47,9 +44,7 @@ function runtimeScratchGitExcludes(relativeWorkspace: string): readonly string[]
   ) {
     throw new Error("Cannot build Runtime scratch exclusions outside the repository");
   }
-  const reservedRoot = normalizedWorkspace
-    ? `${normalizedWorkspace}/.easy-code-runtime`
-    : ".easy-code-runtime";
+  const reservedRoot = normalizedWorkspace ? `${normalizedWorkspace}/.easy-code-runtime` : ".easy-code-runtime";
   // A literal directory pathspec applies recursively to its descendants while
   // keeping valid Windows filename characters such as '[' out of Git's glob parser.
   return [`:(top,exclude,literal)${reservedRoot}`];
@@ -68,7 +63,6 @@ interface PersistedArtifact {
 export interface ExecutionEnvironmentManagerOptions {
   readonly logicalWorkspaceRoot: string;
   readonly dataDir: string;
-  readonly defaultIsolation?: SubagentIsolationMode;
   readonly baseMode?: WorktreeBaseMode;
   readonly worktreeRoot?: string;
   readonly maxManagedWorktrees?: number;
@@ -97,19 +91,13 @@ export interface FinalizeExecutionEnvironmentInput {
   readonly parentArtifactIds?: readonly string[];
 }
 
-export type HandoffDestination =
-  | { readonly type: "local" }
-  | { readonly type: "branch"; readonly branchName?: string };
+export type HandoffDestination = { readonly type: "local" } | { readonly type: "branch"; readonly branchName?: string };
 
 export class WorktreeConflictError extends Error {
   readonly environment: ExecutionEnvironmentSnapshot;
   readonly files: readonly string[];
 
-  constructor(
-    message: string,
-    environment: ExecutionEnvironmentSnapshot,
-    files: readonly string[],
-  ) {
+  constructor(message: string, environment: ExecutionEnvironmentSnapshot, files: readonly string[]) {
     super(message);
     this.name = "WorktreeConflictError";
     this.environment = cloneEnvironment(environment);
@@ -128,22 +116,16 @@ export class ExecutionEnvironmentManager {
   readonly logicalWorkspaceRoot: string;
   readonly worktreeRoot: string;
   private readonly dataDir: string;
-  private readonly defaultIsolation: SubagentIsolationMode;
   private readonly baseMode: WorktreeBaseMode;
   private readonly environmentDir: string;
   private readonly artifactDir: string;
   private readonly maxManagedWorktrees: number;
 
   constructor(options: ExecutionEnvironmentManagerOptions) {
-    this.logicalWorkspaceRoot = path.normalize(
-      realpathSync.native(path.resolve(options.logicalWorkspaceRoot)),
-    );
+    this.logicalWorkspaceRoot = path.normalize(realpathSync.native(path.resolve(options.logicalWorkspaceRoot)));
     this.dataDir = path.resolve(options.dataDir);
-    this.defaultIsolation = options.defaultIsolation ?? "auto";
     this.baseMode = options.baseMode ?? "current-snapshot";
-    this.worktreeRoot = path.resolve(
-      options.worktreeRoot ?? path.join(this.dataDir, "worktrees"),
-    );
+    this.worktreeRoot = path.resolve(options.worktreeRoot ?? path.join(this.dataDir, "worktrees"));
     if (pathsOverlap(this.logicalWorkspaceRoot, this.worktreeRoot)) {
       throw new Error("Managed Worktree storage must be outside the logical workspace");
     }
@@ -168,19 +150,18 @@ export class ExecutionEnvironmentManager {
     }
   }
 
-  async provision(
-    input: ProvisionExecutionEnvironmentInput,
-  ): Promise<ActiveExecutionEnvironment> {
+  async provision(input: ProvisionExecutionEnvironmentInput): Promise<ActiveExecutionEnvironment> {
     await this.initialize();
     const requestedIsolation = input.requestedIsolation;
     const repository = await discoverRepository(this.logicalWorkspaceRoot);
-    const kind = requestedIsolation === "shared"
-      ? "shared"
-      : repository
-        ? "worktree"
-        : requestedIsolation === "worktree"
-          ? undefined
-          : "shared";
+    const kind =
+      requestedIsolation === "shared"
+        ? "shared"
+        : repository
+          ? "worktree"
+          : requestedIsolation === "worktree"
+            ? undefined
+            : "shared";
     if (!kind) {
       throw new Error("Worktree isolation requires the workspace to be inside a Git repository");
     }
@@ -193,13 +174,8 @@ export class ExecutionEnvironmentManager {
         throw new Error(`Dependency artifact ${artifact.id} is not ready for DAG lineage`);
       }
     }
-    if (
-      kind === "shared" &&
-      dependencyArtifacts.some((artifact) => artifact.environmentKind === "worktree")
-    ) {
-      throw new Error(
-        "A shared child cannot consume an isolated Worktree result before explicit integration",
-      );
+    if (kind === "shared" && dependencyArtifacts.some((artifact) => artifact.environmentKind === "worktree")) {
+      throw new Error("A shared child cannot consume an isolated Worktree result before explicit integration");
     }
 
     const now = new Date().toISOString();
@@ -229,9 +205,7 @@ export class ExecutionEnvironmentManager {
 
     const repositoryRoot = repository as string;
     if (pathsOverlap(repositoryRoot, await realpath(this.worktreeRoot))) {
-      throw new Error(
-        "Managed Worktree storage must be outside the complete Git repository",
-      );
+      throw new Error("Managed Worktree storage must be outside the complete Git repository");
     }
     await this.assertWorktreeCapacity(id);
     const relativeWorkspace = path.relative(repositoryRoot, this.logicalWorkspaceRoot);
@@ -243,9 +217,7 @@ export class ExecutionEnvironmentManager {
       throw new Error("Logical workspace is not contained by its Git repository root");
     }
     const managedRoot = compactManagedWorktreeRoot(this.worktreeRoot, repositoryRoot, id);
-    const executionRoot = relativeWorkspace
-      ? path.join(managedRoot, relativeWorkspace)
-      : managedRoot;
+    const executionRoot = relativeWorkspace ? path.join(managedRoot, relativeWorkspace) : managedRoot;
     const scratchExcludes = runtimeScratchGitExcludes(relativeWorkspace);
     const descriptor: ExecutionEnvironmentSnapshot = {
       id,
@@ -268,30 +240,23 @@ export class ExecutionEnvironmentManager {
     await this.persistEnvironment(descriptor);
 
     try {
-      const dependencyKinds = new Set(
-        dependencyArtifacts.map((artifact) => artifact.environmentKind),
-      );
+      const dependencyKinds = new Set(dependencyArtifacts.map((artifact) => artifact.environmentKind));
       if (dependencyKinds.size > 1) {
         throw new Error(
           "A Worktree child cannot silently combine shared and isolated dependency results; integrate or hand off them first",
         );
       }
       for (const artifact of dependencyArtifacts) {
-        if (
-          artifact.environmentKind === "worktree" && !artifact.resultCommit
-        ) {
+        if (artifact.environmentKind === "worktree" && !artifact.resultCommit) {
           throw new Error(`Dependency artifact ${artifact.id} is not ready for DAG lineage`);
         }
       }
       const dependencyCommits = uniqueNonEmpty(
         dependencyArtifacts.flatMap((artifact) =>
-          artifact.environmentKind === "worktree" && artifact.resultCommit
-            ? [artifact.resultCommit]
-            : [],
+          artifact.environmentKind === "worktree" && artifact.resultCommit ? [artifact.resultCommit] : [],
         ),
       );
-      const selectedBase = dependencyCommits[0] ??
-        await resolveBaseCommit(repositoryRoot, this.baseMode);
+      const selectedBase = dependencyCommits[0] ?? (await resolveBaseCommit(repositoryRoot, this.baseMode));
       descriptor.baseCommit = selectedBase;
       await assertWorktreePathsAreSafe(
         repositoryRoot,
@@ -317,36 +282,23 @@ export class ExecutionEnvironmentManager {
       );
       const dependencyBases = uniqueNonEmpty(
         dependencyArtifacts.flatMap((artifact) =>
-          artifact.environmentKind === "worktree" && artifact.baseCommit
-            ? [artifact.baseCommit]
-            : [],
+          artifact.environmentKind === "worktree" && artifact.baseCommit ? [artifact.baseCommit] : [],
         ),
       );
-      if (
-        dependencyArtifacts.some(
-          (artifact) =>
-            artifact.environmentKind === "worktree" && !artifact.baseCommit,
-        )
-      ) {
+      if (dependencyArtifacts.some((artifact) => artifact.environmentKind === "worktree" && !artifact.baseCommit)) {
         throw new Error("A Worktree dependency is missing its handoff base snapshot");
       }
       if (dependencyBases.length > 1) {
-        const trees = await Promise.all(dependencyBases.map(async (commit) =>
-          (await git(repositoryRoot, ["rev-parse", `${commit}^{tree}`])).trim(),
-        ));
+        const trees = await Promise.all(
+          dependencyBases.map(async (commit) => (await git(repositoryRoot, ["rev-parse", `${commit}^{tree}`])).trim()),
+        );
         if (new Set(trees).size !== 1) {
-          throw new Error(
-            "Dependency artifacts do not share one logical handoff baseline",
-          );
+          throw new Error("Dependency artifacts do not share one logical handoff baseline");
         }
       }
       descriptor.handoffBaseCommit = dependencyBases[0] ?? descriptor.baselineCommit;
       descriptor.snapshotRef = environmentRef(id, "baseline");
-      await git(repositoryRoot, [
-        "update-ref",
-        descriptor.snapshotRef,
-        descriptor.baselineCommit,
-      ]);
+      await git(repositoryRoot, ["update-ref", descriptor.snapshotRef, descriptor.baselineCommit]);
       descriptor.status = "ready";
       descriptor.updatedAt = new Date().toISOString();
       await this.persistEnvironment(descriptor);
@@ -386,9 +338,7 @@ export class ExecutionEnvironmentManager {
     if (existsSync(descriptor.worktreeRoot)) {
       await verifyManagedWorktree(descriptor.repositoryRoot, descriptor.worktreeRoot);
     } else {
-      const restoreCommit = descriptor.resultCommit ??
-        descriptor.baselineCommit ??
-        descriptor.baseCommit;
+      const restoreCommit = descriptor.resultCommit ?? descriptor.baselineCommit ?? descriptor.baseCommit;
       if (!restoreCommit) {
         throw new Error(`Worktree environment ${environmentId} has no restorable snapshot`);
       }
@@ -401,13 +351,7 @@ export class ExecutionEnvironmentManager {
         false,
       );
       await mkdir(path.dirname(descriptor.worktreeRoot), { recursive: true });
-      await git(descriptor.repositoryRoot, [
-        "worktree",
-        "add",
-        "--detach",
-        descriptor.worktreeRoot,
-        restoreCommit,
-      ]);
+      await git(descriptor.repositoryRoot, ["worktree", "add", "--detach", descriptor.worktreeRoot, restoreCommit]);
     }
     descriptor.status = descriptor.resultCommit ? "result_ready" : "ready";
     delete descriptor.provisioningCleanup;
@@ -430,8 +374,7 @@ export class ExecutionEnvironmentManager {
   /** Persist in-progress Worktree bytes so a missing checkout can be rebuilt on resume. */
   async checkpoint(
     environment: ActiveExecutionEnvironment,
-    status: "ready" | "running" =
-      environment.descriptor.status === "running" ? "running" : "ready",
+    status: "ready" | "running" = environment.descriptor.status === "running" ? "running" : "ready",
   ): Promise<ExecutionEnvironmentSnapshot> {
     const descriptor = cloneEnvironment(environment.descriptor);
     await this.assertEnvironmentDescriptor(descriptor);
@@ -443,16 +386,10 @@ export class ExecutionEnvironmentManager {
       descriptor.resultCommit = await checkpointWorktree(
         descriptor.worktreeRoot,
         `EASY CODE resumable checkpoint for ${descriptor.id}`,
-        runtimeScratchGitExcludes(
-          path.relative(descriptor.worktreeRoot, descriptor.executionRoot),
-        ),
+        runtimeScratchGitExcludes(path.relative(descriptor.worktreeRoot, descriptor.executionRoot)),
       );
       descriptor.snapshotRef = environmentRef(descriptor.id, "result");
-      await git(descriptor.repositoryRoot, [
-        "update-ref",
-        descriptor.snapshotRef,
-        descriptor.resultCommit,
-      ]);
+      await git(descriptor.repositoryRoot, ["update-ref", descriptor.snapshotRef, descriptor.resultCommit]);
     }
     descriptor.status = status;
     descriptor.updatedAt = new Date().toISOString();
@@ -481,9 +418,7 @@ export class ExecutionEnvironmentManager {
         throw new Error(`Worktree environment ${descriptor.id} is incomplete`);
       }
       await verifyManagedWorktree(descriptor.repositoryRoot, descriptor.worktreeRoot);
-      const baseline = descriptor.handoffBaseCommit ??
-        descriptor.baselineCommit ??
-        descriptor.baseCommit;
+      const baseline = descriptor.handoffBaseCommit ?? descriptor.baselineCommit ?? descriptor.baseCommit;
       if (!baseline) throw new Error(`Worktree environment ${descriptor.id} has no baseline`);
       artifactBaseCommit = baseline;
       const scratchExcludes = runtimeScratchGitExcludes(
@@ -495,14 +430,9 @@ export class ExecutionEnvironmentManager {
         scratchExcludes,
       );
       descriptor.snapshotRef = environmentRef(descriptor.id, "result");
-      await git(descriptor.repositoryRoot, [
-        "update-ref",
-        descriptor.snapshotRef,
-        descriptor.resultCommit,
-      ]);
-      changedFiles = nulList(await git(
-        descriptor.repositoryRoot,
-        [
+      await git(descriptor.repositoryRoot, ["update-ref", descriptor.snapshotRef, descriptor.resultCommit]);
+      changedFiles = nulList(
+        await git(descriptor.repositoryRoot, [
           "diff",
           "--name-only",
           "-z",
@@ -511,13 +441,13 @@ export class ExecutionEnvironmentManager {
           "--",
           ".",
           ...scratchExcludes,
-        ],
-      ));
+        ]),
+      );
       descriptor.status = input.accepted ? "result_ready" : "retained";
     } else {
-      changedFiles = [...new Set(
-        environment.workspace.getChangeSet().map((change) => change.path),
-      )].sort((left, right) => left.localeCompare(right));
+      changedFiles = [...new Set(environment.workspace.getChangeSet().map((change) => change.path))].sort(
+        (left, right) => left.localeCompare(right),
+      );
       descriptor.status = input.accepted ? "handed_off" : "retained";
     }
     descriptor.updatedAt = now;
@@ -529,9 +459,14 @@ export class ExecutionEnvironmentManager {
       taskId: input.taskId,
       environmentId: descriptor.id,
       environmentKind: descriptor.kind,
-      status: descriptor.kind === "shared"
-        ? input.accepted ? "delivered" : "retained"
-        : input.accepted ? "ready" : "retained",
+      status:
+        descriptor.kind === "shared"
+          ? input.accepted
+            ? "delivered"
+            : "retained"
+          : input.accepted
+            ? "ready"
+            : "retained",
       logicalWorkspaceRoot: descriptor.logicalWorkspaceRoot,
       ...(artifactBaseCommit ? { baseCommit: artifactBaseCommit } : {}),
       ...(descriptor.resultCommit ? { resultCommit: descriptor.resultCommit } : {}),
@@ -540,18 +475,13 @@ export class ExecutionEnvironmentManager {
       changedFiles,
       createdAt: now,
       updatedAt: now,
-      ...(descriptor.kind === "shared" && input.accepted
-        ? { deliveredAt: now, delivery: "local" as const }
-        : {}),
+      ...(descriptor.kind === "shared" && input.accepted ? { deliveredAt: now, delivery: "local" as const } : {}),
     };
     await this.persistArtifact(artifact);
     return cloneArtifact(artifact);
   }
 
-  async handoff(
-    artifactInput: Readonly<ResultArtifact>,
-    destination: HandoffDestination,
-  ): Promise<ResultArtifact> {
+  async handoff(artifactInput: Readonly<ResultArtifact>, destination: HandoffDestination): Promise<ResultArtifact> {
     const artifact = cloneArtifact(artifactInput);
     if (artifact.environmentKind !== "worktree") {
       if (destination.type === "branch") {
@@ -575,16 +505,14 @@ export class ExecutionEnvironmentManager {
     }
 
     if (destination.type === "branch") {
-      const branchName = destination.branchName ??
-        `easy-code/${safeBranchSegment(artifact.taskId)}-${artifact.agentId.slice(-8)}`;
+      const branchName =
+        destination.branchName ?? `easy-code/${safeBranchSegment(artifact.taskId)}-${artifact.agentId.slice(-8)}`;
       await git(repositoryRoot, ["check-ref-format", "--branch", branchName]);
       let existingCommit: string | undefined;
       try {
-        existingCommit = (await git(repositoryRoot, [
-          "rev-parse",
-          "--verify",
-          `refs/heads/${branchName}^{commit}`,
-        ])).trim();
+        existingCommit = (
+          await git(repositoryRoot, ["rev-parse", "--verify", `refs/heads/${branchName}^{commit}`])
+        ).trim();
       } catch {
         // A missing branch is created below.
       }
@@ -593,10 +521,7 @@ export class ExecutionEnvironmentManager {
         artifact.updatedAt = new Date().toISOString();
         descriptor.status = "conflicted";
         descriptor.updatedAt = artifact.updatedAt;
-        await Promise.all([
-          this.persistArtifact(artifact),
-          this.persistEnvironment(descriptor),
-        ]);
+        await Promise.all([this.persistArtifact(artifact), this.persistEnvironment(descriptor)]);
         return cloneArtifact(artifact);
       }
       if (!existingCommit) {
@@ -606,9 +531,7 @@ export class ExecutionEnvironmentManager {
       artifact.delivery = "branch";
       artifact.branchName = branchName;
     } else {
-      const scratchExcludes = runtimeScratchGitExcludes(
-        path.relative(repositoryRoot, artifact.logicalWorkspaceRoot),
-      );
+      const scratchExcludes = runtimeScratchGitExcludes(path.relative(repositoryRoot, artifact.logicalWorkspaceRoot));
       const patch = await git(repositoryRoot, [
         "diff",
         "--binary",
@@ -625,13 +548,7 @@ export class ExecutionEnvironmentManager {
           await git(repositoryRoot, ["apply", "--whitespace=nowarn", "-"], patch);
         } catch {
           try {
-            await git(repositoryRoot, [
-              "apply",
-              "--reverse",
-              "--check",
-              "--whitespace=nowarn",
-              "-",
-            ], patch);
+            await git(repositoryRoot, ["apply", "--reverse", "--check", "--whitespace=nowarn", "-"], patch);
             alreadyApplied = true;
           } catch {
             artifact.status = "conflicted";
@@ -655,10 +572,7 @@ export class ExecutionEnvironmentManager {
     artifact.updatedAt = now;
     descriptor.status = "handed_off";
     descriptor.updatedAt = now;
-    await Promise.all([
-      this.persistArtifact(artifact),
-      this.persistEnvironment(descriptor),
-    ]);
+    await Promise.all([this.persistArtifact(artifact), this.persistEnvironment(descriptor)]);
     return cloneArtifact(artifact);
   }
 
@@ -706,10 +620,7 @@ export class ExecutionEnvironmentManager {
     const filename = this.environmentFile(environmentId);
     const parsed = JSON.parse(await readFile(filename, "utf8")) as PersistedEnvironment;
     requireCurrentProtocol("worktreeDescriptor", parsed?.schemaVersion);
-    if (
-      !isExecutionEnvironmentSnapshot(parsed?.environment) ||
-      parsed.environment.id !== environmentId
-    ) {
+    if (!isExecutionEnvironmentSnapshot(parsed?.environment) || parsed.environment.id !== environmentId) {
       throw new Error(`Invalid execution environment record: ${environmentId}`);
     }
     const descriptor = cloneEnvironment(parsed.environment);
@@ -720,10 +631,7 @@ export class ExecutionEnvironmentManager {
   async loadArtifact(artifactId: string): Promise<ResultArtifact> {
     const parsed = JSON.parse(await readFile(this.artifactFile(artifactId), "utf8")) as PersistedArtifact;
     requireCurrentProtocol("worktreeDescriptor", parsed?.schemaVersion);
-    if (
-      !isResultArtifact(parsed?.artifact) ||
-      parsed.artifact.id !== artifactId
-    ) {
+    if (!isResultArtifact(parsed?.artifact) || parsed.artifact.id !== artifactId) {
       throw new Error(`Invalid result artifact record: ${artifactId}`);
     }
     return cloneArtifact(parsed.artifact);
@@ -757,20 +665,14 @@ export class ExecutionEnvironmentManager {
    * the complete path relationship before any saved path is used as a cwd or
    * passed to `git worktree`.
    */
-  private async assertEnvironmentDescriptor(
-    descriptor: Readonly<ExecutionEnvironmentSnapshot>,
-  ): Promise<void> {
-    if (
-      normalizePathIdentity(descriptor.logicalWorkspaceRoot) !==
-      normalizePathIdentity(this.logicalWorkspaceRoot)
-    ) {
+  private async assertEnvironmentDescriptor(descriptor: Readonly<ExecutionEnvironmentSnapshot>): Promise<void> {
+    if (normalizePathIdentity(descriptor.logicalWorkspaceRoot) !== normalizePathIdentity(this.logicalWorkspaceRoot)) {
       throw new Error("Saved execution environment belongs to another logical workspace");
     }
 
     if (descriptor.kind === "shared") {
       if (
-        normalizePathIdentity(descriptor.executionRoot) !==
-          normalizePathIdentity(this.logicalWorkspaceRoot) ||
+        normalizePathIdentity(descriptor.executionRoot) !== normalizePathIdentity(this.logicalWorkspaceRoot) ||
         descriptor.repositoryRoot !== undefined ||
         descriptor.worktreeRoot !== undefined
       ) {
@@ -783,28 +685,18 @@ export class ExecutionEnvironmentManager {
       throw new Error(`Worktree environment ${descriptor.id} is missing repository metadata`);
     }
     const repositoryRoot = await discoverRepository(this.logicalWorkspaceRoot);
-    if (
-      !repositoryRoot ||
-      normalizePathIdentity(repositoryRoot) !==
-        normalizePathIdentity(descriptor.repositoryRoot)
-    ) {
+    if (!repositoryRoot || normalizePathIdentity(repositoryRoot) !== normalizePathIdentity(descriptor.repositoryRoot)) {
       throw new Error("Saved Worktree repository identity no longer matches the workspace");
     }
 
     assertManagedPath(this.worktreeRoot, descriptor.worktreeRoot);
     const expectedWorktreeRoot = compactManagedWorktreeRoot(this.worktreeRoot, repositoryRoot, descriptor.id);
-    if (
-      normalizePathIdentity(descriptor.worktreeRoot) !==
-      normalizePathIdentity(expectedWorktreeRoot)
-    ) {
+    if (normalizePathIdentity(descriptor.worktreeRoot) !== normalizePathIdentity(expectedWorktreeRoot)) {
       throw new Error("Saved Worktree path is not the Runtime-managed environment path");
     }
     await assertPhysicallyManagedPath(this.worktreeRoot, descriptor.worktreeRoot);
 
-    const relativeWorkspace = path.relative(
-      descriptor.repositoryRoot,
-      descriptor.logicalWorkspaceRoot,
-    );
+    const relativeWorkspace = path.relative(descriptor.repositoryRoot, descriptor.logicalWorkspaceRoot);
     if (
       relativeWorkspace === ".." ||
       relativeWorkspace.startsWith(`..${path.sep}`) ||
@@ -816,16 +708,10 @@ export class ExecutionEnvironmentManager {
       ? path.join(descriptor.worktreeRoot, relativeWorkspace)
       : descriptor.worktreeRoot;
     assertPathInsideOrEqual(descriptor.worktreeRoot, descriptor.executionRoot);
-    if (
-      normalizePathIdentity(descriptor.executionRoot) !==
-      normalizePathIdentity(expectedExecutionRoot)
-    ) {
+    if (normalizePathIdentity(descriptor.executionRoot) !== normalizePathIdentity(expectedExecutionRoot)) {
       throw new Error("Saved execution root does not match the logical workspace mapping");
     }
-    await assertPhysicallyContainedPath(
-      descriptor.worktreeRoot,
-      descriptor.executionRoot,
-    );
+    await assertPhysicallyContainedPath(descriptor.worktreeRoot, descriptor.executionRoot);
   }
 
   private async assertWorktreeCapacity(environmentId: string): Promise<void> {
@@ -883,22 +769,10 @@ async function removeValidatedRuntimeScratch(executionRoot: string): Promise<voi
   }
 }
 
-async function assertRuntimeScratchIsUntracked(
-  repositoryRoot: string,
-  logicalWorkspaceRoot: string,
-): Promise<void> {
-  const relativeWorkspace = path.relative(repositoryRoot, logicalWorkspaceRoot)
-    .split(path.sep)
-    .join("/");
-  const reservedRoot = relativeWorkspace
-    ? `${relativeWorkspace}/.easy-code-runtime`
-    : ".easy-code-runtime";
-  const tracked = nulList(await git(repositoryRoot, [
-    "ls-files",
-    "-z",
-    "--",
-    `:(top,literal)${reservedRoot}`,
-  ]));
+async function assertRuntimeScratchIsUntracked(repositoryRoot: string, logicalWorkspaceRoot: string): Promise<void> {
+  const relativeWorkspace = path.relative(repositoryRoot, logicalWorkspaceRoot).split(path.sep).join("/");
+  const reservedRoot = relativeWorkspace ? `${relativeWorkspace}/.easy-code-runtime` : ".easy-code-runtime";
+  const tracked = nulList(await git(repositoryRoot, ["ls-files", "-z", "--", `:(top,literal)${reservedRoot}`]));
   if (tracked.length > 0) {
     throw new Error(
       `Git tracks the EASY CODE Runtime-reserved path ${reservedRoot}; move or untrack it before using Worktree isolation`,
@@ -914,17 +788,10 @@ async function discoverRepository(workspaceRoot: string): Promise<string | undef
   }
 }
 
-async function resolveBaseCommit(
-  repositoryRoot: string,
-  mode: WorktreeBaseMode,
-): Promise<string> {
+async function resolveBaseCommit(repositoryRoot: string, mode: WorktreeBaseMode): Promise<string> {
   if (mode === "fresh") {
     try {
-      const symbolic = (await git(repositoryRoot, [
-        "symbolic-ref",
-        "--quiet",
-        "refs/remotes/origin/HEAD",
-      ])).trim();
+      const symbolic = (await git(repositoryRoot, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])).trim();
       if (symbolic) return (await git(repositoryRoot, ["rev-parse", symbolic])).trim();
     } catch {
       // Repositories without a configured remote fall back to local HEAD.
@@ -942,23 +809,12 @@ async function assertWorktreePathsAreSafe(
   includeConfiguredFiles = true,
 ): Promise<void> {
   if (process.platform !== "win32") return;
-  const paths = new Set(nulList(await git(repositoryRoot, [
-    "ls-tree",
-    "-r",
-    "-z",
-    "--name-only",
-    baseCommit,
-  ])));
+  const paths = new Set(nulList(await git(repositoryRoot, ["ls-tree", "-r", "-z", "--name-only", baseCommit])));
   if (includeCurrentSnapshot) {
-    for (const filename of nulList(await git(repositoryRoot, [
-      "ls-files",
-      "--others",
-      "--exclude-standard",
-      "-z",
-      "--",
-      ".",
-      ...scratchExcludes,
-    ]))) paths.add(filename);
+    for (const filename of nulList(
+      await git(repositoryRoot, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...scratchExcludes]),
+    ))
+      paths.add(filename);
   }
   if (includeConfiguredFiles) {
     for (const filename of await listWorktreeIncludes(repositoryRoot, scratchExcludes)) {
@@ -974,26 +830,13 @@ async function applyCurrentWorkspaceSnapshot(
   worktreeRoot: string,
   scratchExcludes: readonly string[],
 ): Promise<void> {
-  const patch = await git(repositoryRoot, [
-    "diff",
-    "--binary",
-    "HEAD",
-    "--",
-    ".",
-    ...scratchExcludes,
-  ]);
+  const patch = await git(repositoryRoot, ["diff", "--binary", "HEAD", "--", ".", ...scratchExcludes]);
   if (patch.length > 0) {
     await git(worktreeRoot, ["apply", "--whitespace=nowarn", "-"], patch);
   }
-  const untracked = nulList(await git(repositoryRoot, [
-    "ls-files",
-    "--others",
-    "--exclude-standard",
-    "-z",
-    "--",
-    ".",
-    ...scratchExcludes,
-  ]));
+  const untracked = nulList(
+    await git(repositoryRoot, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...scratchExcludes]),
+  );
   await copyRepositoryPaths(repositoryRoot, worktreeRoot, untracked);
 }
 
@@ -1010,10 +853,7 @@ async function copyWorktreeIncludes(
   );
 }
 
-async function listWorktreeIncludes(
-  repositoryRoot: string,
-  scratchExcludes: readonly string[],
-): Promise<string[]> {
+async function listWorktreeIncludes(repositoryRoot: string, scratchExcludes: readonly string[]): Promise<string[]> {
   const includePath = path.join(repositoryRoot, ".worktreeinclude");
   let source: string;
   try {
@@ -1028,16 +868,18 @@ async function listWorktreeIncludes(
     .filter((line) => line && !line.startsWith("#") && isSafeIncludePattern(line));
   const matches = new Set<string>();
   for (const pattern of patterns.slice(0, 256)) {
-    for (const filename of nulList(await git(repositoryRoot, [
-      "ls-files",
-      "--others",
-      "--ignored",
-      "--exclude-standard",
-      "-z",
-      "--",
-      pattern,
-      ...scratchExcludes,
-    ]))) {
+    for (const filename of nulList(
+      await git(repositoryRoot, [
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+        "--",
+        pattern,
+        ...scratchExcludes,
+      ]),
+    )) {
       matches.add(filename);
       if (matches.size > MAX_INCLUDED_FILES) {
         throw new Error(`.worktreeinclude matched more than ${MAX_INCLUDED_FILES} files`);
@@ -1094,24 +936,13 @@ async function mergeDependencyCommits(
   commits: readonly string[],
   descriptor: ExecutionEnvironmentSnapshot,
 ): Promise<void> {
-  const scratchExcludes = runtimeScratchGitExcludes(
-    path.relative(worktreeRoot, descriptor.executionRoot),
-  );
+  const scratchExcludes = runtimeScratchGitExcludes(path.relative(worktreeRoot, descriptor.executionRoot));
   for (const commit of commits) {
     try {
       await git(worktreeRoot, ["merge", "--no-ff", "--no-commit", commit]);
-      await checkpointWorktree(
-        worktreeRoot,
-        "EASY CODE dependency integration snapshot",
-        scratchExcludes,
-      );
+      await checkpointWorktree(worktreeRoot, "EASY CODE dependency integration snapshot", scratchExcludes);
     } catch (error) {
-      const files = nulList(await git(worktreeRoot, [
-        "diff",
-        "--name-only",
-        "--diff-filter=U",
-        "-z",
-      ]).catch(() => ""));
+      const files = nulList(await git(worktreeRoot, ["diff", "--name-only", "--diff-filter=U", "-z"]).catch(() => ""));
       descriptor.status = "conflicted";
       descriptor.updatedAt = new Date().toISOString();
       throw new WorktreeConflictError(
@@ -1128,13 +959,7 @@ async function checkpointWorktree(
   message: string,
   scratchExcludes: readonly string[],
 ): Promise<string> {
-  await git(worktreeRoot, [
-    "add",
-    "-A",
-    "--",
-    ".",
-    ...scratchExcludes,
-  ]);
+  await git(worktreeRoot, ["add", "-A", "--", ".", ...scratchExcludes]);
   const staged = await git(worktreeRoot, ["diff", "--cached", "--name-only", "-z"]);
   if (staged.length > 0) {
     await git(worktreeRoot, [
@@ -1161,9 +986,9 @@ async function verifyManagedWorktree(repositoryRoot: string, worktreeRoot: strin
   }
   const expectedCommon = await canonicalGitCommonDirectory(repositoryRoot);
   const commonPath = (await git(worktreeRoot, ["rev-parse", "--git-common-dir"])).trim();
-  const actualCommon = path.normalize(await realpath(
-    path.isAbsolute(commonPath) ? commonPath : path.resolve(worktreeRoot, commonPath),
-  ));
+  const actualCommon = path.normalize(
+    await realpath(path.isAbsolute(commonPath) ? commonPath : path.resolve(worktreeRoot, commonPath)),
+  );
   if (normalizePathIdentity(actualCommon) !== normalizePathIdentity(expectedCommon)) {
     throw new Error("Saved worktree no longer belongs to the expected Git repository");
   }
@@ -1171,9 +996,7 @@ async function verifyManagedWorktree(repositoryRoot: string, worktreeRoot: strin
 
 async function canonicalGitCommonDirectory(cwd: string): Promise<string> {
   const commonPath = (await git(cwd, ["rev-parse", "--git-common-dir"])).trim();
-  return path.normalize(await realpath(
-    path.isAbsolute(commonPath) ? commonPath : path.resolve(cwd, commonPath),
-  ));
+  return path.normalize(await realpath(path.isAbsolute(commonPath) ? commonPath : path.resolve(cwd, commonPath)));
 }
 
 async function git(cwd: string, args: readonly string[], input?: string): Promise<string> {
@@ -1191,11 +1014,7 @@ async function git(cwd: string, args: readonly string[], input?: string): Promis
     delete environment[key];
   }
   for (const key of Object.keys(environment)) {
-    if (
-      key.startsWith("GIT_CONFIG_KEY_") ||
-      key.startsWith("GIT_CONFIG_VALUE_") ||
-      key === "GIT_CONFIG_COUNT"
-    ) {
+    if (key.startsWith("GIT_CONFIG_KEY_") || key.startsWith("GIT_CONFIG_VALUE_") || key === "GIT_CONFIG_COUNT") {
       delete environment[key];
     }
   }
@@ -1225,9 +1044,7 @@ async function git(cwd: string, args: readonly string[], input?: string): Promis
   return String(result.stdout ?? "");
 }
 
-export function runtimeGitConfigArgs(
-  platform: NodeJS.Platform = process.platform,
-): string[] {
+export function runtimeGitConfigArgs(platform: NodeJS.Platform = process.platform): string[] {
   return [
     "-c",
     `core.hooksPath=${platform === "win32" ? "NUL" : "/dev/null"}`,
@@ -1281,9 +1098,7 @@ async function cleanupFailedProvision(
       errors.push(`snapshot ref removal: ${errorText(error)}`);
     }
   }
-  return errors.length
-    ? { status: "failed", error: errors.join("; ").slice(0, 2_000) }
-    : { status: "completed" };
+  return errors.length ? { status: "failed", error: errors.join("; ").slice(0, 2_000) } : { status: "completed" };
 }
 
 async function writeJsonAtomic(filename: string, value: unknown): Promise<void> {
@@ -1309,11 +1124,7 @@ function safePathSegment(value: string): string {
   return value;
 }
 
-function compactManagedWorktreeRoot(
-  root: string,
-  repositoryRoot: string,
-  environmentId: string,
-): string {
+function compactManagedWorktreeRoot(root: string, repositoryRoot: string, environmentId: string): string {
   safePathSegment(environmentId);
   const repositoryKey = sha256(normalizePathIdentity(repositoryRoot)).slice(0, 16);
   const environmentKey = sha256(environmentId).slice(0, 20);
@@ -1346,11 +1157,7 @@ function assertManagedPath(root: string, candidate: string): void {
 
 function assertPathInsideOrEqual(root: string, candidate: string): void {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  if (
-    relative === ".." ||
-    relative.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(relative)
-  ) {
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error("Saved execution root is outside its managed Worktree");
   }
 }
@@ -1360,10 +1167,7 @@ function assertPathInsideOrEqual(root: string, candidate: string): void {
  * replaced with a symlink or Windows junction. Resolve the nearest existing
  * ancestor before a missing checkout is recreated.
  */
-async function assertPhysicallyManagedPath(
-  managedRoot: string,
-  candidate: string,
-): Promise<void> {
+async function assertPhysicallyManagedPath(managedRoot: string, candidate: string): Promise<void> {
   assertManagedPath(managedRoot, candidate);
   const managedRootInfo = await lstat(managedRoot);
   if (managedRootInfo.isSymbolicLink()) {
@@ -1393,10 +1197,7 @@ async function assertPhysicallyManagedPath(
   }
 }
 
-async function assertPhysicallyContainedPath(
-  container: string,
-  candidate: string,
-): Promise<void> {
+async function assertPhysicallyContainedPath(container: string, candidate: string): Promise<void> {
   assertPathInsideOrEqual(container, candidate);
   if (!existsSync(container)) return;
   const canonicalContainer = path.normalize(await realpath(container));
@@ -1421,10 +1222,7 @@ function pathsOverlap(left: string, right: string): boolean {
   const leftToRight = path.relative(path.resolve(left), path.resolve(right));
   const rightToLeft = path.relative(path.resolve(right), path.resolve(left));
   const contained = (relative: string): boolean =>
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative));
+    relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
   return contained(leftToRight) || contained(rightToLeft);
 }
 
@@ -1447,9 +1245,7 @@ function cloneEnvironment(value: Readonly<ExecutionEnvironmentSnapshot>): Execut
 function cloneArtifact(value: Readonly<ResultArtifact>): ResultArtifact {
   return {
     ...value,
-    ...(value.parentArtifactIds
-      ? { parentArtifactIds: [...value.parentArtifactIds] }
-      : {}),
+    ...(value.parentArtifactIds ? { parentArtifactIds: [...value.parentArtifactIds] } : {}),
     changedFiles: [...value.changedFiles],
   };
 }
@@ -1489,17 +1285,16 @@ export function isExecutionEnvironmentSnapshot(value: unknown): value is Executi
       input.requestedIsolation === "shared" ||
       input.requestedIsolation === "worktree") &&
     (input.kind === "shared" ? input.pathLayoutVersion === undefined : input.pathLayoutVersion === 2) &&
-    (input.provisioningCleanup === undefined ||
-      isProvisioningCleanup(input.provisioningCleanup)) &&
+    (input.provisioningCleanup === undefined || isProvisioningCleanup(input.provisioningCleanup)) &&
     (input.baseMode === "fresh" || input.baseMode === "head" || input.baseMode === "current-snapshot") &&
     typeof input.createdAt === "string" &&
     typeof input.updatedAt === "string"
   );
 }
 
-function isProvisioningCleanup(value: unknown): value is NonNullable<
-  ExecutionEnvironmentSnapshot["provisioningCleanup"]
-> {
+function isProvisioningCleanup(
+  value: unknown,
+): value is NonNullable<ExecutionEnvironmentSnapshot["provisioningCleanup"]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const input = value as { status?: unknown; error?: unknown };
   return (
@@ -1527,8 +1322,7 @@ export function isResultArtifact(value: unknown): value is ResultArtifact {
     (input.baseCommit === undefined || isGitCommitId(input.baseCommit)) &&
     (input.resultCommit === undefined || isGitCommitId(input.resultCommit)) &&
     (input.parentArtifactIds === undefined ||
-      (Array.isArray(input.parentArtifactIds) &&
-        input.parentArtifactIds.every((item) => typeof item === "string"))) &&
+      (Array.isArray(input.parentArtifactIds) && input.parentArtifactIds.every((item) => typeof item === "string"))) &&
     Array.isArray(input.changedFiles) &&
     input.changedFiles.every((item) => typeof item === "string") &&
     typeof input.createdAt === "string" &&

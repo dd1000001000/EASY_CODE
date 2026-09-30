@@ -6,11 +6,7 @@ export interface TextWindow {
   readonly end: number;
 }
 
-export function tokenWindows(
-  text: string,
-  count: (text: string) => number,
-  maximum: number,
-): TextWindow[] {
+export function tokenWindows(text: string, count: (text: string) => number, maximum: number): TextWindow[] {
   if (!Number.isSafeInteger(maximum) || maximum < 4) throw new Error("Invalid token window");
   if (!text) return [];
   const points = Array.from(text);

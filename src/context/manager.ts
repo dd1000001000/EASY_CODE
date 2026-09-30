@@ -14,20 +14,19 @@ import { pressureProjectedMessages } from "./pressure-projection.js";
 import { requestTokens, tokenBudget, type TokenBudget } from "./token-budget.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 
-export const MAX_CONTEXT_SUMMARY_CHARS = DEFAULT_RUNTIME_LIMITS.contextSummaryMaxChars;
 /**
  * Maximum projected recent conversation considered for a provider request.
  * Older evidence remains durable and is recovered through the Thread-private
  * index.
  */
 export const MAX_ACTIVE_WORKING_SET_CHARS = DEFAULT_RUNTIME_LIMITS.maxActiveContextChars;
-export const CONTEXT_COMPACTION_SUGGEST_RATIO = DEFAULT_RUNTIME_LIMITS.contextReferenceTriggerRatio;
-export const CONTEXT_COMPACTION_REQUIRE_RATIO = DEFAULT_RUNTIME_LIMITS.contextCompactionTriggerRatio;
-export const CONTEXT_COMPACTION_FORCE_RATIO = DEFAULT_RUNTIME_LIMITS.contextForceRatio;
 
 export type ContextPressureLevel = "normal" | "suggest" | "require" | "force";
 
-export function contextPressureLevel(utilization: number, limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS): ContextPressureLevel {
+export function contextPressureLevel(
+  utilization: number,
+  limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
+): ContextPressureLevel {
   const normalized = Number.isNaN(utilization) ? 0 : Math.max(0, utilization);
   if (normalized >= limits.contextForceRatio) return "force";
   if (normalized >= limits.contextCompactionTriggerRatio) return "require";
@@ -40,7 +39,10 @@ export function contextPressureLevel(utilization: number, limits: Readonly<Runti
  * may be larger, but the local working set is deliberately capped so older
  * evidence can move to the Thread-private retrieval layer.
  */
-export function activeWorkingSetCharBudget(maxContextChars: number, activeLimit = MAX_ACTIVE_WORKING_SET_CHARS): number {
+export function activeWorkingSetCharBudget(
+  maxContextChars: number,
+  activeLimit = MAX_ACTIVE_WORKING_SET_CHARS,
+): number {
   if (!Number.isSafeInteger(maxContextChars) || maxContextChars < 1) {
     throw new RangeError("maxContextChars must be a positive safe integer");
   }
@@ -131,9 +133,7 @@ export function estimateMessagesChars(messages: readonly ChatMessage[]): number 
 }
 
 /** Account for the provider-visible JSON schema surface beside chat messages. */
-export function estimateToolDefinitionsChars(
-  tools: readonly ToolDefinition[] | undefined,
-): number {
+export function estimateToolDefinitionsChars(tools: readonly ToolDefinition[] | undefined): number {
   return tools?.length ? JSON.stringify(tools).length + 16 : 0;
 }
 
@@ -163,14 +163,15 @@ function estimateMessageTextTokens(message: ChatMessage): number {
 function estimateVisionTokens(messages: readonly ChatMessage[]): number {
   return messages.reduce((total, message) => {
     if (message.role !== "user") return total;
-    return total + (message.images ?? []).reduce(
-      (imageTotal, image) =>
-        imageTotal + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
-      0,
+    return (
+      total +
+      (message.images ?? []).reduce(
+        (imageTotal, image) => imageTotal + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
+        0,
+      )
     );
   }, 0);
 }
-
 
 function limitActiveImages(
   messages: readonly ChatMessage[],
@@ -190,11 +191,7 @@ function limitActiveImages(
         const image = message.images[imageIndex];
         if (!image) continue;
         const pixels = image.width * image.height;
-        if (
-          remainingCount < 1 ||
-          image.byteSize > remainingBytes ||
-          pixels > remainingPixels
-        ) {
+        if (remainingCount < 1 || image.byteSize > remainingBytes || pixels > remainingPixels) {
           exhausted = true;
           break;
         }
@@ -206,9 +203,11 @@ function limitActiveImages(
     }
     const omitted = message.images.length - images.length;
     const marker = omitted
-      ? `\n${loadPromptBundleCatalog().render("context/older-images-omitted.md", {
-          count: omitted,
-        }).trim()}`
+      ? `\n${loadPromptBundleCatalog()
+          .render("context/older-images-omitted.md", {
+            count: omitted,
+          })
+          .trim()}`
       : "";
     result[index] = {
       role: "user",
@@ -228,23 +227,22 @@ function removeOrphanToolMessages(messages: ChatMessage[]): ChatMessage[] {
 function summaryMessage(content: string): ChatMessage {
   return {
     role: "user",
-    content: loadPromptBundleCatalog().render("context/summary.md", {
-      content,
-    }).trimEnd(),
+    content: loadPromptBundleCatalog()
+      .render("context/summary.md", {
+        content,
+      })
+      .trimEnd(),
   };
 }
 
 export function shortTermMessages(state: Readonly<SessionState>): ChatMessage[] {
-  const compactedMessageCount = Math.min(
-    Math.max(0, state.compactedMessageCount),
-    state.messages.length,
+  const compactedMessageCount = Math.min(Math.max(0, state.compactedMessageCount), state.messages.length);
+  const activeMessages = limitActiveImages(
+    removeOrphanToolMessages(projectModelInputMessages(pressureProjectedMessages(state).slice(compactedMessageCount))),
   );
-  const activeMessages = limitActiveImages(removeOrphanToolMessages(
-    projectModelInputMessages(pressureProjectedMessages(state).slice(compactedMessageCount)),
-  ));
   const persistentSummary = state.workingSummary.trim();
   return [
-    ...(state.pressureRecovery?.serverReset?.requirementIndices.map(i => state.messages[i]!).filter(Boolean) ?? []),
+    ...(state.pressureRecovery?.serverReset?.requirementIndices.map((i) => state.messages[i]!).filter(Boolean) ?? []),
     ...(persistentSummary ? [summaryMessage(persistentSummary)] : []),
     ...activeMessages,
   ];
@@ -257,9 +255,11 @@ interface ContextSystemBudget {
 
 function contextSystemBudget(input: ContextBuildInput): ContextSystemBudget {
   const memorySection = input.longTermMemories?.length
-    ? `\n\n${loadPromptBundleCatalog().render("context/long-term-memory.md", {
-        content: input.longTermMemories.map((memory) => `- ${memory}`).join("\n"),
-      }).trimEnd()}`
+    ? `\n\n${loadPromptBundleCatalog()
+        .render("context/long-term-memory.md", {
+          content: input.longTermMemories.map((memory) => `- ${memory}`).join("\n"),
+        })
+        .trimEnd()}`
     : "";
   if (!Number.isInteger(input.maxContextChars) || input.maxContextChars < 1_024) {
     throw new Error("maxContextChars must be an integer of at least 1024");
@@ -272,24 +272,29 @@ function contextSystemBudget(input: ContextBuildInput): ContextSystemBudget {
     content: systemContent,
   };
   const actualSystemChars = messageChars(system);
-  const requestedSystemChars = input.reservedSystemPromptChars === undefined
-    ? actualSystemChars
-    : Math.max(actualSystemChars, Math.trunc(input.reservedSystemPromptChars));
+  const requestedSystemChars =
+    input.reservedSystemPromptChars === undefined
+      ? actualSystemChars
+      : Math.max(actualSystemChars, Math.trunc(input.reservedSystemPromptChars));
   const latestUser = [...input.state.messages].reverse().find((message) => message.role === "user");
-  const protectedReserve = estimateMessagesChars([
-    ...(latestUser ? [latestUser] : []),
-    ...(input.state.workingSummary ? [summaryMessage(input.state.workingSummary)] : []),
-    ...[runtimeContinuityMessage(input.state), input.state.pressureRecovery?.serverReset ? "" : input.runtimeContext ?? ""].filter(Boolean)
-      .map((content): ChatMessage => ({ role: "user", content })),
-  ]) + 384;
+  const protectedReserve =
+    estimateMessagesChars([
+      ...(latestUser ? [latestUser] : []),
+      ...(input.state.workingSummary ? [summaryMessage(input.state.workingSummary)] : []),
+      ...[
+        runtimeContinuityMessage(input.state),
+        input.state.pressureRecovery?.serverReset ? "" : (input.runtimeContext ?? ""),
+      ]
+        .filter(Boolean)
+        .map((content): ChatMessage => ({ role: "user", content })),
+    ]) + 384;
   // Artificial retrieval/tool headroom may shrink; actual instructions and
   // protected evidence may not. Pressure enforcement still counts real tools.
-  const maximumSystemChars = Math.max(actualSystemChars,
-    requestedBudget - Math.max(conversationReserve, protectedReserve));
-  const reservedSystemChars = Math.max(
+  const maximumSystemChars = Math.max(
     actualSystemChars,
-    Math.min(maximumSystemChars, requestedSystemChars),
+    requestedBudget - Math.max(conversationReserve, protectedReserve),
   );
+  const reservedSystemChars = Math.max(actualSystemChars, Math.min(maximumSystemChars, requestedSystemChars));
   return {
     system,
     conversationBudget: Math.max(0, requestedBudget - reservedSystemChars),
@@ -308,17 +313,18 @@ export class ContextManager {
     this.limits = limits ?? DEFAULT_RUNTIME_LIMITS;
     this.capacity = window === undefined ? undefined : tokenBudget(window, limits, thinkingEffort);
   }
-  get tokenCapacity(): TokenBudget | undefined { return this.capacity; }
-  get runtimeLimits(): Readonly<RuntimeLimits> { return this.limits; }
+  get tokenCapacity(): TokenBudget | undefined {
+    return this.capacity;
+  }
+  get runtimeLimits(): Readonly<RuntimeLimits> {
+    return this.limits;
+  }
   activeCharBudget(maxContextChars: number): number {
     return activeWorkingSetCharBudget(maxContextChars, this.limits.maxActiveContextChars);
   }
   /** Character budget used by automatic context-pressure thresholds. */
   estimateShortTermChars(state: Readonly<SessionState>): number {
-    return shortTermMessages(state).reduce(
-      (total, message) => total + messageChars(message),
-      0,
-    );
+    return shortTermMessages(state).reduce((total, message) => total + messageChars(message), 0);
   }
 
   /** Estimate the persisted summary plus currently active thread messages. */
@@ -335,13 +341,7 @@ export class ContextManager {
    * set. Retrieval must use this exact boundary so it never duplicates recent
    * messages that are already represented in the provider projection.
    */
-  retrievalBoundary(
-    state: Readonly<SessionState>,
-    maxContextChars: number,
-    systemPrompt = "",
-    reservedSystemPromptChars?: number,
-    runtimeContext = "",
-  ): number {
+  retrievalBoundary(state: Readonly<SessionState>): number {
     return state.compactedMessageCount;
   }
 
@@ -368,23 +368,19 @@ export class ContextManager {
     }
     if (
       contextState &&
-      (
-        contextState.metadata.formatVersion !== 2 ||
-        contextState.metadata.sourceStartMessageIndex !==
-          state.compactedMessageCount ||
+      (contextState.metadata.formatVersion !== 2 ||
+        contextState.metadata.sourceStartMessageIndex !== state.compactedMessageCount ||
         contextState.metadata.compactedMessageCount !== compactedMessageCount ||
         contextState.metadata.sourceEndMessageIndex > compactedMessageCount ||
-        contextState.metadata.sourceStartMessageIndex >
-          contextState.metadata.sourceEndMessageIndex ||
-        !/^sha256:[a-f0-9]{64}$/u.test(contextState.metadata.sourceHistoryHash)
-      )
+        contextState.metadata.sourceStartMessageIndex > contextState.metadata.sourceEndMessageIndex ||
+        !/^sha256:[a-f0-9]{64}$/u.test(contextState.metadata.sourceHistoryHash))
     ) {
       throw new Error("Context compaction provenance is invalid");
     }
     if (contextState) {
-      const sourceHistoryHash = `sha256:${sha256(JSON.stringify(
-        state.messages.slice(0, contextState.metadata.sourceEndMessageIndex),
-      ))}`;
+      const sourceHistoryHash = `sha256:${sha256(
+        JSON.stringify(state.messages.slice(0, contextState.metadata.sourceEndMessageIndex)),
+      )}`;
       if (sourceHistoryHash !== contextState.metadata.sourceHistoryHash) {
         throw new Error("Context compaction source history changed before commit");
       }
@@ -417,8 +413,13 @@ export class ContextManager {
   build(input: ContextBuildInput): ChatMessage[] {
     const budget = contextSystemBudget(input);
     const continuity = runtimeContinuityMessage(input.state);
-    const tail: ChatMessage[] = [continuity,
-      reconciliationPending(input.state) || input.state.pressureRecovery?.serverReset ? "" : input.runtimeContext ?? ""].filter(Boolean)
+    const tail: ChatMessage[] = [
+      continuity,
+      reconciliationPending(input.state) || input.state.pressureRecovery?.serverReset
+        ? ""
+        : (input.runtimeContext ?? ""),
+    ]
+      .filter(Boolean)
       .map((content) => ({ role: "user", content }));
     // History is retired only by a committed Runtime maintenance event.
     // Pressure inspection and the provider guard handle oversized requests;
@@ -426,23 +427,12 @@ export class ContextManager {
     return [budget.system, ...shortTermMessages(input.state), ...tail];
   }
 
-  inspect(
-    state: SessionState,
-    maxContextChars: number,
-    buildBudget?: ContextInspectionBuildBudget,
-  ): ContextInspection {
-    const images = state.messages.flatMap((message) =>
-      message.role === "user" ? message.images ?? [] : [],
-    );
+  inspect(state: SessionState, maxContextChars: number, buildBudget?: ContextInspectionBuildBudget): ContextInspection {
+    const images = state.messages.flatMap((message) => (message.role === "user" ? (message.images ?? []) : []));
     const estimatedShortTermChars = this.estimateShortTermChars(state);
-    const compactedMessageCount = Math.min(
-      Math.max(0, state.compactedMessageCount),
-      state.messages.length,
-    );
+    const compactedMessageCount = Math.min(Math.max(0, state.compactedMessageCount), state.messages.length);
     const durableHistoryChars = estimateMessagesChars(state.messages);
-    const durableActiveChars = estimateMessagesChars(
-      state.messages.slice(compactedMessageCount),
-    );
+    const durableActiveChars = estimateMessagesChars(state.messages.slice(compactedMessageCount));
     const conversationBudget = buildBudget
       ? contextSystemBudget({
           systemPrompt: buildBudget.systemPrompt,
@@ -457,7 +447,8 @@ export class ContextManager {
     // Runtime enforcement uses inspectProviderRequest() after final messages
     // and tool schemas have been assembled.
     const budgetChars = this.activeCharBudget(conversationBudget);
-    const utilization = this.capacity ? this.estimateRequestTokens(shortTermMessages(state)) / this.capacity.inputCapacity
+    const utilization = this.capacity
+      ? this.estimateRequestTokens(shortTermMessages(state)) / this.capacity.inputCapacity
       : estimatedShortTermChars / budgetChars;
     return {
       messageCount: state.messages.length,
@@ -472,8 +463,7 @@ export class ContextManager {
       imageCount: images.length,
       imageBytes: images.reduce((total, image) => total + image.byteSize, 0),
       estimatedVisionTokens: images.reduce(
-        (total, image) =>
-          total + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
+        (total, image) => total + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
         0,
       ),
       estimatedShortTermTokens: this.estimateShortTermTokens(state),
@@ -487,9 +477,7 @@ export class ContextManager {
    * sent to a provider. The fixed retrieval reserve is intentionally absent:
    * it controls selection headroom, not bytes in this concrete request.
    */
-  inspectProviderRequest(
-    input: ProviderRequestInspectionInput,
-  ): ProviderRequestContextInspection {
+  inspectProviderRequest(input: ProviderRequestInspectionInput): ProviderRequestContextInspection {
     const projectedMessages = projectModelInputMessages(input.messages);
     const providerMessageChars = estimateMessagesChars(projectedMessages);
     const providerToolDefinitionChars = estimateToolDefinitionsChars(input.tools);
@@ -498,9 +486,10 @@ export class ContextManager {
     // Measure the actual request once. Retention policy belongs to Runtime;
     // never secretly add a second projection or count the same overhead twice.
     const estimatedInputTokens = this.estimateRequestTokens(projectedMessages, input.tools);
-    const utilization = this.capacity ? estimatedInputTokens / this.capacity.inputCapacity
-      : providerInputChars / Math.floor(budgetChars *
-        (1 - this.limits.contextToolReserveRatio - this.limits.contextSafetyReserveRatio));
+    const utilization = this.capacity
+      ? estimatedInputTokens / this.capacity.inputCapacity
+      : providerInputChars /
+        Math.floor(budgetChars * (1 - this.limits.contextToolReserveRatio - this.limits.contextSafetyReserveRatio));
     return {
       ...this.inspect(input.state, input.maxContextChars),
       configuredBudgetChars: input.maxContextChars,
@@ -510,8 +499,9 @@ export class ContextManager {
       providerToolDefinitionChars,
       providerInputChars,
       estimatedInputTokens,
-      ...(this.capacity ? { inputTokenCapacity: this.capacity.inputCapacity,
-        outputTokenReserve: this.capacity.outputReserve } : {}),
+      ...(this.capacity
+        ? { inputTokenCapacity: this.capacity.inputCapacity, outputTokenReserve: this.capacity.outputReserve }
+        : {}),
       utilization,
       pressure: contextPressureLevel(utilization, this.limits),
     };

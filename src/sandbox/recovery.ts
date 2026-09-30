@@ -18,14 +18,19 @@ export interface RecoveryReport {
   quarantine: "absent" | "preserved" | "cleared";
 }
 
-const entries = async (directory: string): Promise<string[]> => readdir(directory).catch((error: NodeJS.ErrnoException) => {
-  if (error.code === "ENOENT") return [];
-  throw error;
-});
+const entries = async (directory: string): Promise<string[]> =>
+  readdir(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
 const optionalJson = async (file: string): Promise<any | undefined> => {
   assertPlainAncestors(file);
-  try { return JSON.parse(await readFile(file, "utf8")); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 };
 
 /**
@@ -35,7 +40,12 @@ const optionalJson = async (file: string): Promise<any | undefined> => {
  * recorded both a final outcome and cleanup before the interruption.
  */
 export class SandboxRecovery {
-  constructor(private readonly dataDir: string, private readonly limits: Readonly<RuntimeLimits>) { void this.limits; }
+  constructor(
+    private readonly dataDir: string,
+    private readonly limits: Readonly<RuntimeLimits>,
+  ) {
+    void this.limits;
+  }
 
   async inspect(workspace: string, apply = false): Promise<RecoveryReport> {
     assertNoUninstall();
@@ -47,16 +57,22 @@ export class SandboxRecovery {
     if (apply) {
       await mkdir(lifecycle, { recursive: true, mode: 0o700 });
       lock = await open(lockPath, "wx", 0o600);
-      await lock.writeFile(JSON.stringify({ pid: process.pid, hostname: os.hostname(), processIdentity: currentProcessIdentity() }));
+      await lock.writeFile(
+        JSON.stringify({ pid: process.pid, hostname: os.hostname(), processIdentity: currentProcessIdentity() }),
+      );
       await lock.sync();
     }
     try {
       const report: RecoveryReport = { items: [], quarantine: "absent" };
       const probe = processOwnerProbe();
-      for (const name of (await entries(lifecycle)).filter(value => value.endsWith(".lease"))) {
+      for (const name of (await entries(lifecycle)).filter((value) => value.endsWith(".lease"))) {
         const commandId = name.slice(0, -6);
         const leasePath = path.join(lifecycle, name);
-        const item: RecoveryItem = { commandId, status: "blocked", reason: "Missing trusted native lifecycle evidence" };
+        const item: RecoveryItem = {
+          commandId,
+          status: "blocked",
+          reason: "Missing trusted native lifecycle evidence",
+        };
         report.items.push(item);
         if (!/^[a-zA-Z0-9_-]+$/u.test(commandId)) continue;
         const lease = await optionalJson(leasePath);
@@ -70,15 +86,22 @@ export class SandboxRecovery {
           item.reason = "Truncated lifecycle journal preserved";
           continue;
         }
-        const events = source.split("\n").filter(Boolean).map(line => JSON.parse(line));
-        if (events.some(event => event.commandId !== commandId)) throw new Error("Mismatched command lifecycle evidence");
+        const events = source
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        if (events.some((event) => event.commandId !== commandId))
+          throw new Error("Mismatched command lifecycle evidence");
         const reverseEvents = [...events].reverse();
         const notStarted = deterministicNotStartedEvidence(events);
-        const cleanup = reverseEvents.find((event: any) => event.type === "cleanup_complete" || event.type === "cleanup_not_required");
+        const cleanup = reverseEvents.find(
+          (event: any) => event.type === "cleanup_complete" || event.type === "cleanup_not_required",
+        );
         const final = reverseEvents.find((event: any) => event.type === "finished" || event.type === "finalized");
         if (notStarted) {
           item.status = "recoverable";
-          item.reason = "Trusted spawn evidence proves the target never started; cleanup is not required and the command will not be replayed";
+          item.reason =
+            "Trusted spawn evidence proves the target never started; cleanup is not required and the command will not be replayed";
           if (apply) {
             const journal = new ExecutionJournal(lifecycle);
             journal.record(commandId, "not_started_reconciled", notStarted);
@@ -98,7 +121,8 @@ export class SandboxRecovery {
           continue;
         }
         item.status = "recoverable";
-        item.reason = "Owner is inactive and trusted lifecycle records prove cleanup and a final outcome; the command will not be replayed";
+        item.reason =
+          "Owner is inactive and trusted lifecycle records prove cleanup and a final outcome; the command will not be replayed";
         if (apply) {
           new ExecutionJournal(lifecycle).record(commandId, "recovered", { backend: "native", replayed: false });
           await rm(leasePath);
@@ -109,15 +133,23 @@ export class SandboxRecovery {
       const marker = await optionalJson(quarantine);
       if (marker) {
         report.quarantine = "preserved";
-        if (apply && marker.version === 2 && marker.backend === "native" && path.resolve(marker.workspace) === workspace &&
-          !(await entries(lifecycle)).some(name => name.endsWith(".lease"))) {
+        if (
+          apply &&
+          marker.version === 2 &&
+          marker.backend === "native" &&
+          path.resolve(marker.workspace) === workspace &&
+          !(await entries(lifecycle)).some((name) => name.endsWith(".lease"))
+        ) {
           await rm(quarantine);
           report.quarantine = "cleared";
         }
       }
       return report;
     } finally {
-      if (lock) { await lock.close(); await rm(lockPath, { force: true }); }
+      if (lock) {
+        await lock.close();
+        await rm(lockPath, { force: true });
+      }
     }
   }
 }

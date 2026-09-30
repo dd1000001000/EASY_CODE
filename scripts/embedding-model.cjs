@@ -66,18 +66,11 @@ function errorMessage(error) {
 }
 
 function isFileSystemError(error, code) {
-  return Boolean(
-    error &&
-    typeof error === "object" &&
-    "code" in error &&
-    error.code === code,
-  );
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === code);
 }
 
 function isReplaceContention(error) {
-  return ["EACCES", "EBUSY", "EEXIST", "ENOENT", "EPERM"].some((code) =>
-    isFileSystemError(error, code),
-  );
+  return ["EACCES", "EBUSY", "EEXIST", "ENOENT", "EPERM"].some((code) => isFileSystemError(error, code));
 }
 
 function wait(milliseconds, options = {}) {
@@ -104,11 +97,7 @@ function downloadDeadline(options = {}) {
     if (!Number.isFinite(deadline)) throw new Error("deadlineAt must be finite");
     return deadline;
   }
-  return currentTime(options) + positiveDuration(
-    options.deadlineMs,
-    DOWNLOAD_DEADLINE_MS,
-    "deadlineMs",
-  );
+  return currentTime(options) + positiveDuration(options.deadlineMs, DOWNLOAD_DEADLINE_MS, "deadlineMs");
 }
 
 function remainingDownloadTime(deadlineAt, options = {}) {
@@ -234,9 +223,7 @@ async function resolveEmbeddingModelDirectory(options = {}) {
   if (cacheDirectory === undefined) {
     const loadEnvPaths = options.loadEnvPaths || (() => import("env-paths"));
     const imported = await loadEnvPaths();
-    const envPaths = imported && typeof imported === "object" && "default" in imported
-      ? imported.default
-      : imported;
+    const envPaths = imported && typeof imported === "object" && "default" in imported ? imported.default : imported;
     if (typeof envPaths !== "function") {
       throw new Error("env-paths did not provide its path resolver");
     }
@@ -286,9 +273,7 @@ async function verifyAsset(modelDirectory, file, options = {}) {
     throw error;
   }
   if (actual.size !== file.size) {
-    throw new Error(
-      `Embedding model asset ${file.path} has size ${actual.size}; expected ${file.size}`,
-    );
+    throw new Error(`Embedding model asset ${file.path} has size ${actual.size}; expected ${file.size}`);
   }
   if (actual.sha256 !== file.sha256) {
     throw new Error(`Embedding model asset ${file.path} failed SHA256 verification`);
@@ -385,9 +370,7 @@ async function requestHttpsResponse(source, options = {}) {
       }
       if (!settled && request && typeof request.setTimeout === "function") {
         request.setTimeout(idleTimeoutMs, () => {
-          const error = new Error(
-            `Embedding model download was idle for ${idleTimeoutMs}ms`,
-          );
+          const error = new Error(`Embedding model download was idle for ${idleTimeoutMs}ms`);
           if (typeof request.destroy === "function") request.destroy(error);
           fail(error);
         });
@@ -483,9 +466,7 @@ async function atomicReplace(stagingPath, destinationPath, options = {}) {
       await wait(ATOMIC_REPLACE_RETRY_MS, options);
     }
   }
-  const error = new Error(
-    `Embedding model asset remained busy while replacing ${destinationPath}`,
-  );
+  const error = new Error(`Embedding model asset remained busy while replacing ${destinationPath}`);
   error.cause = lastContention;
   throw error;
 }
@@ -496,27 +477,15 @@ function randomToken(options = {}) {
 }
 
 function newModelInstallLockOwner(options = {}) {
-  const configuredToken = typeof options.lockToken === "function"
-    ? options.lockToken()
-    : options.lockToken;
-  const token = configuredToken === undefined
-    ? randomBytes(16).toString("hex")
-    : String(configuredToken);
+  const configuredToken = typeof options.lockToken === "function" ? options.lockToken() : options.lockToken;
+  const token = configuredToken === undefined ? randomBytes(16).toString("hex") : String(configuredToken);
   if (!/^[a-f0-9]{32}$/u.test(token)) {
     throw new Error("Embedding model install lock token must be 32 lowercase hex characters");
   }
-  const host = typeof options.hostname === "function"
-    ? options.hostname()
-    : options.hostname || os.hostname();
+  const host = typeof options.hostname === "function" ? options.hostname() : options.hostname || os.hostname();
   const pid = options.pid === undefined ? process.pid : Number(options.pid);
   const acquiredAt = currentTime(options);
-  if (
-    typeof host !== "string" ||
-    !host ||
-    !Number.isSafeInteger(pid) ||
-    pid <= 0 ||
-    !Number.isFinite(acquiredAt)
-  ) {
+  if (typeof host !== "string" || !host || !Number.isSafeInteger(pid) || pid <= 0 || !Number.isFinite(acquiredAt)) {
     throw new Error("Embedding model install lock owner metadata is invalid");
   }
   return {
@@ -548,14 +517,10 @@ async function readModelInstallLockOwner(directory, options = {}) {
   const ownerPath = path.join(directory, MODEL_INSTALL_LOCK_OWNER_FILE);
   let ownerSource;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (!await plainModelInstallLockDirectoryExists(directory, options)) return undefined;
+    if (!(await plainModelInstallLockDirectoryExists(directory, options))) return undefined;
     try {
       const ownerMetadata = await fsp.lstat(ownerPath);
-      if (
-        ownerMetadata.isSymbolicLink() ||
-        !ownerMetadata.isFile() ||
-        ownerMetadata.size > 4_096
-      ) {
+      if (ownerMetadata.isSymbolicLink() || !ownerMetadata.isFile() || ownerMetadata.size > 4_096) {
         throw new Error(`Embedding model install lock has invalid owner metadata: ${ownerPath}`);
       }
       ownerSource = await fsp.readFile(ownerPath, "utf8");
@@ -566,7 +531,7 @@ async function readModelInstallLockOwner(directory, options = {}) {
       // between the directory and owner-file lookups. Recheck the live path:
       // disappearance means normal contention; a persistently ownerless lock
       // is damaged and must not be silently stolen.
-      if (!await plainModelInstallLockDirectoryExists(directory, options)) return undefined;
+      if (!(await plainModelInstallLockDirectoryExists(directory, options))) return undefined;
       if (attempt === 2) {
         throw new Error(`Embedding model install lock is missing owner metadata: ${ownerPath}`);
       }
@@ -598,9 +563,7 @@ async function readModelInstallLockOwner(directory, options = {}) {
 }
 
 function modelInstallLockOwnerState(owner, options = {}) {
-  const host = typeof options.hostname === "function"
-    ? options.hostname()
-    : options.hostname || os.hostname();
+  const host = typeof options.hostname === "function" ? options.hostname() : options.hostname || os.hostname();
   if (owner.hostname.toLowerCase() !== String(host).toLowerCase()) return "unknown";
   const probe = options.processKill || process.kill.bind(process);
   try {
@@ -674,18 +637,9 @@ async function removeModelInstallLockIfOwned(directory, expectedToken, options =
   }
 }
 
-async function renameOwnedModelInstallLock(
-  source,
-  destination,
-  expectedToken,
-  options = {},
-) {
+async function renameOwnedModelInstallLock(source, destination, expectedToken, options = {}) {
   const fsp = options.fsp || fs.promises;
-  const timeoutMs = positiveDuration(
-    options.lockReleaseTimeoutMs,
-    2_000,
-    "lockReleaseTimeoutMs",
-  );
+  const timeoutMs = positiveDuration(options.lockReleaseTimeoutMs, 2_000, "lockReleaseTimeoutMs");
   const deadline = currentTime(options) + timeoutMs;
   while (true) {
     const owner = await readModelInstallLockOwner(source, options);
@@ -708,11 +662,7 @@ async function acquireModelInstallLock(modelDirectory, options = {}) {
   const owner = newModelInstallLockOwner(options);
   const stagingDirectory = `${lockDirectory}.staging-${owner.token}`;
   await writeModelInstallLockOwner(stagingDirectory, owner, options);
-  const timeoutMs = positiveDuration(
-    options.lockTimeoutMs,
-    MODEL_INSTALL_LOCK_TIMEOUT_MS,
-    "lockTimeoutMs",
-  );
+  const timeoutMs = positiveDuration(options.lockTimeoutMs, MODEL_INSTALL_LOCK_TIMEOUT_MS, "lockTimeoutMs");
   const deadline = currentTime(options) + timeoutMs;
 
   try {
@@ -777,12 +727,7 @@ async function acquireModelInstallLock(modelDirectory, options = {}) {
         throw new Error("Embedding model install lock ownership changed before release");
       }
       const releaseDirectory = `${lockDirectory}.release-${owner.token}`;
-      await renameOwnedModelInstallLock(
-        lockDirectory,
-        releaseDirectory,
-        owner.token,
-        options,
-      );
+      await renameOwnedModelInstallLock(lockDirectory, releaseDirectory, owner.token, options);
       const moved = await readModelInstallLockOwner(releaseDirectory, options);
       if (!moved || moved.token !== owner.token) {
         throw new Error("Embedding model install lock ownership changed during release");
@@ -862,9 +807,7 @@ async function downloadHttpsFile(input, options = {}) {
     if (responseSocket && typeof responseSocket.setTimeout === "function") {
       responseSocket.setTimeout(idleTimeoutMs, () => {
         if (response && typeof response.destroy === "function") {
-          response.destroy(new Error(
-            `Embedding model download was idle for ${idleTimeoutMs}ms`,
-          ));
+          response.destroy(new Error(`Embedding model download was idle for ${idleTimeoutMs}ms`));
         }
       });
     }
@@ -875,9 +818,7 @@ async function downloadHttpsFile(input, options = {}) {
       Number(contentLength) !== input.size
     ) {
       discardHttpsResponse(response);
-      throw new Error(
-        `Embedding model download declared ${contentLength} bytes; expected ${input.size}`,
-      );
+      throw new Error(`Embedding model download declared ${contentLength} bytes; expected ${input.size}`);
     }
     const digest = makeHash("sha256");
     let size = 0;
@@ -942,10 +883,7 @@ async function downloadHttpsFile(input, options = {}) {
 async function writeManifest(modelDirectory, manifest, options = {}) {
   const fsp = options.fsp || fs.promises;
   const manifestPath = path.join(modelDirectory, MANIFEST_FILE);
-  const stagingPath = path.join(
-    modelDirectory,
-    `.${MANIFEST_FILE}.write-${process.pid}-${randomToken(options)}.tmp`,
-  );
+  const stagingPath = path.join(modelDirectory, `.${MANIFEST_FILE}.write-${process.pid}-${randomToken(options)}.tmp`);
   let handle;
   try {
     handle = await fsp.open(stagingPath, "wx", 0o600);
@@ -1030,13 +968,11 @@ async function runCli(argv = process.argv.slice(2)) {
   if (action !== "prepare" && action !== "verify") {
     throw new Error("Usage: node scripts/embedding-model.cjs <prepare|verify>");
   }
-  const result = action === "prepare"
-    ? await prepareEmbeddingModel()
-    : await verifyEmbeddingModel();
+  const result = action === "prepare" ? await prepareEmbeddingModel() : await verifyEmbeddingModel();
   const totalBytes = result.manifest.files.reduce((sum, file) => sum + file.size, 0);
   process.stdout.write(
     `EASY CODE: embedding model ${action === "prepare" ? "is ready" : "verified"} ` +
-    `at ${result.modelDirectory} (${totalBytes} bytes).\n`,
+      `at ${result.modelDirectory} (${totalBytes} bytes).\n`,
   );
   return result;
 }

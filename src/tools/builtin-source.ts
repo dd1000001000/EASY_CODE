@@ -15,7 +15,6 @@ import {
 } from "../subagents/workspace-mutation-lock.js";
 import type { ToolSource } from "./catalog.js";
 import { bindBuiltinToolMetadata } from "./capabilities.js";
-import { CompactContextTool } from "./compact-context.js";
 import { RecallContextTool, SearchContextTool } from "./context-read.js";
 import { CreateFileTool } from "./create-file.js";
 import { DeleteFileTool } from "./delete-file.js";
@@ -36,12 +35,7 @@ import { ProposePlanTool } from "./propose-plan.js";
 import { ReadFileTool } from "./read-file.js";
 import { ReadDocumentTool } from "./read-document.js";
 import { ReadImageTool } from "./read-image.js";
-import {
-  CancelCommandTool,
-  PollCommandTool,
-  RunCommandTool,
-  StartCommandTool,
-} from "./run-command.js";
+import { CancelCommandTool, PollCommandTool, RunCommandTool, StartCommandTool } from "./run-command.js";
 import { SearchFilesTool } from "./search-files.js";
 import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "./skill-tools.js";
 import { SubmitTaskResultTool } from "./submit-task-result.js";
@@ -71,8 +65,11 @@ export interface BuiltinToolSourceOptions {
   readonly boundTask?: BoundTask;
   readonly parentMessage?: {
     binding: ParentMessageBinding;
-    post: (message: Omit<SubagentParentMessage, "id" | "createdAt">,
-      childThreadId: string, toolCallId: string) => SubagentParentMessage;
+    post: (
+      message: Omit<SubagentParentMessage, "id" | "createdAt">,
+      childThreadId: string,
+      toolCallId: string,
+    ) => SubagentParentMessage;
   };
   readonly threadTitleStore?: ThreadTitleStore;
   readonly skillStore?: SkillStore;
@@ -99,12 +96,18 @@ export class BuiltinToolSource implements ToolSource {
     const { workspace } = this.options;
     const memorySession = new MemoryToolSession();
     const skillStore = this.options.skillStore ?? new SkillStore(workspace.root);
-    const commandRuntime = this.options.commandRuntime ?? new CommandRuntime(workspace, undefined, undefined, undefined, {
-      limits: this.options.limits,
-    });
+    const commandRuntime =
+      this.options.commandRuntime ??
+      new CommandRuntime(workspace, undefined, undefined, undefined, {
+        limits: this.options.limits,
+      });
     const tools: AgentTool[] = [
       ...(this.options.coordination && this.options.limits?.coordinationEnabled !== false
-        ? [new FindFileEditorsTool(workspace, this.options.coordination), new SendThreadMessageTool(this.options.coordination)] : []),
+        ? [
+            new FindFileEditorsTool(workspace, this.options.coordination),
+            new SendThreadMessageTool(this.options.coordination),
+          ]
+        : []),
       new ReadFileTool(workspace, this.options.threadResourceStore),
       ...(this.options.threadDocumentService
         ? [new ReadDocumentTool(workspace, this.options.threadDocumentService)]
@@ -125,25 +128,26 @@ export class BuiltinToolSource implements ToolSource {
       new CancelCommandTool(workspace, commandRuntime),
       ...(this.options.downloadBroker ? [new FetchArtifactTool(this.options.downloadBroker)] : []),
       ...(this.options.includePublicWebTools !== false && this.options.threadResourceStore
-        ? [new WebSearchTool(workspace)] : []),
+        ? [new WebSearchTool(workspace)]
+        : []),
       ...(this.options.includePublicWebTools !== false && this.options.threadDocumentService
-        ? [new FetchWebpageTool(workspace, this.options.threadDocumentService)] : []),
+        ? [new FetchWebpageTool(workspace, this.options.threadDocumentService)]
+        : []),
       new ManageTasksTool(),
       ...(this.options.threadTitleStore ? [new NameThreadTool(this.options.threadTitleStore)] : []),
       ...(this.options.mcpConfigStore
         ? [
-          new ListMcpServersTool(workspace, this.options.mcpConfigStore),
-          new SaveLocalMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
-          new SaveRemoteMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
-          new DisableMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
-          new RemoveMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
-        ]
+            new ListMcpServersTool(workspace, this.options.mcpConfigStore),
+            new SaveLocalMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
+            new SaveRemoteMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
+            new DisableMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
+            new RemoveMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
+          ]
         : []),
       ...(this.options.subagentControl
         ? [new ManageSubagentsTool(this.options.subagentControl, this.options.limits)]
         : []),
       new ProposePlanTool(),
-      new CompactContextTool(this.options.limits),
       new RecallContextTool(this.options.limits),
       new SearchContextTool(),
       new ReadMemoryTool(workspace, memorySession),
@@ -151,21 +155,28 @@ export class BuiltinToolSource implements ToolSource {
         ? [new WriteMemoryTool(this.options.memoryManager, workspace, memorySession)]
         : []),
       ...(this.options.boundTask ? [new SubmitTaskResultTool(this.options.boundTask, this.options.limits)] : []),
-      ...(this.options.parentMessage ? [new SendParentMessageTool(
-        this.options.parentMessage.binding, this.options.parentMessage.post,
-        this.options.limits?.subagentParentMessageMaxChars,
-      )] : []),
-    ].filter(tool => this.options.profile !== "benchmark" || !BENCHMARK_DISABLED_TOOLS.has(tool.name)).map((tool) => {
-      bindBuiltinToolMetadata(tool);
-      if (tool.mutating) {
-        const execute = tool.execute.bind(tool);
-        tool.execute = (input, context) => {
-          commandRuntime.assertEnvironmentSafe();
-          return execute(input, context);
-        };
-      }
-      return tool;
-    });
+      ...(this.options.parentMessage
+        ? [
+            new SendParentMessageTool(
+              this.options.parentMessage.binding,
+              this.options.parentMessage.post,
+              this.options.limits?.subagentParentMessageMaxChars,
+            ),
+          ]
+        : []),
+    ]
+      .filter((tool) => this.options.profile !== "benchmark" || !BENCHMARK_DISABLED_TOOLS.has(tool.name))
+      .map((tool) => {
+        bindBuiltinToolMetadata(tool);
+        if (tool.mutating) {
+          const execute = tool.execute.bind(tool);
+          tool.execute = (input, context) => {
+            commandRuntime.assertEnvironmentSafe();
+            return execute(input, context);
+          };
+        }
+        return tool;
+      });
     return this.options.mutationLock
       ? wrapAgentToolsWithWorkspaceMutationLock(tools, this.options.mutationLock)
       : tools;
@@ -175,9 +186,20 @@ export class BuiltinToolSource implements ToolSource {
 // One policy for main/child catalogs. Trial-local memory, task orchestration
 // and parent/child messages remain available; cross-trial services do not.
 export const BENCHMARK_DISABLED_TOOLS: ReadonlySet<string> = new Set([
-  "find_file_editors", "send_thread_message", "name_thread",
-  "list_skills", "read_skill", "create_skill", "modify_skill", "delete_skill",
-  "web_search", "fetch_webpage", "fetch_artifact",
-  "list_mcp_servers", "save_local_mcp_server", "save_remote_mcp_server",
-  "disable_mcp_server", "remove_mcp_server",
+  "find_file_editors",
+  "send_thread_message",
+  "name_thread",
+  "list_skills",
+  "read_skill",
+  "create_skill",
+  "modify_skill",
+  "delete_skill",
+  "web_search",
+  "fetch_webpage",
+  "fetch_artifact",
+  "list_mcp_servers",
+  "save_local_mcp_server",
+  "save_remote_mcp_server",
+  "disable_mcp_server",
+  "remove_mcp_server",
 ]);

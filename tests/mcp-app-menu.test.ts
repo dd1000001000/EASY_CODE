@@ -18,12 +18,20 @@ function menuApp(server: McpServerConfig, answers: string[]) {
   app.config = { dataDir: "unused-test-data" };
   app.mcpConfigStore = {
     filePath: "unused-test-mcp.toml",
-    read: async () => { reads += 1; return { servers: { sample: server } }; },
-    setEnabled: async (id: string, value: boolean) => { enabled.push([id, value]); },
+    read: async () => {
+      reads += 1;
+      return { servers: { sample: server } };
+    },
+    setEnabled: async (id: string, value: boolean) => {
+      enabled.push([id, value]);
+    },
   };
   app.mcpConnections = {
     status: () => ({ connected: false, toolCount: 0 }),
-    connect: async () => { connections += 1; return 3; },
+    connect: async () => {
+      connections += 1;
+      return 3;
+    },
     disconnect: async () => undefined,
   };
   app.terminal = {
@@ -33,19 +41,41 @@ function menuApp(server: McpServerConfig, answers: string[]) {
       if (!next) throw new Error(`Unexpected MCP menu prompt: ${title}`);
       return next;
     },
-    write: (value: string) => { messages.push(value); },
-    success: (value: string) => { messages.push(value); },
-    warning: (value: string) => { messages.push(value); },
-    info: (value: string) => { messages.push(value); },
+    write: (value: string) => {
+      messages.push(value);
+    },
+    success: (value: string) => {
+      messages.push(value);
+    },
+    warning: (value: string) => {
+      messages.push(value);
+    },
+    info: (value: string) => {
+      messages.push(value);
+    },
   };
-  return { app, prompts, messages, enabled, get reads() { return reads; },
-    get connections() { return connections; } };
+  return {
+    app,
+    prompts,
+    messages,
+    enabled,
+    get reads() {
+      return reads;
+    },
+    get connections() {
+      return connections;
+    },
+  };
 }
 
 describe("MCP app menu navigation", () => {
   const remote: RemoteMcpServerConfig = {
-    transport: "http", url: "https://mcp.example.com/mcp", auth: "none",
-    headers: {}, query: {}, enabled: false,
+    transport: "http",
+    url: "https://mcp.example.com/mcp",
+    auth: "none",
+    headers: {},
+    query: {},
+    enabled: false,
   };
 
   it("returns to the main request after showing server details", async () => {

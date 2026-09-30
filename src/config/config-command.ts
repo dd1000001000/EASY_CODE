@@ -4,10 +4,7 @@ import { defaultRuntimeLimits } from "./runtime-limits.js";
 import type { Command } from "commander";
 
 import type { ProviderName } from "../core/types.js";
-import {
-  PROVIDER_CATALOG,
-  providerCredentialConfigKey,
-} from "../models/catalog.js";
+import { PROVIDER_CATALOG, providerCredentialConfigKey } from "../models/catalog.js";
 import { loadEasyCodeConfig } from "./loader.js";
 import {
   SystemKeyringCredentialStore,
@@ -18,11 +15,7 @@ import {
   type ApiKeyCredentialStore,
 } from "./credentials.js";
 import { resolveEasyCodePaths } from "./defaults.js";
-import {
-  readSecretInput,
-  type SecretInputStream,
-  type SecretOutputStream,
-} from "./secret-input.js";
+import { readSecretInput, type SecretInputStream, type SecretOutputStream } from "./secret-input.js";
 
 export interface ConfigCommandRuntime {
   credentialStore?: ApiKeyCredentialStore;
@@ -35,23 +28,17 @@ export interface ConfigCommandRuntime {
   userConfigPath?: string;
 }
 
-type ApiKeyStatus =
-  | { state: "configured" }
-  | { state: "not-configured" }
-  | { state: "unavailable" };
+type ApiKeyStatus = { state: "configured" } | { state: "not-configured" } | { state: "unavailable" };
 
-export function registerConfigCommands(
-  program: Command,
-  runtime: ConfigCommandRuntime = {},
-): Command {
+export function registerConfigCommands(program: Command, runtime: ConfigCommandRuntime = {}): Command {
   const config = program
     .command("config")
     .description("inspect or update user API-key configuration")
     .addHelpText(
       "after",
-      `\nSupported keys: ${PROVIDER_CATALOG.map(({ provider }) =>
-        providerCredentialConfigKey(provider)).join(", ")}. ` +
-        "Keys are stored in the operating system credential store, never in workspace configuration.\n",
+      `\nSupported keys: ${PROVIDER_CATALOG.map(({ provider }) => providerCredentialConfigKey(provider)).join(
+        ", ",
+      )}. ` + "Keys are stored in the operating system credential store, never in workspace configuration.\n",
     );
 
   config
@@ -59,20 +46,36 @@ export function registerConfigCommands(
     .description("print the complete operational limits as TOML (no credentials)")
     .allowExcessArguments(false)
     .action(() => {
-      const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests,
-        maxResponseTokens, maxConcurrentSubagents, providerStreamIdleTimeoutMs,
-        providerBufferedTimeoutMs, ...limits } = defaultRuntimeLimits();
+      const {
+        steps: legacySteps,
+        maxModelRequests: legacyMaxModelRequests,
+        maxResponseTokens,
+        maxConcurrentSubagents,
+        providerStreamIdleTimeoutMs,
+        providerBufferedTimeoutMs,
+        ...limits
+      } = defaultRuntimeLimits();
       void legacySteps;
       void legacyMaxModelRequests;
-      const snakeCase = (value: string) => value.replace(/[A-Z]/gu, character => `_${character.toLowerCase()}`);
+      const snakeCase = (value: string) => value.replace(/[A-Z]/gu, (character) => `_${character.toLowerCase()}`);
       const table = (name: string, values: Record<string, unknown>) =>
-        `[${name}]\n` + Object.entries(values).map(([key, value]) => `${snakeCase(key)} = ${JSON.stringify(value)}`).join("\n");
-      writeLine(resolveRuntime(runtime).output,
-        "orchestration_enabled = false\n\n" + table("limits", limits) + "\n\n" +
-        table("limits.max_response_tokens", maxResponseTokens) +
-        "\n\n" + table("limits.max_concurrent_subagents", maxConcurrentSubagents) +
-        "\n\n" + table("limits.provider_stream_idle_timeout_ms", providerStreamIdleTimeoutMs) +
-        "\n\n" + table("limits.provider_buffered_timeout_ms", providerBufferedTimeoutMs));
+        `[${name}]\n` +
+        Object.entries(values)
+          .map(([key, value]) => `${snakeCase(key)} = ${JSON.stringify(value)}`)
+          .join("\n");
+      writeLine(
+        resolveRuntime(runtime).output,
+        "orchestration_enabled = false\n\n" +
+          table("limits", limits) +
+          "\n\n" +
+          table("limits.max_response_tokens", maxResponseTokens) +
+          "\n\n" +
+          table("limits.max_concurrent_subagents", maxConcurrentSubagents) +
+          "\n\n" +
+          table("limits.provider_stream_idle_timeout_ms", providerStreamIdleTimeoutMs) +
+          "\n\n" +
+          table("limits.provider_buffered_timeout_ms", providerBufferedTimeoutMs),
+      );
     });
 
   config
@@ -89,16 +92,9 @@ export function registerConfigCommands(
       const { key, provider } = parseApiKeyConfigKey(rawKey);
       const resources = resolveRuntime(runtime);
       const endpoint = await endpointFor(provider, resources);
-      const value = await readSecretInput(
-        resources.input,
-        resources.errorOutput,
-        `API key for ${provider}: `,
-      );
+      const value = await readSecretInput(resources.input, resources.errorOutput, `API key for ${provider}: `);
       await storeVerifiedApiKey(resources.credentialStore, provider, value, endpoint);
-      writeLine(
-        resources.output,
-        `Stored ${key} in the operating system credential store.`,
-      );
+      writeLine(resources.output, `Stored ${key} in the operating system credential store.`);
     });
 
   config
@@ -127,10 +123,7 @@ export function registerConfigCommands(
           `${key} was not deleted or deletion could not be verified by the operating system credential store.`,
         );
       }
-      writeLine(
-        resources.output,
-        `Deleted ${key} from the operating system credential store.`,
-      );
+      writeLine(resources.output, `Deleted ${key} from the operating system credential store.`);
     });
 
   config
@@ -141,10 +134,7 @@ export function registerConfigCommands(
       const resources = resolveRuntime(runtime);
       for (const { provider } of PROVIDER_CATALOG) {
         const status = await apiKeyStatus(provider, resources);
-        writeLine(
-          resources.output,
-          formatStatus(apiKeyConfigKey(provider), status),
-        );
+        writeLine(resources.output, formatStatus(apiKeyConfigKey(provider), status));
       }
     });
 
@@ -166,43 +156,35 @@ function resolveRuntime(runtime: ConfigCommandRuntime): ResolvedRuntime {
   const env = runtime.env ?? process.env;
   const generatedConfigDir = resolveEasyCodePaths(runtime.appName ?? "easy-code").configDir;
   const environmentConfigDir = env.EASY_CODE_CONFIG_DIR?.trim();
-  const configDir = path.resolve(
-    runtime.configDir ?? (environmentConfigDir || generatedConfigDir),
-  );
+  const configDir = path.resolve(runtime.configDir ?? (environmentConfigDir || generatedConfigDir));
   return {
-    credentialStore:
-      runtime.credentialStore ?? new SystemKeyringCredentialStore(),
+    credentialStore: runtime.credentialStore ?? new SystemKeyringCredentialStore(),
     env,
     configDir,
     input: runtime.input ?? process.stdin,
     output: runtime.output ?? process.stdout,
     errorOutput: runtime.errorOutput ?? process.stderr,
-    userConfigPath: path.resolve(
-      runtime.userConfigPath ?? path.join(configDir, "config.toml"),
-    ),
+    userConfigPath: path.resolve(runtime.userConfigPath ?? path.join(configDir, "config.toml")),
   };
 }
 
-async function apiKeyStatus(
-  provider: ProviderName,
-  runtime: ResolvedRuntime,
-): Promise<ApiKeyStatus> {
+async function apiKeyStatus(provider: ProviderName, runtime: ResolvedRuntime): Promise<ApiKeyStatus> {
   const endpoint = await endpointFor(provider, runtime);
   try {
-    return await runtime.credentialStore.get(provider, endpoint)
-      ? { state: "configured" } : { state: "not-configured" };
+    return (await runtime.credentialStore.get(provider, endpoint))
+      ? { state: "configured" }
+      : { state: "not-configured" };
   } catch {
     return { state: "unavailable" };
   }
 }
 
-async function endpointFor(
-  provider: ProviderName,
-  runtime: ResolvedRuntime,
-): Promise<string> {
+async function endpointFor(provider: ProviderName, runtime: ResolvedRuntime): Promise<string> {
   const config = await loadEasyCodeConfig({
-    env: runtime.env, configDir: runtime.configDir,
-    userConfigPath: runtime.userConfigPath, credentialStore: false,
+    env: runtime.env,
+    configDir: runtime.configDir,
+    userConfigPath: runtime.userConfigPath,
+    credentialStore: false,
   });
   return config.providers[provider]!.baseUrl;
 }

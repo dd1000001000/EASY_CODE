@@ -48,9 +48,7 @@ function cloneIncident(value: Readonly<ProgressIncident>): ProgressIncident {
   };
 }
 
-export function cloneProgressGuardState(
-  state: Readonly<ProgressGuardState>,
-): ProgressGuardState {
+export function cloneProgressGuardState(state: Readonly<ProgressGuardState>): ProgressGuardState {
   return {
     ...state,
     lastObservedResponseOrdinal: state.lastObservedResponseOrdinal ?? 0,
@@ -101,18 +99,11 @@ export function createProgressGuardState(): ProgressGuardState {
   };
 }
 
-export type ProgressHintKind = "read" | "search";
-
 /** Persist the one-shot presentation marker without changing execution state. */
-export function foldProgressHint(
-  current: Readonly<ProgressGuardState>,
-  raw: unknown,
-): ProgressGuardState {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    throw new Error("Invalid progress hint event");
+export function foldProgressHint(current: Readonly<ProgressGuardState>, raw: unknown): ProgressGuardState {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid progress hint event");
   const payload = raw as Record<string, unknown>;
-  if (typeof payload.scopeKey !== "string" || !payload.scopeKey ||
-      !["read", "search"].includes(String(payload.kind)))
+  if (typeof payload.scopeKey !== "string" || !payload.scopeKey || !["read", "search"].includes(String(payload.kind)))
     throw new Error("Invalid progress hint event");
   const state = cloneProgressGuardState(current);
   const marker = `${String(payload.kind)}:${payload.scopeKey}`;
@@ -131,15 +122,10 @@ function updateReadWindow(
 ): ProgressReadTrigger | undefined {
   if (observation.kind !== "read" || !observation.targetKey) return undefined;
   const identity = `${observation.targetKey}:${observation.outcomeKey ?? "unknown"}`;
-  const minimumOrdinal = Math.max(
-    0,
-    observation.responseOrdinal - PROGRESS_READ_WINDOW_RESPONSES + 1,
-  );
+  const minimumOrdinal = Math.max(0, observation.responseOrdinal - PROGRESS_READ_WINDOW_RESPONSES + 1);
   state.recentReads = [
     ...state.recentReads.filter(
-      (entry) =>
-        entry.scopeKey === observation.scopeKey &&
-        entry.responseOrdinal >= minimumOrdinal,
+      (entry) => entry.scopeKey === observation.scopeKey && entry.responseOrdinal >= minimumOrdinal,
     ),
     {
       sourceEventId: observation.sourceEventId,
@@ -154,8 +140,7 @@ function updateReadWindow(
     }
     return undefined;
   }
-  const repeatedReads = state.recentReads.length -
-    new Set(state.recentReads.map((entry) => entry.identity)).size;
+  const repeatedReads = state.recentReads.length - new Set(state.recentReads.map((entry) => entry.identity)).size;
   const repeatedRatio = repeatedReads / state.recentReads.length;
   if (repeatedRatio <= PROGRESS_READ_WARNING_RATIO) {
     if (state.readWarning?.scopeKey === observation.scopeKey) {
@@ -171,9 +156,7 @@ function updateReadWindow(
     return undefined;
   }
   const warning = {
-    id: `read_warning_${sha256(
-      `${observation.scopeKey}:${observation.sourceEventId}`,
-    ).slice(0, 32)}`,
+    id: `read_warning_${sha256(`${observation.scopeKey}:${observation.sourceEventId}`).slice(0, 32)}`,
     sourceEventId: observation.sourceEventId,
     scopeKey: observation.scopeKey,
     responseOrdinal: observation.responseOrdinal,
@@ -202,35 +185,50 @@ function updateSearchWindow(state: ProgressGuardState, observation: Readonly<Pro
     state.searchWarning = state.searchWarning?.scopeKey === observation.scopeKey ? undefined : state.searchWarning;
   }
   const sameTargetPrefix = `${observation.targetKey}:`;
-  state.recentSearches = [...recent.filter((entry) => entry.scopeKey !== observation.scopeKey ||
-    !entry.identity.startsWith(sameTargetPrefix) || entry.identity === identity), {
-    sourceEventId: observation.sourceEventId, scopeKey: observation.scopeKey,
-    responseOrdinal: observation.responseOrdinal, identity,
-  }].slice(-128);
-  const matching = state.recentSearches.filter((entry) => entry.scopeKey === observation.scopeKey && entry.identity === identity);
+  state.recentSearches = [
+    ...recent.filter(
+      (entry) =>
+        entry.scopeKey !== observation.scopeKey ||
+        !entry.identity.startsWith(sameTargetPrefix) ||
+        entry.identity === identity,
+    ),
+    {
+      sourceEventId: observation.sourceEventId,
+      scopeKey: observation.scopeKey,
+      responseOrdinal: observation.responseOrdinal,
+      identity,
+    },
+  ].slice(-128);
+  const matching = state.recentSearches.filter(
+    (entry) => entry.scopeKey === observation.scopeKey && entry.identity === identity,
+  );
   if (matching.length >= observation.searchRepeatLimit) {
-    state.searchWarning = { scopeKey: observation.scopeKey, sourceEventId: observation.sourceEventId, count: matching.length };
+    state.searchWarning = {
+      scopeKey: observation.scopeKey,
+      sourceEventId: observation.sourceEventId,
+      count: matching.length,
+    };
   } else if (state.searchWarning?.scopeKey === observation.scopeKey) state.searchWarning = undefined;
 }
 
 function failureSignature(observation: Readonly<ProgressObservation>): string {
-  return `sha256:${sha256(JSON.stringify([
-    observation.scopeKey,
-    observation.targetKey,
-    observation.verificationKind ?? "custom",
-    observation.outcomeClass,
-    observation.outcomeKey,
-    observation.baselineDigest,
-  ]))}`;
+  return `sha256:${sha256(
+    JSON.stringify([
+      observation.scopeKey,
+      observation.targetKey,
+      observation.verificationKind ?? "custom",
+      observation.outcomeClass,
+      observation.outcomeKey,
+      observation.baselineDigest,
+    ]),
+  )}`;
 }
 
 function applyRead(state: ProgressGuardState, observation: Readonly<ProgressObservation>): void {
   if (observation.kind !== "read" || !observation.targetKey) return;
   const coverage = state.readCoverage;
   coverage.totalReads = increment(coverage.totalReads);
-  const index = coverage.targets.findIndex(
-    (target) => target.targetKey === observation.targetKey,
-  );
+  const index = coverage.targets.findIndex((target) => target.targetKey === observation.targetKey);
   if (index >= 0) {
     const previous = coverage.targets[index]!;
     coverage.targets[index] = {
@@ -257,31 +255,34 @@ function applyRead(state: ProgressGuardState, observation: Readonly<ProgressObse
 function comparableStandard(observation: Readonly<ProgressObservation>, baseline: string | undefined): boolean {
   // Missing global inventory is not evidence that an actual test result is
   // invalid. A known changed original test still cannot certify recovery.
-  return observation.standardStatus !== "changed" &&
-    (!baseline || !observation.baselineDigest || observation.baselineDigest === baseline);
+  return (
+    observation.standardStatus !== "changed" &&
+    (!baseline || !observation.baselineDigest || observation.baselineDigest === baseline)
+  );
 }
 
-function clearResolvedFailures(
-  state: ProgressGuardState,
-  observation: Readonly<ProgressObservation>,
-): void {
+function clearResolvedFailures(state: ProgressGuardState, observation: Readonly<ProgressObservation>): void {
   if (
     observation.kind !== "verification_terminal" ||
     observation.outcomeClass !== "passed" ||
     observation.confidence !== "high" ||
-    !observation.targetKey || !comparableStandard(observation, observation.baselineDigest)
+    !observation.targetKey ||
+    !comparableStandard(observation, observation.baselineDigest)
   ) {
     return;
   }
   state.failureRuns = state.failureRuns.filter(
-    (run) => run.scopeKey !== observation.scopeKey || run.targetKey !== observation.targetKey ||
+    (run) =>
+      run.scopeKey !== observation.scopeKey ||
+      run.targetKey !== observation.targetKey ||
       !comparableStandard(observation, run.baselineDigest),
   );
   for (const incident of state.incidents) {
     if (
       incident.scopeKey === observation.scopeKey &&
       incident.targetKey === observation.targetKey &&
-      incident.phase !== "resolved" && comparableStandard(observation, incident.baselineDigest)
+      incident.phase !== "resolved" &&
+      comparableStandard(observation, incident.baselineDigest)
     ) {
       incident.phase = "resolved";
     }
@@ -315,9 +316,7 @@ function applyFailure(
       targetKey: observation.targetKey,
       outcomeKey: observation.outcomeKey,
       outcomeClass: observation.outcomeClass,
-      ...(observation.verificationKind
-        ? { verificationKind: observation.verificationKind }
-        : {}),
+      ...(observation.verificationKind ? { verificationKind: observation.verificationKind } : {}),
       verificationCycleIds: [],
       responseOrdinals: [],
       triggered: false,
@@ -332,16 +331,12 @@ function applyFailure(
 
   const next: ProgressFailureRun = {
     ...run,
-    verificationCycleIds: [
-      ...run.verificationCycleIds,
-      observation.verificationCycleId,
-    ].slice(0, PROGRESS_FAILURE_THRESHOLD),
-    responseOrdinals: [
-      ...run.responseOrdinals,
-      observation.responseOrdinal,
-    ].slice(0, PROGRESS_FAILURE_THRESHOLD),
-    triggered:
-      run.verificationCycleIds.length + 1 >= PROGRESS_FAILURE_THRESHOLD,
+    verificationCycleIds: [...run.verificationCycleIds, observation.verificationCycleId].slice(
+      0,
+      PROGRESS_FAILURE_THRESHOLD,
+    ),
+    responseOrdinals: [...run.responseOrdinals, observation.responseOrdinal].slice(0, PROGRESS_FAILURE_THRESHOLD),
+    triggered: run.verificationCycleIds.length + 1 >= PROGRESS_FAILURE_THRESHOLD,
     ...(run.triggerSourceEventId
       ? { triggerSourceEventId: run.triggerSourceEventId }
       : run.verificationCycleIds.length + 1 >= PROGRESS_FAILURE_THRESHOLD
@@ -350,9 +345,7 @@ function applyFailure(
   };
   state.failureRuns[index] = next;
   if (!next.triggered) return { duplicateCycle: false, saturated: false };
-  if (
-    !state.incidents.some((incident) => incident.signature === signature)
-  ) {
+  if (!state.incidents.some((incident) => incident.signature === signature)) {
     if (state.incidents.length >= MAX_PROGRESS_INCIDENTS) {
       return { duplicateCycle: false, saturated: true };
     }
@@ -365,9 +358,7 @@ function applyFailure(
       targetKey: observation.targetKey,
       outcomeKey: observation.outcomeKey,
       outcomeClass: observation.outcomeClass,
-      ...(observation.verificationKind
-        ? { verificationKind: observation.verificationKind }
-        : {}),
+      ...(observation.verificationKind ? { verificationKind: observation.verificationKind } : {}),
       triggerSourceEventId: observation.sourceEventId,
       triggerResponseOrdinal: observation.responseOrdinal,
       verificationCycleIds: [...next.verificationCycleIds],
@@ -386,9 +377,7 @@ function applyFailure(
       targetKey: observation.targetKey,
       outcomeKey: observation.outcomeKey,
       outcomeClass: observation.outcomeClass,
-      ...(observation.verificationKind
-        ? { verificationKind: observation.verificationKind }
-        : {}),
+      ...(observation.verificationKind ? { verificationKind: observation.verificationKind } : {}),
       verificationCycleIds: [...next.verificationCycleIds],
     },
   };
@@ -416,22 +405,13 @@ export function foldProgressObservation(
     return result(state, false, false, "source_event_capacity");
   }
   state.seenSourceEventIds.push(observation.sourceEventId);
-  state.lastObservedResponseOrdinal = Math.max(
-    state.lastObservedResponseOrdinal,
-    observation.responseOrdinal,
-  );
+  state.lastObservedResponseOrdinal = Math.max(state.lastObservedResponseOrdinal, observation.responseOrdinal);
 
-  if (
-    observation.commandId &&
-    state.seenTerminalCommandIds.includes(observation.commandId)
-  ) {
+  if (observation.commandId && state.seenTerminalCommandIds.includes(observation.commandId)) {
     state.duplicateObservations = increment(state.duplicateObservations);
     return result(state, false, true, "duplicate_terminal_command");
   }
-  if (
-    observation.commandId &&
-    state.seenTerminalCommandIds.length >= MAX_PROGRESS_TERMINAL_COMMANDS
-  ) {
+  if (observation.commandId && state.seenTerminalCommandIds.length >= MAX_PROGRESS_TERMINAL_COMMANDS) {
     state.ignoredObservations = increment(state.ignoredObservations);
     state.saturated = true;
     return result(state, false, false, "terminal_command_capacity");
@@ -444,8 +424,7 @@ export function foldProgressObservation(
   applyRead(state, observation);
   updateSearchWindow(state, observation);
   const readTrigger = updateReadWindow(state, observation);
-  if (observation.kind === "verification_terminal" && observation.confidence === "high")
-    state.readWarning = undefined;
+  if (observation.kind === "verification_terminal" && observation.confidence === "high") state.readWarning = undefined;
   clearResolvedFailures(state, observation);
   const failure = applyFailure(state, observation);
   if (failure.saturated) {

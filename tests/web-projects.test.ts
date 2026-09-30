@@ -23,14 +23,24 @@ describe("Web project library", () => {
       assert.equal(project.folders.length, 1);
       assert.equal(project.folders[0]?.path, realpathSync.native(projectRoot));
       index.renameProject(project.id, "My project");
-      storage.db.prepare(
-        `INSERT INTO threads(id, workspace_root, workspace_id, mode, provider, model, created_at, updated_at)
+      storage.db
+        .prepare(
+          `INSERT INTO threads(id, workspace_root, workspace_id, mode, provider, model, created_at, updated_at)
          VALUES (?, ?, ?, 'code', 'glm', 'glm-5.3-flash', ?, ?)`,
-      ).run("thread_project_test", projectRoot, project.id, "2026-09-20T00:00:00Z", "2026-09-20T00:00:00Z");
-      const thread: ThreadSummary = { id: "thread_project_test", threadId: "thread_project_test",
-        workspaceRoot: projectRoot, workspaceId: project.id, mode: "code", provider: "glm",
-        model: "glm-5.3-flash", status: "active", createdAt: "2026-09-20T00:00:00Z",
-        updatedAt: "2026-09-20T00:00:00Z" };
+        )
+        .run("thread_project_test", projectRoot, project.id, "2026-09-20T00:00:00Z", "2026-09-20T00:00:00Z");
+      const thread: ThreadSummary = {
+        id: "thread_project_test",
+        threadId: "thread_project_test",
+        workspaceRoot: projectRoot,
+        workspaceId: project.id,
+        mode: "code",
+        provider: "glm",
+        model: "glm-5.3-flash",
+        status: "active",
+        createdAt: "2026-09-20T00:00:00Z",
+        updatedAt: "2026-09-20T00:00:00Z",
+      };
       index.renameThread(thread, "Custom conversation");
       assert.throws(() => index.renameThread(thread, "Another name"), /already named/iu);
       writeLastModel(storage, { provider: "glm", model: "glm-5.3-flash", thinkingEffort: "high" });
@@ -40,7 +50,10 @@ describe("Web project library", () => {
       assert.equal(readLastModel(storage)?.thinkingEffort, "high");
       assert.equal(existsSync(path.join(root, "data", "projects.json")), false);
       assert.equal(existsSync(path.join(root, "data", "last-model.json")), false);
-    } finally { storage.close(); rmSync(root, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("creates empty projects and revisions a stable multi-folder membership", () => {
@@ -48,7 +61,9 @@ describe("Web project library", () => {
     const first = path.join(root, "frontend");
     const second = path.join(root, "backend");
     const nested = path.join(first, "nested");
-    mkdirSync(first); mkdirSync(second); mkdirSync(nested);
+    mkdirSync(first);
+    mkdirSync(second);
+    mkdirSync(nested);
     const storage = createStorage(path.join(root, "data"));
     try {
       const index = new ProjectIndex(storage);
@@ -61,7 +76,10 @@ describe("Web project library", () => {
       let project = index.get(empty.id);
       assert.equal(project.workspaceRevision, 3);
       assert.equal(project.primaryFolderId, firstFolder.id);
-      assert.deepEqual(project.folders.filter(folder => folder.active).map(folder => folder.key), ["frontend", "backend"]);
+      assert.deepEqual(
+        project.folders.filter((folder) => folder.active).map((folder) => folder.key),
+        ["frontend", "backend"],
+      );
       assert.throws(() => index.addFolder(empty.id, nested), /cannot contain one another/iu);
       const other = index.add(first);
       assert.notEqual(other.id, empty.id, "the same physical folder may belong to another logical project");
@@ -70,12 +88,15 @@ describe("Web project library", () => {
       index.removeFolder(empty.id, firstFolder.id);
       project = index.get(empty.id);
       assert.equal(project.primaryFolderId, secondFolder.id);
-      assert.equal(project.folders.find(folder => folder.id === firstFolder.id)?.active, false);
+      assert.equal(project.folders.find((folder) => folder.id === firstFolder.id)?.active, false);
       const restored = index.addFolder(empty.id, first);
       assert.equal(restored.id, firstFolder.id);
       assert.equal(restored.key, firstFolder.key);
       assert.equal(index.workspace(empty.id).revision, 6);
-    } finally { storage.close(); rmSync(root, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("atomically edits a project name, folder set, order, and primary folder", () => {
@@ -84,7 +105,10 @@ describe("Web project library", () => {
     const second = path.join(root, "backend");
     const third = path.join(root, "docs");
     const nested = path.join(second, "nested");
-    mkdirSync(first); mkdirSync(second); mkdirSync(third); mkdirSync(nested);
+    mkdirSync(first);
+    mkdirSync(second);
+    mkdirSync(third);
+    mkdirSync(nested);
     const storage = createStorage(path.join(root, "data"));
     try {
       const index = new ProjectIndex(storage);
@@ -100,15 +124,29 @@ describe("Web project library", () => {
       });
       assert.equal(edited.name, "Product suite");
       assert.equal(edited.workspaceRevision, before + 1, "a multi-change save uses one workspace revision");
-      assert.deepEqual(edited.folders.filter(folder => folder.active).map(folder => folder.path),
-        [realpathSync.native(second), realpathSync.native(third)]);
-      assert.equal(edited.folders.find(folder => folder.id === firstFolder.id)?.active, false);
-      assert.equal(edited.folders.find(folder => folder.id === edited.primaryFolderId)?.path, realpathSync.native(third));
-      assert.throws(() => index.editProject(project.id, {
-        name: "Invalid", retainedFolderIds: [secondFolder.id], addedFolderPaths: [nested],
-      }), /cannot contain one another/iu);
+      assert.deepEqual(
+        edited.folders.filter((folder) => folder.active).map((folder) => folder.path),
+        [realpathSync.native(second), realpathSync.native(third)],
+      );
+      assert.equal(edited.folders.find((folder) => folder.id === firstFolder.id)?.active, false);
+      assert.equal(
+        edited.folders.find((folder) => folder.id === edited.primaryFolderId)?.path,
+        realpathSync.native(third),
+      );
+      assert.throws(
+        () =>
+          index.editProject(project.id, {
+            name: "Invalid",
+            retainedFolderIds: [secondFolder.id],
+            addedFolderPaths: [nested],
+          }),
+        /cannot contain one another/iu,
+      );
       assert.equal(index.get(project.id).name, "Product suite", "a rejected edit is not partially applied");
-    } finally { storage.close(); rmSync(root, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("deletes a conversation and its memory without deleting source files", () => {
@@ -121,19 +159,39 @@ describe("Web project library", () => {
     try {
       const id = "thread_delete_test";
       const workspaceId = workspaceIdFromRoot(projectRoot);
-      storage.db.prepare(
-        `INSERT INTO threads(id, workspace_root, workspace_id, mode, provider, model, created_at, updated_at)
+      storage.db
+        .prepare(
+          `INSERT INTO threads(id, workspace_root, workspace_id, mode, provider, model, created_at, updated_at)
          VALUES (?, ?, ?, 'code', 'glm', 'glm-5.3-flash', ?, ?)`,
-      ).run(id, projectRoot, workspaceId, "2026-09-20T00:00:00Z", "2026-09-20T00:00:00Z");
-      storage.db.prepare(
-        `INSERT INTO memories(id, workspace_id, scope, category, content, normalized_content,
+        )
+        .run(id, projectRoot, workspaceId, "2026-09-20T00:00:00Z", "2026-09-20T00:00:00Z");
+      storage.db
+        .prepare(
+          `INSERT INTO memories(id, workspace_id, scope, category, content, normalized_content,
           source_thread_id, created_at, updated_at) VALUES (?, ?, 'project', 'fact', ?, ?, ?, ?, ?)`,
-      ).run("memory_delete_test", workspaceId, "specific memory", "specific memory", id,
-        "2026-09-20T00:00:00Z", "2026-09-20T00:00:00Z");
+        )
+        .run(
+          "memory_delete_test",
+          workspaceId,
+          "specific memory",
+          "specific memory",
+          id,
+          "2026-09-20T00:00:00Z",
+          "2026-09-20T00:00:00Z",
+        );
       deleteStoredThreads(storage, [{ threadId: id, workspaceId }]);
-      assert.equal(storage.db.prepare<[string], { id: string }>("SELECT id FROM threads WHERE id = ?").get(id), undefined);
-      assert.equal(storage.db.prepare<[string], { id: string }>("SELECT id FROM memories WHERE id = ?").get("memory_delete_test"), undefined);
+      assert.equal(
+        storage.db.prepare<[string], { id: string }>("SELECT id FROM threads WHERE id = ?").get(id),
+        undefined,
+      );
+      assert.equal(
+        storage.db.prepare<[string], { id: string }>("SELECT id FROM memories WHERE id = ?").get("memory_delete_test"),
+        undefined,
+      );
       assert.equal(existsSync(source), true);
-    } finally { storage.close(); rmSync(root, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

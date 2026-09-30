@@ -12,7 +12,7 @@ export async function assertProjectSandboxReady(
   if (readiness?.status !== "ready") {
     throw new Error(
       `Project sandbox is not ready (${String(readiness?.status ?? "unknown")}); ` +
-      "complete Windows sandbox setup before running commands",
+        "complete Windows sandbox setup before running commands",
     );
   }
 }

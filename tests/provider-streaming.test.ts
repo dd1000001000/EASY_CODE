@@ -4,10 +4,7 @@ import type { AddressInfo } from "node:net";
 
 import { createDefaultEasyCodeConfig } from "../src/config/defaults.js";
 import type { ProviderStreamEvent } from "../src/core/types.js";
-import {
-  PACKAGED_MODEL_REGISTRY_SOURCE,
-  activateModelRegistry,
-} from "../src/models/catalog.js";
+import { PACKAGED_MODEL_REGISTRY_SOURCE, activateModelRegistry } from "../src/models/catalog.js";
 import { createProvider } from "../src/providers/factory.js";
 import { HttpTransportError, type JsonPostRequest } from "../src/providers/http-transport.js";
 import { ServerSentEventDecoder } from "../src/providers/sse.js";
@@ -55,14 +52,11 @@ function deliverStream(
 describe("provider streaming", () => {
   it("decodes split UTF-8 bytes, CRLF and multiline SSE data", () => {
     const decoder = new ServerSentEventDecoder();
-    const bytes = Buffer.from("event: sample\r\ndata: {\"text\":\"你\r\ndata: 好\"}\r\n\r\n", "utf8");
+    const bytes = Buffer.from('event: sample\r\ndata: {"text":"你\r\ndata: 好"}\r\n\r\n', "utf8");
     const split = bytes.indexOf(Buffer.from("你", "utf8")) + 1;
     assert.deepEqual(decoder.push(bytes.subarray(0, split)), []);
-    const events = [
-      ...decoder.push(bytes.subarray(split)),
-      ...decoder.finish(),
-    ];
-    assert.deepEqual(events, [{ event: "sample", data: "{\"text\":\"你\n好\"}" }]);
+    const events = [...decoder.push(bytes.subarray(split)), ...decoder.finish()];
+    assert.deepEqual(events, [{ event: "sample", data: '{"text":"你\n好"}' }]);
   });
 
   it("assembles Chat Completions deltas and emits ordered transient events", async () => {
@@ -105,16 +99,14 @@ describe("provider streaming", () => {
       function: { name: "read_file", arguments: '{"path":"README.md"}' },
     });
     assert.equal(response.usage?.totalTokens, 11);
-    assert.deepEqual(events.map((event) => event.kind), [
-      "started",
-      "reasoning_delta",
-      "text_delta",
-      "tool_call_delta",
-      "tool_call_delta",
-      "usage",
-      "completed",
-    ]);
-    assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(
+      events.map((event) => event.kind),
+      ["started", "reasoning_delta", "text_delta", "tool_call_delta", "tool_call_delta", "usage", "completed"],
+    );
+    assert.deepEqual(
+      events.map((event) => event.sequence),
+      [1, 2, 3, 4, 5, 6, 7],
+    );
   });
 
   it("sends configured tool_stream only for streamed Chat Completions requests with tools", async () => {
@@ -128,7 +120,9 @@ describe("provider streaming", () => {
         return {
           statusCode: 200,
           headers: {},
-          body: JSON.stringify({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "done" } }] }),
+          body: JSON.stringify({
+            choices: [{ finish_reason: "stop", message: { role: "assistant", content: "done" } }],
+          }),
         };
       },
     });
@@ -137,7 +131,11 @@ describe("provider streaming", () => {
       function: { name: "read_file", description: "read", parameters: { type: "object" } },
     };
     await provider.complete({ messages: [{ role: "user", content: "plain" }], responseMode: "stream" });
-    await provider.complete({ messages: [{ role: "user", content: "use a tool" }], tools: [tool], responseMode: "stream" });
+    await provider.complete({
+      messages: [{ role: "user", content: "use a tool" }],
+      tools: [tool],
+      responseMode: "stream",
+    });
     assert.equal(bodies[0]?.tool_stream, undefined);
     assert.equal(bodies[1]?.tool_stream, true);
 
@@ -148,11 +146,17 @@ describe("provider streaming", () => {
         return {
           statusCode: 200,
           headers: {},
-          body: JSON.stringify({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "done" } }] }),
+          body: JSON.stringify({
+            choices: [{ finish_reason: "stop", message: { role: "assistant", content: "done" } }],
+          }),
         };
       },
     });
-    await disabled.complete({ messages: [{ role: "user", content: "use a tool" }], tools: [tool], responseMode: "stream" });
+    await disabled.complete({
+      messages: [{ role: "user", content: "use a tool" }],
+      tools: [tool],
+      responseMode: "stream",
+    });
     assert.equal(bodies[2]?.tool_stream, undefined);
   });
 
@@ -193,10 +197,19 @@ describe("provider streaming", () => {
       assert.equal(response.usage?.totalTokens, 9);
       const sentInput = (JSON.parse(sent!.body) as { input: Array<Record<string, unknown>> }).input;
       assert.equal(sentInput[1]?.phase, "final_answer");
-      assert.deepEqual(events.map((event) => event.kind), [
-        "started", "reasoning_delta", "assistant_phase", "text_delta", "tool_call_delta",
-        "tool_call_delta", "usage", "completed",
-      ]);
+      assert.deepEqual(
+        events.map((event) => event.kind),
+        [
+          "started",
+          "reasoning_delta",
+          "assistant_phase",
+          "text_delta",
+          "tool_call_delta",
+          "tool_call_delta",
+          "usage",
+          "completed",
+        ],
+      );
     } finally {
       activateModelRegistry(PACKAGED_MODEL_REGISTRY_SOURCE, "packaged test registry");
     }
@@ -212,7 +225,11 @@ describe("provider streaming", () => {
       const provider = createProvider(config, "openai-like", undefined, {
         transport: async (request) => {
           sent = request;
-          return { statusCode: 200, headers: { "content-type": "application/json" }, body: '{"status":"completed","output":[]}' };
+          return {
+            statusCode: 200,
+            headers: { "content-type": "application/json" },
+            body: '{"status":"completed","output":[]}',
+          };
         },
       });
       const events: ProviderStreamEvent[] = [];
@@ -245,28 +262,41 @@ describe("provider streaming", () => {
       },
       sleep: async () => undefined,
     });
-    await assert.rejects(provider.complete({
-      messages: [{ role: "user", content: "answer" }],
-      responseMode: "stream",
-      maxRetries: 0,
-      onStreamEvent: (event) => events.push(event),
-    }), /connection lost/u);
+    await assert.rejects(
+      provider.complete({
+        messages: [{ role: "user", content: "answer" }],
+        responseMode: "stream",
+        maxRetries: 0,
+        onStreamEvent: (event) => events.push(event),
+      }),
+      /connection lost/u,
+    );
     assert.equal(attempts, 1);
-    assert.deepEqual(events.map((event) => event.kind), [
-      "started", "text_delta", "interrupted",
-    ]);
+    assert.deepEqual(
+      events.map((event) => event.kind),
+      ["started", "text_delta", "interrupted"],
+    );
   });
 });
 
-const mockConfig = { apiKey: "mock-key", model: "mock", baseUrl: "https://example.invalid", maxRetries: 0, timeoutMs: 1000 };
+const mockConfig = {
+  apiKey: "mock-key",
+  model: "mock",
+  baseUrl: "https://example.invalid",
+  maxRetries: 0,
+  timeoutMs: 1000,
+};
 const mockRequest = { messages: [{ role: "user" as const, content: "test" }], responseMode: "stream" as const };
-const buffers = (events: readonly unknown[]) => events.map((event) => Buffer.from(
-  `data: ${typeof event === "string" ? event : JSON.stringify(event)}\n\n`,
-));
+const buffers = (events: readonly unknown[]) =>
+  events.map((event) => Buffer.from(`data: ${typeof event === "string" ? event : JSON.stringify(event)}\n\n`));
 const chatFinish = { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
-const chatText = (content: string) => ({ choices: [{ index: 0, delta: { content }, finish_reason: null }], usage: null });
+const chatText = (content: string) => ({
+  choices: [{ index: 0, delta: { content }, finish_reason: null }],
+  usage: null,
+});
 const responseFinish = (text: string, status = "completed") => ({
-  type: `response.${status}`, response: { status, output: [{ type: "message", content: [{ type: "output_text", text }] }] },
+  type: `response.${status}`,
+  response: { status, output: [{ type: "message", content: [{ type: "output_text", text }] }] },
 });
 
 describe("stream recovery boundaries", () => {
@@ -276,20 +306,24 @@ describe("stream recovery boundaries", () => {
       request.resume();
       response.writeHead(200, { "content-type": "text/event-stream" });
       attempts++;
-      response.end(Buffer.concat(buffers(attempts === 1
-        ? [chatText("discarded")]
-        : [chatText("complete"), chatFinish, "[DONE]"])));
+      response.end(
+        Buffer.concat(buffers(attempts === 1 ? [chatText("discarded")] : [chatText("complete"), chatFinish, "[DONE]"])),
+      );
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const port = (server.address() as AddressInfo).port;
-      const provider = new OpenAICompatibleProvider("qwen", { ...mockConfig, baseUrl: `http://127.0.0.1:${port}` }, { supportsStreaming: true });
+      const provider = new OpenAICompatibleProvider(
+        "qwen",
+        { ...mockConfig, baseUrl: `http://127.0.0.1:${port}` },
+        { supportsStreaming: true },
+      );
       const result = await completeWithApiRetries(provider, mockRequest, { sleep: async () => undefined });
       assert.equal(result.message.content, "complete");
       assert.equal(attempts, 2);
     } finally {
       server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 
@@ -298,12 +332,20 @@ describe("stream recovery boundaries", () => {
       let body: Record<string, unknown> = {};
       const events: ProviderStreamEvent[] = [];
       const provider = new OpenAICompatibleProvider("qwen", mockConfig, {
-        supportsStreaming: true, supportsStreamUsage,
+        supportsStreaming: true,
+        supportsStreamUsage,
         transport: async (request) => {
           body = JSON.parse(request.body);
-          return deliverStream(request, buffers([chatText("hello"), chatFinish,
-            { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
-            { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } }, "[DONE]"]));
+          return deliverStream(
+            request,
+            buffers([
+              chatText("hello"),
+              chatFinish,
+              { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+              { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+              "[DONE]",
+            ]),
+          );
         },
       });
       const result = await provider.complete({ ...mockRequest, onStreamEvent: (event) => events.push(event) });
@@ -318,14 +360,51 @@ describe("stream recovery boundaries", () => {
     for (const Provider of [OpenAICompatibleProvider, ResponsesProvider]) {
       for (const withTool of [false, true]) {
         const events: ProviderStreamEvent[] = [];
-        const data = Provider === OpenAICompatibleProvider
-          ? withTool ? { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "run_command", arguments: '{"program":"echo"}' } }] } }] } : chatText("partial")
-          : withTool ? { type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: "item_1", call_id: "call_1", name: "run_command", arguments: '{"program":"echo"}' } } : { type: "response.output_text.delta", delta: "partial" };
-        const provider = new Provider("qwen", mockConfig, { supportsStreaming: true, transport: (request) => deliverStream(request, buffers([data])) });
-        await assert.rejects(provider.complete({ ...mockRequest, onStreamEvent: (event) => events.push(event) }),
-          (error: unknown) => error instanceof Error && "code" in error && error.code === "incomplete_stream");
+        const data =
+          Provider === OpenAICompatibleProvider
+            ? withTool
+              ? {
+                  choices: [
+                    {
+                      delta: {
+                        tool_calls: [
+                          {
+                            index: 0,
+                            id: "call_1",
+                            function: { name: "run_command", arguments: '{"program":"echo"}' },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                }
+              : chatText("partial")
+            : withTool
+              ? {
+                  type: "response.output_item.added",
+                  output_index: 0,
+                  item: {
+                    type: "function_call",
+                    id: "item_1",
+                    call_id: "call_1",
+                    name: "run_command",
+                    arguments: '{"program":"echo"}',
+                  },
+                }
+              : { type: "response.output_text.delta", delta: "partial" };
+        const provider = new Provider("qwen", mockConfig, {
+          supportsStreaming: true,
+          transport: (request) => deliverStream(request, buffers([data])),
+        });
+        await assert.rejects(
+          provider.complete({ ...mockRequest, onStreamEvent: (event) => events.push(event) }),
+          (error: unknown) => error instanceof Error && "code" in error && error.code === "incomplete_stream",
+        );
         assert.equal(events.at(-1)?.kind, "interrupted");
-        assert.equal(events.some((event) => event.kind === "completed"), false);
+        assert.equal(
+          events.some((event) => event.kind === "completed"),
+          false,
+        );
       }
     }
   });
@@ -337,38 +416,73 @@ describe("stream recovery boundaries", () => {
       [chatText("partial"), chatFinish, chatText("late"), "[DONE]"],
       [chatText("partial"), { error: { code: "server_error", message: "upstream failed" } }],
     ]) {
-      const provider = new OpenAICompatibleProvider("qwen", mockConfig, { supportsStreaming: true, transport: (request) => deliverStream(request, buffers(wire)) });
+      const provider = new OpenAICompatibleProvider("qwen", mockConfig, {
+        supportsStreaming: true,
+        transport: (request) => deliverStream(request, buffers(wire)),
+      });
       await assert.rejects(provider.complete(mockRequest));
     }
     for (const wire of [
-      [{ type: "response.output_text.delta", delta: "partial" }, { type: "error", code: "server_error", message: "upstream failed" }],
+      [
+        { type: "response.output_text.delta", delta: "partial" },
+        { type: "error", code: "server_error", message: "upstream failed" },
+      ],
       [responseFinish("done"), { type: "response.output_text.delta", delta: "late" }],
       [{ type: "response.completed", response: { status: "in_progress", output: [] } }],
     ]) {
-      const provider = new ResponsesProvider("qwen", mockConfig, { supportsStreaming: true, transport: (request) => deliverStream(request, buffers(wire)) });
+      const provider = new ResponsesProvider("qwen", mockConfig, {
+        supportsStreaming: true,
+        transport: (request) => deliverStream(request, buffers(wire)),
+      });
       await assert.rejects(provider.complete(mockRequest));
     }
   });
 
   it("retries interrupted attempts through the shared budget without mixing candidate output", async () => {
     for (const Provider of [OpenAICompatibleProvider, ResponsesProvider]) {
-      let attempts = 0, settlements = 0;
+      let attempts = 0,
+        settlements = 0;
       const events: ProviderStreamEvent[] = [];
-      const provider = new Provider("qwen", { ...mockConfig, maxRetries: 5 }, {
-        supportsStreaming: true,
-        transport: async (request) => {
-          attempts++;
-          if (attempts <= 2) {
-            request.onResponseStart?.({ statusCode: 200, headers: { "content-type": "text/event-stream" } });
-            if (attempts === 2) request.onResponseChunk?.(buffers([Provider === OpenAICompatibleProvider ? chatText("discard me") : { type: "response.output_text.delta", delta: "discard me" }])[0]!);
-            throw new HttpTransportError("network", "connection lost");
-          }
-          return deliverStream(request, buffers(Provider === OpenAICompatibleProvider ? [chatText("accepted"), chatFinish, "[DONE]"] : [responseFinish("accepted")]));
+      const provider = new Provider(
+        "qwen",
+        { ...mockConfig, maxRetries: 5 },
+        {
+          supportsStreaming: true,
+          transport: async (request) => {
+            attempts++;
+            if (attempts <= 2) {
+              request.onResponseStart?.({ statusCode: 200, headers: { "content-type": "text/event-stream" } });
+              if (attempts === 2)
+                request.onResponseChunk?.(
+                  buffers([
+                    Provider === OpenAICompatibleProvider
+                      ? chatText("discard me")
+                      : { type: "response.output_text.delta", delta: "discard me" },
+                  ])[0]!,
+                );
+              throw new HttpTransportError("network", "connection lost");
+            }
+            return deliverStream(
+              request,
+              buffers(
+                Provider === OpenAICompatibleProvider
+                  ? [chatText("accepted"), chatFinish, "[DONE]"]
+                  : [responseFinish("accepted")],
+              ),
+            );
+          },
         },
-      });
-      const result = await completeWithApiRetries(provider, { ...mockRequest, onStreamEvent: (event) => events.push(event) }, {
-        sleep: async () => undefined, reserve: () => () => { settlements++; },
-      });
+      );
+      const result = await completeWithApiRetries(
+        provider,
+        { ...mockRequest, onStreamEvent: (event) => events.push(event) },
+        {
+          sleep: async () => undefined,
+          reserve: () => () => {
+            settlements++;
+          },
+        },
+      );
       assert.equal(attempts, 3);
       assert.equal(settlements, 3);
       assert.equal(result.message.content, "accepted");
@@ -382,27 +496,42 @@ describe("stream recovery boundaries", () => {
       let attempts = 0;
       const controller = new AbortController();
       const provider = new OpenAICompatibleProvider("qwen", mockConfig, {
-        supportsStreaming: true, transport: async (request) => {
+        supportsStreaming: true,
+        transport: async (request) => {
           attempts++;
           request.onResponseStart?.({ statusCode: 200, headers: { "content-type": "text/event-stream" } });
-          if (scenario === "authentication") return deliverStream(request, buffers([{ error: { code: "invalid_api_key", message: "bad key" } }]));
+          if (scenario === "authentication")
+            return deliverStream(request, buffers([{ error: { code: "invalid_api_key", message: "bad key" } }]));
           if (scenario === "cancel") controller.abort();
           throw new HttpTransportError("network", "lost");
         },
       });
-      await assert.rejects(completeWithApiRetries(provider, { ...mockRequest, signal: controller.signal }, {
-        limits: { ...DEFAULT_RUNTIME_LIMITS, maxProviderRetries: 2 }, sleep: async () => undefined,
-      }));
+      await assert.rejects(
+        completeWithApiRetries(
+          provider,
+          { ...mockRequest, signal: controller.signal },
+          {
+            limits: { ...DEFAULT_RUNTIME_LIMITS, maxProviderRetries: 2 },
+            sleep: async () => undefined,
+          },
+        ),
+      );
       assert.equal(attempts, scenario === "network" ? 3 : 1);
     }
   });
 
   it("preserves length/incomplete outcomes for Runtime content correction", async () => {
-    const chat = new OpenAICompatibleProvider("qwen", mockConfig, { supportsStreaming: true,
-      transport: (request) => deliverStream(request, buffers([chatText("partial"), { choices: [{ delta: {}, finish_reason: "length" }] }, "[DONE]"])),
+    const chat = new OpenAICompatibleProvider("qwen", mockConfig, {
+      supportsStreaming: true,
+      transport: (request) =>
+        deliverStream(
+          request,
+          buffers([chatText("partial"), { choices: [{ delta: {}, finish_reason: "length" }] }, "[DONE]"]),
+        ),
     });
     assert.match(incompleteModelOutput(await chat.complete(mockRequest)) ?? "", /truncated/u);
-    const responses = new ResponsesProvider("qwen", mockConfig, { supportsStreaming: true,
+    const responses = new ResponsesProvider("qwen", mockConfig, {
+      supportsStreaming: true,
       transport: (request) => deliverStream(request, buffers([responseFinish("partial", "incomplete")])),
     });
     assert.match(incompleteModelOutput(await responses.complete(mockRequest)) ?? "", /did not complete/u);
@@ -416,40 +545,81 @@ describe("stream recovery boundaries", () => {
   });
 
   it("keeps interleaved tools separate and ignores observer exceptions", async () => {
-    const provider = new OpenAICompatibleProvider("qwen", mockConfig, { supportsStreaming: true,
-      transport: (request) => deliverStream(request, buffers([
-        { choices: [{ delta: { tool_calls: [
-          { index: 1, id: "second", function: { name: "read_file", arguments: '{"path":' } },
-          { index: 0, id: "first", function: { name: "read_file", arguments: '{"path":"a"}' } },
-        ] } }] },
-        { choices: [{ delta: { tool_calls: [{ index: 1, function: { arguments: '"b"}' } }] }, finish_reason: "tool_calls" }] }, "[DONE]",
-      ])),
+    const provider = new OpenAICompatibleProvider("qwen", mockConfig, {
+      supportsStreaming: true,
+      transport: (request) =>
+        deliverStream(
+          request,
+          buffers([
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      { index: 1, id: "second", function: { name: "read_file", arguments: '{"path":' } },
+                      { index: 0, id: "first", function: { name: "read_file", arguments: '{"path":"a"}' } },
+                    ],
+                  },
+                },
+              ],
+            },
+            {
+              choices: [
+                { delta: { tool_calls: [{ index: 1, function: { arguments: '"b"}' } }] }, finish_reason: "tool_calls" },
+              ],
+            },
+            "[DONE]",
+          ]),
+        ),
     });
-    const result = await provider.complete({ ...mockRequest, onStreamEvent: () => { throw new Error("UI failure"); } });
-    assert.deepEqual(result.message.tool_calls?.map((call) => [call.id, call.function.arguments]), [
-      ["first", '{"path":"a"}'], ["second", '{"path":"b"}'],
-    ]);
+    const result = await provider.complete({
+      ...mockRequest,
+      onStreamEvent: () => {
+        throw new Error("UI failure");
+      },
+    });
+    assert.deepEqual(
+      result.message.tool_calls?.map((call) => [call.id, call.function.arguments]),
+      [
+        ["first", '{"path":"a"}'],
+        ["second", '{"path":"b"}'],
+      ],
+    );
   });
 
   it("does not silently omit malformed Responses calls from a completed response", async () => {
-    const provider = new ResponsesProvider("qwen", mockConfig, { supportsStreaming: true,
-      transport: (request) => deliverStream(request, buffers([{ type: "response.completed", response: {
-        status: "completed", output: [{ type: "function_call", call_id: "id", name: "run_command" }],
-      } }])),
+    const provider = new ResponsesProvider("qwen", mockConfig, {
+      supportsStreaming: true,
+      transport: (request) =>
+        deliverStream(
+          request,
+          buffers([
+            {
+              type: "response.completed",
+              response: {
+                status: "completed",
+                output: [{ type: "function_call", call_id: "id", name: "run_command" }],
+              },
+            },
+          ]),
+        ),
     });
     await assert.rejects(provider.complete(mockRequest), /incomplete function call/u);
   });
 
   it("reports invalid UTF-8 as a protocol error without spending API retries", async () => {
     let attempts = 0;
-    const provider = new OpenAICompatibleProvider("qwen", mockConfig, { supportsStreaming: true,
+    const provider = new OpenAICompatibleProvider("qwen", mockConfig, {
+      supportsStreaming: true,
       transport: async (request) => {
         attempts++;
         return deliverStream(request, [Buffer.from([0xff])]);
       },
     });
-    await assert.rejects(completeWithApiRetries(provider, mockRequest, { sleep: async () => undefined }),
-      (error: unknown) => error instanceof Error && "code" in error && error.code === "invalid_response");
+    await assert.rejects(
+      completeWithApiRetries(provider, mockRequest, { sleep: async () => undefined }),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "invalid_response",
+    );
     assert.equal(attempts, 1);
   });
 });

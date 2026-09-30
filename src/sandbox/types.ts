@@ -1,14 +1,7 @@
 import type { ToolContext } from "../core/types.js";
-import type {
-  CommandPolicyDecision,
-  ResolvedCommand,
-} from "../command/types.js";
+import type { CommandPolicyDecision, ResolvedCommand } from "../command/types.js";
 
-export type SandboxBackendName =
-  | "native"
-  | "benchmark-container"
-  | "host-unrestricted"
-  | "host-test-only";
+export type SandboxBackendName = "native" | "benchmark-container" | "host-unrestricted" | "host-test-only";
 
 export interface SandboxExecutionMetadata {
   capabilities?: import("./capabilities.js").ExecutionCapabilities;
@@ -72,10 +65,14 @@ export interface CommandExecutionBackend {
   /** Host-relative metadata lookup only; undefined means the cwd is not a shared checkout. */
   workspaceRelativeCwd?(command: ResolvedCommand): string | undefined;
   /** Container paths must never be looked up or executed on the host. */
-  resolveCommand?(input: import("../command/types.js").RunCommandInput, context: ToolContext): ResolvedCommand | Promise<ResolvedCommand>;
+  resolveCommand?(
+    input: import("../command/types.js").RunCommandInput,
+    context: ToolContext,
+  ): ResolvedCommand | Promise<ResolvedCommand>;
   /** Platform backend may provide a process-scoped network gate. */
-  createNetworkGate?(options: import("../command/network-gate.js").CommandNetworkGateOptions):
-    Promise<import("../command/network-gate.js").CommandNetworkGate>;
+  createNetworkGate?(
+    options: import("../command/network-gate.js").CommandNetworkGateOptions,
+  ): Promise<import("../command/network-gate.js").CommandNetworkGate>;
   approvalPrefix?(command: ResolvedCommand, context: ToolContext, network: boolean): string;
   assertEnvironmentSafe?(): void;
   quarantine?(reason: string): void;
@@ -90,17 +87,17 @@ export type SandboxWorkerControl =
   | { type: "execution_request_sent" }
   /** Trusted evidence that the requested target process started. */
   | { type: "target_started" }
-  | { type: "execution_exited"; exitCode: number; outcome?: "exited" | "timed_out" | "canceled" | "output_limit" | "spawn_failed" | "unknown" }
+  | {
+      type: "execution_exited";
+      exitCode: number;
+      outcome?: "exited" | "timed_out" | "canceled" | "output_limit" | "spawn_failed" | "unknown";
+    }
   | { type: "cleanup_complete" }
   | { type: "cleanup_error"; message: string }
   | { type: "ready"; backend: SandboxBackendName }
   | {
       type: "stage";
-      stage:
-        | "worker_started"
-        | "relay_start"
-        | "dispatch_start"
-        | "cleanup_start";
+      stage: "worker_started" | "relay_start" | "dispatch_start" | "cleanup_start";
     }
   | { type: "sandbox_error"; message: string }
   | {

@@ -46,11 +46,7 @@ export function assessWorktreePaths(
     if (!relative) continue;
     const absolute = pathApi.resolve(worktreeRoot, ...relative.split("/"));
     const contained = pathApi.relative(pathApi.resolve(worktreeRoot), absolute);
-    if (
-      contained === ".." ||
-      contained.startsWith(`..${pathApi.sep}`) ||
-      pathApi.isAbsolute(contained)
-    ) {
+    if (contained === ".." || contained.startsWith(`..${pathApi.sep}`) || pathApi.isAbsolute(contained)) {
       throw new Error(`Git returned an unsafe Worktree path: ${candidate}`);
     }
     if (absolute.length > longestPathChars) {

@@ -8,16 +8,21 @@ export interface TextProjection {
 }
 
 /** Storage/display only. Never apply to executable arguments or authorization scopes. */
-export function projectText(value: string, maximum: number,
-  measure: (text: string) => number = text => text.length): TextProjection {
+export function projectText(
+  value: string,
+  maximum: number,
+  measure: (text: string) => number = (text) => text.length,
+): TextProjection {
   if (!Number.isSafeInteger(maximum) || maximum < 0) throw new Error("Invalid text budget");
   const originalSize = measure(value);
   if (originalSize <= maximum) return { text: value, truncated: false, originalSize, retainedSize: originalSize };
-  let low = 0, high = value.length;
+  let low = 0,
+    high = value.length;
   const prefix = (end: number) => value.slice(0, end).replace(/[\uD800-\uDBFF]$/u, "");
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (measure(prefix(middle)) <= maximum) low = middle; else high = middle - 1;
+    if (measure(prefix(middle)) <= maximum) low = middle;
+    else high = middle - 1;
   }
   const text = prefix(low);
   return { text, truncated: true, originalSize, retainedSize: measure(text) };
@@ -27,12 +32,11 @@ export function projectText(value: string, maximum: number,
 export function projectHeadTailText(
   value: string,
   maximum: number,
-  measure: (text: string) => number = text => text.length,
+  measure: (text: string) => number = (text) => text.length,
   marker = "\n... [truncated] ...\n",
   headShare = 0.5,
 ): TextProjection {
-  if (!Number.isSafeInteger(maximum) || maximum < 0 ||
-      !Number.isFinite(headShare) || headShare < 0 || headShare > 1) {
+  if (!Number.isSafeInteger(maximum) || maximum < 0 || !Number.isFinite(headShare) || headShare < 0 || headShare > 1) {
     throw new Error("Invalid text budget");
   }
   const originalSize = measure(value);
@@ -43,9 +47,7 @@ export function projectHeadTailText(
     const headChars = Math.ceil(retainedChars * headShare);
     const tailChars = retainedChars - headChars;
     const head = value.slice(0, headChars).replace(/[\uD800-\uDBFF]$/u, "");
-    const tail = tailChars > 0
-      ? value.slice(-tailChars).replace(/^[\uDC00-\uDFFF]/u, "")
-      : "";
+    const tail = tailChars > 0 ? value.slice(-tailChars).replace(/^[\uDC00-\uDFFF]/u, "") : "";
     return head + marker + tail;
   };
   let low = 0;
@@ -68,6 +70,8 @@ export function boundedText(value: string, maximum: number): string {
 }
 
 export function displayTextSchema(maximum: number, normalize = (value: string) => value.trim()) {
-  return z.string().transform(value => boundedText(normalize(value), maximum))
+  return z
+    .string()
+    .transform((value) => boundedText(normalize(value), maximum))
     .pipe(z.string().min(1).max(maximum));
 }

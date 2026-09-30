@@ -3,10 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import {
-  MemoryVectorIndex,
-  type EmbeddingProvider,
-} from "../src/memory/vector-index.js";
+import { MemoryVectorIndex, type EmbeddingProvider } from "../src/memory/vector-index.js";
 import type { EasyCodeStorage } from "../src/storage/database.js";
 import { createStorage } from "../src/storage/database.js";
 import { describe, it } from "./harness.js";
@@ -51,22 +48,24 @@ function insertMemory(
   },
 ): void {
   const now = new Date().toISOString();
-  storage.db.prepare(
-    `INSERT INTO memories(
+  storage.db
+    .prepare(
+      `INSERT INTO memories(
        id, workspace_id, scope, category, content, normalized_content,
        status, evidence, source_thread_id, source_turn_id, created_at, updated_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
-  ).run(
-    input.id,
-    input.workspaceId ?? WORKSPACE_ID,
-    input.scope ?? "project",
-    input.category ?? "decision",
-    input.content,
-    input.content.toLocaleLowerCase(),
-    input.status ?? "active",
-    now,
-    now,
-  );
+    )
+    .run(
+      input.id,
+      input.workspaceId ?? WORKSPACE_ID,
+      input.scope ?? "project",
+      input.category ?? "decision",
+      input.content,
+      input.content.toLocaleLowerCase(),
+      input.status ?? "active",
+      now,
+      now,
+    );
 }
 
 const commonVectors = {
@@ -142,15 +141,18 @@ describe("memory vector index", () => {
       assert.equal(provider.calls.length, providerCallsAfterBackfill);
 
       const stored = storage.db
-        .prepare<[], {
-          model: string;
-          revision: string;
-          dimensions: number;
-          pooling: string;
-          embedding_version: number;
-          hash_length: number;
-          blob_length: number;
-        }>(
+        .prepare<
+          [],
+          {
+            model: string;
+            revision: string;
+            dimensions: number;
+            pooling: string;
+            embedding_version: number;
+            hash_length: number;
+            blob_length: number;
+          }
+        >(
           `SELECT model, revision, dimensions, pooling, embedding_version,
                   length(content_hash) AS hash_length,
                   length(embedding) AS blob_length
@@ -170,7 +172,10 @@ describe("memory vector index", () => {
 
       const active = await vectors.search(WORKSPACE_ID, "fruit query", { limit: 3 });
       assert.equal(active[0]?.id, "memory_active_fruit");
-      assert.equal(active.some((hit) => hit.id === "memory_expired_fruit"), false);
+      assert.equal(
+        active.some((hit) => hit.id === "memory_expired_fruit"),
+        false,
+      );
 
       const audit = await vectors.search(WORKSPACE_ID, "fruit query", {
         limit: 3,
@@ -191,21 +196,27 @@ describe("memory vector index", () => {
         status: "active",
       });
       assert.equal(matchingMetadata[0]?.id, "memory_ocean");
-      assert.deepEqual(await vectors.search(WORKSPACE_ID, "ocean query", {
-        limit: 3,
-        minimumSimilarity: 0.5,
-        scope: "project",
-        category: "decision",
-        status: "active",
-      }), []);
-      assert.deepEqual(await vectors.search(WORKSPACE_ID, "ocean query", {
-        limit: 3,
-        minimumSimilarity: 0.5,
-        scope: "project",
-        category: "environment",
-        status: "active",
-        excludeMemoryId: "memory_ocean",
-      }), []);
+      assert.deepEqual(
+        await vectors.search(WORKSPACE_ID, "ocean query", {
+          limit: 3,
+          minimumSimilarity: 0.5,
+          scope: "project",
+          category: "decision",
+          status: "active",
+        }),
+        [],
+      );
+      assert.deepEqual(
+        await vectors.search(WORKSPACE_ID, "ocean query", {
+          limit: 3,
+          minimumSimilarity: 0.5,
+          scope: "project",
+          category: "environment",
+          status: "active",
+          excludeMemoryId: "memory_ocean",
+        }),
+        [],
+      );
 
       storage.db.prepare("DELETE FROM memories WHERE id = ?").run("memory_ocean");
       assert.equal(
@@ -236,14 +247,8 @@ describe("memory vector index", () => {
         id: "memory_older",
         content: "Older fruit memory",
       });
-      const indexA = new MemoryVectorIndex(
-        storageA,
-        new FakeEmbeddingProvider("shared-revision", vectorsByText),
-      );
-      assert.equal(
-        (await indexA.search(WORKSPACE_ID, "fruit query", { limit: 2 }))[0]?.id,
-        "memory_older",
-      );
+      const indexA = new MemoryVectorIndex(storageA, new FakeEmbeddingProvider("shared-revision", vectorsByText));
+      assert.equal((await indexA.search(WORKSPACE_ID, "fruit query", { limit: 2 }))[0]?.id, "memory_older");
       const cachedGeneration = indexA.getGeneration(WORKSPACE_ID);
 
       insertMemory(storageB, {
@@ -251,23 +256,14 @@ describe("memory vector index", () => {
         content: "New exact fruit memory",
       });
       assert.ok(
-        new MemoryVectorIndex(
-          storageB,
-          new FakeEmbeddingProvider("shared-revision", vectorsByText),
-        ).getGeneration(WORKSPACE_ID) > cachedGeneration,
+        new MemoryVectorIndex(storageB, new FakeEmbeddingProvider("shared-revision", vectorsByText)).getGeneration(
+          WORKSPACE_ID,
+        ) > cachedGeneration,
       );
-      assert.equal(
-        (await indexA.search(WORKSPACE_ID, "fruit query", { limit: 2 }))[0]?.id,
-        "memory_newer",
-      );
+      assert.equal((await indexA.search(WORKSPACE_ID, "fruit query", { limit: 2 }))[0]?.id, "memory_newer");
 
-      storageB.db
-        .prepare("UPDATE memories SET status = 'expired' WHERE id = ?")
-        .run("memory_newer");
-      assert.equal(
-        (await indexA.search(WORKSPACE_ID, "fruit query", { limit: 2 }))[0]?.id,
-        "memory_older",
-      );
+      storageB.db.prepare("UPDATE memories SET status = 'expired' WHERE id = ?").run("memory_newer");
+      assert.equal((await indexA.search(WORKSPACE_ID, "fruit query", { limit: 2 }))[0]?.id, "memory_older");
     } finally {
       storageB.close();
       storageA.close();
@@ -283,16 +279,10 @@ describe("memory vector index", () => {
         id: "memory_revision",
         content: "Active fruit memory",
       });
-      const first = new MemoryVectorIndex(
-        storage,
-        new FakeEmbeddingProvider("revision-one", commonVectors),
-      );
+      const first = new MemoryVectorIndex(storage, new FakeEmbeddingProvider("revision-one", commonVectors));
       assert.equal((await first.backfill(WORKSPACE_ID)).embedded, 1);
 
-      const second = new MemoryVectorIndex(
-        storage,
-        new FakeEmbeddingProvider("revision-two", commonVectors),
-      );
+      const second = new MemoryVectorIndex(storage, new FakeEmbeddingProvider("revision-two", commonVectors));
       assert.equal((await second.backfill(WORKSPACE_ID)).embedded, 1);
       assert.equal(
         storage.db

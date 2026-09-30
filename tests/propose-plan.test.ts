@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 
 import type { ToolContext } from "../src/core/types.js";
-import {
-  MAX_PLAN_OVERVIEW_CHARS,
-  MAX_PLAN_STEPS,
-  MAX_PLAN_TITLE_CHARS,
-} from "../src/plans/plan.js";
+import { MAX_PLAN_OVERVIEW_CHARS, MAX_PLAN_STEPS, MAX_PLAN_TITLE_CHARS } from "../src/plans/plan.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
 import { describe, it } from "./harness.js";
 
@@ -26,11 +22,13 @@ function validPlan() {
   return {
     title: "Implement login and registration",
     overview: "Add a local demonstration authentication flow without changing the backend.",
-    steps: [{
-      title: "Add the authentication UI",
-      description: "Create login and registration forms and render the current user state.",
-      verification: "Open the page and verify both forms and the signed-in user bar.",
-    }],
+    steps: [
+      {
+        title: "Add the authentication UI",
+        description: "Create login and registration forms and render the current user state.",
+        verification: "Open the page and verify both forms and the signed-in user bar.",
+      },
+    ],
   };
 }
 

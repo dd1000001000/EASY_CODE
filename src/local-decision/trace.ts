@@ -11,17 +11,20 @@ let currentUserSid: Promise<string> | undefined;
 
 async function privateWindowsAcl(target: string, directory: boolean): Promise<void> {
   if (process.platform !== "win32") return;
-  currentUserSid ??= execFileAsync("whoami", ["/user", "/fo", "csv", "/nh"],
-    { timeout: 5000, windowsHide: true }).then(result => {
+  currentUserSid ??= execFileAsync("whoami", ["/user", "/fo", "csv", "/nh"], { timeout: 5000, windowsHide: true }).then(
+    (result) => {
       const sid = result.stdout.match(/S-1-5-\d+(?:-\d+)+/u)?.[0];
       if (!sid) throw new Error("Could not identify the current Windows account for decision traces");
       return sid;
-    });
+    },
+  );
   const sid = await currentUserSid;
   const rights = directory ? "(OI)(CI)F" : "F";
-  await execFileAsync("icacls", [target, "/inheritance:r", "/grant:r",
-    `*${sid}:${rights}`, "/grant:r", `*S-1-5-18:${rights}`],
-  { timeout: 10000, windowsHide: true });
+  await execFileAsync(
+    "icacls",
+    [target, "/inheritance:r", "/grant:r", `*${sid}:${rights}`, "/grant:r", `*S-1-5-18:${rights}`],
+    { timeout: 10000, windowsHide: true },
+  );
 }
 
 async function existingDirectory(target: string): Promise<boolean> {
@@ -38,15 +41,17 @@ async function existingDirectory(target: string): Promise<boolean> {
 async function ensureDirectory(target: string): Promise<void> {
   if (await existingDirectory(target)) return;
   await mkdir(target, { mode: 0o700 });
-  if (!await existingDirectory(target)) throw new Error(`Could not create decision trace directory: ${target}`);
+  if (!(await existingDirectory(target))) throw new Error(`Could not create decision trace directory: ${target}`);
 }
 
 /** Keep private decision input logs out of Git without editing project files. */
 async function excludeFromGit(projectRoot: string, traceDirectory: string): Promise<void> {
   let repositoryRoot: string;
   try {
-    const result = await execFileAsync("git", ["-C", projectRoot, "rev-parse", "--show-toplevel"],
-      { timeout: 5000, windowsHide: true });
+    const result = await execFileAsync("git", ["-C", projectRoot, "rev-parse", "--show-toplevel"], {
+      timeout: 5000,
+      windowsHide: true,
+    });
     repositoryRoot = path.resolve(result.stdout.trim());
   } catch {
     return; // A non-Git project has no index from which to exclude traces.
@@ -54,8 +59,10 @@ async function excludeFromGit(projectRoot: string, traceDirectory: string): Prom
   const relative = path.relative(repositoryRoot, traceDirectory).replace(/\\/gu, "/");
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative))
     throw new Error("Decision traces are outside the project Git root");
-  const result = await execFileAsync("git", ["-C", projectRoot, "rev-parse", "--git-path", "info/exclude"],
-    { timeout: 5000, windowsHide: true });
+  const result = await execFileAsync("git", ["-C", projectRoot, "rev-parse", "--git-path", "info/exclude"], {
+    timeout: 5000,
+    windowsHide: true,
+  });
   const exclude = path.resolve(repositoryRoot, result.stdout.trim());
   const pattern = `/${relative}/`;
   const current = await readFile(exclude, "utf8").catch((error: NodeJS.ErrnoException) => {
@@ -80,8 +87,9 @@ async function rotate(target: string, incomingBytes: number): Promise<void> {
   // Runtime-owned trace prefix, never in the user's source tree.
   for (let index = RETAINED_ROTATIONS; index >= 1; index -= 1) {
     const previous = index === 1 ? target : `${target}.${index - 1}`;
-    try { await stat(previous); }
-    catch (error) {
+    try {
+      await stat(previous);
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
@@ -130,26 +138,44 @@ async function appendTraceLine(projectRoot: string, threadId: string, record: Re
 /** Auxiliary project-local audit. The Thread Journal remains authoritative. */
 export async function appendLocalDecisionTrace(projectRoot: string, trace: LocalDecisionTrace): Promise<void> {
   await appendTraceLine(projectRoot, trace.threadId, {
-    timestamp: new Date().toISOString(), id: trace.id, threadId: trace.threadId,
-    turnId: trace.turnId, task: trace.decision.task, input: trace.decision.input,
-    inputTokens: trace.decision.inputTokens, truncated: trace.decision.truncated,
-    optionOrder: trace.decision.optionOrder, scores: trace.decision.scores,
-    decision: trace.decision.decision, modelSha256: trace.decision.modelSha256,
+    timestamp: new Date().toISOString(),
+    id: trace.id,
+    threadId: trace.threadId,
+    turnId: trace.turnId,
+    task: trace.decision.task,
+    input: trace.decision.input,
+    inputTokens: trace.decision.inputTokens,
+    truncated: trace.decision.truncated,
+    optionOrder: trace.decision.optionOrder,
+    scores: trace.decision.scores,
+    decision: trace.decision.decision,
+    modelSha256: trace.decision.modelSha256,
     appliedDecision: trace.appliedDecision,
     device: trace.decision.device,
-    submittedToModel: true, fallbackToCloud: false,
+    submittedToModel: true,
+    fallbackToCloud: false,
     ...(trace.challenged !== undefined ? { challenged: trace.challenged } : {}),
     ...(trace.challengeAlreadyUsed !== undefined ? { challengeAlreadyUsed: trace.challengeAlreadyUsed } : {}),
   });
 }
 
 /** A fallback has no Laya choice; retain the attempted input without claiming inference occurred. */
-export async function appendLocalDecisionFallbackTrace(projectRoot: string,
-  trace: LocalDecisionFallbackTrace): Promise<void> {
+export async function appendLocalDecisionFallbackTrace(
+  projectRoot: string,
+  trace: LocalDecisionFallbackTrace,
+): Promise<void> {
   await appendTraceLine(projectRoot, trace.threadId, {
-    timestamp: new Date().toISOString(), id: trace.id, threadId: trace.threadId,
-    turnId: trace.turnId, task: trace.task, input: trace.input,
-    submittedToModel: false, decision: null, optionOrder: null, scores: null,
-    fallbackToCloud: trace.task === "route", reason: trace.reason,
+    timestamp: new Date().toISOString(),
+    id: trace.id,
+    threadId: trace.threadId,
+    turnId: trace.turnId,
+    task: trace.task,
+    input: trace.input,
+    submittedToModel: false,
+    decision: null,
+    optionOrder: null,
+    scores: null,
+    fallbackToCloud: trace.task === "route",
+    reason: trace.reason,
   });
 }

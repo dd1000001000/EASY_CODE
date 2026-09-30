@@ -5,9 +5,19 @@ import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-li
 import { resolveEasyCodePaths } from "../config/defaults.js";
 import { NativeAppServerClient } from "./app-server-client.js";
 import { nativePermissionProfile, nativeProjectPermissionProfile } from "./native-policy.js";
-import { nativeSandboxEnvironment, nativeSandboxEntrypoint, nativeSandboxHome, nativeSandboxRuntimeVersion } from "./native-runtime.js";
+import {
+  nativeSandboxEnvironment,
+  nativeSandboxEntrypoint,
+  nativeSandboxHome,
+  nativeSandboxRuntimeVersion,
+} from "./native-runtime.js";
 import { ensureNativeProjectPermissionHome } from "./permission-home.js";
-import { sandboxIsReady, type SandboxReadiness, type SandboxSetupResult, type SandboxStartupService } from "./startup.js";
+import {
+  sandboxIsReady,
+  type SandboxReadiness,
+  type SandboxSetupResult,
+  type SandboxStartupService,
+} from "./startup.js";
 import type { NativeStartupPlatform, ReadinessResult } from "./platform/startup-types.js";
 import { startupError } from "./platform/startup-types.js";
 import { WindowsNativeStartup } from "./platform/windows-startup.js";
@@ -26,24 +36,32 @@ export class NativeSandboxStartupService implements SandboxStartupService {
   ) {
     const options = { limits, dataDir: dataDir ?? resolveEasyCodePaths().dataDir, report };
     switch (process.platform) {
-      case "win32": this.platform = new WindowsNativeStartup(options); break;
-      case "darwin": this.platform = new MacNativeStartup(options); break;
-      case "linux": this.platform = new LinuxNativeStartup(options); break;
-      default: this.platform = undefined;
+      case "win32":
+        this.platform = new WindowsNativeStartup(options);
+        break;
+      case "darwin":
+        this.platform = new MacNativeStartup(options);
+        break;
+      case "linux":
+        this.platform = new LinuxNativeStartup(options);
+        break;
+      default:
+        this.platform = undefined;
     }
   }
 
   private result: ReadinessResult = (status, details, canSetup = false) => ({
-    status, platform: process.platform,
+    status,
+    platform: process.platform,
     backend: this.platform?.backendName ?? "Native OS sandbox (unsupported)",
-    details, canSetup, warnings: [],
+    details,
+    canSetup,
+    warnings: [],
   });
 
   private async sandboxHome(): Promise<string> {
     const baseHome = nativeSandboxHome(this.dataDir);
-    return this.projectRoots?.length
-      ? ensureNativeProjectPermissionHome(baseHome, this.projectRoots)
-      : baseHome;
+    return this.projectRoots?.length ? ensureNativeProjectPermissionHome(baseHome, this.projectRoots) : baseHome;
   }
 
   private async inspectUnlocked(): Promise<SandboxReadiness> {
@@ -58,16 +76,28 @@ export class NativeSandboxStartupService implements SandboxStartupService {
       }
       const probeRoot = this.projectRoots?.[0] ?? temporaryRoot!;
       const proxy = await platform.proxyState();
-      const service = new NativeAppServerClient(nativeSandboxEntrypoint(), home, process.env, proxy?.proxyURL, proxy?.ports);
+      const service = new NativeAppServerClient(
+        nativeSandboxEntrypoint(),
+        home,
+        process.env,
+        proxy?.proxyURL,
+        proxy?.ports,
+      );
       try {
         await service.initialize(this.limits.sandboxStartupWindowsMs);
         const notReady = await platform.checkReadiness(service, this.result);
         if (notReady) return notReady;
-        const probe = await service.request("command/exec", {
-          command: platform.probeCommand, cwd: probeRoot,
-          ...(proxy ? { env: nativeSandboxEnvironment(home, process.env, proxy.proxyURL, proxy.ports) } : {}),
-          ...(this.projectRoots?.length ? nativeProjectPermissionProfile() : nativePermissionProfile()), timeoutMs: 15_000,
-        }, platform.startupTimeoutMs);
+        const probe = await service.request(
+          "command/exec",
+          {
+            command: platform.probeCommand,
+            cwd: probeRoot,
+            ...(proxy ? { env: nativeSandboxEnvironment(home, process.env, proxy.proxyURL, proxy.ports) } : {}),
+            ...(this.projectRoots?.length ? nativeProjectPermissionProfile() : nativePermissionProfile()),
+            timeoutMs: 15_000,
+          },
+          platform.startupTimeoutMs,
+        );
         if (probe?.exitCode !== 0) throw new Error(String(probe?.stderr ?? "readiness command failed"));
         const rejected = platform.checkProbe(probe.stdout, this.result);
         if (rejected) return rejected;
@@ -76,7 +106,9 @@ export class NativeSandboxStartupService implements SandboxStartupService {
           `Installed native runtime ${nativeSandboxRuntimeVersion()} passed an enforced command probe.`,
           platform.successDetail,
         ]);
-      } finally { await service.close(); }
+      } finally {
+        await service.close();
+      }
     } catch (error) {
       return platform.probeFailed(startupError(error), this.result);
     } finally {
@@ -85,14 +117,18 @@ export class NativeSandboxStartupService implements SandboxStartupService {
   }
 
   inspect(): Promise<SandboxReadiness> {
-    return this.platform?.inspect(() => this.inspectUnlocked(), this.result)
-      ?? Promise.resolve(this.result("unsupported", [`Unsupported native sandbox platform: ${process.platform}`]));
+    return (
+      this.platform?.inspect(() => this.inspectUnlocked(), this.result) ??
+      Promise.resolve(this.result("unsupported", [`Unsupported native sandbox platform: ${process.platform}`]))
+    );
   }
 
   async setup(readiness?: SandboxReadiness): Promise<SandboxSetupResult> {
     readiness ??= await this.inspect();
-    if (readiness.status === "ready") return { status: "already_ready", message: "Native sandbox is already ready.", readiness };
-    if (!this.platform) return { status: "unavailable", message: "This native sandbox platform is unsupported.", readiness };
+    if (readiness.status === "ready")
+      return { status: "already_ready", message: "Native sandbox is already ready.", readiness };
+    if (!this.platform)
+      return { status: "unavailable", message: "This native sandbox platform is unsupported.", readiness };
     return this.platform.setup(readiness, () => this.inspectUnlocked(), this.result, await this.sandboxHome());
   }
 
@@ -100,8 +136,13 @@ export class NativeSandboxStartupService implements SandboxStartupService {
    * commands. A failed or declined elevation never falls through to exec. */
   async prepare(): Promise<SandboxReadiness> {
     const readiness = await this.inspect();
-    if (sandboxIsReady(readiness) || process.platform !== "win32" ||
-      readiness.status !== "setup_required" || !readiness.canSetup) return readiness;
+    if (
+      sandboxIsReady(readiness) ||
+      process.platform !== "win32" ||
+      readiness.status !== "setup_required" ||
+      !readiness.canSetup
+    )
+      return readiness;
     return (await this.setup(readiness)).readiness;
   }
 }

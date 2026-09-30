@@ -26,24 +26,24 @@ function hasResultClass(tool: Readonly<AgentTool>, resultClass: ToolResultClass)
 
 function flags(tools: readonly Readonly<AgentTool>[]): CapabilityFlags {
   return {
-    workspaceRead: tools.some(tool => hasEffect(tool, "workspace_read")),
-    publicWebSearch: tools.some(tool => hasEffect(tool, "network_read") && hasResultClass(tool, "search")),
-    publicWebPageRead: tools.some(tool => hasEffect(tool, "network_read") && hasResultClass(tool, "file_read")),
-    visualRead: tools.some(tool => toolMetadata(tool).requiresVision),
-    processExecution: tools.some(tool => hasEffect(tool, "process_execute") || hasEffect(tool, "process_control")),
-    fileMutation: tools.some(tool => hasEffect(tool, "workspace_write") && hasResultClass(tool, "file_mutation")),
-    managedExternalWrite: tools.some(tool => hasEffect(tool, "external_write")),
-    artifactRetrieval: tools.some(tool => hasResultClass(tool, "artifact")),
-    orchestration: tools.some(tool => toolMetadata(tool).requiresOrchestration),
-    externalServiceTools: tools.some(tool => toolMetadata(tool).identity.sourceKind === "external"),
-    memory: tools.some(tool => hasEffect(tool, "memory_read") || hasEffect(tool, "memory_write")),
-    planSubmission: tools.some(tool => tool.name === "propose_plan"),
+    workspaceRead: tools.some((tool) => hasEffect(tool, "workspace_read")),
+    publicWebSearch: tools.some((tool) => hasEffect(tool, "network_read") && hasResultClass(tool, "search")),
+    publicWebPageRead: tools.some((tool) => hasEffect(tool, "network_read") && hasResultClass(tool, "file_read")),
+    visualRead: tools.some((tool) => toolMetadata(tool).requiresVision),
+    processExecution: tools.some((tool) => hasEffect(tool, "process_execute") || hasEffect(tool, "process_control")),
+    fileMutation: tools.some((tool) => hasEffect(tool, "workspace_write") && hasResultClass(tool, "file_mutation")),
+    managedExternalWrite: tools.some((tool) => hasEffect(tool, "external_write")),
+    artifactRetrieval: tools.some((tool) => hasResultClass(tool, "artifact")),
+    orchestration: tools.some((tool) => toolMetadata(tool).requiresOrchestration),
+    externalServiceTools: tools.some((tool) => toolMetadata(tool).identity.sourceKind === "external"),
+    memory: tools.some((tool) => hasEffect(tool, "memory_read") || hasEffect(tool, "memory_write")),
+    planSubmission: tools.some((tool) => tool.name === "propose_plan"),
   };
 }
 
 function bullets(entries: readonly string[]): string {
   return entries.length
-    ? entries.map(entry => `- ${entry}`).join("\n")
+    ? entries.map((entry) => `- ${entry}`).join("\n")
     : "- No ordinary work capability is currently available in this mode.";
 }
 
@@ -77,10 +77,15 @@ export function autoRouteCapabilitySummary(input: {
     planEntries.push("Search the public Web and read selected public pages for planning evidence.");
   }
   if (plan.visualRead) planEntries.push("Inspect workspace images with the active vision-capable model.");
-  if (plan.processExecution) planEntries.push("Run bounded investigation and diagnostic commands under the active approval policy.");
-  if (plan.orchestration) planEntries.push("Create planning task graphs and delegate bounded investigation to read-only child agents.");
+  if (plan.processExecution)
+    planEntries.push("Run bounded investigation and diagnostic commands under the active approval policy.");
+  if (plan.orchestration)
+    planEntries.push("Create planning task graphs and delegate bounded investigation to read-only child agents.");
   if (plan.memory) planEntries.push("Retrieve relevant conversation, project, and long-term memory.");
-  if (plan.planSubmission) planEntries.push("Finish with a reviewable implementation plan for the user; do not implement the requested change.");
+  if (plan.planSubmission)
+    planEntries.push(
+      "Finish with a reviewable implementation plan for the user; do not implement the requested change.",
+    );
 
   const codeEntries: string[] = [];
   if (code.workspaceRead) codeEntries.push("Inspect project files and local resources, including converted documents.");
@@ -91,7 +96,10 @@ export function autoRouteCapabilitySummary(input: {
   if (code.fileMutation) codeEntries.push("Create, change, and remove project or managed files.");
   if (code.processExecution) codeEntries.push("Run commands, tests, builds, and supervised long-running services.");
   if (code.artifactRetrieval) codeEntries.push("Retrieve authorized external artifacts into the workspace.");
-  if (code.managedExternalWrite) codeEntries.push("Modify managed skills, external-service configuration, or connected external systems when authorized.");
+  if (code.managedExternalWrite)
+    codeEntries.push(
+      "Modify managed skills, external-service configuration, or connected external systems when authorized.",
+    );
   if (code.orchestration) codeEntries.push("Create task graphs and delegate bounded work to child agents.");
   if (code.externalServiceTools) codeEntries.push("Use tools exposed by currently connected external services.");
   if (code.memory) codeEntries.push("Retrieve and maintain relevant conversation, project, and long-term memory.");

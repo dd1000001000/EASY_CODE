@@ -3,7 +3,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
-import { DocumentConverter, ThreadDocumentService, ThreadResourceStore, documentMediaType, isSupportedDocument } from "../src/resources/index.js";
+import {
+  DocumentConverter,
+  ThreadDocumentService,
+  ThreadResourceStore,
+  documentMediaType,
+  isSupportedDocument,
+} from "../src/resources/index.js";
 import { parseSearchHtml } from "../src/resources/web-content.js";
 import { ReadDocumentTool, ReadFileTool, SearchFilesTool, UpdateFileTool } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
@@ -11,9 +17,14 @@ import { describe, it } from "./harness.js";
 
 function context(root: string, threadId = "thread_resource_test"): ToolContext {
   return {
-    workspaceRoot: root, mode: "code", threadId, turnId: "turn_resource_test",
-    approvalPolicy: "safe", requestApproval: async () => false,
-    commandTimeoutMs: 2_000, maxOutputChars: 16_000,
+    workspaceRoot: root,
+    mode: "code",
+    threadId,
+    turnId: "turn_resource_test",
+    approvalPolicy: "safe",
+    requestApproval: async () => false,
+    commandTimeoutMs: 2_000,
+    maxOutputChars: 16_000,
   };
 }
 
@@ -25,42 +36,51 @@ describe("Thread resources", () => {
       const workspace = await WorkspaceManager.create(root);
       const store = new ThreadResourceStore(data);
       const resource = await store.create({
-        threadId: "thread_resource_test", filename: "requirements.docx", kind: "document",
+        threadId: "thread_resource_test",
+        filename: "requirements.docx",
+        kind: "document",
         mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        markdown: "# Requirements\n\nfirst line\nsecond needle line\nlast line", byteSize: 321,
+        markdown: "# Requirements\n\nfirst line\nsecond needle line\nlast line",
+        byteSize: 321,
       });
       assert.match(resource.uri, /^thread-resource:\/\/resource_[0-9a-f-]{36}\/content\.md$/u);
 
       const read = await new ReadFileTool(workspace, store).execute(
-        { path: resource.uri, startLine: 3, endLine: 4 }, context(root),
+        { path: resource.uri, startLine: 3, endLine: 4 },
+        context(root),
       );
       assert.equal(read.ok, true);
       assert.equal((read.data as { content: string }).content, "first line\nsecond needle line");
       assert.equal((read.data as { readOnly: boolean }).readOnly, true);
 
       const empty = await store.create({
-        threadId: "thread_resource_test", filename: "empty.txt", kind: "document",
-        mediaType: "text/plain", markdown: "", byteSize: 0,
+        threadId: "thread_resource_test",
+        filename: "empty.txt",
+        kind: "document",
+        mediaType: "text/plain",
+        markdown: "",
+        byteSize: 0,
       });
-      const emptyRead = await new ReadFileTool(workspace, store).execute(
-        { path: empty.uri }, context(root),
-      );
+      const emptyRead = await new ReadFileTool(workspace, store).execute({ path: empty.uri }, context(root));
       assert.equal(emptyRead.ok, true);
       assert.equal((emptyRead.data as { content: string }).content, "");
 
       const search = await new SearchFilesTool(workspace, store).execute(
-        { scope: "thread_resources", query: "needle" }, context(root),
+        { scope: "thread_resources", query: "needle" },
+        context(root),
       );
       assert.equal(search.ok, true);
       assert.equal((search.data as { matches: Array<{ path: string }> }).matches[0]?.path, resource.uri);
 
       const wrongThread = await new ReadFileTool(workspace, store).execute(
-        { path: resource.uri }, context(root, "thread_other"),
+        { path: resource.uri },
+        context(root, "thread_other"),
       );
       assert.equal(wrongThread.ok, false);
 
       const update = await new UpdateFileTool(workspace).execute(
-        { path: resource.uri, expectedHash: "0".repeat(64), edits: [{ oldText: "first", newText: "changed" }] }, context(root),
+        { path: resource.uri, expectedHash: "0".repeat(64), edits: [{ oldText: "first", newText: "changed" }] },
+        context(root),
       );
       assert.equal(update.ok, false);
       assert.match(update.error ?? "", /immutable/iu);
@@ -71,8 +91,11 @@ describe("Thread resources", () => {
   });
 
   it("extracts bounded search previews", () => {
-    const search = parseSearchHtml(`<div class="result results_links"><h2 class="result__title"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;rut=1">First &amp; Docs</a></h2><a class="result__snippet">A &amp; B</a></div>
-      <div class="result results_links"><h2 class="result__title"><a href="https://example.com/b" class="result__a">Second</a></h2><a class="result__snippet">C</a></div>`, 1);
+    const search = parseSearchHtml(
+      `<div class="result results_links"><h2 class="result__title"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;rut=1">First &amp; Docs</a></h2><a class="result__snippet">A &amp; B</a></div>
+      <div class="result results_links"><h2 class="result__title"><a href="https://example.com/b" class="result__a">Second</a></h2><a class="result__snippet">C</a></div>`,
+      1,
+    );
     assert.deepEqual(search, [{ title: "First & Docs", url: "https://example.com/a", snippet: "A & B" }]);
     assert.deepEqual(parseSearchHtml('<a class="result__a" href="javascript:alert(1)">Bad</a>', 5), []);
   });
@@ -83,7 +106,11 @@ describe("Thread resources", () => {
       const store = new ThreadResourceStore(data);
       class TestConverter extends DocumentConverter {
         override async convertWithMetadata(
-          _data: Buffer, filename: string, mediaType: string, _signal?: AbortSignal, sourceUrl?: string,
+          _data: Buffer,
+          filename: string,
+          mediaType: string,
+          _signal?: AbortSignal,
+          sourceUrl?: string,
         ) {
           assert.equal(filename, "webpage.html");
           assert.equal(mediaType, "text/html");
@@ -93,15 +120,19 @@ describe("Thread resources", () => {
       }
       const service = new ThreadDocumentService(new TestConverter(data), store);
       const resource = await service.importWebpage({
-        threadId: "thread_resource_test", data: Buffer.from("<html><body>Guide</body></html>"),
-        url: "https://example.com/docs/page", mediaType: "text/html",
+        threadId: "thread_resource_test",
+        data: Buffer.from("<html><body>Guide</body></html>"),
+        url: "https://example.com/docs/page",
+        mediaType: "text/html",
       });
       assert.equal(resource.filename, "Example Docs.md");
       const content = (await store.readLines("thread_resource_test", resource.uri, 1, 10)).lines.join("\n");
       assert.match(content, /Source: https:\/\/example\.com\/docs\/page/u);
       assert.match(content, /\[Next\]\(https:\/\/example\.com\/next\)/u);
       await assert.rejects(store.readLines("thread_other", resource.uri, 1, 2), /unavailable/u);
-    } finally { await rm(data, { recursive: true, force: true }); }
+    } finally {
+      await rm(data, { recursive: true, force: true });
+    }
   });
 
   it("advertises only document formats handled by the installed converter", () => {
@@ -131,9 +162,7 @@ describe("Thread resources", () => {
       assert.equal(secondData.id, firstData.id);
       assert.equal((await store.list("thread_resource_test")).length, 1);
 
-      const read = await new ReadFileTool(workspace, store).execute(
-        { path: firstData.uri }, context(root),
-      );
+      const read = await new ReadFileTool(workspace, store).execute({ path: firstData.uri }, context(root));
       assert.equal(read.ok, true);
       assert.match((read.data as { content: string }).content, /Shared conversion path/u);
     } finally {
@@ -153,10 +182,18 @@ describe("Thread resources", () => {
         /configured 8-byte limit/u,
       );
       await assert.rejects(
-        store.create({ threadId: "thread_resource_test", filename: "large.md", kind: "document",
-          mediaType: "text/markdown", markdown: "small", byteSize: 9 }),
+        store.create({
+          threadId: "thread_resource_test",
+          filename: "large.md",
+          kind: "document",
+          mediaType: "text/markdown",
+          markdown: "small",
+          byteSize: 9,
+        }),
         /configured 8-byte limit/u,
       );
-    } finally { await rm(data, { recursive: true, force: true }); }
+    } finally {
+      await rm(data, { recursive: true, force: true });
+    }
   });
 });

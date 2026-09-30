@@ -2,12 +2,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";

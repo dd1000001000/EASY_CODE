@@ -1,16 +1,5 @@
 import assert from "node:assert/strict";
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  realpath,
-  rm,
-  symlink,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -33,10 +22,7 @@ import {
 } from "../src/images/index.js";
 import { createProvider, type JsonPostRequest } from "../src/providers/index.js";
 import { createStorage } from "../src/storage/database.js";
-import {
-  deserializeChatMessage,
-  serializeChatMessage,
-} from "../src/threads/serialization.js";
+import { deserializeChatMessage, serializeChatMessage } from "../src/threads/serialization.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { describe, it } from "./harness.js";
 
@@ -48,10 +34,7 @@ const PNG_16X16 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAEklEQVR4nGNgGAWjYBSMAggAAAQQAAFVN1rQAAAAAElFTkSuQmCC",
   "base64",
 );
-const GIF_1X1 = Buffer.from(
-  "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
-  "base64",
-);
+const GIF_1X1 = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
 
 function successResponse(): {
   statusCode: number;
@@ -73,8 +56,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000001",
       label: "Image #1",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000001.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000001.png",
       sha256: "1".repeat(64),
       byteSize: PNG_16X16.length,
       width: 16,
@@ -84,22 +66,14 @@ describe("image attachments", () => {
       ...first,
       id: "image_00000000-0000-4000-8000-000000000004",
       label: "Image #4",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000004.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000004.png",
       sha256: "4".repeat(64),
     };
-    assert.equal(nextThreadImageNumber([
-      { role: "user", content: "first", images: [first] },
-    ], [pending]), 5);
+    assert.equal(nextThreadImageNumber([{ role: "user", content: "first", images: [first] }], [pending]), 5);
 
     const last = { ...first, label: "Image #99" };
-    assert.equal(nextThreadImageNumber([
-      { role: "user", content: "last", images: [last] },
-    ]), 100);
-    assert.throws(
-      () => assertThreadImageNumberAvailable(100),
-      /99 image attachment limit/u,
-    );
+    assert.equal(nextThreadImageNumber([{ role: "user", content: "last", images: [last] }]), 100);
+    assert.throws(() => assertThreadImageNumberAvailable(100), /99 image attachment limit/u);
   });
 
   it("inspects supported image headers and rejects unsafe dimensions", () => {
@@ -109,30 +83,17 @@ describe("image attachments", () => {
     assert.equal(inspected.height, 1);
     assert.match(inspected.sha256, /^[a-f0-9]{64}$/u);
 
-    assert.throws(
-      () => inspectImageBuffer(PNG_1X1, { maxImageEdge: 0 }),
-      /dimensions/u,
-    );
+    assert.throws(() => inspectImageBuffer(PNG_1X1, { maxImageEdge: 0 }), /dimensions/u);
     assert.throws(() => inspectImageBuffer(Buffer.from("not an image")), /Unsupported|damaged/u);
   });
 
   it("rejects animated, truncated, and trailing image payloads", () => {
     assert.equal(inspectImageBuffer(GIF_1X1).mediaType, "image/gif");
     const imageBlock = GIF_1X1.subarray(GIF_1X1.indexOf(0x2c), GIF_1X1.length - 1);
-    const animatedGif = Buffer.concat([
-      GIF_1X1.subarray(0, GIF_1X1.length - 1),
-      imageBlock,
-      Buffer.from([0x3b]),
-    ]);
+    const animatedGif = Buffer.concat([GIF_1X1.subarray(0, GIF_1X1.length - 1), imageBlock, Buffer.from([0x3b])]);
     assert.throws(() => inspectImageBuffer(animatedGif), /Animated GIF/u);
-    assert.throws(
-      () => inspectImageBuffer(Buffer.concat([PNG_1X1, Buffer.from("polyglot")])),
-      /trailing data/u,
-    );
-    assert.throws(
-      () => inspectImageBuffer(PNG_1X1.subarray(0, PNG_1X1.length - 4)),
-      /truncated|damaged/u,
-    );
+    assert.throws(() => inspectImageBuffer(Buffer.concat([PNG_1X1, Buffer.from("polyglot")])), /trailing data/u);
+    assert.throws(() => inspectImageBuffer(PNG_1X1.subarray(0, PNG_1X1.length - 4)), /truncated|damaged/u);
   });
 
   it("copies images into a private thread store and verifies integrity on load", async () => {
@@ -142,12 +103,7 @@ describe("image attachments", () => {
       const dataDir = path.join(root, "data");
       await writeFile(source, PNG_1X1);
       const store = new ImageStore(dataDir);
-      const attachment = await store.importFile(
-        "thread_test",
-        "Image #1",
-        source,
-        "source.png",
-      );
+      const attachment = await store.importFile("thread_test", "Image #1", source, "source.png");
 
       assert.equal(attachment.sourceName, "source.png");
       assert.match(attachment.storageKey, /^attachments\/[a-f0-9]{32}\//u);
@@ -165,20 +121,20 @@ describe("image attachments", () => {
         images: [attachment],
       });
       assert.throws(
-        () => deserializeChatMessage(JSON.stringify({
-          role: "user",
-          content: "unsafe",
-          images: [{ ...attachment, base64: PNG_1X1.toString("base64") }],
-        })),
+        () =>
+          deserializeChatMessage(
+            JSON.stringify({
+              role: "user",
+              content: "unsafe",
+              images: [{ ...attachment, base64: PNG_1X1.toString("base64") }],
+            }),
+          ),
         /shape/u,
       );
 
       const storedPath = path.join(dataDir, ...attachment.storageKey.split("/"));
       await writeFile(storedPath, Buffer.from(PNG_1X1).fill(0, 30, 31));
-      await assert.rejects(
-        store.load("thread_test", attachment),
-        /integrity check|metadata|checksum/u,
-      );
+      await assert.rejects(store.load("thread_test", attachment), /integrity check|metadata|checksum/u);
       await assert.rejects(
         store.load("thread_test", { ...attachment, storageKey: "../../outside.png" }),
         /metadata|storage key/u,
@@ -205,10 +161,7 @@ describe("image attachments", () => {
     });
 
     assert.deepEqual(await clipboard.readImage(), PNG_1X1);
-    assert.equal(
-      calls[0]?.program,
-      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-    );
+    assert.equal(calls[0]?.program, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
     assert.equal(calls[0]?.args.includes("-STA"), true);
     assert.equal(path.isAbsolute(calls[0]?.cwd ?? ""), true);
     assert.notEqual(calls[0]?.cwd, process.cwd());
@@ -320,21 +273,15 @@ describe("image attachments", () => {
       );
       const controller = new AbortController();
       const startedAt = Date.now();
-      const pending = runClipboardCommand(
-        process.execPath,
-        ["-e", "setInterval(() => {}, 1000)"],
-        {
-          cwd,
-          env: {},
-          maxOutputBytes: 1_024,
-          timeoutMs: 5_000,
-          signal: controller.signal,
-        },
-      );
+      const pending = runClipboardCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        cwd,
+        env: {},
+        maxOutputBytes: 1_024,
+        timeoutMs: 5_000,
+        signal: controller.signal,
+      });
       setTimeout(() => controller.abort(), 25);
-      await assert.rejects(pending, (error: unknown) =>
-        error instanceof Error && error.name === "AbortError",
-      );
+      await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
       assert.ok(Date.now() - startedAt < 2_000);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -345,11 +292,7 @@ describe("image attachments", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-image-binding-"));
     try {
       const store = new ImageStore(path.join(root, "data"));
-      const attachment = await store.importBuffer(
-        "thread_owner",
-        "Image #1",
-        PNG_1X1,
-      );
+      const attachment = await store.importBuffer("thread_owner", "Image #1", PNG_1X1);
       await assert.rejects(store.load("thread_other", attachment), /metadata/u);
       assert.deepEqual(validateImageAttachmentCollection([attachment]), {
         imageCount: 1,
@@ -358,27 +301,23 @@ describe("image attachments", () => {
       });
       assert.equal(MAX_IMAGES_PER_MODEL_REQUEST, 99);
       assert.equal(
-        validateImageAttachmentCollection(
-          Array.from({ length: MAX_IMAGES_PER_MODEL_REQUEST }, () => attachment),
-        ).imageCount,
+        validateImageAttachmentCollection(Array.from({ length: MAX_IMAGES_PER_MODEL_REQUEST }, () => attachment))
+          .imageCount,
         99,
       );
       assert.throws(
-        () => validateImageAttachmentCollection(
-          Array.from({ length: MAX_IMAGES_PER_MODEL_REQUEST + 1 }, () => attachment),
-        ),
+        () =>
+          validateImageAttachmentCollection(Array.from({ length: MAX_IMAGES_PER_MODEL_REQUEST + 1 }, () => attachment)),
         /at most 99 images/u,
       );
       assert.throws(
-        () => validateImageAttachmentCollection([attachment], {
-          maxTotalBytes: attachment.byteSize - 1,
-        }),
+        () =>
+          validateImageAttachmentCollection([attachment], {
+            maxTotalBytes: attachment.byteSize - 1,
+          }),
         /combined size/u,
       );
-      assert.throws(
-        () => validateImageAttachmentCollection([attachment], { maxTotalPixels: 0 }),
-        /pixel limit/u,
-      );
+      assert.throws(() => validateImageAttachmentCollection([attachment], { maxTotalPixels: 0 }), /pixel limit/u);
       await store.remove("thread_owner", attachment);
       await store.remove("thread_owner", attachment);
       await assert.rejects(store.load("thread_owner", attachment), /ENOENT/u);
@@ -397,22 +336,10 @@ describe("image attachments", () => {
       await writeFile(inside, PNG_1X1);
       await writeFile(outside, PNG_1X1);
       const store = new ImageStore(path.join(root, "data"));
-      const attachment = await store.importFile(
-        "thread_workspace",
-        "Image #1",
-        inside,
-        "inside.png",
-        workspace,
-      );
+      const attachment = await store.importFile("thread_workspace", "Image #1", inside, "inside.png", workspace);
       assert.deepEqual(await store.load("thread_workspace", attachment), PNG_1X1);
       await assert.rejects(
-        store.importFile(
-          "thread_workspace",
-          "Image #2",
-          outside,
-          "outside.png",
-          workspace,
-        ),
+        store.importFile("thread_workspace", "Image #2", outside, "outside.png", workspace),
         /escapes the allowed workspace/u,
       );
     } finally {
@@ -432,36 +359,21 @@ describe("image attachments", () => {
         /outside the workspace|pollute Git/u,
       );
       await assert.rejects(
-        assertDataDirectoryOutsideWorkspace(
-          path.join(workspace, "missing", "data"),
-          workspace,
-        ),
+        assertDataDirectoryOutsideWorkspace(path.join(workspace, "missing", "data"), workspace),
         /outside the workspace|pollute Git/u,
       );
       const alias = path.join(outside, "workspace-alias");
-      await symlink(
-        workspace,
-        alias,
-        process.platform === "win32" ? "junction" : "dir",
-      );
+      await symlink(workspace, alias, process.platform === "win32" ? "junction" : "dir");
       await assert.rejects(
         assertDataDirectoryOutsideWorkspace(path.join(alias, "private"), workspace),
         /outside the workspace|pollute Git/u,
       );
-      await assert.doesNotReject(
-        assertDataDirectoryOutsideWorkspace(path.join(outside, "data"), workspace),
-      );
+      await assert.doesNotReject(assertDataDirectoryOutsideWorkspace(path.join(outside, "data"), workspace));
       assert.equal(
-        await resolveDataDirectoryOutsideWorkspace(
-          path.join(outside, "missing", "data"),
-          workspace,
-        ),
+        await resolveDataDirectoryOutsideWorkspace(path.join(outside, "missing", "data"), workspace),
         path.join(await realpath(outside), "missing", "data"),
       );
-      const prepared = await prepareDataDirectoryOutsideWorkspace(
-        path.join(outside, "prepared", "data"),
-        workspace,
-      );
+      const prepared = await prepareDataDirectoryOutsideWorkspace(path.join(outside, "prepared", "data"), workspace);
       assert.equal((await lstat(prepared)).isDirectory(), true);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -472,11 +384,7 @@ describe("image attachments", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-image-commit-"));
     try {
       const store = new ImageStore(root);
-      const attachment = await store.importBuffer(
-        "thread_commit",
-        "Image #1",
-        PNG_1X1,
-      );
+      const attachment = await store.importBuffer("thread_commit", "Image #1", PNG_1X1);
       await store.commit("thread_commit", attachment);
       await store.remove("thread_commit", attachment);
       assert.deepEqual(await store.load("thread_commit", attachment), PNG_1X1);
@@ -503,11 +411,7 @@ describe("image attachments", () => {
         model: "qwen3.7-plus",
       });
       const store = new ImageStore(dataDir, { leaseId });
-      const attachment = await store.importBuffer(
-        "thread_commit_race",
-        "Image #1",
-        PNG_1X1,
-      );
+      const attachment = await store.importBuffer("thread_commit_race", "Image #1", PNG_1X1);
       threads.appendEvent("thread_commit_race", {
         type: "message.user",
         turnId: "turn_commit_race",
@@ -526,12 +430,16 @@ describe("image attachments", () => {
         `${storageParts[2] ?? ""}.pending.json`,
       );
       const lockPath = path.join(dataDir, "attachments", ".gc-lock");
-      await writeFile(lockPath, `${JSON.stringify({
-        version: 1,
-        token: "gc_00000000-0000-4000-8000-000000000707",
-        pid: process.pid,
-        createdAt: Date.now(),
-      })}\n`, "utf8");
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({
+          version: 1,
+          token: "gc_00000000-0000-4000-8000-000000000707",
+          pid: process.pid,
+          createdAt: Date.now(),
+        })}\n`,
+        "utf8",
+      );
 
       await store.commit("thread_commit_race", attachment);
       assert.equal((await lstat(markerPath)).isFile(), true);
@@ -553,17 +461,10 @@ describe("image attachments", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-image-shutdown-"));
     try {
       const store = new ImageStore(root);
-      const attachment = await store.importBuffer(
-        "thread_shutdown",
-        "Image #1",
-        PNG_1X1,
-      );
+      const attachment = await store.importBuffer("thread_shutdown", "Image #1", PNG_1X1);
       const result = await store.shutdown();
       assert.equal(result.orphanImagesRemoved, 1);
-      await assert.rejects(
-        store.load("thread_shutdown", attachment),
-        /ENOENT/u,
-      );
+      await assert.rejects(store.load("thread_shutdown", attachment), /ENOENT/u);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -581,11 +482,7 @@ describe("image attachments", () => {
         leaseId: "lease_00000000-0000-4000-8000-000000000101",
         isProcessAlive: (pid) => pid === 101 && ownerAlive,
       });
-      const attachment = await owner.importBuffer(
-        "thread_active",
-        "Image #1",
-        PNG_1X1,
-      );
+      const attachment = await owner.importBuffer("thread_active", "Image #1", PNG_1X1);
       now += 1_000;
       const collector = new ImageStore(root, {
         orphanGraceMs: 100,
@@ -629,11 +526,7 @@ describe("image attachments", () => {
         leaseId: "lease_00000000-0000-4000-8000-000000000303",
         isProcessAlive: () => false,
       });
-      const referenced = await owner.importBuffer(
-        "thread_gc",
-        "Image #1",
-        PNG_1X1,
-      );
+      const referenced = await owner.importBuffer("thread_gc", "Image #1", PNG_1X1);
       threads.appendEvent("thread_gc", {
         type: "message.user",
         turnId: "turn_gc",
@@ -642,11 +535,7 @@ describe("image attachments", () => {
         },
       });
 
-      const orphan = await owner.importBuffer(
-        "thread_gc",
-        "Image #2",
-        PNG_1X1,
-      );
+      const orphan = await owner.importBuffer("thread_gc", "Image #2", PNG_1X1);
       await owner.commit("thread_gc", orphan);
       const orphanPath = path.join(dataDir, ...orphan.storageKey.split("/"));
       const old = new Date(now - 1_000);
@@ -684,11 +573,7 @@ describe("image attachments", () => {
         leaseId,
         isProcessAlive: () => false,
       });
-      const attachment = await owner.importBuffer(
-        "thread_marker",
-        "Image #1",
-        PNG_1X1,
-      );
+      const attachment = await owner.importBuffer("thread_marker", "Image #1", PNG_1X1);
       const storageParts = attachment.storageKey.split("/");
       const finalPath = path.join(root, ...storageParts);
       const markerPath = path.join(
@@ -728,11 +613,7 @@ describe("image attachments", () => {
       await mkdir(external);
       const linkedData = path.join(root, "linked-data");
       await mkdir(linkedData);
-      await symlink(
-        external,
-        path.join(linkedData, "attachments"),
-        process.platform === "win32" ? "junction" : "dir",
-      );
+      await symlink(external, path.join(linkedData, "attachments"), process.platform === "win32" ? "junction" : "dir");
       await assert.rejects(
         new ImageStore(linkedData).importBuffer("thread_link", "Image #1", PNG_1X1),
         /symlink|junction/u,
@@ -741,19 +622,10 @@ describe("image attachments", () => {
       const dataDir = path.join(root, "data");
       const store = new ImageStore(dataDir);
       const first = await store.importBuffer("thread_link", "Image #1", PNG_1X1);
-      const threadDirectory = path.dirname(
-        path.join(dataDir, ...first.storageKey.split("/")),
-      );
+      const threadDirectory = path.dirname(path.join(dataDir, ...first.storageKey.split("/")));
       await rm(threadDirectory, { recursive: true, force: true });
-      await symlink(
-        external,
-        threadDirectory,
-        process.platform === "win32" ? "junction" : "dir",
-      );
-      await assert.rejects(
-        store.importBuffer("thread_link", "Image #2", PNG_1X1),
-        /symlink|junction/u,
-      );
+      await symlink(external, threadDirectory, process.platform === "win32" ? "junction" : "dir");
+      await assert.rejects(store.importBuffer("thread_link", "Image #2", PNG_1X1), /symlink|junction/u);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -763,12 +635,7 @@ describe("image attachments", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-image-thread-"));
     const dataDir = path.join(root, "data");
     const imageStore = new ImageStore(dataDir);
-    const attachment = await imageStore.importBuffer(
-      "thread_images",
-      "Image #1",
-      PNG_1X1,
-      "clipboard",
-    );
+    const attachment = await imageStore.importBuffer("thread_images", "Image #1", PNG_1X1, "clipboard");
     const storage = createStorage(dataDir);
     try {
       const threads = new ThreadStore(storage);
@@ -806,15 +673,11 @@ describe("image attachments", () => {
         ),
         true,
       );
-      const journal = await readFile(
-        path.join(dataDir, "threads", "thread_images", "events.jsonl"),
-        "utf8",
-      );
-      const projected = storage.db
-        .prepare<[string], { user_message_json: string }>(
-          "SELECT user_message_json FROM turns WHERE id = ?",
-        )
-        .get("turn_images")?.user_message_json ?? "";
+      const journal = await readFile(path.join(dataDir, "threads", "thread_images", "events.jsonl"), "utf8");
+      const projected =
+        storage.db
+          .prepare<[string], { user_message_json: string }>("SELECT user_message_json FROM turns WHERE id = ?")
+          .get("turn_images")?.user_message_json ?? "";
       const base64 = PNG_1X1.toString("base64");
       assert.doesNotMatch(journal, new RegExp(base64, "u"));
       assert.doesNotMatch(projected, new RegExp(base64, "u"));
@@ -833,8 +696,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000000",
       label: "Image #1",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000000.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000000.png",
       sha256: "0".repeat(64),
       byteSize: PNG_16X16.length,
       width: 16,
@@ -865,10 +727,7 @@ describe("image attachments", () => {
     const parts = body.messages?.[0]?.content ?? [];
     assert.deepEqual(parts[0], { type: "text", text: "[Image #1]" });
     const imagePart = parts[1] as { image_url?: { url?: string } } | undefined;
-    assert.equal(
-      imagePart?.image_url?.url,
-      `data:image/png;base64,${PNG_16X16.toString("base64")}`,
-    );
+    assert.equal(imagePart?.image_url?.url, `data:image/png;base64,${PNG_16X16.toString("base64")}`);
     assert.deepEqual(parts[2], { type: "text", text: "What is shown?" });
   });
 
@@ -879,8 +738,7 @@ describe("image attachments", () => {
       id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
       label: `Image #${index}`,
       mediaType: "image/png",
-      storageKey:
-        `attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}.png`,
+      storageKey: `attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}.png`,
       sha256: String(index).repeat(64),
       byteSize: PNG_16X16.length,
       width: 16,
@@ -896,11 +754,13 @@ describe("image attachments", () => {
     });
 
     await provider.complete({
-      messages: [{
-        role: "user",
-        content: "Compare [Image #2] against [Image #1].",
-        images,
-      }],
+      messages: [
+        {
+          role: "user",
+          content: "Compare [Image #2] against [Image #1].",
+          images,
+        },
+      ],
     });
 
     const parsed = JSON.parse(body) as {
@@ -908,7 +768,7 @@ describe("image attachments", () => {
     };
     const parts = parsed.messages[0]?.content ?? [];
     assert.deepEqual(
-      parts.map((part) => part.type === "text" ? part.text : "<image>"),
+      parts.map((part) => (part.type === "text" ? part.text : "<image>")),
       ["Compare ", "[Image #2]", "<image>", " against ", "[Image #1]", "<image>", "."],
     );
   });
@@ -920,26 +780,20 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000001",
       label: "Image #1",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000001.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000001.png",
       sha256: "1".repeat(64),
       byteSize: PNG_1X1.length,
       width: 1,
       height: 1,
     };
     let body = "";
-    const provider = createProvider(
-      config,
-      "deepseek",
-      "deepseek-flash",
-      {
-        loadImage: async () => PNG_1X1,
-        transport: async (request) => {
-          body = request.body;
-          return successResponse();
-        },
+    const provider = createProvider(config, "deepseek", "deepseek-flash", {
+      loadImage: async () => PNG_1X1,
+      transport: async (request) => {
+        body = request.body;
+        return successResponse();
       },
-    );
+    });
 
     await provider.complete({
       messages: [{ role: "user", content: "Inspect it", images: [attachment] }],
@@ -959,8 +813,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000005",
       label: "Image #1",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000005.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000005.png",
       sha256: "5".repeat(64),
       byteSize: PNG_1X1.length,
       width: 1,
@@ -1008,8 +861,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000007",
       label: "Image #1",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000007.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000007.png",
       sha256: "7".repeat(64),
       byteSize: PNG_1X1.length,
       width: 1,
@@ -1046,8 +898,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000006",
       label: "Image #1",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000006.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000006.png",
       sha256: "6".repeat(64),
       byteSize: PNG_1X1.length,
       width: 1,
@@ -1105,8 +956,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000002",
       label: "Image #1",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000002.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000002.png",
       sha256: "2".repeat(64),
       byteSize: PNG_1X1.length,
       width: 1,
@@ -1134,8 +984,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000003",
       label: "Image #1",
       mediaType: "image/gif",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000003.gif",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000003.gif",
       sha256: "3".repeat(64),
       byteSize: GIF_1X1.length,
       width: 16,
@@ -1145,8 +994,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000004",
       label: "Image #2",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000004.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000004.png",
       sha256: "4".repeat(64),
       byteSize: PNG_16X16.length,
       width: 16,
@@ -1205,12 +1053,14 @@ describe("image attachments", () => {
         statusCode: 200,
         headers: {},
         body: JSON.stringify({
-          choices: [{
-            message: {
-              role: "assistant",
-              content: "echo data:image/png;base64,QUJDRA== end",
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: "echo data:image/png;base64,QUJDRA== end",
+              },
             },
-          }],
+          ],
         }),
       }),
     });
@@ -1228,15 +1078,12 @@ describe("image attachments", () => {
         }),
       }),
     });
-    await assert.rejects(
-      failure.complete({ messages: [{ role: "user", content: "hello" }] }),
-      (error: unknown) => {
-        assert.ok(error instanceof Error);
-        assert.doesNotMatch(error.message, /QUJDRA/u);
-        assert.match(error.message, /REDACTED_IMAGE_DATA_URL/u);
-        return true;
-      },
-    );
+    await assert.rejects(failure.complete({ messages: [{ role: "user", content: "hello" }] }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.doesNotMatch(error.message, /QUJDRA/u);
+      assert.match(error.message, /REDACTED_IMAGE_DATA_URL/u);
+      return true;
+    });
   });
 
   it("does not load historical images when the selected model is text-only", async () => {
@@ -1246,8 +1093,7 @@ describe("image attachments", () => {
       id: "image_00000000-0000-4000-8000-000000000000",
       label: "Image #1",
       mediaType: "image/png",
-      storageKey:
-        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000000.png",
+      storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000000.png",
       sha256: "0".repeat(64),
       byteSize: PNG_1X1.length,
       width: 1,

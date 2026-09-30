@@ -1,20 +1,10 @@
 import { readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import {
-  assertMatchingWorkspace,
-  assertWritableMode,
-  toolFailure,
-  toolSuccess,
-} from "./base.js";
+import { assertMatchingWorkspace, assertWritableMode, toolFailure, toolSuccess } from "./base.js";
 import {
   acquireHostFileMutationLock,
   assertHostFileMutationStillAllowed,

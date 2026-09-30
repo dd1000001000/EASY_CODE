@@ -14,8 +14,7 @@ function image(): ImageAttachment {
     id: "image_00000000-0000-4000-8000-000000000001",
     label: "Image #1",
     mediaType: "image/png",
-    storageKey:
-      "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000001.png",
+    storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000001.png",
     sha256: "1".repeat(64),
     byteSize: 68,
     width: 1,
@@ -42,16 +41,15 @@ describe("durable turn steering", () => {
         phase: "completed",
         payload: { message: { role: "user", content: "start" } },
       });
-      const first = threads.enqueueTurnSteering(
-        "thread_steering_fifo",
-        "turn_a",
-        { role: "user", content: "first follow-up" },
-      );
-      const second = threads.enqueueTurnSteering(
-        "thread_steering_fifo",
-        "turn_a",
-        { role: "user", content: "look here", images: [image()] },
-      );
+      const first = threads.enqueueTurnSteering("thread_steering_fifo", "turn_a", {
+        role: "user",
+        content: "first follow-up",
+      });
+      const second = threads.enqueueTurnSteering("thread_steering_fifo", "turn_a", {
+        role: "user",
+        content: "look here",
+        images: [image()],
+      });
 
       assert.deepEqual(
         threads.pendingTurnSteering("thread_steering_fifo").map((entry) => entry.sequence),
@@ -60,7 +58,10 @@ describe("durable turn steering", () => {
       const batch = threads.drainTurnSteering("thread_steering_fifo", "turn_a");
       assert.ok(batch);
       assert.equal(batch.throughSequence, 2);
-      assert.deepEqual(batch.entries.map((entry) => entry.id), [first.id, second.id]);
+      assert.deepEqual(
+        batch.entries.map((entry) => entry.id),
+        [first.id, second.id],
+      );
       assert.match(batch.message.content, /\[Steering 1\][\s\S]*first follow-up/u);
       assert.match(batch.message.content, /\[Steering 2\][\s\S]*look here/u);
       assert.equal(batch.message.images?.[0]?.id, image().id);
@@ -192,10 +193,11 @@ describe("durable turn steering", () => {
       assert.equal(threads.sealTurnSteering("thread_steering_seal", "turn_seal"), undefined);
       assert.equal(threads.recover("thread_steering_seal").steeringSealedTurnId, "turn_seal");
       assert.throws(
-        () => threads.enqueueTurnSteering("thread_steering_seal", "turn_seal", {
-          role: "user",
-          content: "too late",
-        }),
+        () =>
+          threads.enqueueTurnSteering("thread_steering_seal", "turn_seal", {
+            role: "user",
+            content: "too late",
+          }),
         /sealed for finalization/u,
       );
     } finally {

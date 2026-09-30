@@ -9,10 +9,7 @@ import type {
   TaskNodeStatus,
   ResultArtifactRef,
 } from "../core/types.js";
-import {
-  containsSensitiveInformation,
-  redactSensitiveInformation,
-} from "../memory/sensitive.js";
+import { containsSensitiveInformation, redactSensitiveInformation } from "../memory/sensitive.js";
 import { createId } from "../utils/ids.js";
 
 export const MAX_TASK_GRAPH_NODES = 32;
@@ -27,8 +24,7 @@ export const MAX_TASK_GRAPH_DEFINITION_CHARS = 20_000;
 const TASK_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/u;
 const AGENT_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u;
 const GRAPH_ID_PATTERN = /^task_graph_[0-9a-f-]{36}$/u;
-const UNSAFE_TASK_TEXT =
-  /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/u;
+const UNSAFE_TASK_TEXT = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/u;
 
 const taskIdSchema = z.string().trim().regex(TASK_ID_PATTERN);
 const agentIdSchema = z.string().trim().regex(AGENT_ID_PATTERN);
@@ -66,9 +62,7 @@ function boundedTaskText(maximum = MAX_TASK_TEXT_CHARS): z.ZodEffects<z.ZodStrin
     });
 }
 
-const taskTextListSchema = z
-  .array(boundedTaskText())
-  .max(MAX_TASK_LIST_ITEMS);
+const taskTextListSchema = z.array(boundedTaskText()).max(MAX_TASK_LIST_ITEMS);
 
 export const taskDefinitionInputSchema = z
   .object({
@@ -99,10 +93,7 @@ export const taskGraphOperationSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("complete"),
       taskId: taskIdSchema,
-      evidence: z
-        .array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS))
-        .min(1)
-        .max(MAX_TASK_LIST_ITEMS),
+      evidence: z.array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS)).min(1).max(MAX_TASK_LIST_ITEMS),
     })
     .strict(),
   z
@@ -135,10 +126,7 @@ export const subagentTaskOperationSchema = z.discriminatedUnion("action", [
       action: z.literal("complete"),
       taskId: taskIdSchema,
       agentId: agentIdSchema,
-      evidence: z
-        .array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS))
-        .min(1)
-        .max(MAX_TASK_LIST_ITEMS),
+      evidence: z.array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS)).min(1).max(MAX_TASK_LIST_ITEMS),
       resultArtifact: resultArtifactRefSchema.optional(),
     })
     .strict(),
@@ -166,12 +154,14 @@ const completionEvidenceSchema = z
   })
   .strict();
 
-const taskBlockerSchema = z.object({
-  kind: z.enum(["dependency", "user_input", "environment", "review", "implementation"]),
-  reason: boundedTaskText(MAX_TASK_EVIDENCE_CHARS),
-  recoverable: z.boolean(),
-  evidenceRefs: z.array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS)).max(MAX_TASK_LIST_ITEMS),
-}).strict();
+const taskBlockerSchema = z
+  .object({
+    kind: z.enum(["dependency", "user_input", "environment", "review", "implementation"]),
+    reason: boundedTaskText(MAX_TASK_EVIDENCE_CHARS),
+    recoverable: z.boolean(),
+    evidenceRefs: z.array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS)).max(MAX_TASK_LIST_ITEMS),
+  })
+  .strict();
 
 const persistedTaskNodeSchema = z
   .object({
@@ -221,11 +211,7 @@ function assertSafeDefinition(task: TaskDefinitionInput): void {
   assertSafeText(task.title);
   assertSafeText(task.description);
   assertSafeText(task.failureHandling);
-  for (const value of [
-    ...task.inputs,
-    ...task.expectedArtifacts,
-    ...task.completionChecks,
-  ]) {
+  for (const value of [...task.inputs, ...task.expectedArtifacts, ...task.completionChecks]) {
     assertSafeText(value);
   }
 }
@@ -242,11 +228,14 @@ function blockerRecoverable(task: Readonly<TaskNode>): boolean {
 
 function derivedGraphStatus(tasks: readonly Readonly<TaskNode>[]): TaskGraphStatus {
   if (tasks.every((task) => task.status === "completed")) return "completed";
-  const byId = new Map(tasks.map(task => [task.id, task]));
-  const runnable = tasks.some(task => task.status === "in_progress" || task.status === "pending" &&
-    task.dependencies.every(id => byId.get(id)?.status === "completed"));
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const runnable = tasks.some(
+    (task) =>
+      task.status === "in_progress" ||
+      (task.status === "pending" && task.dependencies.every((id) => byId.get(id)?.status === "completed")),
+  );
   if (runnable) return "active";
-  const blockers = tasks.filter(task => task.status === "blocked");
+  const blockers = tasks.filter((task) => task.status === "blocked");
   return blockers.some(blockerRecoverable) ? "waiting_input" : "terminal_blocked";
 }
 
@@ -256,19 +245,11 @@ function assertMainOwnedTask(task: Readonly<TaskNode>): void {
   }
 }
 
-function applyCompletionEvidence(
-  task: TaskNode,
-  evidence: readonly string[],
-  completedAt: string,
-): void {
+function applyCompletionEvidence(task: TaskNode, evidence: readonly string[], completedAt: string): void {
   if (evidence.length === 0) throw new Error(`Task ${task.id} requires completion evidence`);
-  if (
-    evidence.reduce((total, item) => total + item.length, 0) >
-    MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS
-  ) {
+  if (evidence.reduce((total, item) => total + item.length, 0) > MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS) {
     throw new Error(
-      `Task ${task.id} completion evidence exceeds ` +
-        `${MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS} total characters`,
+      `Task ${task.id} completion evidence exceeds ` + `${MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS} total characters`,
     );
   }
   for (const item of evidence) assertSafeText(item);
@@ -316,10 +297,7 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
   assertSafeText(graph.goal);
   assertAcyclicTasks(graph.tasks);
   const byId = new Map(graph.tasks.map((task) => [task.id, task]));
-  const inProgress = graph.tasks.filter((task) => task.status === "in_progress");
-  const mainInProgress = graph.tasks.filter(
-    (task) => task.status === "in_progress" && task.owner === "main_agent",
-  );
+  const mainInProgress = graph.tasks.filter((task) => task.status === "in_progress" && task.owner === "main_agent");
   if (mainInProgress.length > 1) {
     throw new Error("Only one main-agent task may be in progress");
   }
@@ -346,14 +324,11 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
       assertSafeText(item.evidence);
     }
     if (
-      (task.completionEvidence ?? []).reduce(
-        (total, item) => total + item.evidence.length,
-        0,
-      ) > MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS
+      (task.completionEvidence ?? []).reduce((total, item) => total + item.evidence.length, 0) >
+      MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS
     ) {
       throw new Error(
-        `Task ${task.id} completion evidence exceeds ` +
-          `${MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS} total characters`,
+        `Task ${task.id} completion evidence exceeds ` + `${MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS} total characters`,
       );
     }
     if (task.blockerDetails) {
@@ -364,17 +339,13 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
       if (task.status !== "completed") {
         throw new Error(`Only completed task ${task.id} may contain a result artifact`);
       }
-      if (
-        task.resultArtifact.taskId !== task.id ||
-        task.resultArtifact.agentId !== task.assignedAgentId
-      ) {
+      if (task.resultArtifact.taskId !== task.id || task.resultArtifact.agentId !== task.assignedAgentId) {
         throw new Error(`Task ${task.id} result artifact does not match its child assignment`);
       }
       if (
         task.resultArtifact.status === "conflicted" ||
         task.resultArtifact.status === "retained" ||
-        (task.resultArtifact.environmentKind === "worktree" &&
-          !task.resultArtifact.resultCommit)
+        (task.resultArtifact.environmentKind === "worktree" && !task.resultArtifact.resultCommit)
       ) {
         throw new Error(`Task ${task.id} result artifact is not ready for DAG lineage`);
       }
@@ -384,19 +355,12 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
       });
       if (
         expectedParents.length !== task.resultArtifact.parentArtifactIds.length ||
-        expectedParents.some(
-          (artifactId, index) =>
-            task.resultArtifact?.parentArtifactIds[index] !== artifactId,
-        )
+        expectedParents.some((artifactId, index) => task.resultArtifact?.parentArtifactIds[index] !== artifactId)
       ) {
         throw new Error(`Task ${task.id} result artifact has invalid parent lineage`);
       }
     }
-    if (
-      task.status === "in_progress" ||
-      task.status === "completed" ||
-      task.status === "blocked"
-    ) {
+    if (task.status === "in_progress" || task.status === "completed" || task.status === "blocked") {
       for (const dependency of task.dependencies) {
         if (byId.get(dependency)?.status !== "completed") {
           throw new Error(`Task ${task.id} started before dependency ${dependency} completed`);
@@ -404,11 +368,7 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
       }
     }
     if (task.status === "completed") {
-      if (
-        !task.startedAt ||
-        !task.completedAt ||
-        !task.completionEvidence?.length
-      ) {
+      if (!task.startedAt || !task.completedAt || !task.completionEvidence?.length) {
         throw new Error(`Completed task ${task.id} is missing completion evidence`);
       }
     } else if (task.status === "in_progress" && !task.startedAt) {
@@ -452,12 +412,8 @@ export function cloneTaskGraph(graph: Readonly<TaskGraph>): TaskGraph {
       inputs: [...task.inputs],
       expectedArtifacts: [...task.expectedArtifacts],
       completionChecks: [...task.completionChecks],
-      ...(task.completionEvidence
-        ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) }
-        : {}),
-      ...(task.resultArtifact
-        ? { resultArtifact: cloneResultArtifact(task.resultArtifact) }
-        : {}),
+      ...(task.completionEvidence ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) } : {}),
+      ...(task.resultArtifact ? { resultArtifact: cloneResultArtifact(task.resultArtifact) } : {}),
       ...(task.blockerDetails
         ? { blockerDetails: { ...task.blockerDetails, evidenceRefs: [...task.blockerDetails.evidenceRefs] } }
         : {}),
@@ -484,11 +440,8 @@ export function applyTaskGraphOperation(
     if (current?.updatedByTurnId === options.turnId) {
       throw new Error("Finish the current turn before creating a replacement task DAG");
     }
-    if (JSON.stringify({ goal: operation.goal, tasks: operation.tasks }).length >
-      MAX_TASK_GRAPH_DEFINITION_CHARS) {
-      throw new Error(
-        `Task DAG definitions exceed ${MAX_TASK_GRAPH_DEFINITION_CHARS} serialized characters`,
-      );
+    if (JSON.stringify({ goal: operation.goal, tasks: operation.tasks }).length > MAX_TASK_GRAPH_DEFINITION_CHARS) {
+      throw new Error(`Task DAG definitions exceed ${MAX_TASK_GRAPH_DEFINITION_CHARS} serialized characters`);
     }
     assertSafeText(operation.goal);
     for (const task of operation.tasks) assertSafeDefinition(task);
@@ -521,19 +474,12 @@ export function applyTaskGraphOperation(
 
   if (operation.action === "start") {
     if (graph.status !== "active") throw new Error("Only an active task DAG can start work");
-    if (
-      graph.tasks.some(
-        (candidate) =>
-          candidate.status === "in_progress" && candidate.owner === "main_agent",
-      )
-    ) {
+    if (graph.tasks.some((candidate) => candidate.status === "in_progress" && candidate.owner === "main_agent")) {
       throw new Error("Complete or block the current main-agent task before starting another one");
     }
     if (task.status !== "pending") throw new Error(`Task ${task.id} is not pending`);
     assertMainOwnedTask(task);
-    const unresolved = task.dependencies.filter(
-      (dependency) => taskById(graph, dependency).status !== "completed",
-    );
+    const unresolved = task.dependencies.filter((dependency) => taskById(graph, dependency).status !== "completed");
     if (unresolved.length) {
       throw new Error(`Task ${task.id} is blocked by: ${unresolved.join(", ")}`);
     }
@@ -553,8 +499,12 @@ export function applyTaskGraphOperation(
     }
     assertSafeText(operation.reason);
     task.status = "blocked";
-    task.blockerDetails = { kind: operation.kind ?? "implementation", reason: operation.reason,
-      recoverable: operation.recoverable ?? true, evidenceRefs: [...(operation.evidenceRefs ?? [])] };
+    task.blockerDetails = {
+      kind: operation.kind ?? "implementation",
+      reason: operation.reason,
+      recoverable: operation.recoverable ?? true,
+      evidenceRefs: [...(operation.evidenceRefs ?? [])],
+    };
     graph.status = derivedGraphStatus(graph.tasks);
   } else {
     assertMainOwnedTask(task);
@@ -595,9 +545,7 @@ export function applySubagentTaskOperation(
     if (graph.tasks.some((candidate) => candidate.assignedAgentId === operation.agentId)) {
       throw new Error(`Subagent ${operation.agentId} is already assigned to a task`);
     }
-    const unresolved = task.dependencies.filter(
-      (dependency) => taskById(graph, dependency).status !== "completed",
-    );
+    const unresolved = task.dependencies.filter((dependency) => taskById(graph, dependency).status !== "completed");
     if (unresolved.length) {
       throw new Error(`Task ${task.id} is blocked by: ${unresolved.join(", ")}`);
     }
@@ -624,8 +572,7 @@ export function applySubagentTaskOperation(
         if (
           operation.resultArtifact.status === "conflicted" ||
           operation.resultArtifact.status === "retained" ||
-          (operation.resultArtifact.environmentKind === "worktree" &&
-            !operation.resultArtifact.resultCommit)
+          (operation.resultArtifact.environmentKind === "worktree" && !operation.resultArtifact.resultCommit)
         ) {
           throw new Error("Subagent result artifact is not ready for DAG lineage");
         }
@@ -727,9 +674,7 @@ export function taskGraphView(graph: Readonly<TaskGraph>): TaskGraphView {
   const byId = new Map(graph.tasks.map((task) => [task.id, task]));
   const current = activeTask(graph);
   const tasks = graph.tasks.map((task) => {
-    const blockedBy = task.dependencies.filter(
-      (dependency) => byId.get(dependency)?.status !== "completed",
-    );
+    const blockedBy = task.dependencies.filter((dependency) => byId.get(dependency)?.status !== "completed");
     return {
       id: task.id,
       title: task.title,
@@ -743,9 +688,7 @@ export function taskGraphView(graph: Readonly<TaskGraph>): TaskGraphView {
       expectedArtifacts: [...task.expectedArtifacts],
       completionChecks: [...task.completionChecks],
       failureHandling: task.failureHandling,
-      ...(task.completionEvidence
-        ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) }
-        : {}),
+      ...(task.completionEvidence ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) } : {}),
       ...(task.blockerDetails ? { blocker: task.blockerDetails.reason } : {}),
     };
   });
@@ -754,11 +697,10 @@ export function taskGraphView(graph: Readonly<TaskGraph>): TaskGraphView {
     goal: graph.goal,
     status: graph.status,
     currentTask: current?.id ?? null,
-    startableTasks: graph.status === "active"
-      ? tasks
-          .filter((task) => task.status === "pending" && task.blockedBy.length === 0)
-          .map((task) => task.id)
-      : [],
+    startableTasks:
+      graph.status === "active"
+        ? tasks.filter((task) => task.status === "pending" && task.blockedBy.length === 0).map((task) => task.id)
+        : [],
     completed: graph.tasks.filter((task) => task.status === "completed").length,
     total: graph.tasks.length,
     tasks,
@@ -785,19 +727,21 @@ export function taskGraphPromptView(graph: Readonly<TaskGraph>): Record<string, 
     startableTasks: view.startableTasks,
     completed: view.completed,
     total: view.total,
-    tasks: view.tasks.map((task) => expanded.has(task.id)
-      ? task
-      : {
-          id: task.id,
-          title: task.title,
-          status: task.status,
-          owner: task.owner,
-          ...(task.assignedAgentId ? { assignedAgentId: task.assignedAgentId } : {}),
-          dependencies: task.dependencies,
-          blockedBy: task.blockedBy,
-          expectedArtifacts: task.expectedArtifacts,
-          completionEvidenceCount: task.completionEvidence?.length ?? 0,
-        }),
+    tasks: view.tasks.map((task) =>
+      expanded.has(task.id)
+        ? task
+        : {
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            owner: task.owner,
+            ...(task.assignedAgentId ? { assignedAgentId: task.assignedAgentId } : {}),
+            dependencies: task.dependencies,
+            blockedBy: task.blockedBy,
+            expectedArtifacts: task.expectedArtifacts,
+            completionEvidenceCount: task.completionEvidence?.length ?? 0,
+          },
+    ),
   };
 }
 
@@ -805,13 +749,8 @@ export function activeTask(graph: Readonly<TaskGraph> | undefined): TaskNode | u
   return activeTasksByOwner(graph, "main_agent")[0];
 }
 
-export function activeTasksByOwner(
-  graph: Readonly<TaskGraph> | undefined,
-  owner: TaskNode["owner"],
-): TaskNode[] {
-  return graph?.tasks.filter(
-    (task) => task.status === "in_progress" && task.owner === owner,
-  ) ?? [];
+export function activeTasksByOwner(graph: Readonly<TaskGraph> | undefined, owner: TaskNode["owner"]): TaskNode[] {
+  return graph?.tasks.filter((task) => task.status === "in_progress" && task.owner === owner) ?? [];
 }
 
 export function activeTaskByOwner(

@@ -8,23 +8,40 @@ import { unresolvedCommands } from "./runtime-state.js";
 
 /** Separate bounded intents; never feed the entire conversation to embedding. */
 export function memoryQueries(state: Readonly<SessionState>, userInput: string): string[] {
-  const task = state.taskGraph?.tasks.find((item) => item.status === "in_progress")
-    ?? state.taskGraph?.tasks.find((item) => item.status === "blocked");
+  const task =
+    state.taskGraph?.tasks.find((item) => item.status === "in_progress") ??
+    state.taskGraph?.tasks.find((item) => item.status === "blocked");
   const failure = unresolvedCommands(state).at(-1);
-  const paths = state.changes.slice(-3).map((item) => item.path).join(" ");
-  return [...new Set([
-    task ? `${task.title} ${task.description}` : state.goal ?? userInput,
-    failure ? `${failure.program} ${failure.summary}` : "",
-    paths,
-    userInput,
-  ].map((value) => redactSensitiveInformation(value.trim()).slice(0, 320)).filter(Boolean))].slice(0, 4);
+  const paths = state.changes
+    .slice(-3)
+    .map((item) => item.path)
+    .join(" ");
+  return [
+    ...new Set(
+      [
+        task ? `${task.title} ${task.description}` : (state.goal ?? userInput),
+        failure ? `${failure.program} ${failure.summary}` : "",
+        paths,
+        userInput,
+      ]
+        .map((value) => redactSensitiveInformation(value.trim()).slice(0, 320))
+        .filter(Boolean),
+    ),
+  ].slice(0, 4);
 }
 
 export function memoryQueryKey(state: Readonly<SessionState>, queries: readonly string[]): string {
-  return sha256(JSON.stringify([state.threadId, queries, state.compactedMessageCount,
-    state.constraints, state.contextIntentLedger,
-    state.taskGraph?.tasks.map((task) => [task.id, task.status]),
-    state.changes.slice(-12).map((entry) => [entry.path, entry.afterHash, entry.status])]));
+  return sha256(
+    JSON.stringify([
+      state.threadId,
+      queries,
+      state.compactedMessageCount,
+      state.constraints,
+      state.contextIntentLedger,
+      state.taskGraph?.tasks.map((task) => [task.id, task.status]),
+      state.changes.slice(-12).map((entry) => [entry.path, entry.afterHash, entry.status]),
+    ]),
+  );
 }
 
 export interface MemorySelection {
@@ -52,10 +69,16 @@ export function selectMemoryContext(input: {
   const present = input.presentText ?? [];
   let estimatedTokens = 0;
   const take = (key: string, content: string): boolean => {
-    if (seen.has(key)) { dropped.duplicate += 1; return false; }
+    if (seen.has(key)) {
+      dropped.duplicate += 1;
+      return false;
+    }
     seen.add(key);
     const cost = estimateTextTokens(content) + 32;
-    if (memories.length + evidence.length >= limits.memoryMaxItems || estimatedTokens + cost > input.tokenBudget) { dropped.budget += 1; return false; }
+    if (memories.length + evidence.length >= limits.memoryMaxItems || estimatedTokens + cost > input.tokenBudget) {
+      dropped.budget += 1;
+      return false;
+    }
     estimatedTokens += cost;
     return true;
   };
@@ -65,19 +88,41 @@ export function selectMemoryContext(input: {
   const candidates = [
     ...input.memories.map((memory, rank) => ({ memory, hit: undefined, rank, content: memory.content })),
     ...input.evidence.map((hit, rank) => ({ memory: undefined, hit, rank, content: hit.content })),
-  ].sort((a, b) => a.rank - b.rank ||
+  ].sort(
+    (a, b) =>
+      a.rank - b.rank ||
       Number(Boolean(b.memory)) - Number(Boolean(a.memory)) ||
-      (a.memory?.id ?? a.hit!.id).localeCompare(b.memory?.id ?? b.hit!.id));
+      (a.memory?.id ?? a.hit!.id).localeCompare(b.memory?.id ?? b.hit!.id),
+  );
   for (const candidate of candidates) {
     const { memory, hit } = candidate;
-    if (memory && !["active", "needs_verification"].includes(memory.status)) { dropped.stale += 1; continue; }
+    if (memory && !["active", "needs_verification"].includes(memory.status)) {
+      dropped.stale += 1;
+      continue;
+    }
     // Exact evidence is deduplicated; near-matches/negations/version changes are not merged.
-    if (!hit?.metadata?.fileHash && candidate.content.length >= 16 && present.some((text) => text.includes(candidate.content))) {
-      dropped.duplicate += 1; continue;
+    if (
+      !hit?.metadata?.fileHash &&
+      candidate.content.length >= 16 &&
+      present.some((text) => text.includes(candidate.content))
+    ) {
+      dropped.duplicate += 1;
+      continue;
     }
     if (memory) {
-      if (take(`text:${sha256(memory.content)}`, JSON.stringify({ id: memory.id, scope: memory.scope, category: memory.category,
-        content: memory.content, status: memory.status }))) memories.push(memory);
+      if (
+        take(
+          `text:${sha256(memory.content)}`,
+          JSON.stringify({
+            id: memory.id,
+            scope: memory.scope,
+            category: memory.category,
+            content: memory.content,
+            status: memory.status,
+          }),
+        )
+      )
+        memories.push(memory);
       continue;
     }
     if (!hit) continue;
@@ -85,7 +130,11 @@ export function selectMemoryContext(input: {
     if (meta?.filePath && meta.fileHash) {
       const latestChange = [...input.state.changes].reverse().find((change) => change.path === meta.filePath);
       const currentHash = latestChange?.afterHash ?? input.state.filesRead.get(meta.filePath)?.hash;
-      if (latestChange?.operation === "delete" || latestChange?.operation === "deleted_by_command" || (currentHash && currentHash !== meta.fileHash)) {
+      if (
+        latestChange?.operation === "delete" ||
+        latestChange?.operation === "deleted_by_command" ||
+        (currentHash && currentHash !== meta.fileHash)
+      ) {
         dropped.stale += 1;
         continue;
       }
@@ -98,21 +147,32 @@ export function selectMemoryContext(input: {
     }
     // Versioned file excerpts only deduplicate within their version; generic
     // prose can deduplicate across the memory/evidence sources by exact text.
-    const key = meta?.fileHash ? `file:${meta.filePath}:${meta.fileHash}:${hit.contentHash}` : `text:${sha256(hit.content)}`;
+    const key = meta?.fileHash
+      ? `file:${meta.filePath}:${meta.fileHash}:${hit.contentHash}`
+      : `text:${sha256(hit.content)}`;
     if (take(key, JSON.stringify(hit))) {
       evidence.push(hit);
-      if (meta) { covered.push([meta.startOffset, meta.endOffset]); ranges.set(rangeKey, covered); }
+      if (meta) {
+        covered.push([meta.startOffset, meta.endOffset]);
+        ranges.set(rangeKey, covered);
+      }
     }
   }
   return { memories, evidence, estimatedTokens, dropped };
 }
 
-export function optionalMemoryTokenBudget(maxContextChars: number, maxContextTokens?: number,
-  limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS, expanded = false): number {
+export function optionalMemoryTokenBudget(
+  maxContextChars: number,
+  maxContextTokens?: number,
+  limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
+  expanded = false,
+): number {
   // This is an optional-data allowance, NOT a conversion of chars to a model window.
   const maximum = expanded ? limits.memoryRecallTokens : limits.memoryAutoTokens;
-  return Math.max(0, Math.min(maximum, maxContextTokens
-    ? Math.floor(maxContextTokens * 0.08) : Math.floor(maxContextChars / 24)));
+  return Math.max(
+    0,
+    Math.min(maximum, maxContextTokens ? Math.floor(maxContextTokens * 0.08) : Math.floor(maxContextChars / 24)),
+  );
 }
 
 /** Bounded expansion after an observed failure, not after neutral status polls. */
@@ -128,6 +188,8 @@ export function visibleMemoryText(messages: readonly ChatMessage[]): string[] {
     try {
       const payload = JSON.parse(message.content);
       return typeof payload?.data?.content === "string" ? [payload.data.content] : [];
-    } catch { return []; }
+    } catch {
+      return [];
+    }
   });
 }

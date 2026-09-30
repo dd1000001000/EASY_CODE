@@ -4,16 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
-import {
-  EasyCodeApp,
-  attributeSubagentCommandAudit,
-} from "../src/app.js";
+import { EasyCodeApp, attributeSubagentCommandAudit } from "../src/app.js";
 import { Terminal } from "../src/cli/terminal.js";
-import type {
-  ApprovalDecision,
-  ApprovalRequest,
-  CommandAuditEntry,
-} from "../src/core/types.js";
+import type { ApprovalDecision, ApprovalRequest, CommandAuditEntry } from "../src/core/types.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { grantCommandApprovalPrefix } from "../src/command/approval.js";
@@ -71,17 +64,15 @@ function approvalHarness(
     },
   });
   const internal = app as unknown as {
-    requestSubagentApproval(
-      request: ApprovalRequest,
-      source: { agentId: string; taskId: string },
-    ): Promise<boolean>;
+    requestSubagentApproval(request: ApprovalRequest, source: { agentId: string; taskId: string }): Promise<boolean>;
   };
   return {
     terminal,
-    request: (request) => internal.requestSubagentApproval(request, {
-      agentId: AGENT_ID,
-      taskId: TASK_ID,
-    }),
+    request: (request) =>
+      internal.requestSubagentApproval(request, {
+        agentId: AGENT_ID,
+        taskId: TASK_ID,
+      }),
   };
 }
 
@@ -134,7 +125,10 @@ describe("background subagent approvals", () => {
 
       const different = {
         ...approvalRequest(),
-        commandPrefix: path.join(path.dirname(path.join(path.dirname(process.execPath), "git.exe")), "different-executable"),
+        commandPrefix: path.join(
+          path.dirname(path.join(path.dirname(process.execPath), "git.exe")),
+          "different-executable",
+        ),
       };
       assert.equal(await harness.request(different), true);
       assert.equal(harness.terminal.approvalCalls, 1);
@@ -179,11 +173,14 @@ describe("background subagent approvals", () => {
       threads.recordToolAudit(state.threadId, "turn_collect_child", attributed);
       const recovered = threads.recover(state.threadId);
       const projected = storage.db
-        .prepare<[], {
-          source_agent_role: string | null;
-          source_agent_id: string | null;
-          source_task_id: string | null;
-        }>(
+        .prepare<
+          [],
+          {
+            source_agent_role: string | null;
+            source_agent_id: string | null;
+            source_task_id: string | null;
+          }
+        >(
           `SELECT source_agent_role, source_agent_id, source_task_id
              FROM tool_audit
             WHERE id = 'command_00000000-0000-4000-8000-000000000001'`,

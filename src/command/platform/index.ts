@@ -6,8 +6,11 @@ import { LinuxCommandWorker } from "./linux.js";
 
 export function createCommandWorker(platform: HostPlatform): CommandWorkerPlatform {
   switch (platform) {
-    case "win32": return new WindowsCommandWorker();
-    case "darwin": return new MacCommandWorker();
-    case "linux": return new LinuxCommandWorker();
+    case "win32":
+      return new WindowsCommandWorker();
+    case "darwin":
+      return new MacCommandWorker();
+    case "linux":
+      return new LinuxCommandWorker();
   }
 }

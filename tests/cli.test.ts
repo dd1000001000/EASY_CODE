@@ -9,14 +9,8 @@ import { describe, it } from "./harness.js";
 
 describe("CLI bootstrap", () => {
   it("enforces the documented Node.js 20.11.0 minimum", () => {
-    assert.throws(
-      () => assertSupportedNodeVersion("18.20.8"),
-      /requires Node\.js >= 20\.11\.0/u,
-    );
-    assert.throws(
-      () => assertSupportedNodeVersion("20.10.9"),
-      /requires Node\.js >= 20\.11\.0/u,
-    );
+    assert.throws(() => assertSupportedNodeVersion("18.20.8"), /requires Node\.js >= 20\.11\.0/u);
+    assert.throws(() => assertSupportedNodeVersion("20.10.9"), /requires Node\.js >= 20\.11\.0/u);
     assert.doesNotThrow(() => assertSupportedNodeVersion("20.11.0"));
     assert.doesNotThrow(() => assertSupportedNodeVersion("22.0.0"));
   });
@@ -25,10 +19,7 @@ describe("CLI bootstrap", () => {
     const entry = process.platform === "win32" ? "C:\\Temp\\easy-code.js" : "/tmp/easy-code.js";
     assert.equal(isDirectExecution(entry, pathToFileURL(entry).href), true);
     assert.equal(isDirectExecution(undefined, pathToFileURL(entry).href), false);
-    assert.equal(
-      isDirectExecution(entry, pathToFileURL(`${entry}.imported`).href),
-      false,
-    );
+    assert.equal(isDirectExecution(entry, pathToFileURL(`${entry}.imported`).href), false);
   });
 
   it("recognizes an npm entry path reached through a directory link", () => {
@@ -39,11 +30,7 @@ describe("CLI bootstrap", () => {
     try {
       mkdirSync(sourceDirectory);
       writeFileSync(path.join(sourceDirectory, entryName), "// fixture\n", "utf8");
-      symlinkSync(
-        sourceDirectory,
-        linkedDirectory,
-        process.platform === "win32" ? "junction" : "dir",
-      );
+      symlinkSync(sourceDirectory, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
 
       assert.equal(
         isDirectExecution(

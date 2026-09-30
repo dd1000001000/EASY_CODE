@@ -1,20 +1,16 @@
 import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import {
-  access,
-  lstat,
-  mkdtemp,
-  open,
-  realpath,
-  rm,
-  stat,
-} from "node:fs/promises";
+import { access, lstat, mkdtemp, open, realpath, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { MAX_IMAGE_BYTES } from "./image-store.js";
 import { hostPlatform } from "../core/host-platform.js";
-import type { ClipboardExecutionContext, ClipboardPlatformHost, ClipboardPlatformReader } from "./clipboard-platform.js";
+import type {
+  ClipboardExecutionContext,
+  ClipboardPlatformHost,
+  ClipboardPlatformReader,
+} from "./clipboard-platform.js";
 import { windowsClipboard } from "./platform/windows.js";
 import { macosClipboard } from "./platform/macos.js";
 import { linuxClipboard } from "./platform/linux.js";
@@ -75,26 +71,26 @@ export class SystemClipboardImageReader implements ClipboardImageReader, Clipboa
     this.currentDirectory = path.resolve(options.currentDirectory ?? process.cwd());
     this.verifyPrograms = options.runCommand === undefined;
     switch (this.platform) {
-      case "win32": this.backend = windowsClipboard(this); break;
-      case "darwin": this.backend = macosClipboard(this); break;
-      case "linux": this.backend = linuxClipboard(this); break;
-      default: throw new Error(`Image clipboard paste is not supported on ${this.platform}.`);
+      case "win32":
+        this.backend = windowsClipboard(this);
+        break;
+      case "darwin":
+        this.backend = macosClipboard(this);
+        break;
+      case "linux":
+        this.backend = linuxClipboard(this);
+        break;
+      default:
+        throw new Error(`Image clipboard paste is not supported on ${this.platform}.`);
     }
   }
 
   async readImage(signal?: AbortSignal): Promise<Buffer> {
     throwIfAborted(signal);
-    const privateDirectory = await mkdtemp(
-      path.join(os.tmpdir(), "easy-code-clipboard-"),
-    );
+    const privateDirectory = await mkdtemp(path.join(os.tmpdir(), "easy-code-clipboard-"));
     const execution: ClipboardExecutionContext = {
       cwd: privateDirectory,
-      env: createClipboardEnvironment(
-        this.platform,
-        this.sourceEnv,
-        privateDirectory,
-        this.currentDirectory,
-      ),
+      env: createClipboardEnvironment(this.platform, this.sourceEnv, privateDirectory, this.currentDirectory),
       signal,
     };
     try {
@@ -111,17 +107,10 @@ export class SystemClipboardImageReader implements ClipboardImageReader, Clipboa
 
   async readText(signal?: AbortSignal): Promise<string | undefined> {
     throwIfAborted(signal);
-    const privateDirectory = await mkdtemp(
-      path.join(os.tmpdir(), "easy-code-clipboard-"),
-    );
+    const privateDirectory = await mkdtemp(path.join(os.tmpdir(), "easy-code-clipboard-"));
     const execution: ClipboardExecutionContext = {
       cwd: privateDirectory,
-      env: createClipboardEnvironment(
-        this.platform,
-        this.sourceEnv,
-        privateDirectory,
-        this.currentDirectory,
-      ),
+      env: createClipboardEnvironment(this.platform, this.sourceEnv, privateDirectory, this.currentDirectory),
       signal,
     };
     try {
@@ -133,18 +122,31 @@ export class SystemClipboardImageReader implements ClipboardImageReader, Clipboa
     }
   }
 
-  run(program: string, args: readonly string[], maxOutputBytes: number, execution: ClipboardExecutionContext): Promise<Buffer> {
+  run(
+    program: string,
+    args: readonly string[],
+    maxOutputBytes: number,
+    execution: ClipboardExecutionContext,
+  ): Promise<Buffer> {
     return this.runCommand(program, args, this.commandOptions(maxOutputBytes, execution));
   }
 
-  windowsRoot(): string { return getWindowsRoot(this.sourceEnv); }
+  windowsRoot(): string {
+    return getWindowsRoot(this.sourceEnv);
+  }
 
   readTemporaryFile(file: string, maxBytes: number, signal?: AbortSignal): Promise<Buffer> {
     return readTemporaryClipboardFile(file, maxBytes, signal);
   }
 
   private commandOptions(maxOutputBytes: number, execution: ClipboardExecutionContext): ClipboardCommandOptions {
-    return { maxOutputBytes, timeoutMs: this.timeoutMs, cwd: execution.cwd, env: execution.env, signal: execution.signal };
+    return {
+      maxOutputBytes,
+      timeoutMs: this.timeoutMs,
+      cwd: execution.cwd,
+      env: execution.env,
+      signal: execution.signal,
+    };
   }
 
   async resolveUnixHelper(name: "wl-paste" | "xclip"): Promise<string> {
@@ -163,10 +165,14 @@ export class SystemClipboardImageReader implements ClipboardImageReader, Clipboa
         if (isPathInside(canonical, canonicalCurrentDirectory)) continue;
         await verifyExecutable(canonical);
         return canonical;
-      } catch (error) { failures.push(errorMessage(error)); }
+      } catch (error) {
+        failures.push(errorMessage(error));
+      }
     }
     throw new ClipboardCommandError(
-      `${name} was not found in a trusted absolute PATH directory. ${failures.at(-1) ?? ""}`, "ENOENT");
+      `${name} was not found in a trusted absolute PATH directory. ${failures.at(-1) ?? ""}`,
+      "ENOENT",
+    );
   }
 
   async resolveFixedProgram(program: string, platform: "win32" | "linux" | "darwin"): Promise<string> {
@@ -192,20 +198,21 @@ export function createClipboardEnvironment(
   rejectedRoot = process.cwd(),
 ): NodeJS.ProcessEnv {
   const output: NodeJS.ProcessEnv = {};
-  const names = platform === "win32"
-    ? ["SystemRoot", "WINDIR", "ComSpec", "LANG", "LC_ALL"]
-    : [
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "DISPLAY",
-        "WAYLAND_DISPLAY",
-        "XAUTHORITY",
-        "XDG_RUNTIME_DIR",
-        "DBUS_SESSION_BUS_ADDRESS",
-        "WSL_DISTRO_NAME",
-        "WSL_INTEROP",
-      ];
+  const names =
+    platform === "win32"
+      ? ["SystemRoot", "WINDIR", "ComSpec", "LANG", "LC_ALL"]
+      : [
+          "HOME",
+          "LANG",
+          "LC_ALL",
+          "DISPLAY",
+          "WAYLAND_DISPLAY",
+          "XAUTHORITY",
+          "XDG_RUNTIME_DIR",
+          "DBUS_SESSION_BUS_ADDRESS",
+          "WSL_DISTRO_NAME",
+          "WSL_INTEROP",
+        ];
   for (const name of names) {
     const value = getEnvironmentValue(source, name);
     if (value !== undefined) output[name] = value;
@@ -324,11 +331,7 @@ export async function runClipboardCommand(
       }
       if (code !== 0) {
         const description = stderr.replace(/[\u0000-\u001f\u007f]+/gu, " ").trim();
-        finish(
-          new ClipboardCommandError(
-            description || `Clipboard helper exited with code ${code ?? "unknown"}.`,
-          ),
-        );
+        finish(new ClipboardCommandError(description || `Clipboard helper exited with code ${code ?? "unknown"}.`));
         return;
       }
       finish(undefined, Buffer.concat(stdout, stdoutLength));
@@ -336,13 +339,8 @@ export async function runClipboardCommand(
   });
 }
 
-function secureUnixPathDirectories(
-  value: string | undefined,
-  rejectedRoot: string,
-): string[] {
-  const entries = (value ?? "/usr/local/bin:/usr/bin:/bin")
-    .split(":")
-    .filter((entry) => path.posix.isAbsolute(entry));
+function secureUnixPathDirectories(value: string | undefined, rejectedRoot: string): string[] {
+  const entries = (value ?? "/usr/local/bin:/usr/bin:/bin").split(":").filter((entry) => path.posix.isAbsolute(entry));
   const unique = new Set<string>();
   for (const entry of entries) {
     const normalized = path.posix.normalize(entry);
@@ -358,11 +356,7 @@ async function verifyExecutable(program: string): Promise<void> {
   await access(program, fsConstants.X_OK);
 }
 
-async function readTemporaryClipboardFile(
-  filePath: string,
-  maxBytes: number,
-  signal?: AbortSignal,
-): Promise<Buffer> {
+async function readTemporaryClipboardFile(filePath: string, maxBytes: number, signal?: AbortSignal): Promise<Buffer> {
   throwIfAborted(signal);
   const info = await lstat(filePath);
   if (info.isSymbolicLink() || !info.isFile()) {
@@ -401,46 +395,34 @@ async function readTemporaryClipboardFile(
 }
 
 function getWindowsRoot(environment: NodeJS.ProcessEnv): string {
-  const configured = getEnvironmentValue(environment, "SystemRoot") ??
-    getEnvironmentValue(environment, "WINDIR") ?? "C:\\Windows";
+  const configured =
+    getEnvironmentValue(environment, "SystemRoot") ?? getEnvironmentValue(environment, "WINDIR") ?? "C:\\Windows";
   if (!path.win32.isAbsolute(configured) || configured.includes("\0")) {
     throw new ClipboardCommandError("Windows system root is invalid.");
   }
   return path.win32.normalize(configured);
 }
 
-function getEnvironmentValue(
-  environment: NodeJS.ProcessEnv,
-  name: string,
-): string | undefined {
+function getEnvironmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
   const exact = environment[name];
   if (exact !== undefined) return exact;
-  const key = Object.keys(environment).find((candidate) =>
-    candidate.toLowerCase() === name.toLowerCase(),
-  );
+  const key = Object.keys(environment).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
   return key ? environment[key] : undefined;
 }
 
-function isAbsoluteForPlatform(
-  value: string,
-  platform: "win32" | "linux" | "darwin" | NodeJS.Platform,
-): boolean {
+function isAbsoluteForPlatform(value: string, platform: "win32" | "linux" | "darwin" | NodeJS.Platform): boolean {
   return platform === "win32" ? path.win32.isAbsolute(value) : path.posix.isAbsolute(value);
 }
 
 function isPathInside(candidate: string, root: string): boolean {
-  const implementation = /^[A-Za-z]:[\\/]/u.test(candidate) || /^[A-Za-z]:[\\/]/u.test(root)
-    ? path.win32
-    : path.posix;
+  const implementation = /^[A-Za-z]:[\\/]/u.test(candidate) || /^[A-Za-z]:[\\/]/u.test(root) ? path.win32 : path.posix;
   const normalize = (value: string): string =>
-    implementation === path.win32
-      ? implementation.resolve(value).toLowerCase()
-      : implementation.resolve(value);
+    implementation === path.win32 ? implementation.resolve(value).toLowerCase() : implementation.resolve(value);
   const relative = implementation.relative(normalize(root), normalize(candidate));
-  return relative === "" ||
-    (!relative.startsWith(`..${implementation.sep}`) &&
-      relative !== ".." &&
-      !implementation.isAbsolute(relative));
+  return (
+    relative === "" ||
+    (!relative.startsWith(`..${implementation.sep}`) && relative !== ".." && !implementation.isAbsolute(relative))
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -455,8 +437,4 @@ function createAbortError(): Error {
   const error = new Error("Clipboard image capture was aborted.");
   error.name = "AbortError";
   return error;
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
 }

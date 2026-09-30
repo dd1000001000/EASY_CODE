@@ -87,11 +87,7 @@ function gitEnvironment(): NodeJS.ProcessEnv {
     delete environment[key];
   }
   for (const key of Object.keys(environment)) {
-    if (
-      key.startsWith("GIT_CONFIG_KEY_") ||
-      key.startsWith("GIT_CONFIG_VALUE_") ||
-      key === "GIT_CONFIG_COUNT"
-    ) {
+    if (key.startsWith("GIT_CONFIG_KEY_") || key.startsWith("GIT_CONFIG_VALUE_") || key === "GIT_CONFIG_COUNT") {
       delete environment[key];
     }
   }
@@ -101,20 +97,10 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 }
 
 function gitArguments(args: readonly string[]): string[] {
-  return [
-    "-c",
-    "core.fsmonitor=false",
-    "-c",
-    "core.untrackedCache=false",
-    ...args,
-  ];
+  return ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args];
 }
 
-async function gitText(
-  cwd: string,
-  args: readonly string[],
-  signal?: AbortSignal,
-): Promise<string> {
+async function gitText(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
   throwIfAborted(signal);
   const result = await execa("git", gitArguments(args), {
     cwd,
@@ -128,18 +114,12 @@ async function gitText(
   throwIfAborted(signal);
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim().slice(0, 2_000);
-    throw new Error(
-      `Git workspace query failed (${String(result.exitCode)}): ${detail || args.join(" ")}`,
-    );
+    throw new Error(`Git workspace query failed (${String(result.exitCode)}): ${detail || args.join(" ")}`);
   }
   return result.stdout;
 }
 
-async function gitBuffer(
-  cwd: string,
-  args: readonly string[],
-  signal?: AbortSignal,
-): Promise<Buffer> {
+async function gitBuffer(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<Buffer> {
   throwIfAborted(signal);
   const result = await execa("git", gitArguments(args), {
     cwd,
@@ -154,9 +134,7 @@ async function gitBuffer(
   throwIfAborted(signal);
   if (result.exitCode !== 0) {
     const detail = result.stderr.toString("utf8").trim().slice(0, 2_000);
-    throw new Error(
-      `Git workspace query failed (${String(result.exitCode)}): ${detail || args.join(" ")}`,
-    );
+    throw new Error(`Git workspace query failed (${String(result.exitCode)}): ${detail || args.join(" ")}`);
   }
   return result.stdout;
 }
@@ -173,13 +151,9 @@ async function gitExitCode(cwd: string, args: readonly string[]): Promise<number
   return result.exitCode ?? 1;
 }
 
-async function currentHead(
-  cwd: string,
-  signal?: AbortSignal,
-): Promise<string | undefined> {
+async function currentHead(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
   try {
-    return (await gitText(cwd, ["rev-parse", "--verify", "-q", "HEAD"], signal)).trim() ||
-      undefined;
+    return (await gitText(cwd, ["rev-parse", "--verify", "-q", "HEAD"], signal)).trim() || undefined;
   } catch (error) {
     throwIfAborted(signal);
     // An unborn repository has no HEAD commit. Confirm that Git still regards
@@ -194,10 +168,7 @@ function nulPaths(value: string): string[] {
   return value.split("\0").filter((entry) => entry.length > 0);
 }
 
-function normalizeGitPath(
-  guard: WorkspacePathGuard,
-  filename: string,
-): string | undefined {
+function normalizeGitPath(guard: WorkspacePathGuard, filename: string): string | undefined {
   try {
     return guard.normalizeRelative(filename);
   } catch {
@@ -208,13 +179,8 @@ function normalizeGitPath(
   }
 }
 
-function isTransientUntrackedPath(
-  filename: string,
-  options: SnapshotOptions,
-): boolean {
-  const configured = new Set(
-    [...(options.ignoredDirectoryNames ?? [])].map((entry) => entry.toLowerCase()),
-  );
+function isTransientUntrackedPath(filename: string, options: SnapshotOptions): boolean {
+  const configured = new Set([...(options.ignoredDirectoryNames ?? [])].map((entry) => entry.toLowerCase()));
   const lowerFilename = filename.toLowerCase();
   if (lowerFilename.endsWith(".pyc") || lowerFilename.endsWith(".pyo")) return true;
   return filename.split("/").some((segment) => {
@@ -246,28 +212,18 @@ async function ignoredUntrackedPaths(
   // Ask Git for collapsed ignored roots first. This prevents a forgotten
   // node_modules/build exclusion from expanding into hundreds of thousands of
   // paths merely so Runtime can discard them afterwards.
-  const collapsed = nulPaths(await gitText(
-    guard.root,
-    [
-      "ls-files",
-      "--others",
-      "--ignored",
-      "--exclude-standard",
-      "--directory",
-      "-z",
-      "--",
-      ".",
-    ],
-    signal,
-  ));
+  const collapsed = nulPaths(
+    await gitText(
+      guard.root,
+      ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."],
+      signal,
+    ),
+  );
   const files = new Set<string>();
   const directories: string[] = [];
   for (const value of collapsed) {
     const directory = value.endsWith("/");
-    const normalized = normalizeGitPath(
-      guard,
-      directory ? value.slice(0, -1) : value,
-    );
+    const normalized = normalizeGitPath(guard, directory ? value.slice(0, -1) : value);
     if (!normalized || isTransientUntrackedPath(normalized, options)) continue;
     if (directory) directories.push(normalized);
     else files.add(normalized);
@@ -283,24 +239,10 @@ async function ignoredUntrackedPaths(
       .map((directory) => `:(literal)${directory}`);
     const expanded = await gitText(
       guard.root,
-      [
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "--no-directory",
-        "-z",
-        "--",
-        ...pathspecs,
-      ],
+      ["ls-files", "--others", "--ignored", "--exclude-standard", "--no-directory", "-z", "--", ...pathspecs],
       signal,
     );
-    for (const filename of normalizedPathSet(
-      guard,
-      nulPaths(expanded),
-      options,
-      true,
-    )) {
+    for (const filename of normalizedPathSet(guard, nulPaths(expanded), options, true)) {
       files.add(filename);
     }
   }
@@ -322,46 +264,21 @@ async function candidateState(
     ),
     gitText(
       guard.root,
-      [
-        "diff",
-        "--cached",
-        "--no-ext-diff",
-        "--no-renames",
-        "--name-only",
-        "-z",
-        "--relative",
-        "--",
-        ".",
-      ],
+      ["diff", "--cached", "--no-ext-diff", "--no-renames", "--name-only", "-z", "--relative", "--", "."],
       signal,
     ),
-    gitText(
-      guard.root,
-      ["ls-files", "--others", "--exclude-standard", "-z", "--", "."],
-      signal,
-    ),
+    gitText(guard.root, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."], signal),
     ignoredUntrackedPaths(guard, options, signal),
   ]);
-  const tracked = normalizedPathSet(
-    guard,
-    [...nulPaths(working), ...nulPaths(staged)],
-    options,
-    false,
-  );
+  const tracked = normalizedPathSet(guard, [...nulPaths(working), ...nulPaths(staged)], options, false);
   return {
     head,
     tracked,
-    untracked: new Set([
-      ...normalizedPathSet(guard, nulPaths(untracked), options, true),
-      ...ignored,
-    ]),
+    untracked: new Set([...normalizedPathSet(guard, nulPaths(untracked), options, true), ...ignored]),
   };
 }
 
-function boundedPaths(
-  paths: ReadonlySet<string>,
-  options: SnapshotOptions,
-): { paths: string[]; truncated: boolean } {
+function boundedPaths(paths: ReadonlySet<string>, options: SnapshotOptions): { paths: string[]; truncated: boolean } {
   const ordered = [...paths].sort((left, right) => left.localeCompare(right));
   const maxFiles = Math.max(0, options.maxFiles ?? 20_000);
   return {
@@ -384,9 +301,7 @@ async function capturePaths(
   for (let offset = 0; offset < filenames.length; offset += concurrency) {
     throwIfAborted(signal);
     const batch = filenames.slice(offset, offset + concurrency);
-    const entries = await Promise.all(
-      batch.map((filename) => captureWorkspaceSnapshotEntry(guard, filename, signal)),
-    );
+    const entries = await Promise.all(batch.map((filename) => captureWorkspaceSnapshotEntry(guard, filename, signal)));
     for (let index = 0; index < batch.length; index += 1) {
       captured.set(batch[index]!, entries[index]);
     }
@@ -395,7 +310,6 @@ async function capturePaths(
 }
 
 async function headChangedPaths(
-  descriptor: GitWorkspaceDescriptor,
   guard: WorkspacePathGuard,
   before: string | undefined,
   after: string | undefined,
@@ -407,26 +321,11 @@ async function headChangedPaths(
   if (before && after) {
     output = await gitText(
       guard.root,
-      [
-        "diff",
-        "--no-ext-diff",
-        "--no-renames",
-        "--name-only",
-        "-z",
-        "--relative",
-        before,
-        after,
-        "--",
-        ".",
-      ],
+      ["diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", "--relative", before, after, "--", "."],
       signal,
     );
   } else {
-    output = await gitText(
-      guard.root,
-      ["ls-tree", "-r", "--name-only", "-z", before ?? after!, "--", "."],
-      signal,
-    );
+    output = await gitText(guard.root, ["ls-tree", "-r", "--name-only", "-z", before ?? after!, "--", "."], signal);
   }
   return normalizedPathSet(guard, nulPaths(output), options, false);
 }
@@ -438,11 +337,7 @@ async function revisionEntry(
   filename: string,
   signal?: AbortSignal,
 ): Promise<WorkspaceSnapshotEntry | undefined> {
-  const listing = await gitText(
-    guard.root,
-    ["ls-tree", "-z", "-l", revision, "--", `:(literal)${filename}`],
-    signal,
-  );
+  const listing = await gitText(guard.root, ["ls-tree", "-z", "-l", revision, "--", `:(literal)${filename}`], signal);
   const record = listing.split("\0").find(Boolean);
   if (!record) return undefined;
   const tab = record.indexOf("\t");
@@ -482,9 +377,7 @@ async function revisionEntry(
   };
 }
 
-export async function discoverGitWorkspace(
-  guard: WorkspacePathGuard,
-): Promise<GitWorkspaceDescriptor | undefined> {
+export async function discoverGitWorkspace(guard: WorkspacePathGuard): Promise<GitWorkspaceDescriptor | undefined> {
   try {
     const inside = (await gitText(guard.root, ["rev-parse", "--is-inside-work-tree"])).trim();
     if (inside !== "true") return undefined;
@@ -543,20 +436,8 @@ export async function compareGitCommandBaseline(
   signal?: AbortSignal,
 ): Promise<GitCommandComparison> {
   const current = await candidateState(descriptor, guard, options, signal);
-  const committed = await headChangedPaths(
-    descriptor,
-    guard,
-    baseline.head,
-    current.head,
-    options,
-    signal,
-  );
-  const candidates = new Set([
-    ...baseline.files.keys(),
-    ...current.tracked,
-    ...current.untracked,
-    ...committed,
-  ]);
+  const committed = await headChangedPaths(guard, baseline.head, current.head, options, signal);
+  const candidates = new Set([...baseline.files.keys(), ...current.tracked, ...current.untracked, ...committed]);
   const bounded = boundedPaths(candidates, options);
   const currentFiles = await capturePaths(guard, bounded.paths, options, signal);
   const beforeFiles = new Map<string, WorkspaceSnapshotEntry>();
@@ -569,13 +450,7 @@ export async function compareGitCommandBaseline(
     } else {
       previous = baseline.knownFiles.get(filename);
       if (!previous && baseline.head) {
-        previous = await revisionEntry(
-          descriptor,
-          guard,
-          baseline.head,
-          filename,
-          signal,
-        );
+        previous = await revisionEntry(descriptor, guard, baseline.head, filename, signal);
       }
     }
     if (previous) beforeFiles.set(filename, previous);
@@ -613,11 +488,7 @@ export async function captureGitWorkspaceSnapshot(
   await gitText(descriptor.repositoryRoot, ["rev-parse", "--is-inside-work-tree"], signal);
   const [trackedOutput, untrackedOutput, ignored] = await Promise.all([
     gitText(guard.root, ["ls-files", "--cached", "-z", "--", "."], signal),
-    gitText(
-      guard.root,
-      ["ls-files", "--others", "--exclude-standard", "-z", "--", "."],
-      signal,
-    ),
+    gitText(guard.root, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."], signal),
     ignoredUntrackedPaths(guard, options, signal),
   ]);
   const tracked = normalizedPathSet(guard, nulPaths(trackedOutput), options, false);
@@ -626,10 +497,7 @@ export async function captureGitWorkspaceSnapshot(
   // Keep explicitly verified manifest entries in consistency scans so such a
   // file is not falsely reported as deleted merely because Git omits it.
   const verified = normalizedPathSet(guard, [...previouslyVerifiedPaths], options, false);
-  const bounded = boundedPaths(
-    new Set([...tracked, ...untracked, ...ignored, ...verified]),
-    options,
-  );
+  const bounded = boundedPaths(new Set([...tracked, ...untracked, ...ignored, ...verified]), options);
   const captured = await capturePaths(guard, bounded.paths, options, signal);
   const files = new Map<string, WorkspaceSnapshotEntry>();
   for (const filename of bounded.paths) {

@@ -1,13 +1,5 @@
 import assert from "node:assert/strict";
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,7 +50,12 @@ describe("Benchmark-only credentials", () => {
         credentialStore: store,
         env: { GLM_CODING_PLAN_API_KEY: "ignored-environment-key" },
         input: Readable.from([input]),
-        stdout: { write: value => { output.push(String(value)); return true; } },
+        stdout: {
+          write: (value) => {
+            output.push(String(value));
+            return true;
+          },
+        },
       });
       await program.parseAsync(["node", "easy-code", "benchmark", "credential", ...args]);
     };
@@ -67,16 +64,16 @@ describe("Benchmark-only credentials", () => {
     await invoke(["set", "glm-coding-plan"], "benchmark-only-key\n");
     await invoke(["get", "glm-coding-plan"]);
     assert.match(output.join(""), /configured/u);
-    assert.ok(calls.some(value => value.startsWith("set:glm-coding-plan:https://open.bigmodel.cn/api/coding/paas/v4")));
+    assert.ok(
+      calls.some((value) => value.startsWith("set:glm-coding-plan:https://open.bigmodel.cn/api/coding/paas/v4")),
+    );
     assert.equal(values.get("glm-coding-plan"), "benchmark-only-key");
     assert.doesNotMatch(output.join(""), /benchmark-only-key|ignored-environment-key/u);
     await invoke(["unset", "glm-coding-plan"]);
     assert.equal(values.has("glm-coding-plan"), false);
   });
 });
-const BENCHMARK_PROVIDER = PROVIDER_CATALOG.find(
-  (provider) => provider.provider === BENCHMARK_PROFILE.provider,
-);
+const BENCHMARK_PROVIDER = PROVIDER_CATALOG.find((provider) => provider.provider === BENCHMARK_PROFILE.provider);
 if (!BENCHMARK_PROVIDER) throw new Error("The benchmark provider is missing");
 
 const EXPECTED_INSTANCE_IDS = [
@@ -142,14 +139,7 @@ function valuesAfter(args: readonly string[], option: string): string[] {
 
 describe("SWE-bench Verified integration", () => {
   it("trusts Harbor's outer sandbox only when explicitly requested inside Linux Docker", () => {
-    assert.equal(
-      resolveHarborOuterSandbox(
-        { EASY_CODE_OUTER_SANDBOX: "harbor" },
-        "linux",
-        true,
-      ),
-      "harbor",
-    );
+    assert.equal(resolveHarborOuterSandbox({ EASY_CODE_OUTER_SANDBOX: "harbor" }, "linux", true), "harbor");
 
     // The marker alone must never weaken EASY CODE's command sandbox.
     assert.equal(resolveHarborOuterSandbox({}, "linux", true), undefined);
@@ -158,35 +148,13 @@ describe("SWE-bench Verified integration", () => {
 
   it("rejects unknown, host, and non-Linux outer-sandbox claims", () => {
     assert.throws(
-      () => resolveHarborOuterSandbox(
-        { EASY_CODE_OUTER_SANDBOX: "docker" },
-        "linux",
-        true,
-      ),
+      () => resolveHarborOuterSandbox({ EASY_CODE_OUTER_SANDBOX: "docker" }, "linux", true),
       /EASY_CODE_OUTER_SANDBOX|harbor/iu,
     );
+    assert.throws(() => resolveHarborOuterSandbox({ EASY_CODE_OUTER_SANDBOX: "harbor" }, "win32", true), /Linux/iu);
+    assert.throws(() => resolveHarborOuterSandbox({ EASY_CODE_OUTER_SANDBOX: "harbor" }, "darwin", true), /Linux/iu);
     assert.throws(
-      () => resolveHarborOuterSandbox(
-        { EASY_CODE_OUTER_SANDBOX: "harbor" },
-        "win32",
-        true,
-      ),
-      /Linux/iu,
-    );
-    assert.throws(
-      () => resolveHarborOuterSandbox(
-        { EASY_CODE_OUTER_SANDBOX: "harbor" },
-        "darwin",
-        true,
-      ),
-      /Linux/iu,
-    );
-    assert.throws(
-      () => resolveHarborOuterSandbox(
-        { EASY_CODE_OUTER_SANDBOX: "harbor" },
-        "linux",
-        false,
-      ),
+      () => resolveHarborOuterSandbox({ EASY_CODE_OUTER_SANDBOX: "harbor" }, "linux", false),
       /container|Docker|marker/iu,
     );
   });
@@ -201,10 +169,7 @@ describe("SWE-bench Verified integration", () => {
         EASY_CODE_PROVIDER_API_KEY_FILE: secretPath,
       };
 
-      assert.equal(
-        consumeHarborProviderApiKeyFile("harbor", env, secretPath),
-        "test-secret",
-      );
+      assert.equal(consumeHarborProviderApiKeyFile("harbor", env, secretPath), "test-secret");
       assert.equal(env.EASY_CODE_PROVIDER_API_KEY_FILE, undefined);
       assert.equal(existsSync(secretPath), false);
     } finally {
@@ -213,39 +178,21 @@ describe("SWE-bench Verified integration", () => {
   });
 
   it("pins the recognized, duplicate-free 50-task Verified Mini subset", () => {
-    assert.equal(
-      SWE_BENCH_VERIFIED_50.harborDataset,
-      "swe-bench/swe-bench-verified",
-    );
+    assert.equal(SWE_BENCH_VERIFIED_50.harborDataset, "swe-bench/swe-bench-verified");
     assert.equal(
       SWE_BENCH_VERIFIED_50.harborDatasetRef,
       "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341",
     );
-    assert.equal(
-      SWE_BENCH_VERIFIED_50.officialDataset,
-      "SWE-bench/SWE-bench_Verified",
-    );
-    assert.equal(
-      SWE_BENCH_VERIFIED_50.officialDatasetRevision,
-      "78f471bf655a3137b2e8a75af1501690ec009ec3",
-    );
-    assert.equal(
-      SWE_BENCH_VERIFIED_50.subsetSource,
-      "MariusHobbhahn/swe-bench-verified-mini",
-    );
-    assert.equal(
-      SWE_BENCH_VERIFIED_50.subsetRevision,
-      "b316c349947c29963fce3f4a65967c9807a4b673",
-    );
+    assert.equal(SWE_BENCH_VERIFIED_50.officialDataset, "SWE-bench/SWE-bench_Verified");
+    assert.equal(SWE_BENCH_VERIFIED_50.officialDatasetRevision, "78f471bf655a3137b2e8a75af1501690ec009ec3");
+    assert.equal(SWE_BENCH_VERIFIED_50.subsetSource, "MariusHobbhahn/swe-bench-verified-mini");
+    assert.equal(SWE_BENCH_VERIFIED_50.subsetRevision, "b316c349947c29963fce3f4a65967c9807a4b673");
     assert.equal(
       SWE_BENCH_VERIFIED_50.subsetParquetSha256,
       "f9ba19dea78884f1081355d2d8afb671899981f24180aa0c4c1aa14d2c23e855",
     );
     assert.equal(SWE_BENCH_VERIFIED_50.harnessVersion, "5.0.2");
-    assert.equal(
-      SWE_BENCH_VERIFIED_50.taskRepoRevision,
-      "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d",
-    );
+    assert.equal(SWE_BENCH_VERIFIED_50.taskRepoRevision, "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d");
     assert.deepEqual(SWE_BENCH_VERIFIED_50.instanceIds, EXPECTED_INSTANCE_IDS);
     assert.equal(SWE_BENCH_VERIFIED_50.instanceIds.length, 50);
     assert.equal(new Set(SWE_BENCH_VERIFIED_50.instanceIds).size, 50);
@@ -308,60 +255,33 @@ describe("SWE-bench Verified integration", () => {
     assert.ok(BENCHMARK_PROVIDER);
     assert.equal(BENCHMARK_PROFILE.provider, "glm-coding-plan");
     assert.equal("apiKey" in BENCHMARK_PROVIDER.environment, false);
-    assert.deepEqual(BENCHMARK_PROVIDER.environment.baseUrl, [
-      "EASY_CODE_GLM_CODING_PLAN_BASE_URL",
-    ]);
-    const adapterPath = fileURLToPath(new URL(
-      "../../benchmarks/swebench_verified/easy_code_agent.py",
-      import.meta.url,
-    ));
+    assert.deepEqual(BENCHMARK_PROVIDER.environment.baseUrl, ["EASY_CODE_GLM_CODING_PLAN_BASE_URL"]);
+    const adapterPath = fileURLToPath(
+      new URL("../../benchmarks/swebench_verified/easy_code_agent.py", import.meta.url),
+    );
     const source = readFileSync(adapterPath, "utf8");
 
     assert.match(
       source,
       /"--provider",\s*shlex\.quote\(_BENCHMARK_PROVIDER\),\s*"--model",\s*shlex\.quote\(_BENCHMARK_MODEL\),\s*"--mode",\s*shlex\.quote\(_BENCHMARK_MODE\),\s*"--thinking-effort",\s*shlex\.quote\(_BENCHMARK_THINKING_EFFORT\),\s*"--approval",\s*"safe",\s*"--yes",\s*"run"/u,
     );
-    assert.match(
-      source,
-      /catalog\.get\("profiles", \{\}\)\.get\("swe_bench_verified_50"\)/u,
-    );
+    assert.match(source, /catalog\.get\("profiles", \{\}\)\.get\("swe_bench_verified_50"\)/u);
     assert.match(source, /provider\.get\("base_url"\)/u);
     assert.match(source, /"EASY_CODE_OUTER_SANDBOX":\s*"harbor"/u);
     assert.match(source, /class EasyCodeBenchmarkDockerEnvironment\(DockerEnvironment\):/u);
-    assert.match(
-      source,
-      /network_mode=NetworkMode\.ALLOWLIST,\s*allowed_hosts=\[_BENCHMARK_ALLOWED_HOST\]/u,
-    );
-    assert.match(
-      source,
-      /await environment\.set_network_policy\(\s*_benchmark_agent_network_policy\(\)\s*\)/u,
-    );
-    assert.match(
-      source,
-      /baseline_network_policy = environment\.network_policy/u,
-    );
-    assert.match(
-      source,
-      /await self\._restore_network_after_clean_exit\(\s*environment, baseline_network_policy/u,
-    );
+    assert.match(source, /network_mode=NetworkMode\.ALLOWLIST,\s*allowed_hosts=\[_BENCHMARK_ALLOWED_HOST\]/u);
+    assert.match(source, /await environment\.set_network_policy\(\s*_benchmark_agent_network_policy\(\)\s*\)/u);
+    assert.match(source, /baseline_network_policy = environment\.network_policy/u);
+    assert.match(source, /await self\._restore_network_after_clean_exit\(\s*environment, baseline_network_policy/u);
     assert.doesNotMatch(source, /NetworkPolicy\(network_mode=NetworkMode\.NO_NETWORK\)/u);
     assert.match(source, /environment\.upload_file\(\s*self\._host_api_key_file,\s*_REMOTE_API_KEY_FILE/u);
     assert.match(
       source,
       /ownership = \(\s*f"chown \{shlex\.quote\(str\(owner\)\)\} "\s*f"\{shlex\.quote\(_REMOTE_SECRETS_DIR\)\} && "/u,
     );
-    assert.match(
-      source,
-      /"EASY_CODE_PROVIDER_API_KEY_FILE":\s*_REMOTE_API_KEY_FILE/u,
-    );
-    assert.match(
-      source,
-      /os\.environ\.get\(\s*"EASY_CODE_PROVIDER_KEY_FILE"/u,
-    );
-    assert.match(
-      source,
-      /_BENCHMARK_BASE_URL_ENV:\s*_BENCHMARK_BASE_URL/u,
-    );
+    assert.match(source, /"EASY_CODE_PROVIDER_API_KEY_FILE":\s*_REMOTE_API_KEY_FILE/u);
+    assert.match(source, /os\.environ\.get\(\s*"EASY_CODE_PROVIDER_KEY_FILE"/u);
+    assert.match(source, /_BENCHMARK_BASE_URL_ENV:\s*_BENCHMARK_BASE_URL/u);
     assert.doesNotMatch(source, /https:\/\/open\.bigmodel\.cn\/api\/coding\/paas\/v4/u);
     assert.doesNotMatch(source, /_GLM_CODING_PLAN_BASE_URL/u);
     assert.match(source, /def _truncate_output\(/u);
@@ -374,14 +294,8 @@ describe("SWE-bench Verified integration", () => {
     assert.match(source, /_REMOTE_CACHE_DIR = "\/tmp\/easy-code-cache"/u);
     assert.doesNotMatch(source, /_REMOTE_CACHE_DIR = "\/logs\/agent/u);
     assert.match(source, /environment\.upload_dir\(self\._model_directory, _REMOTE_MODEL_DIR\)/u);
-    assert.match(
-      source,
-      /command=f"mkdir -p \{shlex\.quote\(_REMOTE_MODEL_DIR\)\}"/u,
-    );
-    assert.match(
-      source,
-      /command=f"chmod -R a\+rX \{shlex\.quote\(_REMOTE_MODEL_DIR\)\}"/u,
-    );
+    assert.match(source, /command=f"mkdir -p \{shlex\.quote\(_REMOTE_MODEL_DIR\)\}"/u);
+    assert.match(source, /command=f"chmod -R a\+rX \{shlex\.quote\(_REMOTE_MODEL_DIR\)\}"/u);
     assert.ok(
       source.indexOf('command=f"mkdir -p {shlex.quote(_REMOTE_MODEL_DIR)}"') <
         source.indexOf("environment.upload_dir(self._model_directory, _REMOTE_MODEL_DIR)"),
@@ -403,7 +317,10 @@ describe("SWE-bench Verified integration", () => {
     )?.[1];
     assert.ok(modelExecEnvironment);
     assert.match(source, /_BENCHMARK_ORCHESTRATION_ENABLED = True/u);
-    assert.match(modelExecEnvironment, /"EASY_CODE_ORCHESTRATION_ENABLED": str\(\s*_BENCHMARK_ORCHESTRATION_ENABLED\s*\)\.lower\(\)/u);
+    assert.match(
+      modelExecEnvironment,
+      /"EASY_CODE_ORCHESTRATION_ENABLED": str\(\s*_BENCHMARK_ORCHESTRATION_ENABLED\s*\)\.lower\(\)/u,
+    );
     assert.match(source, /"orchestrationEnabled": _BENCHMARK_ORCHESTRATION_ENABLED/u);
     assert.doesNotMatch(modelExecEnvironment, /BENCHMARK_CHECKPOINT_ROOT/u);
     assert.doesNotMatch(source, /ensure_system_dependencies/u);
@@ -411,10 +328,7 @@ describe("SWE-bench Verified integration", () => {
     assert.doesNotMatch(source, /"(?:ZAI|GLM|ZHIPUAI)_API_KEY":\s*self\._api_key/u);
     assert.doesNotMatch(source, /shlex\.quote\(self\._api_key\)/u);
 
-    const launcherPath = fileURLToPath(new URL(
-      "../../src/benchmarks/swebench.ts",
-      import.meta.url,
-    ));
+    const launcherPath = fileURLToPath(new URL("../../src/benchmarks/swebench.ts", import.meta.url));
     const launcherSource = readFileSync(launcherPath, "utf8");
     assert.doesNotMatch(
       launcherSource,
@@ -423,15 +337,9 @@ describe("SWE-bench Verified integration", () => {
     const appPath = fileURLToPath(new URL("../../src/app.ts", import.meta.url));
     const appSource = readFileSync(appPath, "utf8");
     assert.match(appSource, /includePublicWebTools: this\.trustedOuterSandbox !== "harbor"/u);
-    assert.match(
-      appSource,
-      /new LocalEmbeddingModel\(\{\s*cacheDirectory:\s*config\.cacheDir,?\s*\}\)/u,
-    );
+    assert.match(appSource, /new LocalEmbeddingModel\(\{\s*cacheDirectory:\s*config\.cacheDir,?\s*\}\)/u);
 
-    const powershellPath = fileURLToPath(new URL(
-      "../../benchmarks/swebench_verified/run.ps1",
-      import.meta.url,
-    ));
+    const powershellPath = fileURLToPath(new URL("../../benchmarks/swebench_verified/run.ps1", import.meta.url));
     const powershellSource = readFileSync(powershellPath, "utf8");
     assert.match(powershellSource, /"benchmark", "swe-bench", "run"/u);
     assert.match(powershellSource, /"--offset", \$offset\.ToString\(\)/u);
@@ -452,18 +360,10 @@ describe("SWE-bench Verified integration", () => {
 
     assert.deepEqual(
       valuesAfter(args, "--include-task-name"),
-      EXPECTED_INSTANCE_IDS.slice(0, 2).map(
-        (instanceId) => `swe-bench/${instanceId}`,
-      ),
+      EXPECTED_INSTANCE_IDS.slice(0, 2).map((instanceId) => `swe-bench/${instanceId}`),
     );
-    assert.throws(
-      () => buildHarborRunArgs({ root, runId: "invalid", concurrency: 0 }),
-      /concurrency|positive/iu,
-    );
-    assert.throws(
-      () => buildHarborRunArgs({ root, runId: "invalid", concurrency: 1, limit: 51 }),
-      /limit|50/iu,
-    );
+    assert.throws(() => buildHarborRunArgs({ root, runId: "invalid", concurrency: 0 }), /concurrency|positive/iu);
+    assert.throws(() => buildHarborRunArgs({ root, runId: "invalid", concurrency: 1, limit: 51 }), /limit|50/iu);
   });
 
   it("aggregates isolated checkpoint and retrieval metrics for one Harbor job", () => {
@@ -525,10 +425,7 @@ describe("SWE-bench Verified integration", () => {
         outputTokens: 500,
         cachedInputTokens: 150,
       });
-      assert.throws(
-        () => summarizeSweBenchContextMetrics(root, "../other-job"),
-        /runId|invalid/iu,
-      );
+      assert.throws(() => summarizeSweBenchContextMetrics(root, "../other-job"), /runId|invalid/iu);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -548,53 +445,48 @@ describe("SWE-bench Verified integration", () => {
       });
       assert.deepEqual(
         valuesAfter(args, "--include-task-name"),
-        EXPECTED_INSTANCE_IDS.slice(offset, offset + 10).map(
-          (instanceId) => `swe-bench/${instanceId}`,
-        ),
+        EXPECTED_INSTANCE_IDS.slice(offset, offset + 10).map((instanceId) => `swe-bench/${instanceId}`),
       );
     }
 
     assert.throws(
-      () => buildHarborRunArgs({
-        root,
-        runId: "negative-offset",
-        concurrency: 1,
-        offset: -1,
-        limit: 10,
-      }),
+      () =>
+        buildHarborRunArgs({
+          root,
+          runId: "negative-offset",
+          concurrency: 1,
+          offset: -1,
+          limit: 10,
+        }),
       /offset|non-negative/iu,
     );
     assert.throws(
-      () => buildHarborRunArgs({
-        root,
-        runId: "empty-offset",
-        concurrency: 1,
-        offset: 50,
-        limit: 1,
-      }),
+      () =>
+        buildHarborRunArgs({
+          root,
+          runId: "empty-offset",
+          concurrency: 1,
+          offset: 50,
+          limit: 1,
+        }),
       /offset|49/iu,
     );
     assert.throws(
-      () => buildHarborRunArgs({
-        root,
-        runId: "overflowing-slice",
-        concurrency: 1,
-        offset: 45,
-        limit: 10,
-      }),
+      () =>
+        buildHarborRunArgs({
+          root,
+          runId: "overflowing-slice",
+          concurrency: 1,
+          offset: 45,
+          limit: 10,
+        }),
       /offset.*limit|50/iu,
     );
   });
 
   it("keeps Windows benchmark artifacts on the F drive", () => {
-    assert.equal(
-      validateSweBenchRoot("F:\\benchmarks\\verified", "win32"),
-      "F:\\benchmarks\\verified",
-    );
-    assert.throws(
-      () => validateSweBenchRoot("C:\\benchmarks\\verified", "win32"),
-      /F: drive/iu,
-    );
+    assert.equal(validateSweBenchRoot("F:\\benchmarks\\verified", "win32"), "F:\\benchmarks\\verified");
+    assert.throws(() => validateSweBenchRoot("C:\\benchmarks\\verified", "win32"), /F: drive/iu);
   });
 
   it("preserves Docker Desktop CLI plugin discovery while relocating benchmark caches", () => {
@@ -603,8 +495,8 @@ describe("SWE-bench Verified integration", () => {
     const providerConfiguration = Object.fromEntries(
       PROVIDER_CATALOG.flatMap((provider) =>
         Object.values(provider.environment).flatMap((names) =>
-          names.map((name: string) => [name, `untrusted-${name.toLowerCase()}`] as const)
-        )
+          names.map((name: string) => [name, `untrusted-${name.toLowerCase()}`] as const),
+        ),
       ),
     );
     const baseEnvironment: NodeJS.ProcessEnv = {

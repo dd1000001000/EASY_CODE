@@ -55,7 +55,8 @@ const stableGateServers = new Map<number, Promise<GateServer>>();
 export async function resolvePublicNetworkHost(host: string): Promise<string> {
   if (!host || /[\s\u0000-\u001f\u007f/@\\]/u.test(host)) throw new Error("Invalid network destination");
   const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, family: 4 });
-  if (!addresses.length || addresses.some(a => !publicDownloadAddress(a.address))) throw new Error("Private, local, reserved and IPv6 destinations are not enabled");
+  if (!addresses.length || addresses.some((a) => !publicDownloadAddress(a.address)))
+    throw new Error("Private, local, reserved and IPv6 destinations are not enabled");
   return addresses[0]!.address;
 }
 
@@ -80,12 +81,21 @@ function meter(session: GateSession, stream: Duplex | IncomingMessage): void {
 }
 
 async function permit(session: GateSession, host: string, port: number): Promise<string> {
-  if (session.closed || session.budgetExceeded || session.options.signal?.aborted ||
-      ++session.requests > 2048 || !Number.isInteger(port) || port < 1 || port > 65535 ||
-      !host || host.length > 253 || /[\s\u0000-\u001f\u007f/@\\]/u.test(host)) {
+  if (
+    session.closed ||
+    session.budgetExceeded ||
+    session.options.signal?.aborted ||
+    ++session.requests > 2048 ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535 ||
+    !host ||
+    host.length > 253 ||
+    /[\s\u0000-\u001f\u007f/@\\]/u.test(host)
+  ) {
     throw new Error("Network capability rejected");
   }
-  if (!await session.options.authorize(host, port)) {
+  if (!(await session.options.authorize(host, port))) {
     session.options.record(host, port, "approval_denied");
     throw new Error("Network approval denied");
   }
@@ -96,8 +106,12 @@ async function permit(session: GateSession, host: string, port: number): Promise
   let timer: NodeJS.Timeout | undefined;
   const address = await Promise.race([
     (session.options.resolveHost ?? resolvePublicNetworkHost)(host),
-    new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("DNS deadline exceeded")), 10000); }),
-  ]).finally(() => { if (timer) clearTimeout(timer); });
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("DNS deadline exceeded")), 10000);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
   if (session.closed || session.budgetExceeded || session.options.signal?.aborted) {
     throw new Error("Network capability expired");
   }
@@ -125,15 +139,29 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
       const headers: OutgoingHttpHeaders = { ...req.headers, host: url.host };
       delete headers["proxy-authorization"];
       delete headers["proxy-connection"];
-      const upstream = httpRequest({ hostname: address, family: 4, port, path: url.pathname + url.search,
-        method: req.method, headers, agent: false, timeout: 60000 }, response => {
-        res.writeHead(response.statusCode ?? 502, response.headers);
-        response.pipe(res);
-        meter(session, response);
-      });
-      upstream.on("socket", socket => track(session, socket));
+      const upstream = httpRequest(
+        {
+          hostname: address,
+          family: 4,
+          port,
+          path: url.pathname + url.search,
+          method: req.method,
+          headers,
+          agent: false,
+          timeout: 60000,
+        },
+        (response) => {
+          res.writeHead(response.statusCode ?? 502, response.headers);
+          response.pipe(res);
+          meter(session, response);
+        },
+      );
+      upstream.on("socket", (socket) => track(session, socket));
       upstream.once("timeout", () => upstream.destroy());
-      upstream.once("error", () => { if (!res.headersSent) res.writeHead(502); res.end("Network request failed"); });
+      upstream.once("error", () => {
+        if (!res.headersSent) res.writeHead(502);
+        res.end("Network request failed");
+      });
       res.once("close", () => upstream.destroy());
       req.pipe(upstream);
       meter(session, req);
@@ -143,7 +171,7 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
     });
   });
   gate.server = server;
-  server.on("connection", socket => {
+  server.on("connection", (socket) => {
     socket.on("error", () => undefined);
     socket.setTimeout(120000, () => socket.destroy());
   });
@@ -154,7 +182,8 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
       if (!session || session.closed) throw new Error("Network capability rejected");
       track(session, client);
       const url = new URL(`http://${req.url}`);
-      if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("Invalid CONNECT authority");
+      if (url.username || url.password || url.pathname !== "/" || url.search || url.hash)
+        throw new Error("Invalid CONNECT authority");
       const port = Number(url.port || 80);
       const address = await permit(session, url.hostname, port);
       if (client.destroyed || session.closed) return;
@@ -164,7 +193,10 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
       client.once("close", () => upstream.destroy());
       upstream.once("close", () => client.destroy());
       upstream.once("connect", () => {
-        if (client.destroyed || session.closed) { upstream.destroy(); return; }
+        if (client.destroyed || session.closed) {
+          upstream.destroy();
+          return;
+        }
         client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         session.transferred += head.length;
         if (head.length) upstream.write(head);
@@ -180,14 +212,21 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
   await new Promise<void>((resolve, reject) => {
     const onError = (error: NodeJS.ErrnoException) => {
       if (listenPort > 0 && error.code === "EADDRINUSE") {
-        reject(new Error(`Native sandbox network broker port ${listenPort} is already in use; the per-process proxy lease must select another slot`));
+        reject(
+          new Error(
+            `Native sandbox network broker port ${listenPort} is already in use; the per-process proxy lease must select another slot`,
+          ),
+        );
       } else reject(error);
     };
     server.once("error", onError);
     server.listen({ port: listenPort, host: "127.0.0.1", exclusive: true }, () => {
       server.off("error", onError);
       const address = server.address();
-      if (!address || typeof address === "string") { reject(new Error("Network gate did not bind")); return; }
+      if (!address || typeof address === "string") {
+        reject(new Error("Network gate did not bind"));
+        return;
+      }
       gate.port = address.port;
       if (shared) server.unref();
       resolve();
@@ -199,7 +238,7 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
 function stableGateServer(port: number): Promise<GateServer> {
   const current = stableGateServers.get(port);
   if (current) return current;
-  const created = startGateServer(port, true).catch(error => {
+  const created = startGateServer(port, true).catch((error) => {
     if (stableGateServers.get(port) === created) stableGateServers.delete(port);
     throw error;
   });
@@ -240,13 +279,15 @@ export async function createCommandNetworkGate(options: CommandNetworkGateOption
     for (const socket of session.sockets) socket.destroy();
     closing = gate.shared
       ? Promise.resolve()
-      : new Promise<void>(resolve => {
+      : new Promise<void>((resolve) => {
           gate.server.closeAllConnections();
           gate.server.close(() => resolve());
         });
     return closing;
   };
-  const abort = () => { void close(); };
+  const abort = () => {
+    void close();
+  };
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) await close();
   return { proxyURL: `http://easy-code:${secret}@127.0.0.1:${gate.port}`, close };

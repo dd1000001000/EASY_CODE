@@ -1,9 +1,6 @@
 import { Chalk, type ChalkInstance } from "chalk";
 
-import {
-  sanitizeCommandOutput,
-  stripTerminalControls,
-} from "../command/output-stream.js";
+import { sanitizeCommandOutput, stripTerminalControls } from "../command/output-stream.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import type { SubagentStatus, SubagentView } from "../subagents/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
@@ -15,9 +12,7 @@ export interface SubagentRenderOptions {
 }
 
 function safeInline(value: string): string {
-  return redactSensitiveInformation(
-    sanitizeCommandOutput(stripTerminalControls(value)),
-  )
+  return redactSensitiveInformation(sanitizeCommandOutput(stripTerminalControls(value)))
     .replace(/\s+/gu, " ")
     .trim();
 }
@@ -26,49 +21,37 @@ function isActive(status: SubagentStatus): boolean {
   return status === "running" || status === "stopping";
 }
 
-function environmentDetails(
-  agent: Readonly<SubagentView>,
-  palette: ChalkInstance,
-): string {
+function environmentDetails(agent: Readonly<SubagentView>, palette: ChalkInstance): string {
   const effectiveIsolation = agent.environment?.kind ?? "pending";
   const environmentStatus = agent.environment?.status ?? "pending";
   return palette.gray(
     `  thread ${safeInline(agent.childThreadId)} · ` +
-    `isolation ${agent.requestedIsolation} → ${effectiveIsolation} · ` +
-    `environment ${safeInline(agent.environmentId)} (${environmentStatus})`,
+      `isolation ${agent.requestedIsolation} → ${effectiveIsolation} · ` +
+      `environment ${safeInline(agent.environmentId)} (${environmentStatus})`,
   );
 }
 
-function resultDetails(
-  agent: Readonly<SubagentView>,
-  palette: ChalkInstance,
-): string {
+function resultDetails(agent: Readonly<SubagentView>, palette: ChalkInstance): string {
   const artifact = agent.resultArtifact;
   if (!artifact) {
     const artifactStatus = isActive(agent.status) ? "pending" : "none";
-    const handoffStatus = agent.environment?.kind === "shared"
-      ? "shared workspace"
-      : isActive(agent.status)
-        ? "pending"
-        : "unavailable";
-    return palette.gray(
-      `  artifact ${artifactStatus} · handoff ${handoffStatus}`,
-    );
+    const handoffStatus =
+      agent.environment?.kind === "shared" ? "shared workspace" : isActive(agent.status) ? "pending" : "unavailable";
+    return palette.gray(`  artifact ${artifactStatus} · handoff ${handoffStatus}`);
   }
 
-  const changedFiles = artifact.changedFileCount === 1
-    ? "1 changed file"
-    : `${artifact.changedFileCount} changed files`;
-  const handoffStatus = artifact.delivery === "local"
-    ? "local"
-    : artifact.delivery === "branch"
-      ? `branch ${safeInline(artifact.branchName ?? "unknown")}`
-      : artifact.environmentKind === "shared"
-        ? "shared workspace"
-        : "pending";
+  const changedFiles =
+    artifact.changedFileCount === 1 ? "1 changed file" : `${artifact.changedFileCount} changed files`;
+  const handoffStatus =
+    artifact.delivery === "local"
+      ? "local"
+      : artifact.delivery === "branch"
+        ? `branch ${safeInline(artifact.branchName ?? "unknown")}`
+        : artifact.environmentKind === "shared"
+          ? "shared workspace"
+          : "pending";
   return palette.gray(
-    `  artifact ${safeInline(artifact.id)} (${artifact.status}) · ` +
-    `${changedFiles} · handoff ${handoffStatus}`,
+    `  artifact ${safeInline(artifact.id)} (${artifact.status}) · ` + `${changedFiles} · handoff ${handoffStatus}`,
   );
 }
 
@@ -79,12 +62,9 @@ export function renderSubagents(
 ): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
   const active = agents.filter((agent) => isActive(agent.status)).length;
-  const activeText = options.concurrencyLimit === undefined
-    ? `${active} active`
-    : `${active}/${options.concurrencyLimit} active`;
-  const header = palette.bold(
-    `Child agents · ${activeText} · ${agents.length} total`,
-  );
+  const activeText =
+    options.concurrencyLimit === undefined ? `${active} active` : `${active}/${options.concurrencyLimit} active`;
+  const header = palette.bold(`Child agents · ${activeText} · ${agents.length} total`);
   if (agents.length === 0) {
     return `\n${header}\n${palette.gray("No child agents in this runtime.")}\n`;
   }
@@ -92,17 +72,14 @@ export function renderSubagents(
   const currentGraph = options.taskGraph;
   const tasks = currentGraph?.tasks ?? [];
   const lines = agents.map((agent, index) => {
-    const currentTaskIndex = currentGraph?.id === agent.taskGraphId
-      ? tasks.findIndex((task) => task.id === agent.taskId)
-      : -1;
-    const taskLabel = agent.assignmentKind === "standalone"
-      ? `Standalone [${safeInline(agent.taskId)}]`
-      : `${currentTaskIndex >= 0 ? `Task ${currentTaskIndex + 1} ` : "Task "}` +
-        `[${safeInline(agent.taskId)}]`;
+    const currentTaskIndex =
+      currentGraph?.id === agent.taskGraphId ? tasks.findIndex((task) => task.id === agent.taskId) : -1;
+    const taskLabel =
+      agent.assignmentKind === "standalone"
+        ? `Standalone [${safeInline(agent.taskId)}]`
+        : `${currentTaskIndex >= 0 ? `Task ${currentTaskIndex + 1} ` : "Task "}` + `[${safeInline(agent.taskId)}]`;
     const label =
-      `${index + 1}. ${safeInline(agent.id)} · ${taskLabel} ` +
-      `${safeInline(agent.taskTitle)} ` +
-      `(${agent.status})`;
+      `${index + 1}. ${safeInline(agent.id)} · ${taskLabel} ` + `${safeInline(agent.taskTitle)} ` + `(${agent.status})`;
 
     let statusLine: string;
     switch (agent.status) {
@@ -129,11 +106,7 @@ export function renderSubagents(
         statusLine = palette.red(`! ${label}`);
         break;
     }
-    return [
-      statusLine,
-      environmentDetails(agent, palette),
-      resultDetails(agent, palette),
-    ].join("\n");
+    return [statusLine, environmentDetails(agent, palette), resultDetails(agent, palette)].join("\n");
   });
 
   return `\n${header}\n${lines.join("\n")}\n`;

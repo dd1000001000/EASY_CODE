@@ -7,10 +7,7 @@ import { execa } from "execa";
 
 import { toResultArtifactRef } from "../src/subagents/coordinator.js";
 import { sha256 } from "../src/utils/hash.js";
-import {
-  ExecutionEnvironmentManager,
-  runtimeGitConfigArgs,
-} from "../src/workspace/execution-environment.js";
+import { ExecutionEnvironmentManager, runtimeGitConfigArgs } from "../src/workspace/execution-environment.js";
 import { describe, it } from "./harness.js";
 
 function environmentBinding(agentId: string, environmentId: string) {
@@ -51,7 +48,6 @@ describe("ExecutionEnvironmentManager", () => {
       const manager = new ExecutionEnvironmentManager({
         logicalWorkspaceRoot: workspaceRoot,
         dataDir,
-        defaultIsolation: "auto",
       });
 
       const active = await manager.provision({
@@ -63,10 +59,7 @@ describe("ExecutionEnvironmentManager", () => {
       const canonicalWorkspaceRoot = path.normalize(await realpath(workspaceRoot));
       assert.equal(active.descriptor.executionRoot, path.resolve(workspaceRoot));
       assert.equal(active.workspace.root, canonicalWorkspaceRoot);
-      assert.equal(
-        (await manager.loadEnvironment("environment_auto")).kind,
-        "shared",
-      );
+      assert.equal((await manager.loadEnvironment("environment_auto")).kind, "shared");
     });
   });
 
@@ -125,22 +118,14 @@ describe("ExecutionEnvironmentManager", () => {
         }),
         /tracks the EASY CODE Runtime-reserved path/u,
       );
-      assert.equal(
-        await readFile(path.join(reservedRoot, "tracked.txt"), "utf8"),
-        "user data\n",
-      );
+      assert.equal(await readFile(path.join(reservedRoot, "tracked.txt"), "utf8"), "user data\n");
     });
   });
 
   it("rejects an unsafe Windows checkout path before creating a Worktree", async () => {
     if (process.platform !== "win32") return;
     await withGitFixture(async ({ root, dataDir }) => {
-      const relative = path.join(
-        "untracked",
-        "a".repeat(70),
-        "b".repeat(70),
-        "evidence.txt",
-      );
+      const relative = path.join("untracked", "a".repeat(70), "b".repeat(70), "evidence.txt");
       await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
       await writeFile(path.join(root, relative), "untracked snapshot evidence\n", "utf8");
       const manager = createManager(root, dataDir);
@@ -158,21 +143,14 @@ describe("ExecutionEnvironmentManager", () => {
       assert.equal(record.environment.status, "failed");
       assert.deepEqual(record.environment.provisioningCleanup, { status: "completed" });
       assert.equal(await fileExists(record.environment.worktreeRoot!), false);
-      assert.doesNotMatch(
-        await git(root, ["worktree", "list", "--porcelain"]),
-        /environment_path_preflight/u,
-      );
+      assert.doesNotMatch(await git(root, ["worktree", "list", "--porcelain"]), /environment_path_preflight/u);
     });
   });
 
   it("disables repository checkout hooks during Runtime-managed Git operations", async () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const hook = path.join(root, ".git", "hooks", "post-checkout");
-      await writeFile(
-        hook,
-        "#!/bin/sh\nprintf 'hook ran' > \"$PWD/easy-code-hook-ran.txt\"\n",
-        "utf8",
-      );
+      await writeFile(hook, "#!/bin/sh\nprintf 'hook ran' > \"$PWD/easy-code-hook-ran.txt\"\n", "utf8");
       await chmod(hook, 0o755);
       const manager = createManager(root, dataDir);
 
@@ -182,10 +160,7 @@ describe("ExecutionEnvironmentManager", () => {
       });
 
       assert.equal(await fileExists(path.join(root, "easy-code-hook-ran.txt")), false);
-      assert.equal(
-        await fileExists(path.join(active.workspace.root, "easy-code-hook-ran.txt")),
-        false,
-      );
+      assert.equal(await fileExists(path.join(active.workspace.root, "easy-code-hook-ran.txt")), false);
     });
   });
 
@@ -205,26 +180,16 @@ describe("ExecutionEnvironmentManager", () => {
 
       assert.equal(active.descriptor.kind, "worktree");
       assert.equal(active.descriptor.pathLayoutVersion, 2);
-      const managedRelative = path.relative(
-        path.join(dataDir, "worktrees"),
-        active.descriptor.worktreeRoot!,
-      ).split(path.sep);
+      const managedRelative = path
+        .relative(path.join(dataDir, "worktrees"), active.descriptor.worktreeRoot!)
+        .split(path.sep);
       assert.equal(managedRelative.length, 2);
       assert.match(managedRelative[0]!, /^r-[a-f0-9]{16}$/u);
       assert.match(managedRelative[1]!, /^e-[a-f0-9]{20}$/u);
       assert.notEqual(active.workspace.root, path.resolve(root));
-      assert.equal(
-        await readFile(path.join(active.workspace.root, "tracked.txt"), "utf8"),
-        "parent dirty tracked\n",
-      );
-      assert.equal(
-        await readFile(path.join(active.workspace.root, "untracked.txt"), "utf8"),
-        "parent untracked\n",
-      );
-      assert.equal(
-        await fileExists(path.join(active.workspace.root, ".easy-code-runtime")),
-        false,
-      );
+      assert.equal(await readFile(path.join(active.workspace.root, "tracked.txt"), "utf8"), "parent dirty tracked\n");
+      assert.equal(await readFile(path.join(active.workspace.root, "untracked.txt"), "utf8"), "parent untracked\n");
+      assert.equal(await fileExists(path.join(active.workspace.root, ".easy-code-runtime")), false);
       assert.ok(active.descriptor.baseCommit);
       assert.ok(active.descriptor.baselineCommit);
       assert.notEqual(active.descriptor.baselineCommit, active.descriptor.baseCommit);
@@ -242,21 +207,9 @@ describe("ExecutionEnvironmentManager", () => {
         ...environmentBinding("subagent_finalize", "environment_finalize"),
         requestedIsolation: "worktree",
       });
-      await writeFile(
-        path.join(active.workspace.root, "tracked.txt"),
-        "child result\n",
-        "utf8",
-      );
-      await writeFile(
-        path.join(active.workspace.root, "child-only.txt"),
-        "new result\n",
-        "utf8",
-      );
-      const scratch = path.join(
-        active.workspace.root,
-        ".easy-code-runtime",
-        "command-fixture",
-      );
+      await writeFile(path.join(active.workspace.root, "tracked.txt"), "child result\n", "utf8");
+      await writeFile(path.join(active.workspace.root, "child-only.txt"), "new result\n", "utf8");
+      const scratch = path.join(active.workspace.root, ".easy-code-runtime", "command-fixture");
       await mkdir(scratch, { recursive: true });
       await writeFile(path.join(scratch, "worker-payload.json"), "private argv", "utf8");
 
@@ -277,10 +230,7 @@ describe("ExecutionEnvironmentManager", () => {
       assert.deepEqual(saved, artifact);
       assert.equal(environment.status, "result_ready");
       assert.equal(environment.resultCommit, artifact.resultCommit);
-      assert.equal(
-        await readFile(path.join(root, "tracked.txt"), "utf8"),
-        "parent baseline change\n",
-      );
+      assert.equal(await readFile(path.join(root, "tracked.txt"), "utf8"), "parent baseline change\n");
       assert.equal(await fileExists(path.join(root, "child-only.txt")), false);
     });
   });
@@ -292,11 +242,7 @@ describe("ExecutionEnvironmentManager", () => {
         ...environmentBinding("subagent_cleanup_scratch", "environment_cleanup_scratch"),
         requestedIsolation: "worktree",
       });
-      const scratch = path.join(
-        active.workspace.root,
-        ".easy-code-runtime",
-        "command-fixture",
-      );
+      const scratch = path.join(active.workspace.root, ".easy-code-runtime", "command-fixture");
       await mkdir(scratch, { recursive: true });
       await writeFile(path.join(scratch, "target-payload.json"), "private argv", "utf8");
 
@@ -314,18 +260,13 @@ describe("ExecutionEnvironmentManager", () => {
       await git(root, ["add", "--", "packages/[app]/app.txt"]);
       await git(root, ["commit", "--no-gpg-sign", "-m", "add nested workspace"]);
       await writeFile(path.join(logicalWorkspace, "parent-untracked.txt"), "parent\n", "utf8");
-      const parentScratch = path.join(
-        logicalWorkspace,
-        ".easy-code-runtime",
-        "command-parent",
-      );
+      const parentScratch = path.join(logicalWorkspace, ".easy-code-runtime", "command-parent");
       await mkdir(parentScratch, { recursive: true });
       await writeFile(path.join(parentScratch, "worker-payload.json"), "private parent", "utf8");
 
       const manager = new ExecutionEnvironmentManager({
         logicalWorkspaceRoot: logicalWorkspace,
         dataDir,
-        defaultIsolation: "worktree",
         baseMode: "current-snapshot",
         worktreeRoot: path.join(dataDir, "worktrees"),
       });
@@ -334,31 +275,16 @@ describe("ExecutionEnvironmentManager", () => {
         taskId: "task_nested_workspace",
         requestedIsolation: "worktree",
       });
-      assert.equal(
-        await readFile(path.join(active.workspace.root, "parent-untracked.txt"), "utf8"),
-        "parent\n",
-      );
-      assert.equal(
-        await fileExists(path.join(active.workspace.root, ".easy-code-runtime")),
-        false,
-      );
+      assert.equal(await readFile(path.join(active.workspace.root, "parent-untracked.txt"), "utf8"), "parent\n");
+      assert.equal(await fileExists(path.join(active.workspace.root, ".easy-code-runtime")), false);
 
       await writeFile(path.join(active.workspace.root, "child.txt"), "child\n", "utf8");
-      const childScratch = path.join(
-        active.workspace.root,
-        ".easy-code-runtime",
-        "command-child",
-      );
+      const childScratch = path.join(active.workspace.root, ".easy-code-runtime", "command-child");
       await mkdir(childScratch, { recursive: true });
       await writeFile(path.join(childScratch, "target-payload.json"), "private child", "utf8");
       const checkpoint = await manager.checkpoint(active);
       assert.ok(checkpoint.resultCommit);
-      const checkpointTree = await git(root, [
-        "ls-tree",
-        "-r",
-        "--name-only",
-        checkpoint.resultCommit!,
-      ]);
+      const checkpointTree = await git(root, ["ls-tree", "-r", "--name-only", checkpoint.resultCommit!]);
       assert.doesNotMatch(checkpointTree, /\.easy-code-runtime/u);
 
       const artifact = await manager.finalize(active, {
@@ -397,14 +323,8 @@ describe("ExecutionEnvironmentManager", () => {
       const restored = await manager.restore("environment_resume");
       assert.equal(restored.descriptor.status, "result_ready");
       assert.equal(restored.descriptor.resultCommit, checkpoint.resultCommit);
-      assert.deepEqual(
-        await readFile(path.join(restored.workspace.root, "tracked.txt")),
-        expectedTracked,
-      );
-      assert.deepEqual(
-        await readFile(path.join(restored.workspace.root, "in-progress.bin")),
-        expectedBinary,
-      );
+      assert.deepEqual(await readFile(path.join(restored.workspace.root, "tracked.txt")), expectedTracked);
+      assert.deepEqual(await readFile(path.join(restored.workspace.root, "in-progress.bin")), expectedBinary);
     });
   });
 
@@ -415,15 +335,8 @@ describe("ExecutionEnvironmentManager", () => {
       const repositoryRoot = path.normalize(await realpath(root));
       const environmentId = "environment_legacy_layout";
       const normalizedIdentity = path.resolve(repositoryRoot).replace(/\\/gu, "/");
-      const repositoryIdentity = process.platform === "win32"
-        ? normalizedIdentity.toLowerCase()
-        : normalizedIdentity;
-      const legacyRoot = path.join(
-        dataDir,
-        "worktrees",
-        sha256(repositoryIdentity).slice(0, 24),
-        environmentId,
-      );
+      const repositoryIdentity = process.platform === "win32" ? normalizedIdentity.toLowerCase() : normalizedIdentity;
+      const legacyRoot = path.join(dataDir, "worktrees", sha256(repositoryIdentity).slice(0, 24), environmentId);
       await mkdir(path.dirname(legacyRoot), { recursive: true });
       const baseCommit = (await git(repositoryRoot, ["rev-parse", "HEAD"])).trim();
       await git(repositoryRoot, ["worktree", "add", "--detach", legacyRoot, baseCommit]);
@@ -478,14 +391,8 @@ describe("ExecutionEnvironmentManager", () => {
         manager.cleanup("environment_tampered_root", true),
         /managed Worktree root|Runtime-managed environment path/iu,
       );
-      assert.equal(
-        await readFile(path.join(root, "tracked.txt"), "utf8"),
-        "committed tracked\n",
-      );
-      assert.equal(
-        path.normalize(await realpath(active.workspace.root)),
-        path.normalize(active.workspace.root),
-      );
+      assert.equal(await readFile(path.join(root, "tracked.txt"), "utf8"), "committed tracked\n");
+      assert.equal(path.normalize(await realpath(active.workspace.root)), path.normalize(active.workspace.root));
 
       await writeEnvironmentRecord(dataDir, "environment_tampered_root", saved);
       assert.equal((await manager.cleanup("environment_tampered_root", true)).status, "removed");
@@ -504,14 +411,8 @@ describe("ExecutionEnvironmentManager", () => {
       tampered.environment.executionRoot = dataDir;
       await writeEnvironmentRecord(dataDir, "environment_tampered_execution", tampered);
 
-      await assert.rejects(
-        manager.restore("environment_tampered_execution"),
-        /execution root/iu,
-      );
-      await assert.rejects(
-        manager.cleanup("environment_tampered_execution", true),
-        /execution root/iu,
-      );
+      await assert.rejects(manager.restore("environment_tampered_execution"), /execution root/iu);
+      await assert.rejects(manager.cleanup("environment_tampered_execution", true), /execution root/iu);
       assert.equal(active.descriptor.kind, "worktree");
       if (active.descriptor.kind !== "worktree") throw new Error("expected a worktree environment");
       await assert.rejects(
@@ -527,10 +428,7 @@ describe("ExecutionEnvironmentManager", () => {
       );
 
       await writeEnvironmentRecord(dataDir, "environment_tampered_execution", saved);
-      assert.equal(
-        (await manager.cleanup("environment_tampered_execution", true)).status,
-        "removed",
-      );
+      assert.equal((await manager.cleanup("environment_tampered_execution", true)).status, "removed");
     });
   });
 
@@ -541,57 +439,29 @@ describe("ExecutionEnvironmentManager", () => {
         ...environmentBinding("subagent_handoff", "environment_handoff"),
         requestedIsolation: "worktree",
       });
-      await writeFile(
-        path.join(active.workspace.root, "tracked.txt"),
-        "child delivered result\n",
-        "utf8",
-      );
-      await writeFile(
-        path.join(active.workspace.root, "child-created.txt"),
-        "created by child\n",
-        "utf8",
-      );
+      await writeFile(path.join(active.workspace.root, "tracked.txt"), "child delivered result\n", "utf8");
+      await writeFile(path.join(active.workspace.root, "child-created.txt"), "created by child\n", "utf8");
       const artifact = await manager.finalize(active, {
         agentId: "subagent_handoff",
         taskId: "task_handoff",
         accepted: true,
       });
 
-      await writeFile(
-        path.join(root, "unrelated.txt"),
-        "user changed this after the child started\n",
-        "utf8",
-      );
-      await writeFile(
-        path.join(root, "local-untracked.txt"),
-        "keep this local file\n",
-        "utf8",
-      );
+      await writeFile(path.join(root, "unrelated.txt"), "user changed this after the child started\n", "utf8");
+      await writeFile(path.join(root, "local-untracked.txt"), "keep this local file\n", "utf8");
       const delivered = await manager.handoff(artifact, { type: "local" });
 
       assert.equal(delivered.status, "delivered");
       assert.equal(delivered.delivery, "local");
       assert.ok(delivered.deliveredAt);
-      assert.equal(
-        await readFile(path.join(root, "tracked.txt"), "utf8"),
-        "child delivered result\n",
-      );
-      assert.equal(
-        await readFile(path.join(root, "child-created.txt"), "utf8"),
-        "created by child\n",
-      );
+      assert.equal(await readFile(path.join(root, "tracked.txt"), "utf8"), "child delivered result\n");
+      assert.equal(await readFile(path.join(root, "child-created.txt"), "utf8"), "created by child\n");
       assert.equal(
         await readFile(path.join(root, "unrelated.txt"), "utf8"),
         "user changed this after the child started\n",
       );
-      assert.equal(
-        await readFile(path.join(root, "local-untracked.txt"), "utf8"),
-        "keep this local file\n",
-      );
-      assert.equal(
-        (await manager.loadEnvironment("environment_handoff")).status,
-        "handed_off",
-      );
+      assert.equal(await readFile(path.join(root, "local-untracked.txt"), "utf8"), "keep this local file\n");
+      assert.equal((await manager.loadEnvironment("environment_handoff")).status, "handed_off");
     });
   });
 
@@ -603,11 +473,7 @@ describe("ExecutionEnvironmentManager", () => {
         taskId: "task_dag_upstream",
         requestedIsolation: "worktree",
       });
-      await writeFile(
-        path.join(upstream.workspace.root, "tracked.txt"),
-        "changed by the upstream DAG node\n",
-        "utf8",
-      );
+      await writeFile(path.join(upstream.workspace.root, "tracked.txt"), "changed by the upstream DAG node\n", "utf8");
       const upstreamArtifact = await manager.finalize(upstream, {
         agentId: "subagent_dag_upstream",
         taskId: "task_dag_upstream",
@@ -638,17 +504,11 @@ describe("ExecutionEnvironmentManager", () => {
 
       assert.equal(downstreamArtifact.baseCommit, upstreamArtifact.baseCommit);
       assert.deepEqual(downstreamArtifact.parentArtifactIds, [upstreamArtifact.id]);
-      assert.deepEqual(downstreamArtifact.changedFiles, [
-        "dag-downstream.txt",
-        "tracked.txt",
-      ]);
+      assert.deepEqual(downstreamArtifact.changedFiles, ["dag-downstream.txt", "tracked.txt"]);
 
       const delivered = await manager.handoff(downstreamArtifact, { type: "local" });
       assert.equal(delivered.status, "delivered");
-      assert.equal(
-        await readFile(path.join(root, "tracked.txt"), "utf8"),
-        "changed by the upstream DAG node\n",
-      );
+      assert.equal(await readFile(path.join(root, "tracked.txt"), "utf8"), "changed by the upstream DAG node\n");
       assert.equal(
         await readFile(path.join(root, "dag-downstream.txt"), "utf8"),
         "created by the downstream DAG node\n",
@@ -661,7 +521,6 @@ function createManager(root: string, dataDir: string): ExecutionEnvironmentManag
   return new ExecutionEnvironmentManager({
     logicalWorkspaceRoot: root,
     dataDir,
-    defaultIsolation: "auto",
     baseMode: "current-snapshot",
     worktreeRoot: path.join(dataDir, "worktrees"),
   });
@@ -718,9 +577,7 @@ async function git(cwd: string, args: readonly string[]): Promise<string> {
     },
   });
   if (result.exitCode !== 0) {
-    throw new Error(
-      `git ${args[0] ?? "command"} failed: ${String(result.stderr || result.stdout)}`,
-    );
+    throw new Error(`git ${args[0] ?? "command"} failed: ${String(result.stderr || result.stdout)}`);
   }
   return String(result.stdout ?? "").replace(/\r\n/gu, "\n");
 }
@@ -744,15 +601,9 @@ interface EnvironmentRecordFixture {
   };
 }
 
-async function readEnvironmentRecord(
-  dataDir: string,
-  environmentId: string,
-): Promise<EnvironmentRecordFixture> {
+async function readEnvironmentRecord(dataDir: string, environmentId: string): Promise<EnvironmentRecordFixture> {
   return JSON.parse(
-    await readFile(
-      path.join(dataDir, "subagent-environments", `${environmentId}.json`),
-      "utf8",
-    ),
+    await readFile(path.join(dataDir, "subagent-environments", `${environmentId}.json`), "utf8"),
   ) as EnvironmentRecordFixture;
 }
 

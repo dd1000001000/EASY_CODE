@@ -27,16 +27,45 @@ import { describe, it } from "./harness.js";
 import { baseSessionState } from "./session-state.js";
 
 function state(): SessionState {
-  return { ...baseSessionState(), threadId: "limits-test", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
-    workspaceRoot: process.cwd(), constraints: [], messages: [], filesRead: new Map(), changes: [], commands: [],
-    commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  return {
+    ...baseSessionState(),
+    threadId: "limits-test",
+    mode: "code",
+    provider: "qwen",
+    model: "mock",
+    thinkingEffort: "medium",
+    workspaceRoot: process.cwd(),
+    constraints: [],
+    messages: [],
+    filesRead: new Map(),
+    changes: [],
+    commands: [],
+    commandApprovalPrefixes: [],
+    workingSummary: "",
+    compactedMessageCount: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
 }
-const options = { maxSteps: 4, maxContextChars: 250000, maxOutputChars: 16000, commandTimeoutMs: 1000, approvalPolicy: "never" as const };
+const options = {
+  maxSteps: 4,
+  maxContextChars: 250000,
+  maxOutputChars: 16000,
+  commandTimeoutMs: 1000,
+  approvalPolicy: "never" as const,
+};
 const request = { messages: [{ role: "user" as const, content: "inspect" }], outputReserveTokens: 100 };
-const context = (root: string): ToolContext => ({ workspaceRoot: root, mode: "code", threadId: "thread", turnId: "turn",
-  approvalPolicy: "never", commandTimeoutMs: 1000, maxOutputChars: 64000, requestApproval: async () => false,
-  limits: defaultRuntimeLimits() });
+const context = (root: string): ToolContext => ({
+  workspaceRoot: root,
+  mode: "code",
+  threadId: "thread",
+  turnId: "turn",
+  approvalPolicy: "never",
+  commandTimeoutMs: 1000,
+  maxOutputChars: 64000,
+  requestApproval: async () => false,
+  limits: defaultRuntimeLimits(),
+});
 
 describe("central runtime limits", () => {
   it("documents every shipped operational default and applies per-tool correction ceilings", async () => {
@@ -45,37 +74,50 @@ describe("central runtime limits", () => {
       PROVIDER_CATALOG.map(({ provider }) => provider),
       defaultRuntimeLimits(),
     );
-      const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests,
-        ...documentedLimits } = defaultRuntimeLimits();
-      void legacySteps;
-      void legacyMaxModelRequests;
-      assert.deepEqual(JSON.parse(JSON.stringify(example.limits)), documentedLimits);
-      assert.equal(example.limits?.memoryVectorMinSimilarity, 0.1);
-      assert.equal(example.limits?.memoryConsolidationMatchLimit, 6);
-      assert.equal("maxSubagentFollowUps" in defaultRuntimeLimits(), false);
-      const retired = normalizeCurrentTomlConfig({ limits: { max_subagent_follow_ups: 1 } },
-        PROVIDER_CATALOG.map(({ provider }) => provider), defaultRuntimeLimits());
-      assert.deepEqual(retired.limits, {});
-    const budget = new ToolRecoveryBudget(3, { compact_context: 1 });
-    assert.equal(budget.fail("compact_context").remaining, 0);
-    assert.equal(budget.fail("propose_plan").remaining, 2);
+    const {
+      steps: legacySteps,
+      maxModelRequests: legacyMaxModelRequests,
+      ...documentedLimits
+    } = defaultRuntimeLimits();
+    void legacySteps;
+    void legacyMaxModelRequests;
+    assert.deepEqual(JSON.parse(JSON.stringify(example.limits)), documentedLimits);
+    assert.equal(example.limits?.memoryVectorMinSimilarity, 0.1);
+    assert.equal(example.limits?.memoryConsolidationMatchLimit, 6);
+    assert.equal("maxSubagentFollowUps" in defaultRuntimeLimits(), false);
+    const retired = normalizeCurrentTomlConfig(
+      { limits: { max_subagent_follow_ups: 1 } },
+      PROVIDER_CATALOG.map(({ provider }) => provider),
+      defaultRuntimeLimits(),
+    );
+    assert.deepEqual(retired.limits, {});
+    const budget = new ToolRecoveryBudget(3, { propose_plan: 1 });
+    assert.equal(budget.fail("propose_plan").remaining, 0);
+    assert.equal(budget.fail("read_file").remaining, 2);
   });
   it("uses 40/40/40/80 independently of concurrency and validates partial TOML overrides", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-limits-"));
     try {
       await mkdir(path.join(root, ".easycode"));
-      await writeFile(path.join(root, ".easycode", "config.toml"),
-        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\nmemory_vector_min_similarity = 0.35\nmemory_consolidation_match_limit = 9\nsubagent_follow_up_max_chars = 4096\nsubagent_parent_message_max_chars = 6144\n[limits.steps]\nhigh = 60\n[limits.max_response_tokens]\nmedium = 70000\n[limits.provider_buffered_timeout_ms]\nhigh = 10000\n[limits.provider_stream_idle_timeout_ms]\nhigh = 20000\n[limits.max_concurrent_subagents]\nmedium = 3\n");
-      const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
-        dataDir: path.join(root, "data"), cacheDir: path.join(root, "cache"), env: {}, credentialStore: false });
+      await writeFile(
+        path.join(root, ".easycode", "config.toml"),
+        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\nmemory_vector_min_similarity = 0.35\nmemory_consolidation_match_limit = 9\nsubagent_follow_up_max_chars = 4096\nsubagent_parent_message_max_chars = 6144\n[limits.steps]\nhigh = 60\n[limits.max_response_tokens]\nmedium = 70000\n[limits.provider_buffered_timeout_ms]\nhigh = 10000\n[limits.provider_stream_idle_timeout_ms]\nhigh = 20000\n[limits.max_concurrent_subagents]\nmedium = 3\n",
+      );
+      const config = await loadEasyCodeConfig({
+        workspaceRoot: root,
+        configDir: path.join(root, "config"),
+        dataDir: path.join(root, "data"),
+        cacheDir: path.join(root, "cache"),
+        env: {},
+        credentialStore: false,
+      });
       assert.deepEqual(defaultRuntimeLimits().steps, { none: 40, low: 40, medium: 40, high: 80 });
       assert.deepEqual(config.limits.steps, { none: 40, low: 40, medium: 40, high: 60 });
       assert.equal(config.limits.providerBufferedTimeoutMs.low, 300000);
       assert.equal(config.limits.providerBufferedTimeoutMs.high, 10000);
       assert.equal(config.limits.providerStreamIdleTimeoutMs.low, 60000);
       assert.equal(config.limits.providerStreamIdleTimeoutMs.high, 20000);
-      assert.deepEqual(config.limits.maxResponseTokens,
-        { none: 32768, low: 32768, medium: 70000, high: 131072 });
+      assert.deepEqual(config.limits.maxResponseTokens, { none: 32768, low: 32768, medium: 70000, high: 131072 });
       assert.deepEqual(defaultRuntimeLimits().maxConcurrentSubagents, { none: 2, low: 2, medium: 4, high: 8 });
       assert.deepEqual(config.limits.maxConcurrentSubagents, { none: 2, low: 2, medium: 3, high: 8 });
       assert.equal(config.limits.maxTaskTokens, 90000);
@@ -86,7 +128,9 @@ describe("central runtime limits", () => {
       assert.equal(defaultRuntimeLimits().subagentFollowUpMaxChars, 8000);
       assert.equal(defaultRuntimeLimits().subagentParentMessageMaxChars, 8000);
       assert.equal(config.orchestrationEnabled, true);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("merges concurrency overrides across config layers and clones defaults", async () => {
@@ -94,33 +138,46 @@ describe("central runtime limits", () => {
     try {
       await mkdir(path.join(root, "config"));
       await mkdir(path.join(root, ".easycode"));
-      await writeFile(path.join(root, "config", "config.toml"),
-        "[limits.max_concurrent_subagents]\nlow = 3\nmedium = 5\n[limits.max_response_tokens]\nlow = 40000\n");
-      await writeFile(path.join(root, ".easycode", "config.toml"),
-        "[limits.max_concurrent_subagents]\nmedium = 6\n[limits.max_response_tokens]\nmedium = 70000\n");
-      const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
-        env: { EASY_CODE_LIMITS_JSON: '{"maxConcurrentSubagents":{"high":10},"maxResponseTokens":{"high":120000}}' }, credentialStore: false });
+      await writeFile(
+        path.join(root, "config", "config.toml"),
+        "[limits.max_concurrent_subagents]\nlow = 3\nmedium = 5\n[limits.max_response_tokens]\nlow = 40000\n",
+      );
+      await writeFile(
+        path.join(root, ".easycode", "config.toml"),
+        "[limits.max_concurrent_subagents]\nmedium = 6\n[limits.max_response_tokens]\nmedium = 70000\n",
+      );
+      const config = await loadEasyCodeConfig({
+        workspaceRoot: root,
+        configDir: path.join(root, "config"),
+        env: { EASY_CODE_LIMITS_JSON: '{"maxConcurrentSubagents":{"high":10},"maxResponseTokens":{"high":120000}}' },
+        credentialStore: false,
+      });
       assert.deepEqual(config.limits.maxConcurrentSubagents, { none: 2, low: 3, medium: 6, high: 10 });
-      assert.deepEqual(config.limits.maxResponseTokens,
-        { none: 32768, low: 40000, medium: 70000, high: 120000 });
+      assert.deepEqual(config.limits.maxResponseTokens, { none: 32768, low: 40000, medium: 70000, high: 120000 });
       const copy = defaultRuntimeLimits();
       copy.maxConcurrentSubagents.low = 7;
       copy.maxResponseTokens.medium = 80000;
       assert.equal(defaultRuntimeLimits().maxConcurrentSubagents.low, 2);
       assert.equal(defaultRuntimeLimits().maxResponseTokens.medium, 65536);
-      for (const invalid of [2, { ...copy.maxConcurrentSubagents, high: 0 },
-        { ...copy.maxConcurrentSubagents, high: 17 }, { ...copy.maxConcurrentSubagents, high: 1.5 },
-        { ...copy.maxConcurrentSubagents, typo: 3 }]) {
+      for (const invalid of [
+        2,
+        { ...copy.maxConcurrentSubagents, high: 0 },
+        { ...copy.maxConcurrentSubagents, high: 17 },
+        { ...copy.maxConcurrentSubagents, high: 1.5 },
+        { ...copy.maxConcurrentSubagents, typo: 3 },
+      ]) {
         assert.equal(runtimeLimitsSchema.safeParse({ ...copy, maxConcurrentSubagents: invalid }).success, false);
       }
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("accepts only current limit inputs and ignores unrelated environment names", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-limits-invalid-"));
     try {
-      const load = (env: NodeJS.ProcessEnv = {}) => loadEasyCodeConfig({ workspaceRoot: root,
-        configDir: path.join(root, "config"), env, credentialStore: false });
+      const load = (env: NodeJS.ProcessEnv = {}) =>
+        loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"), env, credentialStore: false });
       const unrelated = await load({ EASY_CODE_MAX_STEPS: "90" });
       assert.deepEqual(unrelated.limits.steps, defaultRuntimeLimits().steps);
       await assert.rejects(load({ EASY_CODE_LIMITS_JSON: '{"maxStep":90}' }), /Unrecognized key/u);
@@ -128,19 +185,30 @@ describe("central runtime limits", () => {
       await writeFile(path.join(root, ".easycode", "config.toml"), "max_steps = 90\n");
       await assert.rejects(load(), /Unable to parse TOML configuration file/u);
       assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), defaultReadLines: 10001 }));
-      assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), defaultReadLines: 150, maxReadLines: 50 }));
+      assert.throws(() =>
+        runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), defaultReadLines: 150, maxReadLines: 50 }),
+      );
       assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), memoryVectorMinSimilarity: 1.1 }));
       assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), memoryConsolidationMatchLimit: 0 }));
-      assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(),
-        nativeSandboxProxyPortStart: 65530, nativeSandboxProxyPortSlots: 32 }), /range exceeds/u);
-    } finally { await rm(root, { recursive: true, force: true }); }
+      assert.throws(
+        () =>
+          runtimeLimitsSchema.parse({
+            ...defaultRuntimeLimits(),
+            nativeSandboxProxyPortStart: 65530,
+            nativeSandboxProxyPortSlots: 32,
+          }),
+        /range exceeds/u,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("enables headless orchestration explicitly without changing the ordinary default", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-orchestration-env-"));
     try {
-      const load = (env: NodeJS.ProcessEnv = {}) => loadEasyCodeConfig({ workspaceRoot: root,
-        configDir: path.join(root, "config"), env, credentialStore: false });
+      const load = (env: NodeJS.ProcessEnv = {}) =>
+        loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"), env, credentialStore: false });
       assert.equal((await load()).orchestrationEnabled, false);
       assert.equal((await load({ EASY_CODE_ORCHESTRATION_ENABLED: "true" })).orchestrationEnabled, true);
       await mkdir(path.join(root, ".easycode"));
@@ -153,7 +221,9 @@ describe("central runtime limits", () => {
       for (const value of ["yes", "1", "FALSE", "typo"]) {
         await assert.rejects(load({ EASY_CODE_ORCHESTRATION_ENABLED: value }), /must be true or false/u);
       }
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("reserves shared tokens atomically and does not double-charge cache or reasoning", () => {
@@ -163,7 +233,13 @@ describe("central runtime limits", () => {
     settle({ promptTokens: 50, completionTokens: 20, totalTokens: 70, cachedInputTokens: 30, reasoningTokens: 10 });
     settle();
     budget.reserve(request, () => 50)();
-    assert.deepEqual(budget.snapshot(), { requests: 2, tokens: 220, reservedTokens: 0, maxRequests: 2, maxTokens: 250 });
+    assert.deepEqual(budget.snapshot(), {
+      requests: 2,
+      tokens: 220,
+      reservedTokens: 0,
+      maxRequests: 2,
+      maxTokens: 250,
+    });
     assert.throws(() => budget.reserve(request), /request limit/u);
   });
 
@@ -185,32 +261,75 @@ describe("central runtime limits", () => {
       name: "progress_tick",
       mutating: false,
       metadata: {
-        identity: { id: "external:test:progress_tick", name: "progress_tick", displayName: "progress_tick",
-          sourceId: "test", sourceKind: "external" },
-        effects: [], allowedModes: ["code"], allowedRoles: ["main_agent"], requiresOrchestration: false,
-        requiresVision: false, validationSensitive: false, idempotent: true, controlPlane: false,
+        identity: {
+          id: "external:test:progress_tick",
+          name: "progress_tick",
+          displayName: "progress_tick",
+          sourceId: "test",
+          sourceKind: "external",
+        },
+        effects: [],
+        allowedModes: ["code"],
+        allowedRoles: ["main_agent"],
+        requiresOrchestration: false,
+        requiresVision: false,
+        validationSensitive: false,
+        idempotent: true,
+        controlPlane: false,
         resultClass: "generic",
       },
-      definition: { type: "function", function: { name: "progress_tick", description: "Record unique progress",
-        parameters: { type: "object", properties: { value: { type: "integer" } }, required: ["value"],
-          additionalProperties: false } } },
+      definition: {
+        type: "function",
+        function: {
+          name: "progress_tick",
+          description: "Record unique progress",
+          parameters: {
+            type: "object",
+            properties: { value: { type: "integer" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+        },
+      },
       async execute(input) {
         const value = (input as { value: number }).value;
         return { ok: true, summary: `progress ${value}`, data: { value } };
       },
     };
     const budget = new TaskBudget(null, 0);
-    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), taskBudget: budget,
-      toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
-      searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
-      provider: { name: "qwen", model: "mock", complete: async () => {
-        calls += 1;
-        return calls <= 125
-          ? { message: { role: "assistant", content: null, tool_calls: [{ id: `tick_${calls}`, type: "function",
-              function: { name: "progress_tick", arguments: JSON.stringify({ value: calls }) } }] } }
-          : { message: { role: "assistant", content: "Done." } };
-      } } });
+    const runtime = new AgentRuntime({
+      limits: defaultRuntimeLimits(),
+      taskBudget: budget,
+      toolCatalog: snapshotToolSet([tool]),
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      provider: {
+        name: "qwen",
+        model: "mock",
+        complete: async () => {
+          calls += 1;
+          return calls <= 125
+            ? {
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: `tick_${calls}`,
+                      type: "function",
+                      function: { name: "progress_tick", arguments: JSON.stringify({ value: calls }) },
+                    },
+                  ],
+                },
+              }
+            : { message: { role: "assistant", content: "Done." } };
+        },
+      },
+    });
     const { maxSteps: _formerLimit, ...unlimited } = options;
     const result = await runtime.run(state(), "Complete every progress tick", unlimited);
     assert.equal(result.reason, "success");
@@ -219,9 +338,11 @@ describe("central runtime limits", () => {
   });
 
   it("uses configured context reserves without clipping active reasoning", () => {
-    const limits = { ...defaultRuntimeLimits(),
+    const limits = {
+      ...defaultRuntimeLimits(),
       maxResponseTokens: { none: 1024, low: 1024, medium: 2048, high: 4096 },
-      contextToolReserveTokens: 512 };
+      contextToolReserveTokens: 512,
+    };
     const capacity = tokenBudget(16000, limits);
     assert.equal(capacity.outputReserve, 1024);
     assert.equal(capacity.toolReserve, 512);
@@ -247,7 +368,9 @@ describe("central runtime limits", () => {
     for (let index = 0; index < 5; index += 1) unlimited.reserve(request, () => 1)();
     assert.equal(unlimited.snapshot().requests, 6);
     let writes = 0;
-    const failing = new TaskBudget(2, 0, () => { if (++writes > 1) throw new Error("journal unavailable"); });
+    const failing = new TaskBudget(2, 0, () => {
+      if (++writes > 1) throw new Error("journal unavailable");
+    });
     assert.throws(() => failing.reserve(request), /journal unavailable/u);
     assert.equal(failing.snapshot().requests, 1);
     assert.throws(() => TaskBudget.restore({ maxRequests: -1 }));
@@ -255,16 +378,40 @@ describe("central runtime limits", () => {
 
   it("hides orchestration tools and does not execute hallucinated creation calls", async () => {
     let calls = 0;
-    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), toolCatalog: snapshotToolSet([new ManageTasksTool()]),
-      contextManager: new ContextManager(), buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
-      searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
-      provider: { name: "qwen", model: "mock", complete: async (input) => {
-        assert.ok(!input.tools?.some((tool) => tool.function.name === "manage_tasks"));
-        calls += 1;
-        return { message: calls === 1 ? { role: "assistant", content: null,
-          tool_calls: [{ id: "denied", type: "function", function: { name: "manage_tasks", arguments: '{"action":"create"}' } }] }
-          : { role: "assistant", content: "Done." } };
-      } } });
+    const runtime = new AgentRuntime({
+      limits: defaultRuntimeLimits(),
+      toolCatalog: snapshotToolSet([new ManageTasksTool()]),
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      provider: {
+        name: "qwen",
+        model: "mock",
+        complete: async (input) => {
+          assert.ok(!input.tools?.some((tool) => tool.function.name === "manage_tasks"));
+          calls += 1;
+          return {
+            message:
+              calls === 1
+                ? {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: [
+                      {
+                        id: "denied",
+                        type: "function",
+                        function: { name: "manage_tasks", arguments: '{"action":"create"}' },
+                      },
+                    ],
+                  }
+                : { role: "assistant", content: "Done." },
+          };
+        },
+      },
+    });
     const current = state();
     const result = await runtime.run(current, "Explain the code", { ...options, orchestrationEnabled: false });
     assert.equal(result.reason, "success");
@@ -275,14 +422,26 @@ describe("central runtime limits", () => {
   it("charges transport retries against the same shared request limit", async () => {
     let calls = 0;
     const budget = new TaskBudget(1, 0);
-    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), taskBudget: budget, toolCatalog: snapshotToolSet([]),
-      contextManager: new ContextManager(), buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
-      searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
-      provider: { name: "qwen", model: "mock", complete: async (input) => {
-        calls += 1;
-        assert.equal(input.maxRetries, 0);
-        throw new ProviderError("busy", { provider: "qwen", code: "busy", retryable: true, retryAfterMs: 0 });
-      } } });
+    const runtime = new AgentRuntime({
+      limits: defaultRuntimeLimits(),
+      taskBudget: budget,
+      toolCatalog: snapshotToolSet([]),
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      provider: {
+        name: "qwen",
+        model: "mock",
+        complete: async (input) => {
+          calls += 1;
+          assert.equal(input.maxRetries, 0);
+          throw new ProviderError("busy", { provider: "qwen", code: "busy", retryable: true, retryAfterMs: 0 });
+        },
+      },
+    });
     const result = await runtime.run(state(), "Inspect", options);
     assert.equal(calls, 1);
     assert.equal(result.reason, "limit_reached");
@@ -301,20 +460,34 @@ describe("central runtime limits", () => {
       current.orchestrationEnabled = false;
       store.save(current);
       assert.equal(store.recover(current.threadId).orchestrationEnabled, false);
-    } finally { storage.close(); await rm(root, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("honors a configured provider retry limit of zero within the shared budget", async () => {
     let calls = 0;
     const budget = new TaskBudget(10, 0);
-    const runtime = new AgentRuntime({ limits: { ...defaultRuntimeLimits(), maxProviderRetries: 0 }, taskBudget: budget,
-      toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
-      searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
-      provider: { name: "qwen", model: "mock", complete: async () => {
-        calls += 1;
-        throw new ProviderError("busy", { provider: "qwen", code: "busy", retryable: true, retryAfterMs: 0 });
-      } } });
+    const runtime = new AgentRuntime({
+      limits: { ...defaultRuntimeLimits(), maxProviderRetries: 0 },
+      taskBudget: budget,
+      toolCatalog: snapshotToolSet([]),
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      provider: {
+        name: "qwen",
+        model: "mock",
+        complete: async () => {
+          calls += 1;
+          throw new ProviderError("busy", { provider: "qwen", code: "busy", retryable: true, retryAfterMs: 0 });
+        },
+      },
+    });
     const result = await runtime.run(state(), "Inspect", options);
     assert.equal(result.reason, "failed");
     assert.equal(calls, 1);
@@ -331,21 +504,34 @@ describe("small model-facing tool results", () => {
       const tool = new ReadFileTool(workspace);
       const initial = await tool.execute({ path: "large.txt" }, context(root));
       assert.equal((initial.data as { endLine: number }).endLine, 100);
-      const next = await tool.execute({ path: "large.txt", startLine: 151, endLine: 700 }, {
-        ...context(root), limits: { ...defaultRuntimeLimits(), maxReadLines: 200 },
-      });
+      const next = await tool.execute(
+        { path: "large.txt", startLine: 151, endLine: 700 },
+        {
+          ...context(root),
+          limits: { ...defaultRuntimeLimits(), maxReadLines: 200 },
+        },
+      );
       assert.equal((next.data as { endLine: number }).endLine, 350);
       assert.equal((next.data as { truncated: boolean }).truncated, true);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps real command identity/status and both failure ends without changing raw evidence", () => {
-    const result: ToolExecutionResult = { ok: false, summary: "failed", evidenceId: "evidence_test", data: {
-      commandId: "command_test", status: "exited", exitCode: 1,
-      failure: { kind: "exit", processStarted: true },
-      stdout: { text: "assertion A\n" + "x".repeat(30000) + "\nFAILED case_a", totalBytes: 30050, truncated: false },
-      stderr: { text: "stack head\n" + "y".repeat(30000) + "\nstack tail", totalBytes: 30050, truncated: false },
-    } };
+    const result: ToolExecutionResult = {
+      ok: false,
+      summary: "failed",
+      evidenceId: "evidence_test",
+      data: {
+        commandId: "command_test",
+        status: "exited",
+        exitCode: 1,
+        failure: { kind: "exit", processStarted: true },
+        stdout: { text: "assertion A\n" + "x".repeat(30000) + "\nFAILED case_a", totalBytes: 30050, truncated: false },
+        stderr: { text: "stack head\n" + "y".repeat(30000) + "\nstack tail", totalBytes: 30050, truncated: false },
+      },
+    };
     const original = JSON.stringify(result);
     const projected = projectToolResult(result);
     assert.equal(JSON.stringify(result), original);
@@ -361,20 +547,37 @@ describe("small model-facing tool results", () => {
     try {
       const workspace = await WorkspaceManager.create(root);
       let polls = 0;
-      const output = { commandId: "command_00000000-0000-4000-8000-000000000001", status: "running", exitCode: null,
-        stdout: { text: "" }, stderr: { text: "" }, policyDecision: {} };
-      const runtime = { status: async (_id: string, _context: ToolContext, wait: number) => {
-        assert.ok(wait > 0 && wait <= 30000);
-        return { ...output, status: ++polls === 1 ? "running" : "exited", exitCode: 0 };
-      } } as unknown as CommandRuntime;
+      const output = {
+        commandId: "command_00000000-0000-4000-8000-000000000001",
+        status: "running",
+        exitCode: null,
+        stdout: { text: "" },
+        stderr: { text: "" },
+        policyDecision: {},
+      };
+      const runtime = {
+        status: async (_id: string, _context: ToolContext, wait: number) => {
+          assert.ok(wait > 0 && wait <= 30000);
+          return { ...output, status: ++polls === 1 ? "running" : "exited", exitCode: 0 };
+        },
+      } as unknown as CommandRuntime;
       const tool = new PollCommandTool(workspace, runtime);
       assert.equal((await tool.execute({ commandId: output.commandId }, context(root))).ok, true);
       assert.equal(polls, 2);
       const steering = new AbortController();
-      const waking = { status: async () => { steering.abort(); return output; } } as unknown as CommandRuntime;
-      const result = await new PollCommandTool(workspace, waking).execute({ commandId: output.commandId },
-        { ...context(root), waitSignal: steering.signal });
+      const waking = {
+        status: async () => {
+          steering.abort();
+          return output;
+        },
+      } as unknown as CommandRuntime;
+      const result = await new PollCommandTool(workspace, waking).execute(
+        { commandId: output.commandId },
+        { ...context(root), waitSignal: steering.signal },
+      );
       assert.equal((result.data as { status: string }).status, "running");
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

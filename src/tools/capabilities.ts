@@ -31,90 +31,192 @@ interface BuiltinPolicy {
 const BUILTIN_POLICIES = {
   select_mode: { effects: [], modes: ["auto"], roles: MAIN, controlPlane: true },
   propose_plan: { effects: [], modes: ["plan"], roles: MAIN, controlPlane: true },
-  read_file: { effects: ["workspace_read"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true, resultClass: "file_read" },
-  read_document: { effects: ["workspace_read"], modes: ALL_MODES, roles: MAIN,
-    idempotent: true, resultClass: "file_read" },
-  search_files: { effects: ["workspace_read"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true, resultClass: "search" },
-  read_image: { effects: ["workspace_read"], modes: ALL_MODES, roles: MAIN,
-    requiresVision: true, idempotent: true },
-  create_file: { effects: ["workspace_write"], modes: ALL_MODES, roles: BOTH,
-    validationSensitive: true, resultClass: "file_mutation" },
-  update_file: { effects: ["workspace_write"], modes: ALL_MODES, roles: BOTH,
-    validationSensitive: true, resultClass: "file_mutation" },
-  delete_file: { effects: ["workspace_write", "destructive"], modes: ALL_MODES, roles: BOTH,
-    validationSensitive: true, resultClass: "file_mutation" },
-  run_command: { effects: ["process_execute", "workspace_write"], modes: ALL_MODES, roles: BOTH,
-    validationSensitive: true, resultClass: "command" },
-  start_command: { effects: ["process_execute", "workspace_write"], modes: ALL_MODES, roles: BOTH,
-    validationSensitive: true, resultClass: "command" },
-  poll_command: { effects: ["process_control"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true, resultClass: "command" },
-  cancel_command: { effects: ["process_control", "destructive"], modes: ALL_MODES, roles: BOTH,
-    resultClass: "command" },
-  manage_tasks: { effects: ["agent_control"], modes: ORCHESTRATION_MODES, roles: MAIN,
-    requiresOrchestration: true, controlPlane: true, resultClass: "task_control" },
-  list_mcp_servers: { effects: ["external_read"], modes: ALL_MODES, roles: MAIN,
-    idempotent: true },
-  list_skills: { effects: ["workspace_read", "external_read"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true },
-  name_thread: { effects: ["agent_control"], modes: ALL_MODES, roles: MAIN,
-    controlPlane: true },
-  read_skill: { effects: ["workspace_read", "external_read"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true, resultClass: "file_read" },
-  create_skill: { effects: ["workspace_write", "external_write"], modes: WORK_MODES, roles: MAIN,
-    validationSensitive: true, resultClass: "file_mutation" },
-  modify_skill: { effects: ["workspace_write", "external_write"], modes: WORK_MODES, roles: MAIN,
-    validationSensitive: true, resultClass: "file_mutation" },
-  delete_skill: { effects: ["workspace_write", "external_write", "destructive"], modes: WORK_MODES, roles: MAIN,
-    validationSensitive: true, resultClass: "file_mutation" },
-  save_local_mcp_server: { effects: ["external_write"], modes: WORK_MODES, roles: MAIN,
-    validationSensitive: true },
-  save_remote_mcp_server: { effects: ["external_write"], modes: WORK_MODES, roles: MAIN,
-    validationSensitive: true },
-  disable_mcp_server: { effects: ["external_write"], modes: WORK_MODES, roles: MAIN,
-    validationSensitive: true },
-  remove_mcp_server: { effects: ["external_write", "destructive"], modes: WORK_MODES, roles: MAIN,
-    validationSensitive: true },
-  manage_subagents: { effects: ["agent_control", "workspace_write"], modes: ORCHESTRATION_MODES, roles: MAIN,
-    requiresOrchestration: true, validationSensitive: true, controlPlane: true,
-    resultClass: "subagent_control" },
-  send_parent_message: { effects: ["agent_control"], modes: ALL_MODES, roles: CHILD,
-    controlPlane: true, resultClass: "subagent_control" },
+  read_file: { effects: ["workspace_read"], modes: ALL_MODES, roles: BOTH, idempotent: true, resultClass: "file_read" },
+  read_document: {
+    effects: ["workspace_read"],
+    modes: ALL_MODES,
+    roles: MAIN,
+    idempotent: true,
+    resultClass: "file_read",
+  },
+  search_files: { effects: ["workspace_read"], modes: ALL_MODES, roles: BOTH, idempotent: true, resultClass: "search" },
+  read_image: { effects: ["workspace_read"], modes: ALL_MODES, roles: MAIN, requiresVision: true, idempotent: true },
+  create_file: {
+    effects: ["workspace_write"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    validationSensitive: true,
+    resultClass: "file_mutation",
+  },
+  update_file: {
+    effects: ["workspace_write"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    validationSensitive: true,
+    resultClass: "file_mutation",
+  },
+  delete_file: {
+    effects: ["workspace_write", "destructive"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    validationSensitive: true,
+    resultClass: "file_mutation",
+  },
+  run_command: {
+    effects: ["process_execute", "workspace_write"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    validationSensitive: true,
+    resultClass: "command",
+  },
+  start_command: {
+    effects: ["process_execute", "workspace_write"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    validationSensitive: true,
+    resultClass: "command",
+  },
+  poll_command: {
+    effects: ["process_control"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    idempotent: true,
+    resultClass: "command",
+  },
+  cancel_command: {
+    effects: ["process_control", "destructive"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    resultClass: "command",
+  },
+  manage_tasks: {
+    effects: ["agent_control"],
+    modes: ORCHESTRATION_MODES,
+    roles: MAIN,
+    requiresOrchestration: true,
+    controlPlane: true,
+    resultClass: "task_control",
+  },
+  list_mcp_servers: { effects: ["external_read"], modes: ALL_MODES, roles: MAIN, idempotent: true },
+  list_skills: { effects: ["workspace_read", "external_read"], modes: ALL_MODES, roles: BOTH, idempotent: true },
+  name_thread: { effects: ["agent_control"], modes: ALL_MODES, roles: MAIN, controlPlane: true },
+  read_skill: {
+    effects: ["workspace_read", "external_read"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    idempotent: true,
+    resultClass: "file_read",
+  },
+  create_skill: {
+    effects: ["workspace_write", "external_write"],
+    modes: WORK_MODES,
+    roles: MAIN,
+    validationSensitive: true,
+    resultClass: "file_mutation",
+  },
+  modify_skill: {
+    effects: ["workspace_write", "external_write"],
+    modes: WORK_MODES,
+    roles: MAIN,
+    validationSensitive: true,
+    resultClass: "file_mutation",
+  },
+  delete_skill: {
+    effects: ["workspace_write", "external_write", "destructive"],
+    modes: WORK_MODES,
+    roles: MAIN,
+    validationSensitive: true,
+    resultClass: "file_mutation",
+  },
+  save_local_mcp_server: { effects: ["external_write"], modes: WORK_MODES, roles: MAIN, validationSensitive: true },
+  save_remote_mcp_server: { effects: ["external_write"], modes: WORK_MODES, roles: MAIN, validationSensitive: true },
+  disable_mcp_server: { effects: ["external_write"], modes: WORK_MODES, roles: MAIN, validationSensitive: true },
+  remove_mcp_server: {
+    effects: ["external_write", "destructive"],
+    modes: WORK_MODES,
+    roles: MAIN,
+    validationSensitive: true,
+  },
+  manage_subagents: {
+    effects: ["agent_control", "workspace_write"],
+    modes: ORCHESTRATION_MODES,
+    roles: MAIN,
+    requiresOrchestration: true,
+    validationSensitive: true,
+    controlPlane: true,
+    resultClass: "subagent_control",
+  },
+  send_parent_message: {
+    effects: ["agent_control"],
+    modes: ALL_MODES,
+    roles: CHILD,
+    controlPlane: true,
+    resultClass: "subagent_control",
+  },
   find_file_editors: { effects: ["workspace_read"], modes: ORCHESTRATION_MODES, roles: MAIN, idempotent: true },
   send_thread_message: { effects: ["agent_control"], modes: ORCHESTRATION_MODES, roles: MAIN, controlPlane: true },
-  submit_task_result: { effects: ["agent_control"], modes: ORCHESTRATION_MODES, roles: CHILD,
-    controlPlane: true, resultClass: "task_control" },
-  compact_context: { effects: ["context_control"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true, controlPlane: true, resultClass: "context_control" },
-  read_memory: { effects: ["memory_read"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true, controlPlane: true, resultClass: "memory" },
-  write_memory: { effects: ["memory_write"], modes: ALL_MODES, roles: MAIN,
-    controlPlane: true, resultClass: "memory" },
-  search_context: { effects: ["memory_read"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true, resultClass: "memory" },
-  recall_context: { effects: ["memory_read"], modes: ALL_MODES, roles: BOTH,
-    idempotent: true, resultClass: "memory" },
-  fetch_artifact: { effects: ["network_read", "workspace_write"], modes: WORK_MODES, roles: MAIN,
-    validationSensitive: true, resultClass: "artifact" },
-  web_search: { effects: ["network_read"], modes: ALL_MODES, roles: MAIN,
-    idempotent: true, resultClass: "search" },
-  fetch_webpage: { effects: ["network_read", "external_read"], modes: ALL_MODES, roles: MAIN,
-    idempotent: true, resultClass: "file_read" },
+  submit_task_result: {
+    effects: ["agent_control"],
+    modes: ORCHESTRATION_MODES,
+    roles: CHILD,
+    controlPlane: true,
+    resultClass: "task_control",
+  },
+  read_memory: {
+    effects: ["memory_read"],
+    modes: ALL_MODES,
+    roles: BOTH,
+    idempotent: true,
+    controlPlane: true,
+    resultClass: "memory",
+  },
+  write_memory: { effects: ["memory_write"], modes: ALL_MODES, roles: MAIN, controlPlane: true, resultClass: "memory" },
+  search_context: { effects: ["memory_read"], modes: ALL_MODES, roles: BOTH, idempotent: true, resultClass: "memory" },
+  recall_context: { effects: ["memory_read"], modes: ALL_MODES, roles: BOTH, idempotent: true, resultClass: "memory" },
+  fetch_artifact: {
+    effects: ["network_read", "workspace_write"],
+    modes: WORK_MODES,
+    roles: MAIN,
+    validationSensitive: true,
+    resultClass: "artifact",
+  },
+  web_search: { effects: ["network_read"], modes: ALL_MODES, roles: MAIN, idempotent: true, resultClass: "search" },
+  fetch_webpage: {
+    effects: ["network_read", "external_read"],
+    modes: ALL_MODES,
+    roles: MAIN,
+    idempotent: true,
+    resultClass: "file_read",
+  },
 } as const satisfies Record<BuiltinToolName, BuiltinPolicy>;
 
 const BUILTIN_NAMES = new Set<string>(Object.keys(BUILTIN_POLICIES));
 /** A Plan child can investigate and report, but cannot mutate or execute commands. */
 const PLAN_CHILD_TOOLS = new Set<string>([
-  "read_file", "search_files", "list_skills", "read_skill", "read_memory",
-  "search_context", "recall_context", "compact_context", "send_parent_message",
+  "read_file",
+  "search_files",
+  "list_skills",
+  "read_skill",
+  "read_memory",
+  "search_context",
+  "recall_context",
+  "send_parent_message",
   "submit_task_result",
 ]);
 const TOOL_EFFECTS = new Set<ToolEffect>([
-  "workspace_read", "workspace_write", "process_execute", "process_control",
-  "network_read", "network_write", "external_read", "external_write", "destructive",
-  "agent_control", "memory_read", "memory_write", "context_control",
+  "workspace_read",
+  "workspace_write",
+  "process_execute",
+  "process_control",
+  "network_read",
+  "network_write",
+  "external_read",
+  "external_write",
+  "destructive",
+  "agent_control",
+  "memory_read",
+  "memory_write",
+  "context_control",
 ]);
 const AGENT_MODES = new Set<AgentMode>(["plan", "auto", "code"]);
 const AGENT_ROLES = new Set<AgentRole>(["main_agent", "subagent"]);
@@ -155,10 +257,7 @@ export function builtinToolMetadata(name: BuiltinToolName): Readonly<ToolRuntime
   });
 }
 
-export function validateToolMetadata(
-  tool: Readonly<AgentTool>,
-  metadata: Readonly<ToolRuntimeMetadata>,
-): void {
+export function validateToolMetadata(tool: Readonly<AgentTool>, metadata: Readonly<ToolRuntimeMetadata>): void {
   if (metadata.identity.name !== tool.name || metadata.identity.id.length === 0) {
     throw new Error(`Tool metadata identity does not match ${tool.name}`);
   }
@@ -171,14 +270,20 @@ export function validateToolMetadata(
   if (!/^[A-Za-z0-9_-]{1,64}$/u.test(tool.name)) {
     throw new Error(`Tool ${tool.name} has an invalid model-facing name`);
   }
-  if (!metadata.identity.displayName || metadata.identity.displayName.length > 256 ||
-      /[\u0000-\u001F\u007F]/u.test(metadata.identity.displayName)) {
+  if (
+    !metadata.identity.displayName ||
+    metadata.identity.displayName.length > 256 ||
+    /[\u0000-\u001F\u007F]/u.test(metadata.identity.displayName)
+  ) {
     throw new Error(`Tool ${tool.name} has an invalid display name`);
   }
-  if (!metadata.effects.every((effect) => TOOL_EFFECTS.has(effect)) ||
-      !metadata.allowedModes.every((mode) => AGENT_MODES.has(mode)) ||
-      !metadata.allowedRoles.every((role) => AGENT_ROLES.has(role)) ||
-      metadata.allowedModes.length === 0 || metadata.allowedRoles.length === 0) {
+  if (
+    !metadata.effects.every((effect) => TOOL_EFFECTS.has(effect)) ||
+    !metadata.allowedModes.every((mode) => AGENT_MODES.has(mode)) ||
+    !metadata.allowedRoles.every((role) => AGENT_ROLES.has(role)) ||
+    metadata.allowedModes.length === 0 ||
+    metadata.allowedRoles.length === 0
+  ) {
     throw new Error(`Tool ${tool.name} metadata contains an unknown capability`);
   }
   if (metadata.identity.sourceKind === "external" && metadata.identity.sourceId === "builtin") {
@@ -186,16 +291,18 @@ export function validateToolMetadata(
   }
   if (
     metadata.identity.sourceKind === "external" &&
-    (metadata.controlPlane || metadata.effects.some((effect) =>
-      effect === "agent_control" || effect === "context_control" || effect === "memory_write"))
+    (metadata.controlPlane ||
+      metadata.effects.some(
+        (effect) => effect === "agent_control" || effect === "context_control" || effect === "memory_write",
+      ))
   ) {
-    throw new Error(
-      `External tool ${tool.name} cannot claim EASY CODE control-plane capabilities`,
-    );
+    throw new Error(`External tool ${tool.name} cannot claim EASY CODE control-plane capabilities`);
   }
-  if (new Set(metadata.effects).size !== metadata.effects.length ||
-      new Set(metadata.allowedModes).size !== metadata.allowedModes.length ||
-      new Set(metadata.allowedRoles).size !== metadata.allowedRoles.length) {
+  if (
+    new Set(metadata.effects).size !== metadata.effects.length ||
+    new Set(metadata.allowedModes).size !== metadata.allowedModes.length ||
+    new Set(metadata.allowedRoles).size !== metadata.allowedRoles.length
+  ) {
     throw new Error(`Tool ${tool.name} metadata contains duplicate capabilities`);
   }
 }
@@ -240,14 +347,30 @@ export interface ToolPolicyDecision {
 export function toolRequiresApproval(tool: Readonly<AgentTool>): boolean {
   const metadata = toolMetadata(tool);
   if (metadata.identity.sourceKind === "builtin") {
-    return !metadata.controlPlane && ![
-      "run_command", "start_command", "poll_command", "cancel_command", "fetch_artifact",
-      "web_search", "fetch_webpage",
-    ].includes(tool.name);
+    return (
+      !metadata.controlPlane &&
+      ![
+        "run_command",
+        "start_command",
+        "poll_command",
+        "cancel_command",
+        "fetch_artifact",
+        "web_search",
+        "fetch_webpage",
+      ].includes(tool.name)
+    );
   }
-  return metadata.identity.sourceKind === "external" && metadata.effects.some((effect) =>
-    effect === "workspace_write" || effect === "process_execute" || effect === "network_write" ||
-    effect === "external_write" || effect === "destructive");
+  return (
+    metadata.identity.sourceKind === "external" &&
+    metadata.effects.some(
+      (effect) =>
+        effect === "workspace_write" ||
+        effect === "process_execute" ||
+        effect === "network_write" ||
+        effect === "external_write" ||
+        effect === "destructive",
+    )
+  );
 }
 
 export function evaluateToolPolicy(
@@ -255,12 +378,17 @@ export function evaluateToolPolicy(
   context: Readonly<ToolAvailabilityContext>,
 ): ToolPolicyDecision {
   const metadata = toolMetadata(tool);
-  if (context.mode === "plan" && context.role === "subagent" &&
-      (metadata.identity.sourceKind !== "builtin" || !PLAN_CHILD_TOOLS.has(tool.name))) {
+  if (
+    context.mode === "plan" &&
+    context.role === "subagent" &&
+    (metadata.identity.sourceKind !== "builtin" || !PLAN_CHILD_TOOLS.has(tool.name))
+  ) {
     return { available: false, requiresApproval: false, denialReason: "mode" };
   }
-  if (!metadata.allowedModes.includes(context.mode)) return { available: false, requiresApproval: false, denialReason: "mode" };
-  if (!metadata.allowedRoles.includes(context.role)) return { available: false, requiresApproval: false, denialReason: "role" };
+  if (!metadata.allowedModes.includes(context.mode))
+    return { available: false, requiresApproval: false, denialReason: "mode" };
+  if (!metadata.allowedRoles.includes(context.role))
+    return { available: false, requiresApproval: false, denialReason: "role" };
   if (metadata.requiresOrchestration && !context.orchestrationAvailable) {
     return { available: false, requiresApproval: false, denialReason: "orchestration" };
   }
@@ -270,10 +398,7 @@ export function evaluateToolPolicy(
   return { available: true, requiresApproval: toolRequiresApproval(tool) };
 }
 
-export function isToolAvailable(
-  tool: Readonly<AgentTool>,
-  context: Readonly<ToolAvailabilityContext>,
-): boolean {
+export function isToolAvailable(tool: Readonly<AgentTool>, context: Readonly<ToolAvailabilityContext>): boolean {
   return evaluateToolPolicy(tool, context).available;
 }
 
@@ -282,8 +407,4 @@ export function availableAgentTools(
   context: Readonly<ToolAvailabilityContext>,
 ): AgentTool[] {
   return tools.filter((tool) => isToolAvailable(tool, context));
-}
-
-export function toolHasEffect(tool: Readonly<AgentTool>, effect: ToolEffect): boolean {
-  return toolMetadata(tool).effects.includes(effect);
 }

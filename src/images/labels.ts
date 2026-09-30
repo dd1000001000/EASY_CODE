@@ -36,8 +36,6 @@ export function assertThreadImageNumberAvailable(imageNumber: number): void {
     throw new Error("Image number must be a positive integer.");
   }
   if (imageNumber > MAX_THREAD_IMAGE_NUMBER) {
-    throw new Error(
-      `This thread has reached the ${MAX_THREAD_IMAGE_NUMBER} image attachment limit.`,
-    );
+    throw new Error(`This thread has reached the ${MAX_THREAD_IMAGE_NUMBER} image attachment limit.`);
   }
 }

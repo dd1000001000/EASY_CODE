@@ -27,9 +27,19 @@ describe("platform service selection", () => {
     assert.match(windows.backendName, /Windows/u);
     assert.match(mac.backendName, /macOS/u);
     assert.match(linux.backendName, /Linux/u);
-    assert.equal(windows.checkProbe("HOST\\CodexSandboxOffline", () => { throw new Error("unexpected"); }), undefined);
+    assert.equal(
+      windows.checkProbe("HOST\\CodexSandboxOffline", () => {
+        throw new Error("unexpected");
+      }),
+      undefined,
+    );
     const result: ReadinessResult = (status, details, canSetup = false) => ({
-      status, details, canSetup, platform: "linux", backend: "test", warnings: [],
+      status,
+      details,
+      canSetup,
+      platform: "linux",
+      backend: "test",
+      warnings: [],
     });
     assert.equal(mac.probeFailed("operation failed", result).status, "probe_failed");
     assert.equal(linux.probeFailed("bubblewrap not found", result).status, "dependencies_missing");
@@ -40,7 +50,13 @@ describe("platform service selection", () => {
       new MacNativeBackend(backendOptions),
       new LinuxNativeBackend(backendOptions),
     ];
-    assert.deepEqual(implementations.map(value => value.sandboxManagedTimeout), [true, false, true]);
-    assert.deepEqual(implementations.map(value => value.cooperativeTermination), [false, true, true]);
+    assert.deepEqual(
+      implementations.map((value) => value.sandboxManagedTimeout),
+      [true, false, true],
+    );
+    assert.deepEqual(
+      implementations.map((value) => value.cooperativeTermination),
+      [false, true, true],
+    );
   });
 });

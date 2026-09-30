@@ -13,10 +13,7 @@ import {
 import { cloneSessionState } from "../src/runtime/state.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
-import {
-  deserializeSessionState,
-  serializeSessionState,
-} from "../src/threads/serialization.js";
+import { deserializeSessionState, serializeSessionState } from "../src/threads/serialization.js";
 import { describe, it } from "./harness.js";
 
 function temporaryDataDir(): string {
@@ -25,67 +22,31 @@ function temporaryDataDir(): string {
 
 describe("per-Thread command approval prefixes", () => {
   it("normalizes by platform and matches only the exact executable identity", () => {
-    const granted = grantCommandApprovalPrefix(
-      [],
-      "E:\\Miniconda3\\git.exe",
-      "win32",
-    );
+    const granted = grantCommandApprovalPrefix([], "E:\\Miniconda3\\git.exe", "win32");
     assert.deepEqual(granted, ["e:\\miniconda3\\git.exe"]);
-    assert.equal(
-      isCommandApprovalPrefixGranted(
-        granted,
-        "e:/MINICONDA3/git.exe",
-        "win32",
-      ),
-      true,
-    );
-    assert.equal(
-      isCommandApprovalPrefixGranted(
-        granted,
-        "E:\\Miniconda3\\git.exe-evil",
-        "win32",
-      ),
-      false,
-    );
-    assert.equal(
-      isCommandApprovalPrefixGranted(
-        granted,
-        "E:\\Miniconda3\\git.exe\\child",
-        "win32",
-      ),
-      false,
-    );
-    assert.equal(
-      isCommandApprovalPrefixGranted(
-        ["/usr/bin/Git"],
-        "/usr/bin/git",
-        "linux",
-      ),
-      false,
-    );
+    assert.equal(isCommandApprovalPrefixGranted(granted, "e:/MINICONDA3/git.exe", "win32"), true);
+    assert.equal(isCommandApprovalPrefixGranted(granted, "E:\\Miniconda3\\git.exe-evil", "win32"), false);
+    assert.equal(isCommandApprovalPrefixGranted(granted, "E:\\Miniconda3\\git.exe\\child", "win32"), false);
+    assert.equal(isCommandApprovalPrefixGranted(["/usr/bin/Git"], "/usr/bin/git", "linux"), false);
 
-    const duplicate = grantCommandApprovalPrefix(
-      granted,
-      "E:\\MINICONDA3\\GIT.EXE",
-      "win32",
-    );
+    const duplicate = grantCommandApprovalPrefix(granted, "E:\\MINICONDA3\\GIT.EXE", "win32");
     assert.deepEqual(duplicate, granted);
     assert.notEqual(duplicate, granted);
   });
 
   it("rejects relative, control-character, and oversized persisted grants", () => {
-    assert.throws(
-      () => normalizeCommandApprovalPrefix("git.exe", process.platform),
-      /absolute executable path/u,
-    );
+    assert.throws(() => normalizeCommandApprovalPrefix("git.exe", process.platform), /absolute executable path/u);
     assert.throws(
       () => normalizeCommandApprovalPrefix(`${path.join(path.dirname(process.execPath), "git.exe")}\nspoofed`),
       /Invalid command approval prefix/u,
     );
     assert.throws(
-      () => validateCommandApprovalPrefixes(
-        Array.from({ length: MAX_COMMAND_APPROVAL_PREFIXES + 1 }, () => path.join(path.dirname(process.execPath), "git.exe")),
-      ),
+      () =>
+        validateCommandApprovalPrefixes(
+          Array.from({ length: MAX_COMMAND_APPROVAL_PREFIXES + 1 }, () =>
+            path.join(path.dirname(process.execPath), "git.exe"),
+          ),
+        ),
       /Invalid command approval prefix list/u,
     );
   });
@@ -118,10 +79,7 @@ describe("per-Thread command approval prefixes", () => {
 
       const legacy = { ...serialized } as Record<string, unknown>;
       delete legacy.commandApprovalPrefixes;
-      assert.throws(
-        () => deserializeSessionState(legacy),
-        /Invalid command approval prefixes/u,
-      );
+      assert.throws(() => deserializeSessionState(legacy), /Invalid command approval prefixes/u);
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -143,24 +101,29 @@ describe("per-Thread command approval prefixes", () => {
       const baseline = serializeSessionState(state) as unknown as Record<string, unknown>;
 
       assert.throws(
-        () => deserializeSessionState({ ...baseline, commandApprovalPrefixes: path.join(path.dirname(process.execPath), "git.exe") }),
+        () =>
+          deserializeSessionState({
+            ...baseline,
+            commandApprovalPrefixes: path.join(path.dirname(process.execPath), "git.exe"),
+          }),
         /Invalid command approval prefixes/u,
       );
       assert.throws(
-        () => deserializeSessionState({
-          ...baseline,
-          commandApprovalPrefixes: [`${path.join(path.dirname(process.execPath), "git.exe")}\u0000spoofed`],
-        }),
+        () =>
+          deserializeSessionState({
+            ...baseline,
+            commandApprovalPrefixes: [`${path.join(path.dirname(process.execPath), "git.exe")}\u0000spoofed`],
+          }),
         /Invalid command approval prefixes/u,
       );
       assert.throws(
-        () => deserializeSessionState({
-          ...baseline,
-          commandApprovalPrefixes: Array.from(
-            { length: MAX_COMMAND_APPROVAL_PREFIXES + 1 },
-            () => path.join(path.dirname(process.execPath), "git.exe"),
-          ),
-        }),
+        () =>
+          deserializeSessionState({
+            ...baseline,
+            commandApprovalPrefixes: Array.from({ length: MAX_COMMAND_APPROVAL_PREFIXES + 1 }, () =>
+              path.join(path.dirname(process.execPath), "git.exe"),
+            ),
+          }),
         /Invalid command approval prefixes/u,
       );
     } finally {
@@ -206,9 +169,10 @@ describe("per-Thread command approval prefixes", () => {
         normalizeCommandApprovalPrefix(path.join(path.dirname(process.execPath), "git.exe")),
       ]);
       assert.equal(
-        threads.journal(stale.threadId).read().filter(
-          (event) => event.type === "command.approval_prefix_granted",
-        ).length,
+        threads
+          .journal(stale.threadId)
+          .read()
+          .filter((event) => event.type === "command.approval_prefix_granted").length,
         2,
       );
     } finally {
@@ -236,10 +200,7 @@ describe("per-Thread command approval prefixes", () => {
         phase: "completed",
         payload: { commandPrefix: `${path.join(path.dirname(process.execPath), "git.exe")}\nspoofed` },
       });
-      assert.throws(
-        () => threads.recover(state.threadId),
-        /Invalid command approval prefix/u,
-      );
+      assert.throws(() => threads.recover(state.threadId), /Invalid command approval prefix/u);
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });

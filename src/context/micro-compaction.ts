@@ -32,16 +32,12 @@ const COMPACTABLE_TOOL_NAMES = new Set<string>([
 
 type JsonRecord = Record<string, unknown>;
 
-const TERMINAL_ESCAPE_SEQUENCE =
-  /\u001B(?:\][^\u0007]*(?:\u0007|\u001B\\)|\[[0-?]*[ -/]*[@-~])/gu;
-const UNSAFE_REFERENCE_TEXT =
-  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/gu;
+const TERMINAL_ESCAPE_SEQUENCE = /\u001B(?:\][^\u0007]*(?:\u0007|\u001B\\)|\[[0-?]*[ -/]*[@-~])/gu;
+const UNSAFE_REFERENCE_TEXT = /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/gu;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9_.:/-]+$/u;
 
 function asRecord(value: unknown): JsonRecord | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as JsonRecord
-    : undefined;
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : undefined;
 }
 
 function parseToolResult(content: string): JsonRecord | undefined {
@@ -55,11 +51,7 @@ function parseToolResult(content: string): JsonRecord | undefined {
 function boundedSafeText(value: unknown, maximumChars = 160): string | undefined {
   if (typeof value !== "string") return undefined;
   const safe = redactSensitiveInformation(
-    value
-      .replace(TERMINAL_ESCAPE_SEQUENCE, " ")
-      .replace(UNSAFE_REFERENCE_TEXT, " ")
-      .replace(/\s+/gu, " ")
-      .trim(),
+    value.replace(TERMINAL_ESCAPE_SEQUENCE, " ").replace(UNSAFE_REFERENCE_TEXT, " ").replace(/\s+/gu, " ").trim(),
   );
   if (!safe) return undefined;
   if (safe.length <= maximumChars) return safe;
@@ -75,12 +67,7 @@ function referenceValue(value: unknown, maximumChars = 160): string | undefined 
   return SAFE_IDENTIFIER.test(safe) ? safe : JSON.stringify(safe);
 }
 
-function addField(
-  fields: string[],
-  name: string,
-  value: unknown,
-  maximumChars = 160,
-): void {
+function addField(fields: string[], name: string, value: unknown, maximumChars = 160): void {
   const rendered = referenceValue(value, maximumChars);
   if (rendered !== undefined) fields.push(`${name}=${rendered}`);
 }
@@ -178,13 +165,14 @@ function searchSynopsis(toolName: string, payload: JsonRecord | undefined): stri
 
 function mutationSynopsis(toolName: string, payload: JsonRecord | undefined): string[] {
   const data = resultData(payload);
-  const inferredOperation = toolName === "create_file"
-    ? "create"
-    : toolName === "update_file"
-      ? "update"
-      : toolName === "delete_file"
-        ? "delete"
-        : "mutate";
+  const inferredOperation =
+    toolName === "create_file"
+      ? "create"
+      : toolName === "update_file"
+        ? "update"
+        : toolName === "delete_file"
+          ? "delete"
+          : "mutate";
   const fields = ["kind=file_mutation", `operation=${inferredOperation}`];
   addCommonResultFields(fields, payload);
   addField(fields, "path", data?.path, 200);
@@ -232,9 +220,7 @@ function subagentSynopsis(payload: JsonRecord | undefined): string[] {
   const data = resultData(payload);
   const observedAgentId = boundedSafeText(data?.observedAgentId, 100);
   const observedAgent = Array.isArray(data?.agents)
-    ? data.agents
-        .map(asRecord)
-        .find((candidate) => candidate?.id === observedAgentId)
+    ? data.agents.map(asRecord).find((candidate) => candidate?.id === observedAgentId)
     : undefined;
   const agent = asRecord(data?.agent) ?? observedAgent;
   const result = asRecord(data?.result);
@@ -297,19 +283,18 @@ function synopsisForTool(toolName: string, payload: JsonRecord | undefined): str
   return genericSynopsis(toolName, payload);
 }
 
-function recoveryPlaceholder(
-  message: Extract<ChatMessage, { role: "tool" }>,
-  toolName: string,
-): string {
+function recoveryPlaceholder(message: Extract<ChatMessage, { role: "tool" }>, toolName: string): string {
   const contentHash = sha256(message.content);
   const synopsis = synopsisForTool(toolName, parseToolResult(message.content)).join("; ");
   const safeToolName = referenceValue(toolName, 80) ?? "unknown";
   const safeToolCallId = referenceValue(message.tool_call_id, 160) ?? "unknown";
-  return `${MICRO_COMPACTION_PLACEHOLDER_PREFIX} ` +
+  return (
+    `${MICRO_COMPACTION_PLACEHOLDER_PREFIX} ` +
     `Full content remains in durable Thread history. ` +
     `Reference: tool=${safeToolName}; tool_call_id=${safeToolCallId}; ` +
     `original_chars=${message.content.length}; sha256=${contentHash}. ` +
-    `Synopsis: ${synopsis}.]`;
+    `Synopsis: ${synopsis}.]`
+  );
 }
 
 /**
@@ -324,9 +309,7 @@ function recoveryPlaceholder(
  *
  * The input messages and their nested durable objects are never mutated.
  */
-export function microCompactToolResults(
-  messages: readonly ChatMessage[],
-): ChatMessage[] {
+export function microCompactToolResults(messages: readonly ChatMessage[]): ChatMessage[] {
   const toolNamesByResultIndex = new Map<number, string>();
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
@@ -368,9 +351,7 @@ export function microCompactToolResults(
  * provider request. Calling it repeatedly is safe and produces the same
  * value; no durable message is mutated.
  */
-export function projectModelInputMessages(
-  messages: readonly ChatMessage[],
-): ChatMessage[] {
+export function projectModelInputMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   // Normal requests are append-only. Opportunistically rewriting a result
   // after a single response both loses evidence and invalidates cached prefixes.
   // microCompactToolResults is reserved for an explicit pressure fallback.

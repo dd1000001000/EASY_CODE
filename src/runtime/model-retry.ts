@@ -9,8 +9,14 @@ import { requestTokens } from "../context/token-budget.js";
 export function isContextCapacityError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (error.message.startsWith("context_capacity_insufficient:")) return true;
-  if (!(error instanceof ProviderError) || (error.statusCode !== undefined && ![400, 413, 422].includes(error.statusCode))) return false;
-  return /context_length_exceeded|context_window_exceeded|maximum context length|context (?:window|length).*(?:exceed|limit)|prompt (?:is )?too long|input (?:is )?too long/i.test(`${error.code} ${error.message}`);
+  if (
+    !(error instanceof ProviderError) ||
+    (error.statusCode !== undefined && ![400, 413, 422].includes(error.statusCode))
+  )
+    return false;
+  return /context_length_exceeded|context_window_exceeded|maximum context length|context (?:window|length).*(?:exceed|limit)|prompt (?:is )?too long|input (?:is )?too long/i.test(
+    `${error.code} ${error.message}`,
+  );
 }
 
 export interface ApiAttempt {
@@ -18,26 +24,39 @@ export interface ApiAttempt {
   retry: boolean;
   outcome: "completed" | "failed";
   usage?: ProviderUsage;
-  failure?: { category: ReturnType<typeof failureCategory>; execution: "not_started";
-    recovery: "retry_api" | "reset_context" | "propagate"; apiRetries: number; capacityRetries: number;
-    code?: string; progress?: { reasoningChars: number; textChars: number; toolArgumentChars: number } };
+  failure?: {
+    category: ReturnType<typeof failureCategory>;
+    execution: "not_started";
+    recovery: "retry_api" | "reset_context" | "propagate";
+    apiRetries: number;
+    capacityRetries: number;
+    code?: string;
+    progress?: { reasoningChars: number; textChars: number; toolArgumentChars: number };
+  };
 }
 const managed = new WeakSet<ModelProvider>();
-export function markRetryManaged(provider: ModelProvider): void { managed.add(provider); }
+export function markRetryManaged(provider: ModelProvider): void {
+  managed.add(provider);
+}
 
-export async function completeWithApiRetries(provider: ModelProvider, request: ModelRequest, options: {
-  limits?: Readonly<RuntimeLimits>;
-  reserve?: (request: ModelRequest) => (usage?: ProviderUsage) => void;
-  onAttempt?: (attempt: number) => void | Promise<void>;
-  onSettled?: (attempt: ApiAttempt) => void | Promise<void>;
-  resetContext?: (request: ModelRequest) => Promise<ModelRequest>;
-  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-} = {}): Promise<ProviderResponse> {
+export async function completeWithApiRetries(
+  provider: ModelProvider,
+  request: ModelRequest,
+  options: {
+    limits?: Readonly<RuntimeLimits>;
+    reserve?: (request: ModelRequest) => (usage?: ProviderUsage) => void;
+    onAttempt?: (attempt: number) => void | Promise<void>;
+    onSettled?: (attempt: ApiAttempt) => void | Promise<void>;
+    resetContext?: (request: ModelRequest) => Promise<ModelRequest>;
+    sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  } = {},
+): Promise<ProviderResponse> {
   // Auxiliary callers such as Auto routing can receive the main Runtime wrapper.
   // Never layer another transport retry loop or duplicate its budget debit.
   if (managed.has(provider)) return provider.complete(request);
   const limits = options.limits ?? DEFAULT_RUNTIME_LIMITS;
-  let apiRetries = 0, capacityRetries = 0;
+  let apiRetries = 0,
+    capacityRetries = 0;
   for (let ordinal = 1; ; ordinal++) {
     request.signal?.throwIfAborted();
     await options.onAttempt?.(ordinal);
@@ -47,7 +66,10 @@ export async function completeWithApiRetries(provider: ModelProvider, request: M
     let failed = false;
     try {
       response = await abortable(provider.complete({ ...request, maxRetries: 0 }), request.signal);
-    } catch (error) { failed = true; failure = error; }
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
     // Persistence/usage callback failures must not be mistaken for API failures.
     if (!failed) {
       settle?.(response!.usage);
@@ -57,20 +79,35 @@ export async function completeWithApiRetries(provider: ModelProvider, request: M
     settle?.();
     const category = failureCategory(failure, request.signal);
     const providerFailure = failure instanceof ProviderError ? failure : undefined;
-    await options.onSettled?.({ attempt: ordinal, retry: ordinal > 1, outcome: "failed", failure: {
-      category, execution: "not_started", apiRetries, capacityRetries,
-      recovery: category === "capacity" && options.resetContext && capacityRetries < limits.contextMaxCapacityRetries
-        ? "reset_context" : category === "api" && retryableApiFailure(failure) &&
-          apiRetries < limits.maxProviderRetries && (failure.retryAfterMs ?? 0) <= limits.providerRetryWaitMs ? "retry_api" : "propagate",
-      ...(providerFailure?.code ? { code: providerFailure.code } : {}),
-      ...(providerFailure?.progress ? { progress: { ...providerFailure.progress } } : {}),
-    } });
+    await options.onSettled?.({
+      attempt: ordinal,
+      retry: ordinal > 1,
+      outcome: "failed",
+      failure: {
+        category,
+        execution: "not_started",
+        apiRetries,
+        capacityRetries,
+        recovery:
+          category === "capacity" && options.resetContext && capacityRetries < limits.contextMaxCapacityRetries
+            ? "reset_context"
+            : category === "api" &&
+                retryableApiFailure(failure) &&
+                apiRetries < limits.maxProviderRetries &&
+                (failure.retryAfterMs ?? 0) <= limits.providerRetryWaitMs
+              ? "retry_api"
+              : "propagate",
+        ...(providerFailure?.code ? { code: providerFailure.code } : {}),
+        ...(providerFailure?.progress ? { progress: { ...providerFailure.progress } } : {}),
+      },
+    });
     request.signal?.throwIfAborted();
     if (isContextCapacityError(failure)) {
       if (!options.resetContext || capacityRetries >= limits.contextMaxCapacityRetries) throw failure;
       capacityRetries++;
       const reduced = await options.resetContext(request);
-      if (requestTokens(reduced.messages, reduced.tools) >= requestTokens(request.messages, request.tools)) throw failure;
+      if (requestTokens(reduced.messages, reduced.tools) >= requestTokens(request.messages, request.tools))
+        throw failure;
       request = reduced;
       continue;
     }
@@ -86,17 +123,33 @@ async function abortable<T>(pending: Promise<T>, signal?: AbortSignal): Promise<
   if (!signal) return pending;
   let abort: (() => void) | undefined;
   try {
-    return await Promise.race([pending, new Promise<never>((_, reject) => {
-      abort = () => reject(signal.reason ?? new Error("Model request canceled"));
-      signal.addEventListener("abort", abort, { once: true });
-      if (signal.aborted) abort();
-    })]);
-  } finally { if (abort) signal.removeEventListener("abort", abort); }
+    return await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => {
+        abort = () => reject(signal.reason ?? new Error("Model request canceled"));
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      }),
+    ]);
+  } finally {
+    if (abort) signal.removeEventListener("abort", abort);
+  }
 }
 
 export function incompleteModelOutput(response: ProviderResponse): string | undefined {
-  if (response.finishReason === "length") return "Model output was truncated (finishReason=length); submit a complete response. No incomplete tool call was executed.";
-  if (["incomplete", "failed", "in_progress", "queued", "cancelled", "content_filter", "insufficient_system_resource"].includes(response.finishReason ?? ""))
+  if (response.finishReason === "length")
+    return "Model output was truncated (finishReason=length); submit a complete response. No incomplete tool call was executed.";
+  if (
+    [
+      "incomplete",
+      "failed",
+      "in_progress",
+      "queued",
+      "cancelled",
+      "content_filter",
+      "insufficient_system_resource",
+    ].includes(response.finishReason ?? "")
+  )
     return `Model response did not complete (finishReason=${response.finishReason}); submit a complete response. No incomplete tool call was executed.`;
   if (!response.message.tool_calls?.length && !response.message.content?.trim())
     return "Model returned no usable text or tool call. Thinking alone is not a completed task.";

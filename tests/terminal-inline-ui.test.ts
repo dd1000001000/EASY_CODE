@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
 import { Terminal } from "../src/cli/terminal.js";
-import {
-  VSCODE_IMAGE_PASTE_SEQUENCE,
-} from "../src/cli/prompt-input.js";
+import { VSCODE_IMAGE_PASTE_SEQUENCE } from "../src/cli/prompt-input.js";
 import type { ApprovalRequest, ImageAttachment } from "../src/core/types.js";
 import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
@@ -173,31 +171,32 @@ interface DisclosureNodeProbe {
 }
 
 function disclosureFrame(terminal: Terminal): Readonly<DisclosureFrameProbe> | undefined {
-  return (terminal as unknown as {
-    readonly disclosureViewer?: {
-      readonly frame: Readonly<DisclosureFrameProbe>;
-    };
-  }).disclosureViewer?.frame;
+  return (
+    terminal as unknown as {
+      readonly disclosureViewer?: {
+        readonly frame: Readonly<DisclosureFrameProbe>;
+      };
+    }
+  ).disclosureViewer?.frame;
 }
 
-function disclosureNodes(
-  terminal: Terminal,
-): readonly Readonly<DisclosureNodeProbe>[] {
-  return (terminal as unknown as {
-    readonly disclosureViewer?: {
-      readonly state: {
-        readonly nodes: readonly Readonly<DisclosureNodeProbe>[];
-      };
-    };
-  }).disclosureViewer?.state.nodes ?? [];
+function disclosureNodes(terminal: Terminal): readonly Readonly<DisclosureNodeProbe>[] {
+  return (
+    (
+      terminal as unknown as {
+        readonly disclosureViewer?: {
+          readonly state: {
+            readonly nodes: readonly Readonly<DisclosureNodeProbe>[];
+          };
+        };
+      }
+    ).disclosureViewer?.state.nodes ?? []
+  );
 }
 
 function disclosureNodeText(node: Readonly<DisclosureNodeProbe>): string {
   if (node.kind === "text") return stripAnsi(node.text ?? "");
-  return stripAnsi([
-    node.title ?? "",
-    node.expanded ? node.body ?? "" : node.preview ?? "",
-  ].join("\n"));
+  return stripAnsi([node.title ?? "", node.expanded ? (node.body ?? "") : (node.preview ?? "")].join("\n"));
 }
 
 function disclosureRegionText(
@@ -206,21 +205,17 @@ function disclosureRegionText(
 ): string {
   const frame = disclosureFrame(terminal);
   assert.ok(frame, "the persistent conversation frame must be active");
-  return stripAnsi(frame.visibleRows
-    .filter((row) => region === undefined || row.region === region)
-    .map((row) => row.text)
-    .join("\n"));
+  return stripAnsi(
+    frame.visibleRows
+      .filter((row) => region === undefined || row.region === region)
+      .map((row) => row.text)
+      .join("\n"),
+  );
 }
 
-function disclosureNode(
-  terminal: Terminal,
-  id: string,
-): Readonly<DisclosureNodeProbe> {
-  const virtualId = id.replace(/^thinking_/u, "thinking:")
-    .replace(/^adjustment_/u, "adjustment:");
-  const node = disclosureNodes(terminal).find((candidate) =>
-    candidate.id === id || candidate.id === virtualId
-  );
+function disclosureNode(terminal: Terminal, id: string): Readonly<DisclosureNodeProbe> {
+  const virtualId = id.replace(/^thinking_/u, "thinking:").replace(/^adjustment_/u, "adjustment:");
+  const node = disclosureNodes(terminal).find((candidate) => candidate.id === id || candidate.id === virtualId);
   assert.ok(node, `expected disclosure node ${id}`);
   return node;
 }
@@ -288,7 +283,9 @@ describe("Terminal retained inline shell", () => {
         internal.refresh();
         assert.equal(terminalState(terminal).header.session?.contextTokens, 96);
         assert.match(stripAnsi(captured()), /ctx 96/u);
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
@@ -310,7 +307,9 @@ describe("Terminal retained inline shell", () => {
         input.write("\bZ\r");
         assert.equal(await secret, "abZ");
         assert.equal(input.isRaw, false);
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
@@ -419,9 +418,10 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminal.finalizeStreamedAnswer("Hello world"), true);
 
         const state = terminalState(terminal);
-        assert.deepEqual(state.transcript.map((entry) => entry.kind), [
-          "user", "raw", "assistant",
-        ]);
+        assert.deepEqual(
+          state.transcript.map((entry) => entry.kind),
+          ["user", "raw", "assistant"],
+        );
         assert.equal(state.transcript.filter((entry) => entry.id === "thinking_1").length, 1);
         assert.equal(state.transcript[1]?.reasoning, "Inspect files");
         assert.equal(state.transcript[2]?.text, "\nHello world\n\n");
@@ -453,40 +453,63 @@ describe("Terminal retained inline shell", () => {
 
   it("shows bounded streamed tool-argument progress without exposing arguments", async () => {
     await withInteractiveEnvironment(() => {
-      const output = new TtyOutput(); output.resume();
+      const output = new TtyOutput();
+      output.resume();
       const terminal = new Terminal(new TtyInput(), output);
       const probe = terminal as unknown as { flushModelStreams(): void };
       try {
         terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
-        terminal.beginShell(session()); terminal.setCurrentRequest("Create the application");
+        terminal.beginShell(session());
+        terminal.setCurrentRequest("Create the application");
         const activity = terminal.startActivity("Waiting for model response", "model");
         terminal.modelStream({ kind: "started", streamId: "tool-stream", sequence: 1 });
-        terminal.modelStream({ kind: "tool_call_delta", streamId: "tool-stream", sequence: 2,
-          index: 0, id: "call_1", name: "create_", arguments: '{"content":"SECRET_' });
-        terminal.modelStream({ kind: "tool_call_delta", streamId: "tool-stream", sequence: 3,
-          index: 0, name: "file", arguments: "x".repeat(2048) });
+        terminal.modelStream({
+          kind: "tool_call_delta",
+          streamId: "tool-stream",
+          sequence: 2,
+          index: 0,
+          id: "call_1",
+          name: "create_",
+          arguments: '{"content":"SECRET_',
+        });
+        terminal.modelStream({
+          kind: "tool_call_delta",
+          streamId: "tool-stream",
+          sequence: 3,
+          index: 0,
+          name: "file",
+          arguments: "x".repeat(2048),
+        });
         probe.flushModelStreams();
         const label = terminalState(terminal).live.activity?.label ?? "";
         assert.match(label, /Preparing create_file #1 · 2\.0 KiB arguments/u);
         assert.equal(label.includes("SECRET"), false);
         terminal.modelStream({ kind: "interrupted", streamId: "tool-stream", sequence: 4 });
-        assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /tool arguments were incomplete and were not executed/u);
+        assert.match(
+          terminalState(terminal).transcript.at(-1)?.text ?? "",
+          /tool arguments were incomplete and were not executed/u,
+        );
         terminal.stopActivity(activity);
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
   it("coalesces a delta burst, bounds live previews, and restores complete final text", async () => {
     await withInteractiveEnvironment(() => {
-      const output = new TtyOutput(); output.resume();
+      const output = new TtyOutput();
+      output.resume();
       const terminal = new Terminal(new TtyInput(), output);
       const probe = terminal as unknown as { flushModelStreams(): void; streamFlushTimer?: NodeJS.Timeout };
       try {
         terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
-        terminal.beginShell(session()); terminal.setCurrentRequest("Streaming burst");
+        terminal.beginShell(session());
+        terminal.setCurrentRequest("Streaming burst");
         terminal.modelStream({ kind: "started", streamId: "burst", sequence: 1 });
         const fragment = "Incremental output words. ";
-        for (let index = 0; index < 200; index++) terminal.modelStream({ kind: "text_delta", streamId: "burst", sequence: index + 2, text: fragment });
+        for (let index = 0; index < 200; index++)
+          terminal.modelStream({ kind: "text_delta", streamId: "burst", sequence: index + 2, text: fragment });
         assert.equal(terminalState(terminal).transcript.filter((entry) => entry.kind === "assistant").length, 0);
         assert.ok(probe.streamFlushTimer);
         probe.flushModelStreams();
@@ -496,32 +519,46 @@ describe("Terminal retained inline shell", () => {
         terminal.modelStream({ kind: "completed", streamId: "burst", sequence: 202, finishReason: "stop" });
         assert.equal(terminal.finalizeStreamedAnswer(fragment.repeat(200)), true);
         assert.equal(terminalState(terminal).transcript.at(-1)?.text, `\n${fragment.repeat(200).trim()}\n\n`);
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
   it("keeps live Thinking progress moving after its preview reaches the cap", async () => {
     await withInteractiveEnvironment(() => {
-      const output = new TtyOutput(); output.resume();
+      const output = new TtyOutput();
+      output.resume();
       const terminal = new Terminal(new TtyInput(), output);
       const probe = terminal as unknown as { flushModelStreams(): void };
       try {
         terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
-        terminal.beginShell(session()); terminal.setCurrentRequest("Long reasoning stream");
+        terminal.beginShell(session());
+        terminal.setCurrentRequest("Long reasoning stream");
         const activity = terminal.startActivity("Waiting for model response", "model");
         terminal.modelStream({ kind: "started", streamId: "reasoning-burst", sequence: 1 });
-        terminal.modelStream({ kind: "reasoning_delta", streamId: "reasoning-burst", sequence: 2,
-          text: `${"a".repeat(1100)} ` });
+        terminal.modelStream({
+          kind: "reasoning_delta",
+          streamId: "reasoning-burst",
+          sequence: 2,
+          text: `${"a".repeat(1100)} `,
+        });
         probe.flushModelStreams();
         let marker = terminalState(terminal).transcript.find((entry) => entry.id === "thinking_1")?.text ?? "";
         assert.match(marker, /Thinking #1 · 1,101 chars · still receiving/u);
         assert.match(marker, /\[Live preview limited to 1,024 chars\]/u);
-        assert.match(disclosureNodeText(disclosureNode(terminal, "thinking_1")),
-          /Thinking #1 · 1,101 chars · still receiving/u);
+        assert.match(
+          disclosureNodeText(disclosureNode(terminal, "thinking_1")),
+          /Thinking #1 · 1,101 chars · still receiving/u,
+        );
         assert.ok(marker.length < 1300);
 
-        terminal.modelStream({ kind: "reasoning_delta", streamId: "reasoning-burst", sequence: 3,
-          text: "more reasoning" });
+        terminal.modelStream({
+          kind: "reasoning_delta",
+          streamId: "reasoning-burst",
+          sequence: 3,
+          text: "more reasoning",
+        });
         probe.flushModelStreams();
         marker = terminalState(terminal).transcript.find((entry) => entry.id === "thinking_1")?.text ?? "";
         assert.match(marker, /Thinking #1 · 1,115 chars · still receiving/u);
@@ -531,16 +568,20 @@ describe("Terminal retained inline shell", () => {
         marker = terminalState(terminal).transcript.find((entry) => entry.id === "thinking_1")?.text ?? "";
         assert.doesNotMatch(marker, /still receiving|Live preview limited/u);
         terminal.stopActivity(activity);
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
   it("isolates interrupted attempts and ignores duplicate or late delta events", async () => {
     await withInteractiveEnvironment(() => {
-      const output = new TtyOutput(); output.resume();
+      const output = new TtyOutput();
+      output.resume();
       const terminal = new Terminal(new TtyInput(), output);
       try {
-        terminal.beginShell(session()); terminal.setCurrentRequest("Retry stream");
+        terminal.beginShell(session());
+        terminal.setCurrentRequest("Retry stream");
         terminal.modelStream({ kind: "started", streamId: "old", sequence: 1 });
         terminal.modelStream({ kind: "text_delta", streamId: "old", sequence: 2, text: "Discarded " });
         terminal.modelStream({ kind: "interrupted", streamId: "old", sequence: 3 });
@@ -554,17 +595,21 @@ describe("Terminal retained inline shell", () => {
         assert.equal(answers.length, 2);
         assert.match(answers[0]?.text ?? "", /Interrupted/u);
         assert.equal(answers[1]?.text, "\nAccepted\n\n");
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
   it("clear and close cancel pending stream flushes and reject old deltas", async () => {
     await withInteractiveEnvironment(() => {
-      const output = new TtyOutput(); output.resume();
+      const output = new TtyOutput();
+      output.resume();
       const terminal = new Terminal(new TtyInput(), output);
       const probe = terminal as unknown as { streamFlushTimer?: NodeJS.Timeout };
       try {
-        terminal.beginShell(session()); terminal.setCurrentRequest("Clear stream");
+        terminal.beginShell(session());
+        terminal.setCurrentRequest("Clear stream");
         terminal.modelStream({ kind: "started", streamId: "clear", sequence: 1 });
         terminal.modelStream({ kind: "text_delta", streamId: "clear", sequence: 2, text: "stale " });
         terminal.clearScreen();
@@ -573,20 +618,29 @@ describe("Terminal retained inline shell", () => {
         terminal.modelStream({ kind: "completed", streamId: "clear", sequence: 4, finishReason: "stop" });
         assert.equal(terminal.finalizeStreamedAnswer("stale late"), false);
         assert.equal(terminalState(terminal).transcript.length, 0);
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
       assert.equal(probe.streamFlushTimer, undefined);
     });
   });
 
   it("holds split sensitive tokens until they can be safely filtered", async () => {
     await withInteractiveEnvironment(() => {
-      const output = new TtyOutput(); output.resume();
+      const output = new TtyOutput();
+      output.resume();
       const terminal = new Terminal(new TtyInput(), output);
       const probe = terminal as unknown as { flushModelStreams(): void };
       try {
-        terminal.beginShell(session()); terminal.setCurrentRequest("Sensitive stream");
+        terminal.beginShell(session());
+        terminal.setCurrentRequest("Sensitive stream");
         terminal.modelStream({ kind: "started", streamId: "sensitive", sequence: 1 });
-        terminal.modelStream({ kind: "text_delta", streamId: "sensitive", sequence: 2, text: "Image data:image/png;base64,c2Vj" });
+        terminal.modelStream({
+          kind: "text_delta",
+          streamId: "sensitive",
+          sequence: 2,
+          text: "Image data:image/png;base64,c2Vj",
+        });
         probe.flushModelStreams();
         assert.doesNotMatch(terminalState(terminal).transcript.at(-1)?.text ?? "", /c2Vj/u);
         terminal.modelStream({ kind: "text_delta", streamId: "sensitive", sequence: 3, text: "cmV0\n" });
@@ -594,7 +648,9 @@ describe("Terminal retained inline shell", () => {
         assert.doesNotMatch(terminalState(terminal).transcript.at(-1)?.text ?? "", /c2Vj|cmV0/u);
         terminal.modelStream({ kind: "completed", streamId: "sensitive", sequence: 4, finishReason: "stop" });
         assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /REDACTED_IMAGE_DATA_URL/u);
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
@@ -631,28 +687,16 @@ describe("Terminal retained inline shell", () => {
         assert.match(rendered, /backend-auth/u);
         assert.match(rendered, /Waiting for deepseek-v4-pro/u);
 
-        const firstRegionRows = new Map<
-          DisclosureFrameProbe["visibleRows"][number]["region"],
-          number
-        >();
+        const firstRegionRows = new Map<DisclosureFrameProbe["visibleRows"][number]["region"], number>();
         for (const row of frame.visibleRows) {
           if (!firstRegionRows.has(row.region)) {
             firstRegionRows.set(row.region, row.screenRow);
           }
         }
         assert.ok((firstRegionRows.get("header") ?? -1) === 0);
-        assert.ok(
-          (firstRegionRows.get("header") ?? -1) <
-            (firstRegionRows.get("transcript") ?? -1),
-        );
-        assert.ok(
-          (firstRegionRows.get("transcript") ?? -1) <
-            (firstRegionRows.get("composer") ?? -1),
-        );
-        assert.ok(
-          (firstRegionRows.get("composer") ?? -1) <
-            (firstRegionRows.get("footer") ?? -1),
-        );
+        assert.ok((firstRegionRows.get("header") ?? -1) < (firstRegionRows.get("transcript") ?? -1));
+        assert.ok((firstRegionRows.get("transcript") ?? -1) < (firstRegionRows.get("composer") ?? -1));
+        assert.ok((firstRegionRows.get("composer") ?? -1) < (firstRegionRows.get("footer") ?? -1));
 
         const composer = disclosureRegionText(terminal, "composer");
         assert.ok(composer.indexOf("Progress") < composer.indexOf("Working on:"));
@@ -680,10 +724,7 @@ describe("Terminal retained inline shell", () => {
         terminal.setCurrentRequest("Run and verify the command");
         terminal.status("Step 4/12: requesting deepseek-v4-pro");
 
-        const modelActivity = terminal.startActivity(
-          "Waiting for deepseek-v4-pro response",
-          "model",
-        );
+        const modelActivity = terminal.startActivity("Waiting for deepseek-v4-pro response", "model");
         assert.equal(typeof modelActivity, "string");
         assert.equal(terminalState(terminal).live.progress[0]?.kind, "step");
 
@@ -694,10 +735,7 @@ describe("Terminal retained inline shell", () => {
           false,
         );
 
-        const toolActivity = terminal.startActivity(
-          "Running Tool: run_command",
-          "tool",
-        );
+        const toolActivity = terminal.startActivity("Running Tool: run_command", "tool");
         assert.equal(terminalState(terminal).live.activity?.kind, "tool");
         terminal.stopActivity(modelActivity);
         assert.equal(terminalState(terminal).live.activity?.id, toolActivity);
@@ -728,10 +766,7 @@ describe("Terminal retained inline shell", () => {
         terminal.setSessionInfo(session({ commandExecutionMode: "auto_approve" }));
         const safeFrame = stripAnsi(captured().slice(safeOffset));
         assert.doesNotMatch(safeFrame, /! EASY CODE HOST FULL ACCESS/u);
-        assert.equal(
-          (stripAnsi(captured()).match(/╭─ EASY CODE /gu) ?? []).length,
-          1,
-        );
+        assert.equal((stripAnsi(captured()).match(/╭─ EASY CODE /gu) ?? []).length, 1);
       } finally {
         terminal.close();
       }
@@ -746,11 +781,15 @@ describe("Terminal retained inline shell", () => {
       const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
-        const selection = terminal.selectChoice("Resume a task", [
-          { id: "first", label: "First task" },
-          { id: "second", label: "Second task", detail: "Recommended" },
-          { id: "third", label: "Third task" },
-        ], "second");
+        const selection = terminal.selectChoice(
+          "Resume a task",
+          [
+            { id: "first", label: "First task" },
+            { id: "second", label: "Second task", detail: "Recommended" },
+            { id: "third", label: "Third task" },
+          ],
+          "second",
+        );
 
         const overlay = terminalState(terminal).overlay;
         assert.equal(overlay?.kind, "picker");
@@ -790,10 +829,7 @@ describe("Terminal retained inline shell", () => {
 
         terminal.status("Tool: stale_probe");
         terminal.status("Tool: read_file");
-        assert.equal(
-          terminalState(terminal).live.progress.filter((item) => item.kind === "tool").length,
-          1,
-        );
+        assert.equal(terminalState(terminal).live.progress.filter((item) => item.kind === "tool").length, 1);
         assert.equal(
           terminalState(terminal).live.progress.find((item) => item.kind === "tool")?.label,
           "Tool: read_file",
@@ -827,10 +863,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(transcript[0]?.text ?? "", /✓ Tool: read_file/u);
         assert.match(transcript[1]?.text ?? "", /Retrying API attempt 2\/3/u);
         assert.equal(transcript[2]?.text, "Authentication flow inspected.\n");
-        assert.equal(
-          transcript.filter((entry) => entry.kind === "tool").length,
-          1,
-        );
+        assert.equal(transcript.filter((entry) => entry.kind === "tool").length, 1);
         assert.match(stripAnsi(captured()), /✓ Tool: read_file/u);
 
         terminal.clearCurrentRequest();
@@ -847,7 +880,7 @@ describe("Terminal retained inline shell", () => {
       const output = new TtyOutput();
       output.columns = 32;
       const captured = captureOutput(output);
-        const terminal = new Terminal(input, output);
+      const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
         const promptStartupOffset = captured().length;
@@ -917,18 +950,14 @@ describe("Terminal retained inline shell", () => {
           "Model stream made no semantic progress for the configured idle interval. Retrying API attempt 2/3.",
         );
         assert.equal(
-          terminalState(terminal).transcript.some((entry) =>
-            entry.kind === "warning" &&
-            entry.text.includes("Retrying API attempt 2/3")
+          terminalState(terminal).transcript.some(
+            (entry) => entry.kind === "warning" && entry.text.includes("Retrying API attempt 2/3"),
           ),
           true,
         );
         assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
         const afterStatusFooter = disclosureRegionText(terminal, "footer");
-        assert.ok(
-          afterStatusFooter.indexOf("auto  deepseek/v4-pro") <
-            afterStatusFooter.indexOf("Tasks 2/3"),
-        );
+        assert.ok(afterStatusFooter.indexOf("auto  deepseek/v4-pro") < afterStatusFooter.indexOf("Tasks 2/3"));
         assert.doesNotMatch(afterStatusFooter, /Agents 1\/4/u);
 
         output.columns = 44;
@@ -950,13 +979,18 @@ describe("Terminal retained inline shell", () => {
         input.write(Buffer.from([0x16, 0x0d]));
         const result = await prompt;
         assert.match(result?.text ?? "", /\[Image #1\]/u);
-        assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+        assert.deepEqual(
+          result?.images.map((image) => image.label),
+          ["Image #1"],
+        );
 
         const transcript = terminalState(terminal).transcript;
-        assert.deepEqual(transcript.map((entry) => entry.kind), ["warning", "user"]);
+        assert.deepEqual(
+          transcript.map((entry) => entry.kind),
+          ["warning", "user"],
+        );
         assert.equal(
-          transcript.some((entry) =>
-            /deepseek\/v4-pro|ctx 82\.4k/u.test(stripAnsi(entry.text))),
+          transcript.some((entry) => /deepseek\/v4-pro|ctx 82\.4k/u.test(stripAnsi(entry.text))),
           false,
         );
         // The real shell immediately promotes a submitted idle draft into the
@@ -989,28 +1023,20 @@ describe("Terminal retained inline shell", () => {
         input.write("\u001B[200~first line\nsecond line\u001B[201~\r");
         assert.equal((await prompt)?.text, "first line\nsecond line");
 
-        const submittedUsers = terminalState(terminal).transcript.filter(
-          (entry) => entry.kind === "user",
-        );
+        const submittedUsers = terminalState(terminal).transcript.filter((entry) => entry.kind === "user");
         assert.equal(submittedUsers.length, 1);
         assert.match(submittedUsers[0]?.text ?? "", /first line/u);
         assert.match(submittedUsers[0]?.text ?? "", /second line/u);
-        assert.match(
-          disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
-          /> first line[\s\S]*second line/u,
-        );
+        assert.match(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /> first line[\s\S]*second line/u);
 
         terminal.setCurrentRequest("Process the pasted request");
         assert.equal(
-          terminalState(terminal).transcript.filter((entry) =>
-            entry.kind === "user" && /first line[\s\S]*second line/u.test(entry.text)
+          terminalState(terminal).transcript.filter(
+            (entry) => entry.kind === "user" && /first line[\s\S]*second line/u.test(entry.text),
           ).length,
           1,
         );
-        assert.match(
-          disclosureRegionText(terminal, "composer"),
-          /Working on: Process the pasted request/u,
-        );
+        assert.match(disclosureRegionText(terminal, "composer"), /Working on: Process the pasted request/u);
         terminal.clearCurrentRequest();
       } finally {
         terminal.close();
@@ -1104,9 +1130,11 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Implement authentication");
         const id = terminal.addReasoning("Inspect the authentication routes.");
-        const viewerBefore = (terminal as unknown as {
-          disclosureViewer?: object;
-        }).disclosureViewer;
+        const viewerBefore = (
+          terminal as unknown as {
+            disclosureViewer?: object;
+          }
+        ).disclosureViewer;
         assert.ok(viewerBefore);
         assert.equal(input.listenerCount("data"), initialDataListeners + 1);
 
@@ -1115,10 +1143,7 @@ describe("Terminal retained inline shell", () => {
           { id: "no", label: "No" },
         ]);
         await settlePromptInput();
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
         assert.equal(terminalState(terminal).overlay?.kind, "picker");
         assert.equal(input.isRaw, true);
         assert.equal(input.listenerCount("data"), initialDataListeners + 1);
@@ -1130,10 +1155,7 @@ describe("Terminal retained inline shell", () => {
 
         // Once the modal releases stdin, the busy owner resumes immediately.
         assert.equal(input.isRaw, true);
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
         assert.equal(input.listenerCount("data"), initialDataListeners + 1);
         terminal.handleDisclosureToggle("thinking", id);
         await settlePromptInput();
@@ -1157,15 +1179,15 @@ describe("Terminal retained inline shell", () => {
       try {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Verify modal ownership");
-        const thinkingId = terminal.addReasoning(
-          "Keep this disclosure selected while modal input borrows stdin.",
-        );
+        const thinkingId = terminal.addReasoning("Keep this disclosure selected while modal input borrows stdin.");
         terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
 
-        const viewerBefore = (terminal as unknown as {
-          disclosureViewer?: object;
-        }).disclosureViewer;
+        const viewerBefore = (
+          terminal as unknown as {
+            disclosureViewer?: object;
+          }
+        ).disclosureViewer;
         const initialScrollOffset = disclosureFrame(terminal)?.viewport.scrollOffset;
         assert.ok(viewerBefore);
         assert.equal(terminalState(terminal).live.thinking?.id, thinkingId);
@@ -1182,10 +1204,7 @@ describe("Terminal retained inline shell", () => {
         });
         await settlePromptInput();
         assert.equal(terminalState(terminal).overlay?.kind, "approval");
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
 
         // The first Down and Enter delivered to the modal must both take
         // effect; no priming Enter may be required on Windows ConPTY.
@@ -1193,10 +1212,7 @@ describe("Terminal retained inline shell", () => {
         assert.equal(await approval, "allow_prefix");
         await settlePromptInput();
         assert.equal(terminalState(terminal).overlay, null);
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
         assert.equal(terminalState(terminal).live.thinking?.id, thinkingId);
         assert.equal(disclosureFrame(terminal)?.viewport.scrollOffset, initialScrollOffset);
         assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
@@ -1212,10 +1228,7 @@ describe("Terminal retained inline shell", () => {
         );
         await settlePromptInput();
         assert.equal(terminalState(terminal).overlay?.kind, "picker");
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
 
         // Likewise, the first Up and Enter select the preceding model while
         // the permanent conversation projection remains mounted.
@@ -1223,10 +1236,7 @@ describe("Terminal retained inline shell", () => {
         assert.equal(await model, "deepseek-flash");
         await settlePromptInput();
         assert.equal(terminalState(terminal).overlay, null);
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
         assert.equal(terminalState(terminal).live.thinking?.id, thinkingId);
         assert.equal(disclosureFrame(terminal)?.viewport.scrollOffset, initialScrollOffset);
         assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
@@ -1249,9 +1259,11 @@ describe("Terminal retained inline shell", () => {
       try {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Inspect modal transcript ownership");
-        const viewerBefore = (terminal as unknown as {
-          disclosureViewer?: object;
-        }).disclosureViewer;
+        const viewerBefore = (
+          terminal as unknown as {
+            disclosureViewer?: object;
+          }
+        ).disclosureViewer;
         assert.ok(viewerBefore);
 
         const choice = terminal.selectChoice("Continue?", [
@@ -1267,15 +1279,9 @@ describe("Terminal retained inline shell", () => {
         assert.equal(await choice, "yes");
         await settlePromptInput();
 
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
         assert.equal(terminalState(terminal).overlay, null);
-        assert.match(
-          disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
-          /OVERLAY-TRANSCRIPT-SENTINEL/u,
-        );
+        assert.match(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /OVERLAY-TRANSCRIPT-SENTINEL/u);
         assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
         assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
         terminal.clearCurrentRequest();
@@ -1298,9 +1304,11 @@ describe("Terminal retained inline shell", () => {
         });
         input.write("draft");
         await settlePromptInput();
-        const viewerBefore = (terminal as unknown as {
-          disclosureViewer?: object;
-        }).disclosureViewer;
+        const viewerBefore = (
+          terminal as unknown as {
+            disclosureViewer?: object;
+          }
+        ).disclosureViewer;
         assert.ok(viewerBefore);
 
         const choice = terminal.selectChoice("Continue?", [
@@ -1312,18 +1320,12 @@ describe("Terminal retained inline shell", () => {
         output.emit("resize");
         await settlePromptInput();
         assert.equal(terminalState(terminal).overlay?.kind, "picker");
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
 
         input.write("\r");
         assert.equal(await choice, "yes");
         await settlePromptInput();
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          undefined,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, undefined);
 
         output.rows = 24;
         input.write("!\r");
@@ -1345,24 +1347,20 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Keep the managed shell active");
         terminal.write("CLEAR-SCREEN-SENTINEL\n");
-        const viewerBefore = (terminal as unknown as {
-          disclosureViewer?: object;
-        }).disclosureViewer;
+        const viewerBefore = (
+          terminal as unknown as {
+            disclosureViewer?: object;
+          }
+        ).disclosureViewer;
         assert.ok(viewerBefore);
         const before = captured().length;
 
         terminal.clearScreen();
         const clearOutput = captured().slice(before);
         assert.doesNotMatch(clearOutput, /\u001Bc/u);
-        assert.equal(
-          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
-          viewerBefore,
-        );
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, viewerBefore);
         assert.match(disclosureRegionText(terminal, "header"), /EASY CODE/u);
-        assert.doesNotMatch(
-          disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
-          /CLEAR-SCREEN-SENTINEL/u,
-        );
+        assert.doesNotMatch(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /CLEAR-SCREEN-SENTINEL/u);
         assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
         assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
         terminal.clearCurrentRequest();
@@ -1400,8 +1398,14 @@ describe("Terminal retained inline shell", () => {
         input.write("\u0003");
         assert.equal(await interrupted, null);
         terminal.close();
-        assert.doesNotMatch(captured().slice(before), /OLD-ANSWER-LINE/u, "closing must not replay cleared deferred commits");
-      } finally { terminal.close(); }
+        assert.doesNotMatch(
+          captured().slice(before),
+          /OLD-ANSWER-LINE/u,
+          "closing must not replay cleared deferred commits",
+        );
+      } finally {
+        terminal.close();
+      }
     });
   });
 
@@ -1428,7 +1432,9 @@ describe("Terminal retained inline shell", () => {
         input.write("!\r");
         assert.equal((await prompt)?.text, "draft!");
         assert.doesNotMatch(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /OLD-DRAFT-OUTPUT/u);
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
@@ -1453,7 +1459,9 @@ describe("Terminal retained inline shell", () => {
         const next = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
         input.write("still works\r");
         assert.equal((await next)?.text, "still works");
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
@@ -1468,8 +1476,14 @@ describe("Terminal retained inline shell", () => {
         const prompt = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
         input.write("draft ");
         await settlePromptInput();
-        const approval = terminal.approve({ id: "idle-child", title: "Child command", description: "Inspect the workspace",
-          risk: "read", commandPrefix: "git", source: { agentId: "child", taskId: "inspect" } });
+        const approval = terminal.approve({
+          id: "idle-child",
+          title: "Child command",
+          description: "Inspect the workspace",
+          risk: "read",
+          commandPrefix: "git",
+          source: { agentId: "child", taskId: "inspect" },
+        });
         await settlePromptInput();
         input.write("\r");
         assert.equal(await approval, "allow_once");
@@ -1479,7 +1493,9 @@ describe("Terminal retained inline shell", () => {
         const next = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
         input.write("next\r");
         assert.equal((await next)?.text, "next");
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
@@ -1581,7 +1597,9 @@ describe("Terminal retained inline shell", () => {
       try {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Implement the task", [], {
-          onSteer: async submission => { submitted.push(submission.text); },
+          onSteer: async (submission) => {
+            submitted.push(submission.text);
+          },
         });
         const reviewId = terminal.startReview();
         terminal.updateReview(reviewId, "independent_review");
@@ -1646,13 +1664,42 @@ describe("Terminal retained inline shell", () => {
         assert.deepEqual(await sealed, { throughSequence: 1 });
         input.write("accepted after resume\r");
         await settlePromptInput();
-        assert.deepEqual(submissions, [
-          "submitted before seal",
-          "accepted after resume",
-        ]);
+        assert.deepEqual(submissions, ["submitted before seal", "accepted after resume"]);
         terminal.clearCurrentRequest();
       } finally {
         releaseDelivery?.();
+        terminal.close();
+      }
+    });
+  });
+
+  it("admits no adjustment while automatic compaction runs and resumes afterwards", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      const submissions: string[] = [];
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Implement authentication", [], {
+          onSteer: async (submission) => {
+            submissions.push(submission.text);
+          },
+        });
+        await settlePromptInput();
+        const base = { operationId: "auto", mode: "automatic" as const, beforeChars: 0, startedAt: Date.now() };
+        terminal.compactionProgress({ ...base, phase: "summarizing" });
+        input.write("typed during compaction\r");
+        await settlePromptInput();
+        assert.deepEqual(submissions, []);
+        terminal.compactionProgress({ ...base, phase: "completed", completedAt: Date.now(), outcome: "compacted" });
+        await settlePromptInput();
+        input.write("accepted after compaction\r");
+        await settlePromptInput();
+        assert.deepEqual(submissions, ["accepted after compaction"]);
+        terminal.clearCurrentRequest();
+      } finally {
         terminal.close();
       }
     });
@@ -1705,14 +1752,8 @@ describe("Terminal retained inline shell", () => {
         const secondId = terminal.addReasoning("Verify the registration form.");
         const markerEntries = terminalState(terminal).transcript.length;
         const primaryBeforeViewer = stripAnsi(captured());
-        assert.equal(
-          (primaryBeforeViewer.match(new RegExp(`▶ Thinking #${firstId}`, "gu")) ?? []).length,
-          1,
-        );
-        assert.equal(
-          (primaryBeforeViewer.match(new RegExp(`▶ Thinking #${secondId}`, "gu")) ?? []).length,
-          1,
-        );
+        assert.equal((primaryBeforeViewer.match(new RegExp(`▶ Thinking #${firstId}`, "gu")) ?? []).length, 1);
+        assert.equal((primaryBeforeViewer.match(new RegExp(`▶ Thinking #${secondId}`, "gu")) ?? []).length, 1);
         const prompt = terminal.readPrompt("> ", {
           captureImage: async (index) => ({
             id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
@@ -1727,8 +1768,7 @@ describe("Terminal retained inline shell", () => {
         });
 
         input.write("draft");
-        const exitsBeforeToggle =
-          (captured().match(/\u001B\[\?1049l/gu) ?? []).length;
+        const exitsBeforeToggle = (captured().match(/\u001B\[\?1049l/gu) ?? []).length;
         terminal.handleDisclosureToggle("thinking", firstId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, firstId);
@@ -1795,9 +1835,7 @@ describe("Terminal retained inline shell", () => {
       const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
-        const id = terminal.addReasoning(
-          "Inspect the project and retain every line while the user edits.",
-        );
+        const id = terminal.addReasoning("Inspect the project and retain every line while the user edits.");
         const prompt = terminal.readPrompt("> ", {
           captureImage: async (index) => steeringAttachment(index),
         });
@@ -1839,11 +1877,7 @@ describe("Terminal retained inline shell", () => {
               text: submission.text,
               labels: submission.images.map((image) => image.label),
             });
-            terminal.addQueuedAdjustment(
-              submissions.length,
-              submission.text,
-              submission.images,
-            );
+            terminal.addQueuedAdjustment(submissions.length, submission.text, submission.images);
           },
         });
         await settlePromptInput();
@@ -1851,11 +1885,7 @@ describe("Terminal retained inline shell", () => {
         terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
 
-        input.write(
-          "\u001B[200~first\nsecond\u001B[201~" +
-            VSCODE_IMAGE_PASTE_SEQUENCE +
-            " tail\r",
-        );
+        input.write("\u001B[200~first\nsecond\u001B[201~" + VSCODE_IMAGE_PASTE_SEQUENCE + " tail\r");
         await settlePromptInput();
         await settlePromptInput();
         assert.equal(submissions.length, 1);
@@ -1868,10 +1898,7 @@ describe("Terminal retained inline shell", () => {
         input.write("second adjustment\r");
         await settlePromptInput();
         await settlePromptInput();
-        assert.deepEqual(
-          submissions.map((submission) => submission.text).slice(1),
-          ["second adjustment"],
-        );
+        assert.deepEqual(submissions.map((submission) => submission.text).slice(1), ["second adjustment"]);
 
         terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
@@ -1956,11 +1983,9 @@ describe("Terminal retained inline shell", () => {
 
         assert.ok(captured().length > completedTurnOffset);
         const collapsedNodes = disclosureNodes(terminal);
-        const thinkingIndex = collapsedNodes.findIndex((node) =>
-          node.id === `thinking:${id}`
-        );
+        const thinkingIndex = collapsedNodes.findIndex((node) => node.id === `thinking:${id}`);
         const answerIndex = collapsedNodes.findIndex((node) =>
-          disclosureNodeText(node).includes("ASSISTANT-OUTPUT-SENTINEL")
+          disclosureNodeText(node).includes("ASSISTANT-OUTPUT-SENTINEL"),
         );
         assert.ok(thinkingIndex >= 0 && thinkingIndex < answerIndex);
         assert.equal(collapsedNodes[thinkingIndex]?.expanded, false);
@@ -1979,23 +2004,15 @@ describe("Terminal retained inline shell", () => {
         assert.equal(openNode.expanded, true);
         assert.match(openNode.body ?? "", /FULL-ONLY-SENTINEL/u);
         assert.match(openNode.title ?? "", new RegExp(`Thinking #${id}`, "u"));
-        const completeTurn = disclosureNodes(terminal)
-          .map(disclosureNodeText)
-          .join("\n");
+        const completeTurn = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
         assert.match(completeTurn, /> Explain the authentication changes/u);
         assert.match(completeTurn, /ASSISTANT-OUTPUT-SENTINEL/u);
         assert.ok(
-          completeTurn.indexOf("> Explain the authentication changes") <
-            completeTurn.indexOf(`Thinking #${id}`),
+          completeTurn.indexOf("> Explain the authentication changes") < completeTurn.indexOf(`Thinking #${id}`),
         );
-        assert.ok(
-          completeTurn.indexOf(`Thinking #${id}`) <
-            completeTurn.indexOf("ASSISTANT-OUTPUT-SENTINEL"),
-        );
+        assert.ok(completeTurn.indexOf(`Thinking #${id}`) < completeTurn.indexOf("ASSISTANT-OUTPUT-SENTINEL"));
         assert.equal(
-          disclosureNodes(terminal).filter((node) =>
-            node.id === `thinking:${id}`
-          ).length,
+          disclosureNodes(terminal).filter((node) => node.id === `thinking:${id}`).length,
           1,
           "the expanded body must replace, not duplicate, the collapsed marker",
         );
@@ -2024,23 +2041,15 @@ describe("Terminal retained inline shell", () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
       const output = new TtyOutput();
-      const captured = captureOutput(output);
+      captureOutput(output);
       const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Inspect this project");
-        const thinkingId = terminal.addReasoning(
-          "THINKING-DETAIL: keep this distinct from the answer.",
-        );
-        terminal.addQueuedAdjustment(
-          7,
-          "deploy this project\nand verify it",
-          [steeringAttachment(3)],
-        );
+        const thinkingId = terminal.addReasoning("THINKING-DETAIL: keep this distinct from the answer.");
+        terminal.addQueuedAdjustment(7, "deploy this project\nand verify it", [steeringAttachment(3)]);
         await settlePromptInput();
-        const adjustmentEntry = terminalState(terminal).transcript.find((entry) =>
-          entry.id === "adjustment_message_7"
-        );
+        const adjustmentEntry = terminalState(terminal).transcript.find((entry) => entry.id === "adjustment_message_7");
         assert.ok(adjustmentEntry);
         assert.equal(adjustmentEntry.text, "deploy this project\nand verify it");
         assert.deepEqual(
@@ -2053,32 +2062,17 @@ describe("Terminal retained inline shell", () => {
 
         terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
-        const expandedThinking = disclosureNode(
-          terminal,
-          `thinking_${thinkingId}`,
-        );
+        const expandedThinking = disclosureNode(terminal, `thinking_${thinkingId}`);
         assert.equal(expandedThinking.expanded, true);
         assert.match(expandedThinking.body ?? "", /THINKING-DETAIL/u);
-        const completeTurn = disclosureNodes(terminal)
-          .map(disclosureNodeText)
-          .join("\n");
+        const completeTurn = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
         assert.match(completeTurn, /> Inspect this project/u);
         assert.match(completeTurn, /ASSISTANT-ROW-IN-CURRENT-TURN/u);
+        assert.ok(completeTurn.indexOf("> Inspect this project") < completeTurn.indexOf("> deploy this project"));
+        assert.ok(completeTurn.indexOf("THINKING-DETAIL") < completeTurn.indexOf("> deploy this project"));
+        assert.ok(completeTurn.indexOf("> deploy this project") < completeTurn.indexOf("SECOND-THINKING-DETAIL"));
         assert.ok(
-          completeTurn.indexOf("> Inspect this project") <
-            completeTurn.indexOf("> deploy this project"),
-        );
-        assert.ok(
-          completeTurn.indexOf("THINKING-DETAIL") <
-            completeTurn.indexOf("> deploy this project"),
-        );
-        assert.ok(
-          completeTurn.indexOf("> deploy this project") <
-            completeTurn.indexOf("SECOND-THINKING-DETAIL"),
-        );
-        assert.ok(
-          completeTurn.indexOf("SECOND-THINKING-DETAIL") <
-            completeTurn.indexOf("ASSISTANT-ROW-IN-CURRENT-TURN"),
+          completeTurn.indexOf("SECOND-THINKING-DETAIL") < completeTurn.indexOf("ASSISTANT-ROW-IN-CURRENT-TURN"),
         );
         assert.doesNotMatch(completeTurn, /Queued adjustment|\/adjustment 7/u);
 
@@ -2090,10 +2084,7 @@ describe("Terminal retained inline shell", () => {
         const nextThinkingId = terminal.addReasoning("NEXT-TURN-THINKING");
         terminal.handleDisclosureToggle("thinking", nextThinkingId);
         await settlePromptInput();
-        const nextTurnNode = disclosureNode(
-          terminal,
-          `thinking_${nextThinkingId}`,
-        );
+        const nextTurnNode = disclosureNode(terminal, `thinking_${nextThinkingId}`);
         assert.equal(nextTurnNode.expanded, true);
         assert.match(nextTurnNode.body ?? "", /NEXT-TURN-THINKING/u);
         terminal.handleDisclosureToggle("thinking", nextThinkingId);
@@ -2133,15 +2124,13 @@ describe("Terminal retained inline shell", () => {
         });
         await settlePromptInput();
 
-        terminal.status("Server rejected context capacity. Historical context cleared; retrying once with user requirements. Files, budgets and execution state are unchanged.");
-        const firstThinking = terminal.addReasoning(
-          "FIRST-THINKING-FULL-BODY: inspect README and package metadata.",
+        terminal.status(
+          "Server rejected context capacity. Historical context cleared; retrying once with user requirements. Files, budgets and execution state are unchanged.",
         );
+        const firstThinking = terminal.addReasoning("FIRST-THINKING-FULL-BODY: inspect README and package metadata.");
         terminal.addQueuedAdjustment(1, "以及这个项目怎么使用");
         terminal.toolCompleted("read_file", true, "Read README.md lines 1-63");
-        const secondThinking = terminal.addReasoning(
-          "SECOND-THINKING-FULL-BODY: summarize installation steps.",
-        );
+        const secondThinking = terminal.addReasoning("SECOND-THINKING-FULL-BODY: summarize installation steps.");
         terminal.write("MODEL-ANSWER: this is the complete project explanation.\n");
         terminal.clearCurrentRequest();
         terminal.info("POST-TURN-IDLE-STATUS-MUST-STAY-OUTSIDE-VIEWER");
@@ -2156,31 +2145,33 @@ describe("Terminal retained inline shell", () => {
         const nodes = disclosureNodes(terminal);
         const frame = disclosureFrame(terminal);
         assert.ok(frame);
-        const expandedHeader = stripAnsi(frame.visibleRows
-          .filter((row) => row.region === "header")
-          .map((row) => row.text)
-          .join("\n"));
+        const expandedHeader = stripAnsi(
+          frame.visibleRows
+            .filter((row) => row.region === "header")
+            .map((row) => row.text)
+            .join("\n"),
+        );
         const normalHeader = renderSessionHeader(terminalState(terminal), {
           // ScreenWriter reserves the final physical TTY cell to avoid
           // ConPTY pending-autowrap; both normal and expanded views use it.
           columns: output.columns - 1,
           color: false,
         });
-        assert.equal(
-          expandedHeader,
-          normalHeader,
-          "expanded Thinking must reuse the normal EASY CODE session header",
+        assert.equal(expandedHeader, normalHeader, "expanded Thinking must reuse the normal EASY CODE session header");
+        terminal.setSessionInfo(
+          session({
+            commandExecutionMode: "unrestricted",
+          }),
         );
-        terminal.setSessionInfo(session({
-          commandExecutionMode: "unrestricted",
-        }));
         await settlePromptInput();
         const dangerFrame = disclosureFrame(terminal);
         assert.ok(dangerFrame);
-        const dangerFooter = stripAnsi(dangerFrame.visibleRows
-          .filter((row) => row.region === "footer")
-          .map((row) => row.text)
-          .join("\n"));
+        const dangerFooter = stripAnsi(
+          dangerFrame.visibleRows
+            .filter((row) => row.region === "footer")
+            .map((row) => row.text)
+            .join("\n"),
+        );
         assert.match(dangerFooter, /! EASY CODE HOST FULL ACCESS/u);
         const completeTurn = nodes.map(disclosureNodeText);
         const completeDocument = completeTurn.join("\n");
@@ -2258,7 +2249,9 @@ describe("Terminal retained inline shell", () => {
         terminal.clearScreen();
         assert.equal(terminal.toggleReasoning(id), false);
         assert.equal(terminal.showReasoning(id), true, "/clear must retain the reasoning registry");
-      } finally { terminal.close(); }
+      } finally {
+        terminal.close();
+      }
     });
   });
 
@@ -2274,9 +2267,7 @@ describe("Terminal retained inline shell", () => {
         const turnOffset = captured().length;
         const thinkingId = terminal.addReasoning("EVENT-TIME-THINKING-BODY");
         terminal.toolCompleted("read_file", true, "Read README.md lines 1-10");
-        const secondThinkingId = terminal.addReasoning(
-          "SECOND-EVENT-TIME-THINKING-BODY",
-        );
+        const secondThinkingId = terminal.addReasoning("SECOND-EVENT-TIME-THINKING-BODY");
         terminal.toolCompleted("update_file", true, "Updated README.md");
         terminal.write("EVENT-TIME-ANSWER\n");
         terminal.clearCurrentRequest();
@@ -2284,9 +2275,7 @@ describe("Terminal retained inline shell", () => {
         const stableTurn = stripAnsi(captured().slice(turnOffset));
         const markerOffset = stableTurn.indexOf(`▶ Thinking #${thinkingId}`);
         const toolOffset = stableTurn.indexOf("✓ Tool: read_file");
-        const secondMarkerOffset = stableTurn.indexOf(
-          `▶ Thinking #${secondThinkingId}`,
-        );
+        const secondMarkerOffset = stableTurn.indexOf(`▶ Thinking #${secondThinkingId}`);
         const secondToolOffset = stableTurn.indexOf("✓ Tool: update_file");
         const answerOffset = stableTurn.indexOf("EVENT-TIME-ANSWER");
         assert.ok(markerOffset >= 0);
@@ -2295,23 +2284,17 @@ describe("Terminal retained inline shell", () => {
         assert.ok(secondToolOffset > secondMarkerOffset);
         assert.ok(answerOffset > secondToolOffset);
         assert.equal(
-          terminalState(terminal).transcript.filter((entry) =>
-            entry.id === `thinking_${thinkingId}`
-          ).length,
+          terminalState(terminal).transcript.filter((entry) => entry.id === `thinking_${thinkingId}`).length,
           1,
         );
         assert.equal(
-          terminalState(terminal).transcript.filter((entry) =>
-            entry.id === `thinking_${secondThinkingId}`
-          ).length,
+          terminalState(terminal).transcript.filter((entry) => entry.id === `thinking_${secondThinkingId}`).length,
           1,
         );
 
         terminal.setCurrentRequest("Start the next request");
         assert.equal(
-          terminalState(terminal).transcript.filter((entry) =>
-            entry.id === `thinking_${thinkingId}`
-          ).length,
+          terminalState(terminal).transcript.filter((entry) => entry.id === `thinking_${thinkingId}`).length,
           1,
           "freezing the previous turn must not append its marker again",
         );
@@ -2337,12 +2320,12 @@ describe("Terminal retained inline shell", () => {
       const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
-        (terminal as unknown as {
-          recordAcceptedPlanFeedback(feedback: string): void;
-        }).recordAcceptedPlanFeedback("保留现有样式\n补充部署说明");
-        terminal.setCurrentRequest(
-          "[Plan adjustment]\nINTERNAL-REVISION-CONTROL-PROMPT",
-        );
+        (
+          terminal as unknown as {
+            recordAcceptedPlanFeedback(feedback: string): void;
+          }
+        ).recordAcceptedPlanFeedback("保留现有样式\n补充部署说明");
+        terminal.setCurrentRequest("[Plan adjustment]\nINTERNAL-REVISION-CONTROL-PROMPT");
         const thinkingId = terminal.addReasoning("Revise the accepted plan.");
         terminal.write("PLAN-REVISION-ANSWER\n");
         terminal.clearCurrentRequest();
@@ -2353,9 +2336,7 @@ describe("Terminal retained inline shell", () => {
         await settlePromptInput();
         terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
-        const completeTurn = disclosureNodes(terminal)
-          .map(disclosureNodeText)
-          .join("\n");
+        const completeTurn = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
         assert.match(completeTurn, /> 保留现有样式\n  补充部署说明/u);
         assert.match(completeTurn, /PLAN-REVISION-ANSWER/u);
         assert.match(completeTurn, /Revise the accepted plan/u);
@@ -2382,16 +2363,21 @@ describe("Terminal retained inline shell", () => {
         await settlePromptInput();
         terminal.write(Array.from({ length: 150 }, (_, index) => `history ${index}`).join("\n"));
         await settlePromptInput();
-        const viewer = (terminal as unknown as {
-          disclosureViewer: {
-            writer: { render: (...args: unknown[]) => unknown };
-            repaintTimer?: NodeJS.Timeout;
-            state: { scrollOffset: number };
-          };
-        }).disclosureViewer;
+        const viewer = (
+          terminal as unknown as {
+            disclosureViewer: {
+              writer: { render: (...args: unknown[]) => unknown };
+              repaintTimer?: NodeJS.Timeout;
+              state: { scrollOffset: number };
+            };
+          }
+        ).disclosureViewer;
         const render = viewer.writer.render.bind(viewer.writer);
         let paints = 0;
-        viewer.writer.render = (...args) => { paints += 1; return render(...args); };
+        viewer.writer.render = (...args) => {
+          paints += 1;
+          return render(...args);
+        };
         const initialOffset = viewer.state.scrollOffset;
         input.write("\u001B[A".repeat(12));
         input.write("\u001B[A".repeat(12));
@@ -2447,20 +2433,13 @@ describe("Terminal retained inline shell", () => {
         const frame = disclosureFrame(shortTerminal);
         assert.ok(frame);
         assertPersistentFrame(shortTerminal, shortOutput);
-        assert.equal(
-          disclosureNode(shortTerminal, `thinking_${targetId}`).expanded,
-          true,
-        );
+        assert.equal(disclosureNode(shortTerminal, `thinking_${targetId}`).expanded, true);
         assert.match(
           disclosureNode(shortTerminal, `thinking_${targetId}`).body ?? "",
           /Summarize the deployment steps/u,
         );
-        const firstComposer = frame.visibleRows.find((row) =>
-          row.region === "composer"
-        )?.screenRow ?? -1;
-        const firstFooter = frame.visibleRows.find((row) =>
-          row.region === "footer"
-        )?.screenRow ?? -1;
+        const firstComposer = frame.visibleRows.find((row) => row.region === "composer")?.screenRow ?? -1;
+        const firstFooter = frame.visibleRows.find((row) => row.region === "footer")?.screenRow ?? -1;
         assert.ok(firstComposer > frame.viewport.transcriptStartRow);
         assert.ok(firstFooter > firstComposer);
       } finally {
@@ -2479,8 +2458,7 @@ describe("Terminal retained inline shell", () => {
         });
         await settlePromptInput();
         const targetId = longTerminal.addReasoning(
-          Array.from({ length: 40 }, (_, index) => `complete detail ${index + 1}`)
-            .join("\n"),
+          Array.from({ length: 40 }, (_, index) => `complete detail ${index + 1}`).join("\n"),
         );
         longTerminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
@@ -2488,13 +2466,11 @@ describe("Terminal retained inline shell", () => {
         const frame = disclosureFrame(longTerminal);
         assert.ok(frame);
         assert.ok(
-          (frame.viewport.targetTitleScreenRow ?? 0) >
-            frame.viewport.transcriptStartRow,
+          (frame.viewport.targetTitleScreenRow ?? 0) > frame.viewport.transcriptStartRow,
           "an overflowing disclosure must retain preceding turn context",
         );
         assert.ok(
-          (frame.viewport.targetTitleScreenRow ?? Number.POSITIVE_INFINITY) <=
-            frame.viewport.transcriptStartRow + 3,
+          (frame.viewport.targetTitleScreenRow ?? Number.POSITIVE_INFINITY) <= frame.viewport.transcriptStartRow + 3,
         );
         assert.equal(frame.viewport.atEnd, false);
 
@@ -2527,19 +2503,14 @@ describe("Terminal retained inline shell", () => {
           onSteer: async () => undefined,
         });
         await settlePromptInput();
-        terminal.write(
-          `${Array.from({ length: 30 }, (_, index) =>
-            `STABLE-CONTEXT-${index + 1}`).join("\n")}\n`,
-        );
+        terminal.write(`${Array.from({ length: 30 }, (_, index) => `STABLE-CONTEXT-${index + 1}`).join("\n")}\n`);
         const targetId = terminal.addReasoning("TAIL-SHORT-BODY");
         terminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
 
         const initial = disclosureFrame(terminal);
         assert.ok(initial);
-        const initialTranscriptRows = initial.visibleRows.filter((row) =>
-          row.region === "transcript"
-        );
+        const initialTranscriptRows = initial.visibleRows.filter((row) => row.region === "transcript");
         assert.equal(
           initialTranscriptRows.filter((row) => row.part === "blank").length,
           0,
@@ -2553,10 +2524,7 @@ describe("Terminal retained inline shell", () => {
         const atStart = disclosureFrame(terminal);
         assert.ok(atStart);
         assert.equal(atStart.viewport.atStart, true);
-        assert.match(
-          stripAnsi(atStart.visibleRows.map((row) => row.text).join("\n")),
-          /> Inspect tail anchor/u,
-        );
+        assert.match(stripAnsi(atStart.visibleRows.map((row) => row.text).join("\n")), /> Inspect tail anchor/u);
 
         input.write("\u001B[6~".repeat(10));
         await settlePromptInput();
@@ -2564,10 +2532,7 @@ describe("Terminal retained inline shell", () => {
         const atEnd = disclosureFrame(terminal);
         assert.ok(atEnd);
         assert.equal(atEnd.viewport.atEnd, true);
-        assert.match(
-          stripAnsi(atEnd.visibleRows.map((row) => row.text).join("\n")),
-          /TAIL-SHORT-BODY/u,
-        );
+        assert.match(stripAnsi(atEnd.visibleRows.map((row) => row.text).join("\n")), /TAIL-SHORT-BODY/u);
 
         terminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
@@ -2582,20 +2547,15 @@ describe("Terminal retained inline shell", () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
       const output = new TtyOutput();
-      const captured = captureOutput(output);
+      captureOutput(output);
       const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Summarize a long verification run");
         terminal.addReasoning("Earlier Thinking content.");
-        terminal.write(
-          `${Array.from({ length: 25 }, (_, index) => `assistant row ${index + 1}`).join("\n")}\n`,
-        );
+        terminal.write(`${Array.from({ length: 25 }, (_, index) => `assistant row ${index + 1}`).join("\n")}\n`);
         const targetId = terminal.addReasoning(
-          Array.from(
-            { length: 10 },
-            (_, index) => `TARGET-THINKING-DETAIL-${index + 1}`,
-          ).join("\n"),
+          Array.from({ length: 10 }, (_, index) => `TARGET-THINKING-DETAIL-${index + 1}`).join("\n"),
         );
         terminal.write("answer tail 1\nanswer tail 2\nanswer tail 3\nanswer tail 4\n");
         terminal.clearCurrentRequest();
@@ -2616,9 +2576,7 @@ describe("Terminal retained inline shell", () => {
         await settlePromptInput();
         assertPersistentFrame(terminal, output);
         assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
-        const completeBeforeExpand = disclosureNodes(terminal)
-          .map(disclosureNodeText)
-          .join("\n");
+        const completeBeforeExpand = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
         assert.match(completeBeforeExpand, /assistant row 1/u);
         assert.match(completeBeforeExpand, /assistant row 25/u);
         assert.match(completeBeforeExpand, /answer tail 4/u);
@@ -2629,9 +2587,7 @@ describe("Terminal retained inline shell", () => {
         assert.equal(expandedNode.expanded, true);
         assert.match(expandedNode.body ?? "", /TARGET-THINKING-DETAIL-1/u);
         assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
-        const completeTurn = disclosureNodes(terminal)
-          .map(disclosureNodeText)
-          .join("\n");
+        const completeTurn = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
         assert.match(completeTurn, /> Summarize a long verification run/u);
         assert.match(completeTurn, /assistant row 1/u);
         assert.match(completeTurn, /assistant row 25/u);
@@ -2648,10 +2604,7 @@ describe("Terminal retained inline shell", () => {
         input.write("still works\r");
         assert.equal((await prompt)?.text, "still works");
         assert.equal(disclosureFrame(terminal)?.viewport.atEnd, true);
-        assert.match(
-          disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
-          /> still works/u,
-        );
+        assert.match(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /> still works/u);
       } finally {
         terminal.close();
       }
@@ -2669,10 +2622,7 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Return a long answer");
         terminal.addReasoning("Inspect enough context to answer accurately.");
-        const answer = Array.from(
-          { length: 30 },
-          (_, index) => `COMPLETE-ANSWER-ROW-${index + 1}`,
-        ).join("\n");
+        const answer = Array.from({ length: 30 }, (_, index) => `COMPLETE-ANSWER-ROW-${index + 1}`).join("\n");
 
         const answerOffset = captured().length;
         terminal.write(`\n${answer}\n\n`);
@@ -2680,22 +2630,15 @@ describe("Terminal retained inline shell", () => {
         const committed = stripAnsi(captured().slice(answerOffset));
         for (let index = 1; index <= 30; index += 1) {
           assert.equal(
-            (committed.match(new RegExp(
-              `COMPLETE-ANSWER-ROW-${index}(?![0-9])`,
-              "gu",
-            )) ?? []).length,
+            (committed.match(new RegExp(`COMPLETE-ANSWER-ROW-${index}(?![0-9])`, "gu")) ?? []).length,
             1,
             `answer row ${index} must be committed exactly once`,
           );
         }
         const answerStart = committed.indexOf("COMPLETE-ANSWER-ROW-1");
-        const answerEnd = committed.indexOf("COMPLETE-ANSWER-ROW-30") +
-          "COMPLETE-ANSWER-ROW-30".length;
+        const answerEnd = committed.indexOf("COMPLETE-ANSWER-ROW-30") + "COMPLETE-ANSWER-ROW-30".length;
         assert.ok(answerStart >= 0 && answerEnd > answerStart);
-        assert.doesNotMatch(
-          committed.slice(answerStart, answerEnd),
-          /live row\(s\) hidden/u,
-        );
+        assert.doesNotMatch(committed.slice(answerStart, answerEnd), /live row\(s\) hidden/u);
 
         const prompt = terminal.readPrompt("> ", {
           captureImage: async (index) => steeringAttachment(index),
@@ -2748,10 +2691,7 @@ describe("Terminal retained inline shell", () => {
       terminal.taskGraph(graph());
       terminal.subagents([agent()], graph(), 2);
       terminal.startActivity("This must not animate");
-      assert.equal(
-        await terminal.selectChoice("Choose", [{ id: "one", label: "One" }]),
-        undefined,
-      );
+      assert.equal(await terminal.selectChoice("Choose", [{ id: "one", label: "One" }]), undefined);
 
       const rendered = stripAnsi(captured());
       assert.match(rendered, /Reading workspace/u);

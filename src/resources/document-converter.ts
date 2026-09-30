@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 
 const PLAIN_TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml"]);
-const PLAIN_TEXT_MEDIA_TYPES = new Set(["text/plain", "text/markdown", "application/json", "application/xml", "text/xml"]);
+const PLAIN_TEXT_MEDIA_TYPES = new Set([
+  "text/plain",
+  "text/markdown",
+  "application/json",
+  "application/xml",
+  "text/xml",
+]);
 
 export interface ConvertedDocument {
   readonly markdown: string;
@@ -43,8 +49,11 @@ export class DocumentConverter {
       return { markdown: new TextDecoder("utf-8", { fatal: true }).decode(data) };
     }
     const python = managedPython(this.dataDir);
-    try { await access(python); }
-    catch { throw new Error("The document converter is not installed. Reinstall EASY CODE without --ignore-scripts."); }
+    try {
+      await access(python);
+    } catch {
+      throw new Error("The document converter is not installed. Reinstall EASY CODE without --ignore-scripts.");
+    }
     const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-document-"));
     const source = path.join(directory, `source${extension.slice(0, 16) || ".bin"}`);
     const output = path.join(directory, "content.md");
@@ -59,7 +68,11 @@ export class DocumentConverter {
         maxBuffer: 1024 * 1024,
       });
       let response: { ok?: boolean; error?: string; title?: string | null } = {};
-      try { response = JSON.parse(result.stdout.trim()) as typeof response; } catch { /* Use bounded stderr below. */ }
+      try {
+        response = JSON.parse(result.stdout.trim()) as typeof response;
+      } catch {
+        /* Use bounded stderr below. */
+      }
       if (result.exitCode !== 0 || response.ok !== true) {
         throw new Error(response.error ?? (result.stderr.trim().slice(0, 2000) || "Document conversion failed."));
       }
@@ -67,6 +80,8 @@ export class DocumentConverter {
         markdown: await readFile(output, "utf8"),
         ...(typeof response.title === "string" && response.title.trim() ? { title: response.title.trim() } : {}),
       };
-    } finally { await rm(directory, { recursive: true, force: true }); }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 }

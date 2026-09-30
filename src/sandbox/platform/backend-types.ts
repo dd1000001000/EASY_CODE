@@ -9,7 +9,12 @@ export interface NativeBackendPlatform {
   readonly windowsJobContainment?: boolean;
   createNetworkGate(options: CommandNetworkGateOptions): Promise<CommandNetworkGate>;
   authorizedProxyPorts(existing?: readonly number[]): Promise<readonly number[] | undefined>;
-  recoverCleanup(root: string, request: SandboxExecutionRequest, proxyPorts: readonly number[] | undefined, originalError: unknown): Promise<void>;
+  recoverCleanup(
+    root: string,
+    request: SandboxExecutionRequest,
+    proxyPorts: readonly number[] | undefined,
+    originalError: unknown,
+  ): Promise<void>;
 }
 
 export interface NativeBackendPlatformOptions {

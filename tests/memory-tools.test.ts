@@ -3,35 +3,20 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type {
-  AgentTool,
-  MemoryMutationRequest,
-  ToolContext,
-  ToolExecutionResult,
-} from "../src/core/types.js";
+import type { AgentTool, MemoryMutationRequest, ToolContext } from "../src/core/types.js";
 import { MemoryManager } from "../src/memory/index.js";
 import { MEMORY_ID_PATTERN } from "../src/memory/memory-manager.js";
 import { createStorage, workspaceIdFromRoot } from "../src/storage/index.js";
 import { estimatedTokens } from "../src/context/token-budget.js";
 import { describeToolFailure, prepareToolInput } from "../src/tools/errors.js";
 import { MemoryToolSession } from "../src/tools/memory-tool-session.js";
-import {
-  ReadMemoryTool,
-  readMemoryInputSchema,
-} from "../src/tools/read-memory.js";
-import {
-  WriteMemoryTool,
-  writeMemoryInputSchema,
-} from "../src/tools/write-memory.js";
+import { ReadMemoryTool, readMemoryInputSchema } from "../src/tools/read-memory.js";
+import { WriteMemoryTool, writeMemoryInputSchema } from "../src/tools/write-memory.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { describe, it } from "./harness.js";
 
-function context(
-  root: string,
-  manager?: MemoryManager,
-  mode: ToolContext["mode"] = "code",
-): ToolContext {
+function context(root: string, manager?: MemoryManager, mode: ToolContext["mode"] = "code"): ToolContext {
   const workspaceId = workspaceIdFromRoot(root);
   return {
     workspaceRoot: root,
@@ -45,9 +30,7 @@ function context(
     ...(manager
       ? {
           searchProjectMemory: async (query: string) => {
-            const exact = MEMORY_ID_PATTERN.test(query)
-              ? manager.get(workspaceId, query)
-              : undefined;
+            const exact = MEMORY_ID_PATTERN.test(query) ? manager.get(workspaceId, query) : undefined;
             return exact
               ? [exact]
               : manager.searchHybrid(workspaceId, query, {
@@ -74,13 +57,17 @@ describe("split long-term memory tools", () => {
     assert.equal(readMemoryInputSchema.safeParse({ query: "architecture" }).success, true);
     assert.equal(readMemoryInputSchema.safeParse({ query: "preferences", scope: "global" }).success, true);
     assert.equal(readMemoryInputSchema.safeParse({ query: "preferences", scope: "another-project" }).success, false);
-    assert.equal(writeMemoryInputSchema.safeParse({ operation: "remember", scope: "global",
-      category: "preference", content: "The user prefers brief explanations.",
-      reason: "Current user preference" }).success, true);
     assert.equal(
-      readMemoryInputSchema.safeParse({ query: "architecture", operation: "remember" }).success,
-      false,
+      writeMemoryInputSchema.safeParse({
+        operation: "remember",
+        scope: "global",
+        category: "preference",
+        content: "The user prefers brief explanations.",
+        reason: "Current user preference",
+      }).success,
+      true,
     );
+    assert.equal(readMemoryInputSchema.safeParse({ query: "architecture", operation: "remember" }).success, false);
     const failedThreadPayload = {
       operation: "remember",
       category: "architecture",
@@ -93,10 +80,10 @@ describe("split long-term memory tools", () => {
     assert.equal(rejected.success, false);
     if (!rejected.success) {
       assert.deepEqual(rejected.error.issues[0]?.code, "unrecognized_keys");
-      assert.deepEqual(
-        "keys" in rejected.error.issues[0]! ? rejected.error.issues[0].keys : [],
-        ["sourceRefs", "evidenceId"],
-      );
+      assert.deepEqual("keys" in rejected.error.issues[0]! ? rejected.error.issues[0].keys : [], [
+        "sourceRefs",
+        "evidenceId",
+      ]);
     }
     let diagnostic = "";
     try {
@@ -170,8 +157,15 @@ describe("split long-term memory tools", () => {
       assert.match(retained, /\[truncated\]/u);
       assert.ok(retained.length <= manager.limits.memoryContentMaxChars);
       assert.ok(estimatedTokens(retained) <= manager.limits.maxDurableMemoryTokens);
-      const tokenOnly = await write.execute({ operation: "remember", category: "convention",
-        content: `开头${"项目约束".repeat(160)}结尾`, reason: "Observed source" }, toolContext);
+      const tokenOnly = await write.execute(
+        {
+          operation: "remember",
+          category: "convention",
+          content: `开头${"项目约束".repeat(160)}结尾`,
+          reason: "Observed source",
+        },
+        toolContext,
+      );
       assert.equal(tokenOnly.ok, true, tokenOnly.error);
       const tokenMutation = tokenOnly.memoryMutation as MemoryMutationRequest;
       assert.equal(tokenMutation.action, "remember");
@@ -180,16 +174,28 @@ describe("split long-term memory tools", () => {
       assert.match(tokenMutation.content, /结尾$/u);
       assert.match(tokenMutation.content, /\[truncated\]/u);
       assert.ok(estimatedTokens(tokenMutation.content) <= manager.limits.maxDurableMemoryTokens);
-      const unsafe = await write.execute({ operation: "remember", category: "convention",
-        content: `START ${"x".repeat(1500)} api_key=super-secret-value ${"x".repeat(1500)} END`,
-        reason: "Observed source" }, toolContext);
+      const unsafe = await write.execute(
+        {
+          operation: "remember",
+          category: "convention",
+          content: `START ${"x".repeat(1500)} api_key=super-secret-value ${"x".repeat(1500)} END`,
+          reason: "Observed source",
+        },
+        toolContext,
+      );
       assert.equal(unsafe.ok, false);
-      const committed = manager.applyModelMutations({ workspaceId: workspaceIdFromRoot(workspace.root),
-        threadId: toolContext.threadId, turnId: toolContext.turnId, outcome: "success",
-        mutations: [result.memoryMutation as MemoryMutationRequest] });
+      const committed = manager.applyModelMutations({
+        workspaceId: workspaceIdFromRoot(workspace.root),
+        threadId: toolContext.threadId,
+        turnId: toolContext.turnId,
+        outcome: "success",
+        mutations: [result.memoryMutation as MemoryMutationRequest],
+      });
       assert.equal(committed.applied, 1);
-      assert.equal(manager.get(workspaceIdFromRoot(workspace.root), committed.memoryIds[0]!)?.content,
-        retained.replace(/\s+/gu, " ").trim());
+      assert.equal(
+        manager.get(workspaceIdFromRoot(workspace.root), committed.memoryIds[0]!)?.content,
+        retained.replace(/\s+/gu, " ").trim(),
+      );
     } finally {
       storage.close();
       await rm(root, { recursive: true, force: true });
@@ -233,17 +239,23 @@ describe("split long-term memory tools", () => {
       assert.equal(beforeRead.ok, false);
       assert.match(beforeRead.error ?? "", /read_memory in this turn/iu);
 
-      const nextTurn = { ...toolContext, turnId: "turn_next",
-        recordMemoryRecall: (ids: readonly string[]) => manager.recordRecall(toolContext.threadId, "turn_next", ids) };
+      const nextTurn = {
+        ...toolContext,
+        turnId: "turn_next",
+        recordMemoryRecall: (ids: readonly string[]) => manager.recordRecall(toolContext.threadId, "turn_next", ids),
+      };
       const found = await tools.read.execute({ query: memoryId }, nextTurn);
       assert.equal(found.ok, true, found.error);
-      const modelMemory = (found.data as { memories: Array<Record<string, unknown>> })
-        .memories[0]!;
+      const modelMemory = (found.data as { memories: Array<Record<string, unknown>> }).memories[0]!;
       assert.equal(modelMemory.id, memoryId);
       assert.equal("workspaceId" in modelMemory, false);
       assert.equal("evidence" in modelMemory, false);
-      assert.equal(storage.db.prepare<[string], { access_count: number }>(
-        "SELECT access_count FROM memories WHERE id = ?").get(memoryId)?.access_count, 1);
+      assert.equal(
+        storage.db
+          .prepare<[string], { access_count: number }>("SELECT access_count FROM memories WHERE id = ?")
+          .get(memoryId)?.access_count,
+        1,
+      );
       const forgotten = await tools.write.execute(
         { operation: "forget", memoryId, reason: "The preference changed." },
         nextTurn,
@@ -282,10 +294,7 @@ describe("split long-term memory tools", () => {
       ];
       const mutations: MemoryMutationRequest[] = [];
       for (const fact of facts) {
-        const staged = await toolsA.write.execute(
-          { operation: "remember", ...fact },
-          toolContext,
-        );
+        const staged = await toolsA.write.execute({ operation: "remember", ...fact }, toolContext);
         assert.equal(staged.ok, true, staged.error);
         mutations.push(staged.memoryMutation as MemoryMutationRequest);
       }
@@ -335,10 +344,7 @@ describe("split long-term memory tools", () => {
         mutations,
       });
       const toolsB = memoryTools(manager, rootB);
-      const otherRead = await toolsB.read.execute(
-        { query: "SQLite" },
-        context(rootB.root, manager),
-      );
+      const otherRead = await toolsB.read.execute({ query: "SQLite" }, context(rootB.root, manager));
       assert.equal(otherRead.ok, true, otherRead.error);
       assert.deepEqual(otherRead.data, { memories: [], count: 0 });
       assert.equal(manager.list(workspaceIdA).length, 2);

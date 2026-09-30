@@ -12,7 +12,9 @@ describe("Web assistant Markdown", () => {
     assert.match(rendered, /const/u);
   });
   it("escapes raw HTML, unknown-language code, and unsafe links", () => {
-    const rendered = renderAssistantMarkdown("<img src=x onerror=alert(1)>\n\n```not-a-language\n<script>alert(1)</script>\n```\n\n[bad](javascript:alert(1))\n\n![remote](https://example.com/image.png)");
+    const rendered = renderAssistantMarkdown(
+      "<img src=x onerror=alert(1)>\n\n```not-a-language\n<script>alert(1)</script>\n```\n\n[bad](javascript:alert(1))\n\n![remote](https://example.com/image.png)",
+    );
     assert.doesNotMatch(rendered, /<img|<script|href="javascript:/u);
     assert.match(rendered, /&lt;script&gt;/u);
   });

@@ -40,15 +40,7 @@ export interface UIHeaderState {
   readonly session: UISessionInfo | null;
 }
 
-export type UITranscriptKind =
-  | "user"
-  | "assistant"
-  | "tool"
-  | "info"
-  | "success"
-  | "warning"
-  | "error"
-  | "raw";
+export type UITranscriptKind = "user" | "assistant" | "tool" | "info" | "success" | "warning" | "error" | "raw";
 
 /**
  * One completed scrollback item. Items remain in the local display until an
@@ -90,13 +82,7 @@ export interface UIReviewState {
 }
 
 export type UIProgressKind = "step" | "tool" | "status";
-export type UIProgressStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "blocked"
-  | "stopped";
+export type UIProgressStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "stopped";
 
 /** One ephemeral Step/Tool/status row in the current turn's progress tree. */
 export interface UIProgressItem {
@@ -176,10 +162,7 @@ export interface UIPlanReviewOverlayState extends UIOverlayPickerFields {
   readonly feedback?: string;
 }
 
-export type UIOverlayState =
-  | UIPickerOverlayState
-  | UIApprovalOverlayState
-  | UIPlanReviewOverlayState;
+export type UIOverlayState = UIPickerOverlayState | UIApprovalOverlayState | UIPlanReviewOverlayState;
 
 export interface UIComposerState {
   readonly text: string;

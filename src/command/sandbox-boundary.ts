@@ -24,17 +24,32 @@ function validIncident(value: unknown): value is BoundaryIncident {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<BoundaryIncident>;
   const grant = candidate.grant;
-  const grantValid = grant === undefined || grant !== null && typeof grant === "object" &&
-    grant.kind === "host_once" && typeof grant.fingerprint === "string" && grant.fingerprint.length > 0 &&
-    typeof grant.expiresAt === "string" && Number.isFinite(Date.parse(grant.expiresAt));
-  const decisionValid = candidate.lastDecision === undefined ||
+  const grantValid =
+    grant === undefined ||
+    (grant !== null &&
+      typeof grant === "object" &&
+      grant.kind === "host_once" &&
+      typeof grant.fingerprint === "string" &&
+      grant.fingerprint.length > 0 &&
+      typeof grant.expiresAt === "string" &&
+      Number.isFinite(Date.parse(grant.expiresAt)));
+  const decisionValid =
+    candidate.lastDecision === undefined ||
     ["allow_once", "allow_prefix", "reject", "user_required", "benchmark_allow_once"].includes(candidate.lastDecision);
-  return typeof candidate.scope === "string" && candidate.scope.length > 0 &&
-    typeof candidate.family === "string" && candidate.family.length > 0 &&
-    typeof candidate.fingerprint === "string" && candidate.fingerprint.length > 0 &&
-    Number.isSafeInteger(candidate.attempts) && Number(candidate.attempts) > 0 &&
-    typeof candidate.lastSeenAt === "string" && Number.isFinite(Date.parse(candidate.lastSeenAt)) &&
-    grantValid && decisionValid;
+  return (
+    typeof candidate.scope === "string" &&
+    candidate.scope.length > 0 &&
+    typeof candidate.family === "string" &&
+    candidate.family.length > 0 &&
+    typeof candidate.fingerprint === "string" &&
+    candidate.fingerprint.length > 0 &&
+    Number.isSafeInteger(candidate.attempts) &&
+    Number(candidate.attempts) > 0 &&
+    typeof candidate.lastSeenAt === "string" &&
+    Number.isFinite(Date.parse(candidate.lastSeenAt)) &&
+    grantValid &&
+    decisionValid
+  );
 }
 
 /** Durable, bounded state for one exact sandbox-boundary incident. The store
@@ -52,7 +67,8 @@ export class SandboxBoundaryStore {
     if (parsed.version !== 1 || !Array.isArray(parsed.incidents) || !parsed.incidents.every(validIncident)) {
       throw new Error("Invalid sandbox boundary incident state");
     }
-    for (const incident of parsed.incidents) this.incidents.set(this.key(incident.scope, incident.fingerprint), incident);
+    for (const incident of parsed.incidents)
+      this.incidents.set(this.key(incident.scope, incident.fingerprint), incident);
   }
 
   scope(context: ToolContext): string {
@@ -77,15 +93,23 @@ export class SandboxBoundaryStore {
     return incident.attempts;
   }
 
-  recordDecision(scope: string, fingerprint: string, decision: BoundaryIncident["lastDecision"], grantFingerprint?: string): void {
+  recordDecision(
+    scope: string,
+    fingerprint: string,
+    decision: BoundaryIncident["lastDecision"],
+    grantFingerprint?: string,
+  ): void {
     const key = this.key(scope, fingerprint);
     const incident = this.incidents.get(key);
     if (!incident) throw new Error("Sandbox boundary incident disappeared before approval was recorded");
     incident.lastDecision = decision;
     if (decision === "allow_once" || decision === "allow_prefix") {
       if (!grantFingerprint) throw new Error("Exact host command identity is required for a boundary grant");
-      incident.grant = { kind: "host_once", fingerprint: grantFingerprint,
-        expiresAt: new Date(Date.now() + HOST_GRANT_TTL_MS).toISOString() };
+      incident.grant = {
+        kind: "host_once",
+        fingerprint: grantFingerprint,
+        expiresAt: new Date(Date.now() + HOST_GRANT_TTL_MS).toISOString(),
+      };
     } else delete incident.grant;
     incident.lastSeenAt = new Date().toISOString();
     this.persist();
@@ -93,10 +117,14 @@ export class SandboxBoundaryStore {
 
   /** Consume before dispatch so a crash cannot replay host authority. */
   consumeHostGrant(scope: string, fingerprint: string): boolean {
-    const incident = [...this.incidents.values()].find(candidate =>
-      candidate.scope === scope && candidate.grant?.fingerprint === fingerprint);
+    const incident = [...this.incidents.values()].find(
+      (candidate) => candidate.scope === scope && candidate.grant?.fingerprint === fingerprint,
+    );
     if (!incident?.grant || Date.parse(incident.grant.expiresAt) <= Date.now()) {
-      if (incident?.grant) { delete incident.grant; this.persist(); }
+      if (incident?.grant) {
+        delete incident.grant;
+        this.persist();
+      }
       return false;
     }
     delete incident.grant;
@@ -104,7 +132,9 @@ export class SandboxBoundaryStore {
     return true;
   }
 
-  private key(scope: string, fingerprint: string): string { return `${scope}\n${fingerprint}`; }
+  private key(scope: string, fingerprint: string): string {
+    return `${scope}\n${fingerprint}`;
+  }
   private trim(): void {
     while (this.incidents.size > this.limit) {
       const oldest = this.incidents.keys().next().value as string | undefined;
@@ -116,7 +146,11 @@ export class SandboxBoundaryStore {
     if (!this.filename) return;
     mkdirSync(path.dirname(this.filename), { recursive: true });
     const temporary = `${this.filename}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ version: 1, incidents: [...this.incidents.values()] } satisfies BoundaryState), { mode: 0o600 });
+    writeFileSync(
+      temporary,
+      JSON.stringify({ version: 1, incidents: [...this.incidents.values()] } satisfies BoundaryState),
+      { mode: 0o600 },
+    );
     renameSync(temporary, this.filename);
   }
 }

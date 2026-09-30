@@ -41,7 +41,9 @@ export class ThreadDocumentService {
     private readonly resources: ThreadResourceStore,
   ) {}
 
-  get maxBytes(): number { return this.resources.maxBytes; }
+  get maxBytes(): number {
+    return this.resources.maxBytes;
+  }
 
   async import(input: {
     threadId: string;
@@ -61,12 +63,7 @@ export class ThreadDocumentService {
     const existing = await this.resources.findDocumentBySourceHash(input.threadId, sourceSha256);
     if (existing) return existing;
     const mediaType = documentMediaType(input.filename, input.mediaType);
-    const markdown = await this.converter.convert(
-      input.data,
-      input.filename,
-      mediaType,
-      input.signal,
-    );
+    const markdown = await this.converter.convert(input.data, input.filename, mediaType, input.signal);
     input.signal?.throwIfAborted();
     return this.resources.create({
       threadId: input.threadId,
@@ -96,15 +93,24 @@ export class ThreadDocumentService {
     const html = input.mediaType === "text/html" || input.mediaType === "application/xhtml+xml";
     const extension = html ? ".html" : input.mediaType === "text/markdown" ? ".md" : ".txt";
     const converted = await this.converter.convertWithMetadata(
-      input.data, `webpage${extension}`, input.mediaType, input.signal, html ? input.url : undefined,
+      input.data,
+      `webpage${extension}`,
+      input.mediaType,
+      input.signal,
+      html ? input.url : undefined,
     );
     input.signal?.throwIfAborted();
     const title = (converted.title || new URL(input.url).hostname).replace(/\s+/gu, " ").trim();
     const filename = `${title.replace(/[\\/:*?"<>|]/gu, " ").slice(0, 120) || "webpage"}.md`;
     const markdown = `# ${title}\n\nSource: ${input.url}\n\n${converted.markdown.trim()}\n`;
     return this.resources.create({
-      threadId: input.threadId, filename, kind: "webpage", mediaType: "text/markdown",
-      markdown, byteSize: input.data.byteLength, sourceUrl: input.url,
+      threadId: input.threadId,
+      filename,
+      kind: "webpage",
+      mediaType: "text/markdown",
+      markdown,
+      byteSize: input.data.byteLength,
+      sourceUrl: input.url,
     });
   }
 }

@@ -18,15 +18,16 @@ import { ProjectIndex } from "./web-server/projects.js";
 import type { ProjectWorkspace } from "./projects/types.js";
 import { registerConfigCommands } from "./config/config-command.js";
 import { registerSandboxCommands } from "./sandbox/cli.js";
-import {
-  registerSweBenchCommands,
-} from "./benchmarks/swebench.js";
-import {
-  registerPromptBundleCommands,
-} from "./prompt-bundle/index.js";
+import { registerSweBenchCommands } from "./benchmarks/swebench.js";
+import { registerPromptBundleCommands } from "./prompt-bundle/index.js";
 import { registerUninstallCommand } from "./uninstall/index.js";
 import { registerInstallCommands } from "./install/index.js";
-import { assertNoUninstall, beginOwnedResource, completeOwnedResource, recordOwnedResource } from "./install/ownership.js";
+import {
+  assertNoUninstall,
+  beginOwnedResource,
+  completeOwnedResource,
+  recordOwnedResource,
+} from "./install/ownership.js";
 import { registerRuntimeSession } from "./install/session.js";
 import {
   THINKING_EFFORTS,
@@ -54,7 +55,10 @@ interface CliOptions {
 const MINIMUM_NODE_VERSION = [20, 11, 0] as const;
 
 export function assertSupportedNodeVersion(version = process.versions.node): void {
-  const parts = version.split(".").slice(0, 3).map((part) => Number.parseInt(part, 10));
+  const parts = version
+    .split(".")
+    .slice(0, 3)
+    .map((part) => Number.parseInt(part, 10));
   if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part))) {
     throw new Error(`Unable to determine the Node.js version from ${JSON.stringify(version)}`);
   }
@@ -63,13 +67,9 @@ export function assertSupportedNodeVersion(version = process.versions.node): voi
   const [minimumMajor, minimumMinor, minimumPatch] = MINIMUM_NODE_VERSION;
   const supported =
     major > minimumMajor ||
-    (major === minimumMajor &&
-      (minor > minimumMinor ||
-        (minor === minimumMinor && patch >= minimumPatch)));
+    (major === minimumMajor && (minor > minimumMinor || (minor === minimumMinor && patch >= minimumPatch)));
   if (!supported) {
-    throw new Error(
-      `EASY CODE requires Node.js >= ${MINIMUM_NODE_VERSION.join(".")}; current version is ${version}.`,
-    );
+    throw new Error(`EASY CODE requires Node.js >= ${MINIMUM_NODE_VERSION.join(".")}; current version is ${version}.`);
   }
 }
 
@@ -124,11 +124,14 @@ async function withApp(
 ): Promise<void> {
   let app: EasyCodeApp | undefined;
   let stopRequested = false;
-  const release = registerRuntimeSession(() => { stopRequested = true; app?.requestUninstallShutdown(); });
+  const release = registerRuntimeSession(() => {
+    stopRequested = true;
+    app?.requestUninstallShutdown();
+  });
   try {
     const { loadEasyCodeConfig } = await import("./config/loader.js");
     const config = await loadEasyCodeConfig({ workspaceRoot: options.workspace, credentialStore: false });
-    const resources = (["data", "config", "cache"] as const).map(kind => ({
+    const resources = (["data", "config", "cache"] as const).map((kind) => ({
       kind,
       path: config[(kind + "Dir") as "dataDir" | "configDir" | "cacheDir"],
     }));
@@ -140,23 +143,33 @@ async function withApp(
     try {
       const projects = new ProjectIndex(storage);
       if (options.resume) {
-        const thread = new ThreadStore(storage).list({ limit: 100_000 })
-          .find(item => item.threadId === options.resume);
+        const thread = new ThreadStore(storage)
+          .list({ limit: 100_000 })
+          .find((item) => item.threadId === options.resume);
         if (!thread) throw new Error(`Thread not found: ${options.resume}`);
         projectWorkspace = projects.workspace(thread.workspaceId);
       } else {
         projectWorkspace = projects.workspace(projects.add(config.workspaceRoot).id);
       }
-    } finally { storage.close(); }
+    } finally {
+      storage.close();
+    }
     app = await EasyCodeApp.create({
       ...appOptions(options, startupInteraction, terminal, projectWorkspace),
-      workspaceRoot: projectWorkspace.folders.find(folder => folder.id === projectWorkspace.primaryFolderId)!.path,
+      workspaceRoot: projectWorkspace.folders.find((folder) => folder.id === projectWorkspace.primaryFolderId)!.path,
     });
     for (const resource of resources) completeOwnedResource(resource);
-    if (stopRequested) { app.requestUninstallShutdown(); return; }
+    if (stopRequested) {
+      app.requestUninstallShutdown();
+      return;
+    }
     await action(app);
   } finally {
-    try { await app?.closeAsync(); } finally { release(); }
+    try {
+      await app?.closeAsync();
+    } finally {
+      release();
+    }
   }
 }
 
@@ -164,8 +177,9 @@ async function withWeb(options: CliOptions): Promise<void> {
   const { loadEasyCodeConfig } = await import("./config/loader.js");
   const config = await loadEasyCodeConfig({ workspaceRoot: options.workspace, credentialStore: false });
   const dataDir = await resolveDataDirectoryOutsideWorkspace(config.dataDir, config.workspaceRoot);
-  const resources = (["data", "config", "cache"] as const).map(kind => ({
-    kind, path: kind === "data" ? dataDir : config[(kind + "Dir") as "configDir" | "cacheDir"],
+  const resources = (["data", "config", "cache"] as const).map((kind) => ({
+    kind,
+    path: kind === "data" ? dataDir : config[(kind + "Dir") as "configDir" | "cacheDir"],
   }));
   for (const resource of resources) beginOwnedResource(resource);
   recordOwnedResource({ kind: "config", path: path.join(os.homedir(), ".easy_code") });
@@ -179,33 +193,45 @@ async function withWeb(options: CliOptions): Promise<void> {
   try {
     await prepareDataDirectoryOutsideWorkspace(dataDir, config.workspaceRoot);
     for (const resource of resources) completeOwnedResource(resource);
-    await serveWeb(dataDir, port, (workspaceRoot, resumeThreadId, threadPort, projectWorkspace) => {
-      if (!projectWorkspace) throw new Error("Logical project workspace is unavailable.");
-      return EasyCodeApp.create({ ...appOptions(options, "none", threadPort, projectWorkspace), workspaceRoot, resumeThreadId,
-        mode: resumeThreadId ? undefined : "auto",
-        provider: undefined, model: undefined, thinkingEffort: undefined, keepInteractionOpen: true,
-        workspaceMutationLock });
-    }, shutdown.signal);
-  } finally { port.close(); release(); }
+    await serveWeb(
+      dataDir,
+      port,
+      (workspaceRoot, resumeThreadId, threadPort, projectWorkspace) => {
+        if (!projectWorkspace) throw new Error("Logical project workspace is unavailable.");
+        return EasyCodeApp.create({
+          ...appOptions(options, "none", threadPort, projectWorkspace),
+          workspaceRoot,
+          resumeThreadId,
+          mode: resumeThreadId ? undefined : "auto",
+          provider: undefined,
+          model: undefined,
+          thinkingEffort: undefined,
+          keepInteractionOpen: true,
+          workspaceMutationLock,
+        });
+      },
+      shutdown.signal,
+    );
+  } finally {
+    port.close();
+    release();
+  }
 }
 
 function addCommonOptions(command: Command): Command {
   return command
     .option("-w, --workspace <path>", "workspace root (default: current directory)")
     .addOption(
-      new Option("--provider <name>", "model provider").choices(
-        PROVIDER_CATALOG.map(({ provider }) => provider),
-      ),
+      new Option("--provider <name>", "model provider").choices(PROVIDER_CATALOG.map(({ provider }) => provider)),
     )
     .option("--model <id>", "provider model id")
     .addOption(new Option("--mode <mode>", "working mode").choices(["plan", "auto", "code"]))
+    .addOption(new Option("--thinking-effort <effort>", "model thinking effort").choices([...THINKING_EFFORTS]))
     .addOption(
-      new Option("--thinking-effort <effort>", "model thinking effort")
-        .choices([...THINKING_EFFORTS]),
-    )
-    .addOption(
-      new Option("--approval <policy>", "user prompt availability: safe/ask allow prompts; never disables prompts")
-        .choices(["safe", "ask", "never"]),
+      new Option(
+        "--approval <policy>",
+        "user prompt availability: safe/ask allow prompts; never disables prompts",
+      ).choices(["safe", "ask", "never"]),
     )
     .option("-y, --yes", "use the independent command approval agent; rejection requires user approval")
     .option("--resume <thread-id>", "resume a saved Thread")
@@ -234,9 +260,7 @@ export async function main(argv = process.argv): Promise<void> {
   const program = addCommonOptions(
     new Command()
       .name("easy-code")
-      .description(
-        "EASY CODE — local CLI coding agent with a user-maintained OpenAI-compatible model registry",
-      )
+      .description("EASY CODE — local CLI coding agent with a user-maintained OpenAI-compatible model registry")
       .version("0.1.0")
       .showHelpAfterError(),
   );
@@ -249,11 +273,7 @@ export async function main(argv = process.argv): Promise<void> {
       await withWeb(options);
       return;
     }
-    await withApp(
-      options,
-      async (app) => app.runInteractive(),
-      "ensure-api-key",
-    );
+    await withApp(options, async (app) => app.runInteractive(), "ensure-api-key");
   });
 
   program

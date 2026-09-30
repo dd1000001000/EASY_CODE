@@ -1,9 +1,5 @@
 export * from "./catalog.js";
-export {
-  activePromptBundleBinding,
-  ensurePromptBundle,
-  loadPromptBundleCatalog,
-} from "./manager.js";
+export { activePromptBundleBinding, ensurePromptBundle, loadPromptBundleCatalog } from "./manager.js";
 export {
   assertRuntimeCompatibility,
   assertToolSchemaBinding,

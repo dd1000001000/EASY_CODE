@@ -16,7 +16,10 @@ export interface ProcessTreeTerminationTestHooks {
   spawnTaskkill?: typeof import("node:child_process").spawn;
 }
 
-export interface TerminationResult { confirmed: boolean; method: string; }
+export interface TerminationResult {
+  confirmed: boolean;
+  method: string;
+}
 
 /** Terminate a command and its descendants without invoking a shell. */
 export function terminateProcessTree(
@@ -25,8 +28,11 @@ export function terminateProcessTree(
   testHooks: ProcessTreeTerminationTestHooks = {},
 ): Promise<TerminationResult> {
   switch (hostPlatform(testHooks.platform)) {
-    case "win32": return terminateWindowsProcessTree(subprocess, testHooks);
-    case "darwin": return terminateMacProcessTree(subprocess, graceMs);
-    case "linux": return terminateLinuxProcessTree(subprocess, graceMs);
+    case "win32":
+      return terminateWindowsProcessTree(subprocess, testHooks);
+    case "darwin":
+      return terminateMacProcessTree(subprocess, graceMs);
+    case "linux":
+      return terminateLinuxProcessTree(subprocess, graceMs);
   }
 }

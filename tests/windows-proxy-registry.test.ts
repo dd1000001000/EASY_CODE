@@ -12,11 +12,14 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  await new Promise<void>(resolve => server.close(() => resolve()));
+  await new Promise<void>((resolve) => server.close(() => resolve()));
   return Math.min(address.port, 65535 - 16);
 }
 
-async function startLeaseChild(dataDir: string, portStart: number): Promise<{
+async function startLeaseChild(
+  dataDir: string,
+  portStart: number,
+): Promise<{
   child: ChildProcessWithoutNullStreams;
   port: number;
 }> {
@@ -32,19 +35,24 @@ async function startLeaseChild(dataDir: string, portStart: number): Promise<{
     process.stdin.resume();
     await new Promise(resolve => process.stdin.once("data", resolve));
   `;
-  const child = spawn(process.execPath,
+  const child = spawn(
+    process.execPath,
     ["--input-type=module", "--eval", source, registryURL, gateURL, dataDir, String(portStart)],
-    { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+  );
   const line = await new Promise<string>((resolve, reject) => {
-    let output = ""; let errors = "";
-    child.stdout.on("data", chunk => {
+    let output = "";
+    let errors = "";
+    child.stdout.on("data", (chunk) => {
       output += String(chunk);
       const newline = output.indexOf("\n");
       if (newline >= 0) resolve(output.slice(0, newline));
     });
-    child.stderr.on("data", chunk => { errors += String(chunk); });
+    child.stderr.on("data", (chunk) => {
+      errors += String(chunk);
+    });
     child.once("error", reject);
-    child.once("exit", code => {
+    child.once("exit", (code) => {
       if (!output.includes("\n")) reject(new Error(`lease child exited ${String(code)}: ${errors}`));
     });
   });
@@ -54,7 +62,7 @@ async function startLeaseChild(dataDir: string, portStart: number): Promise<{
 async function stop(child: ChildProcessWithoutNullStreams | undefined): Promise<void> {
   if (!child || child.exitCode !== null) return;
   child.stdin.end("stop\n");
-  await Promise.race([once(child, "exit"), new Promise(resolve => setTimeout(resolve, 5_000))]);
+  await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 5_000))]);
   if (child.exitCode === null) child.kill();
 }
 
@@ -65,14 +73,20 @@ describe("Windows sandbox process proxy registry", () => {
     let first: ChildProcessWithoutNullStreams | undefined;
     let second: ChildProcessWithoutNullStreams | undefined;
     try {
-      const one = await startLeaseChild(dataDir, start); first = one.child;
-      const two = await startLeaseChild(dataDir, start); second = two.child;
+      const one = await startLeaseChild(dataDir, start);
+      first = one.child;
+      const two = await startLeaseChild(dataDir, start);
+      second = two.child;
       assert.notEqual(one.port, two.port);
       const registry = JSON.parse(await readFile(path.join(dataDir, "native-sandbox", "proxy-ports.json"), "utf8")) as {
-        provisionedPorts: number[]; leases: Array<{ port: number }>;
+        provisionedPorts: number[];
+        leases: Array<{ port: number }>;
       };
-      assert.deepEqual(registry.provisionedPorts, Array.from({ length: 16 }, (_, index) => start + index));
-      assert.deepEqual(new Set(registry.leases.map(lease => lease.port)), new Set([one.port, two.port]));
+      assert.deepEqual(
+        registry.provisionedPorts,
+        Array.from({ length: 16 }, (_, index) => start + index),
+      );
+      assert.deepEqual(new Set(registry.leases.map((lease) => lease.port)), new Set([one.port, two.port]));
     } finally {
       await Promise.all([stop(first), stop(second)]);
       await rm(dataDir, { recursive: true, force: true });

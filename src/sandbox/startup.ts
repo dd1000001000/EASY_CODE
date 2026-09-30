@@ -1,11 +1,7 @@
 import { executionCapabilities } from "./capabilities.js";
 
 export type SandboxReadinessStatus =
-  | "ready"
-  | "setup_required"
-  | "dependencies_missing"
-  | "unsupported"
-  | "probe_failed";
+  "ready" | "setup_required" | "dependencies_missing" | "unsupported" | "probe_failed";
 
 export interface SandboxReadiness {
   readonly status: SandboxReadinessStatus;
@@ -16,12 +12,7 @@ export interface SandboxReadiness {
   readonly canSetup: boolean;
 }
 
-export type SandboxSetupStatus =
-  | "completed"
-  | "already_ready"
-  | "cancelled"
-  | "unavailable"
-  | "failed";
+export type SandboxSetupStatus = "completed" | "already_ready" | "cancelled" | "unavailable" | "failed";
 
 export interface SandboxSetupResult {
   readonly status: SandboxSetupStatus;
@@ -51,7 +42,9 @@ export function formatSandboxReadiness(readiness: SandboxReadiness): string[] {
   if (readiness.status === "ready") {
     lines.push("Filesystem and network sandbox checks passed.");
   } else if (readiness.status === "setup_required") {
-    lines.push("One-time operating-system sandbox setup is required. A new project sandbox may request administrator approval before the task starts; `easy-code sandbox setup` prepares the shared sandbox.");
+    lines.push(
+      "One-time operating-system sandbox setup is required. A new project sandbox may request administrator approval before the task starts; `easy-code sandbox setup` prepares the shared sandbox.",
+    );
   } else if (readiness.status === "dependencies_missing") {
     lines.push("Required operating-system sandbox dependencies are missing.");
   } else if (readiness.status === "unsupported") {
@@ -93,11 +86,19 @@ export async function runSandboxStartupGuide(
   let readiness: SandboxReadiness;
   try {
     readiness = await service.inspect();
-    if (prepareProject && readiness.platform === "win32" && readiness.status === "setup_required" && readiness.canSetup) {
+    if (
+      prepareProject &&
+      readiness.platform === "win32" &&
+      readiness.status === "setup_required" &&
+      readiness.canSetup
+    ) {
       terminal.info("Preparing this project's Windows command sandbox before the task starts.");
-      try { readiness = (await service.setup(readiness)).readiness; }
-      catch (error) {
-        terminal.error(`Project sandbox setup failed: ${safeDetail(error instanceof Error ? error.message : String(error))}`);
+      try {
+        readiness = (await service.setup(readiness)).readiness;
+      } catch (error) {
+        terminal.error(
+          `Project sandbox setup failed: ${safeDetail(error instanceof Error ? error.message : String(error))}`,
+        );
       }
     }
   } finally {
@@ -114,15 +115,12 @@ export async function runSandboxStartupGuide(
       {
         id: "continue",
         label: "Continue with sandboxed commands blocked",
-        detail: "Chat and workspace file tools remain available; dangerous full access requires a separate confirmation",
+        detail:
+          "Chat and workspace file tools remain available; dangerous full access requires a separate confirmation",
       },
       { id: "exit", label: "Exit EASY CODE", detail: "Make no further system changes" },
     ];
-    const selected = await terminal.selectChoice(
-      "Command sandbox is not ready",
-      choices,
-      "recheck",
-    );
+    const selected = await terminal.selectChoice("Command sandbox is not ready", choices, "recheck");
     if (!selected || selected === "exit") return false;
     if (selected === "continue") {
       onUnreadyContinue?.();
@@ -141,7 +139,9 @@ export async function runSandboxStartupGuide(
         return true;
       }
     } catch (error) {
-      terminal.error(`Sandbox readiness check failed: ${safeDetail(error instanceof Error ? error.message : String(error))}`);
+      terminal.error(
+        `Sandbox readiness check failed: ${safeDetail(error instanceof Error ? error.message : String(error))}`,
+      );
     } finally {
       terminal.stopActivity();
     }

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
 import { projectHeadTailText, projectText, displayTextSchema } from "../src/utils/bounded-text.js";
 import { estimatedTokens } from "../src/context/token-budget.js";
-import { semanticSummarySchema, clipSemanticFields, parseSemanticRequestPatch } from "../src/context/semantic-compaction.js";
+import {
+  semanticSummarySchema,
+  clipSemanticFields,
+  parseSemanticRequestPatch,
+} from "../src/context/semantic-compaction.js";
 import { reviewReportSchema } from "../src/review/session.js";
 import { proposePlanInputSchema } from "../src/tools/propose-plan.js";
 import { submitTaskResultInputSchema } from "../src/tools/submit-task-result.js";
@@ -43,27 +47,41 @@ describe("storage-only output retention", () => {
     assert.equal(normalized.hypotheses.length, 32);
     assert.equal(normalized.hypotheses[0]!.length, 1400);
     assert.throws(() => parseSemanticRequestPatch({ ...input, hypotheses: [...input.hypotheses, 42] }));
-    assert.throws(() => parseSemanticRequestPatch({ ...input, conclusions: [{ text: "claim", evidenceIds: ["bad-id"] }] }));
+    assert.throws(() =>
+      parseSemanticRequestPatch({ ...input, conclusions: [{ text: "claim", evidenceIds: ["bad-id"] }] }),
+    );
   });
 
   it("bounds the single reviewer conclusion schema", () => {
-    const report = { verdict: "revise", conclusion: "specific issue", nextAction: "run a focused check",
-      evidenceRefs: ["src/a.ts:10"], uncertainties: ["integration not run"] };
+    const report = {
+      verdict: "revise",
+      conclusion: "specific issue",
+      nextAction: "run a focused check",
+      evidenceRefs: ["src/a.ts:10"],
+      uncertainties: ["integration not run"],
+    };
     assert.deepEqual(reviewReportSchema.parse(report), report);
     assert.throws(() => reviewReportSchema.parse({ ...report, conclusion: "x".repeat(6001) }));
     assert.throws(() => reviewReportSchema.parse({ ...report, evidenceRefs: ["x".repeat(161)] }));
   });
 
   it("clips plan/report presentation but preserves complete verification contracts", () => {
-    const draft = { title: "x".repeat(500), overview: "y".repeat(5000),
-      steps: [{ title: "test", description: "implement", verification: "check all cases" }] };
+    const draft = {
+      title: "x".repeat(500),
+      overview: "y".repeat(5000),
+      steps: [{ title: "test", description: "implement", verification: "check all cases" }],
+    };
     const result = proposePlanInputSchema.parse(draft);
     assert.ok(result.title.length <= 200);
     assert.ok(result.overview.length <= 4000);
     assert.deepEqual(result.steps, draft.steps);
-    assert.throws(() => proposePlanInputSchema.parse({ ...draft, steps: [{ ...draft.steps[0], verification: "x".repeat(1001) }] }));
+    assert.throws(() =>
+      proposePlanInputSchema.parse({ ...draft, steps: [{ ...draft.steps[0], verification: "x".repeat(1001) }] }),
+    );
     const submission = { outcome: "completed", summary: "s".repeat(18000), evidence: ["test passed"] };
-    assert.ok(submitTaskResultInputSchema.parse(submission).summary.length <= DEFAULT_RUNTIME_LIMITS.subagentSummaryMaxChars);
+    assert.ok(
+      submitTaskResultInputSchema.parse(submission).summary.length <= DEFAULT_RUNTIME_LIMITS.subagentSummaryMaxChars,
+    );
     assert.throws(() => submitTaskResultInputSchema.parse({ ...submission, evidence: ["e".repeat(1001)] }));
     assert.throws(() => submitTaskResultInputSchema.parse({ outcome: "completed", summary: "done" }));
   });

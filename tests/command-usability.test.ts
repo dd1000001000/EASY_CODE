@@ -18,13 +18,28 @@ import { describe, it } from "./harness.js";
 
 const host: CommandExecutionBackend = {
   describe: () => ({ backend: "host-test-only", enforced: false, filesystem: "host", network: "host" }),
-  async prepare(request) { return { ...request.command, metadata: this.describe(), cleanup: async () => undefined }; },
+  async prepare(request) {
+    return { ...request.command, metadata: this.describe(), cleanup: async () => undefined };
+  },
 };
-const context = (root: string): ToolContext => ({ workspaceRoot: root, mode: "code", threadId: "usability", turnId: "turn", approvalPolicy: "safe", requestApproval: async () => true, commandTimeoutMs: 5000, maxOutputChars: 256 });
+const context = (root: string): ToolContext => ({
+  workspaceRoot: root,
+  mode: "code",
+  threadId: "usability",
+  turnId: "turn",
+  approvalPolicy: "safe",
+  requestApproval: async () => true,
+  commandTimeoutMs: 5000,
+  maxOutputChars: 256,
+});
 async function fixture(run: (root: string, manager: WorkspaceManager) => Promise<void>) {
   const root = await mkdtemp(path.join(process.cwd(), ".easy-code-command-usability-"));
-  try { await mkdir(path.join(root, "tests")); await run(root, await WorkspaceManager.create(root)); }
-  finally { await rm(root, { recursive: true, force: true }); }
+  try {
+    await mkdir(path.join(root, "tests"));
+    await run(root, await WorkspaceManager.create(root));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 describe("command usability and boundaries", () => {
@@ -32,83 +47,170 @@ describe("command usability and boundaries", () => {
     const normalized = normalizeCommandRequest({ program: "node", intent: "verify" });
     assert.equal(normalized.verificationKind, "custom");
     assert.deepEqual(normalizeCommandRequest(normalized), normalized);
-    assert.equal(normalizeCommandRequest({ program: "node", intent: "inspect", verificationKind: "smoke_test" }).verificationKind, undefined);
+    assert.equal(
+      normalizeCommandRequest({ program: "node", intent: "inspect", verificationKind: "smoke_test" }).verificationKind,
+      undefined,
+    );
   });
 
-  it("accepts canonical inside cwd, multiline/literal argv, and relative programs based on cwd", async () => fixture(async (root, manager) => {
-    const resolver = new CommandResolver(manager);
-    for (const cwd of ["tests", "tests/..", "tests/../tests", path.join(root, "tests")]) {
-      const resolved = await resolver.resolve({ program: process.execPath, args: ["-e", "const x = 1;\nconsole.log(x)", "|", "&"], cwd, intent: "run" });
-      assert.ok(resolved.cwdAbsolute === root || resolved.cwdAbsolute === path.join(root, "tests"));
-      assert.equal(resolved.args[2], "|");
-    }
-    const script = path.join(root, "tests", process.platform === "win32" ? "check&one.cmd" : "check&one");
-    await writeFile(script, "echo ok"); await chmod(script, 0o755);
-    const resolved = await resolver.resolve({ program: `./${path.basename(script)}`, cwd: "tests", intent: "run" });
-    assert.equal(resolved.executablePath, script);
-    if (process.platform === "win32") {
-      const shim = path.join(root, "tests", "package-tool");
-      const windowsShim = `${shim}.cmd`;
-      await writeFile(shim, "#!/bin/sh\necho wrong\n");
-      await writeFile(windowsShim, "@echo off\r\nif \"%~1\"==\"literal&value\" (exit /b 0) else (exit /b 9)\r\n");
-      const command = await resolver.resolve({ program: "./package-tool", args: ["literal&value"], cwd: "tests", intent: "run" });
-      assert.equal(command.executablePath, windowsShim, "PATHEXT launchers must win over adjacent POSIX shims");
-      assert.equal(command.launch?.kind, "windows-script");
-      assert.equal(command.launch?.usesCommandPayload, true);
-      assert.deepEqual(command.args, ["literal&value"], "policy and approval keep the original structured argv");
-      const payload = path.join(root, "tests", "launch-payload.json");
-      await writeFile(payload, JSON.stringify({ target: command }));
-      const launched = await execa(command.launch!.executablePath, command.launch!.args, {
-        cwd: command.cwdAbsolute, env: { ...command.environment, EASY_CODE_LAUNCH_SPEC: payload },
-        extendEnv: false, reject: false, windowsHide: true,
+  it("accepts canonical inside cwd, multiline/literal argv, and relative programs based on cwd", async () =>
+    fixture(async (root, manager) => {
+      const resolver = new CommandResolver(manager);
+      for (const cwd of ["tests", "tests/..", "tests/../tests", path.join(root, "tests")]) {
+        const resolved = await resolver.resolve({
+          program: process.execPath,
+          args: ["-e", "const x = 1;\nconsole.log(x)", "|", "&"],
+          cwd,
+          intent: "run",
+        });
+        assert.ok(resolved.cwdAbsolute === root || resolved.cwdAbsolute === path.join(root, "tests"));
+        assert.equal(resolved.args[2], "|");
+      }
+      const script = path.join(root, "tests", process.platform === "win32" ? "check&one.cmd" : "check&one");
+      await writeFile(script, "echo ok");
+      await chmod(script, 0o755);
+      const resolved = await resolver.resolve({ program: `./${path.basename(script)}`, cwd: "tests", intent: "run" });
+      assert.equal(resolved.executablePath, script);
+      if (process.platform === "win32") {
+        const shim = path.join(root, "tests", "package-tool");
+        const windowsShim = `${shim}.cmd`;
+        await writeFile(shim, "#!/bin/sh\necho wrong\n");
+        await writeFile(windowsShim, '@echo off\r\nif "%~1"=="literal&value" (exit /b 0) else (exit /b 9)\r\n');
+        const command = await resolver.resolve({
+          program: "./package-tool",
+          args: ["literal&value"],
+          cwd: "tests",
+          intent: "run",
+        });
+        assert.equal(command.executablePath, windowsShim, "PATHEXT launchers must win over adjacent POSIX shims");
+        assert.equal(command.launch?.kind, "windows-script");
+        assert.equal(command.launch?.usesCommandPayload, true);
+        assert.deepEqual(command.args, ["literal&value"], "policy and approval keep the original structured argv");
+        const payload = path.join(root, "tests", "launch-payload.json");
+        await writeFile(payload, JSON.stringify({ target: command }));
+        const launched = await execa(command.launch!.executablePath, command.launch!.args, {
+          cwd: command.cwdAbsolute,
+          env: { ...command.environment, EASY_CODE_LAUNCH_SPEC: payload },
+          extendEnv: false,
+          reject: false,
+          windowsHide: true,
+        });
+        assert.equal(
+          launched.exitCode,
+          0,
+          `the physical launcher must preserve structured arguments for the Windows script: ${launched.stderr || launched.stdout}`,
+        );
+      }
+      await assert.rejects(
+        () => resolver.resolve({ program: process.execPath, cwd: "../", intent: "run" }),
+        /boundary/u,
+      );
+      await assert.rejects(
+        () => resolver.resolve({ program: process.execPath, args: ["bad\0argument"], intent: "run" }),
+        /NUL/u,
+      );
+      await assert.rejects(
+        () => resolver.resolve({ program: process.execPath, cwd: "//server/share", intent: "run" }),
+        /Network/u,
+      );
+    }));
+
+  it("resolves local executable aliases without granting extra filesystem or Plan authority", async () =>
+    fixture(async (root, manager) => {
+      const filename = path.join(root, "tests", process.platform === "win32" ? "node.exe" : "node");
+      try {
+        await symlink(process.execPath, filename, "file");
+      } catch (error) {
+        if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
+      const resolver = new CommandResolver(manager);
+      const resolved = await resolver.resolve({
+        program: "./node" + (process.platform === "win32" ? ".exe" : ""),
+        args: ["-e", "console.log(1)"],
+        cwd: "tests",
+        intent: "run",
       });
-      assert.equal(launched.exitCode, 0,
-        `the physical launcher must preserve structured arguments for the Windows script: ${launched.stderr || launched.stdout}`);
-    }
-    await assert.rejects(() => resolver.resolve({ program: process.execPath, cwd: "../", intent: "run" }), /boundary/u);
-    await assert.rejects(() => resolver.resolve({ program: process.execPath, args: ["bad\0argument"], intent: "run" }), /NUL/u);
-    await assert.rejects(() => resolver.resolve({ program: process.execPath, cwd: "//server/share", intent: "run" }), /Network/u);
-  }));
+      assert.equal(resolved.executablePath, await realpath(process.execPath));
+      assert.equal(
+        new CommandPolicy().classify({ program: "node", intent: "inspect" }, resolved, "plan").effect,
+        "ask",
+      );
+      await assert.rejects(() => resolveLocalCommandPath("\\\\server\\share\\node.exe", root), /Network/u);
+    }));
 
-  it("resolves local executable aliases without granting extra filesystem or Plan authority", async () => fixture(async (root, manager) => {
-    const filename = path.join(root, "tests", process.platform === "win32" ? "node.exe" : "node");
-    try { await symlink(process.execPath, filename, "file"); }
-    catch (error) { if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") return; throw error; }
-    const resolver = new CommandResolver(manager);
-    const resolved = await resolver.resolve({ program: "./node" + (process.platform === "win32" ? ".exe" : ""), args: ["-e", "console.log(1)"], cwd: "tests", intent: "run" });
-    assert.equal(resolved.executablePath, await realpath(process.execPath));
-    assert.equal(new CommandPolicy().classify({ program: "node", intent: "inspect" }, resolved, "plan").effect, "ask");
-    await assert.rejects(() => resolveLocalCommandPath("\\\\server\\share\\node.exe", root), /Network/u);
-  }));
-
-  it("canonicalizes workspace git -C reads without opening Git configuration or metadata writes", async () => fixture(async (root, manager) => {
-    const resolver = new CommandResolver(manager);
-    const command = await resolver.resolve({ program: "git", args: ["--no-pager", "-C", "tests", "-C", "..", "diff"], intent: "inspect" });
-    assert.equal(command.cwdAbsolute, root);
-    assert.deepEqual(command.args, ["--no-pager", "diff"]);
-    assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" }, command, "code").effect, "ask");
-    for (const args of [["diff", "-p"], ["log", "-p", "-1"], ["show", "-p", "HEAD"]]) {
-      assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" },
-        { ...command, args }, "plan").effect, "ask");
-    }
-    for (const args of [["-p", "diff"], ["--paginate", "log"], ["diff", "--ext-diff"], ["show", "--textconv"]]) {
-      assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" },
-        { ...command, args }, "code").effect, "ask");
-    }
-    await assert.rejects(() => resolver.resolve({ program: "git", args: ["-C", "..", "diff"], intent: "inspect" }), /boundary/u);
-    for (const args of [["-c", "core.pager=evil", "diff"], ["reset", "--hard"]]) {
-      assert.equal(new CommandPolicy().classify({ program: "git", intent: "run" }, { ...command, trustedExecutable: true, args }, "code").effect, "ask");
-    }
-  }));
+  it("canonicalizes workspace git -C reads without opening Git configuration or metadata writes", async () =>
+    fixture(async (root, manager) => {
+      const resolver = new CommandResolver(manager);
+      const command = await resolver.resolve({
+        program: "git",
+        args: ["--no-pager", "-C", "tests", "-C", "..", "diff"],
+        intent: "inspect",
+      });
+      assert.equal(command.cwdAbsolute, root);
+      assert.deepEqual(command.args, ["--no-pager", "diff"]);
+      assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" }, command, "code").effect, "ask");
+      for (const args of [
+        ["diff", "-p"],
+        ["log", "-p", "-1"],
+        ["show", "-p", "HEAD"],
+      ]) {
+        assert.equal(
+          new CommandPolicy().classify({ program: "git", intent: "inspect" }, { ...command, args }, "plan").effect,
+          "ask",
+        );
+      }
+      for (const args of [
+        ["-p", "diff"],
+        ["--paginate", "log"],
+        ["diff", "--ext-diff"],
+        ["show", "--textconv"],
+      ]) {
+        assert.equal(
+          new CommandPolicy().classify({ program: "git", intent: "inspect" }, { ...command, args }, "code").effect,
+          "ask",
+        );
+      }
+      await assert.rejects(
+        () => resolver.resolve({ program: "git", args: ["-C", "..", "diff"], intent: "inspect" }),
+        /boundary/u,
+      );
+      for (const args of [
+        ["-c", "core.pager=evil", "diff"],
+        ["reset", "--hard"],
+      ]) {
+        assert.equal(
+          new CommandPolicy().classify(
+            { program: "git", intent: "run" },
+            { ...command, trustedExecutable: true, args },
+            "code",
+          ).effect,
+          "ask",
+        );
+      }
+    }));
 
   it("distinguishes literal arguments, named file cleanup, recursive removal, system and unknown effects", () => {
-    const base: ResolvedCommand = { program: "rg", executablePath: "/usr/bin/rg", args: ["|", "a"], cwdAbsolute: process.cwd(), cwdRelative: ".", executableInsideWorkspace: false, environment: {}, environmentKeys: [] };
+    const base: ResolvedCommand = {
+      program: "rg",
+      executablePath: "/usr/bin/rg",
+      args: ["|", "a"],
+      cwdAbsolute: process.cwd(),
+      cwdRelative: ".",
+      executableInsideWorkspace: false,
+      environment: {},
+      environmentKeys: [],
+    };
     const policy = new CommandPolicy();
     for (const [program, args, risk] of [
-      ["rg", ["|", "file"], "workspace"], ["rm", ["generated.tmp"], "destructive"],
-      ["rm", ["-rf", "build"], "destructive"], ["mv", ["a", "b"], "workspace"],
-      ["sh", ["-c", "rm -rf build"], "workspace"], ["sh", ["-c", "echo ok | cat"], "workspace"],
-      ["sudo", ["anything"], "system"], ["unknown-admin-tool", [], "workspace"],
+      ["rg", ["|", "file"], "workspace"],
+      ["rm", ["generated.tmp"], "destructive"],
+      ["rm", ["-rf", "build"], "destructive"],
+      ["mv", ["a", "b"], "workspace"],
+      ["sh", ["-c", "rm -rf build"], "workspace"],
+      ["sh", ["-c", "echo ok | cat"], "workspace"],
+      ["sudo", ["anything"], "system"],
+      ["unknown-admin-tool", [], "workspace"],
     ] as const) {
       const command = { ...base, executablePath: `/usr/bin/${program}`, args: [...args] };
       const decision = policy.classify({ program, intent: "run" }, command, "code");
@@ -119,24 +221,46 @@ describe("command usability and boundaries", () => {
     }
   });
 
-  it("reports a masked failure end-to-end and preserves normalized metadata through start/poll/projection", async () => fixture(async (root, manager) => {
-    // An actual platform shell pipeline; no network and no host mutation outside fixture.
-    await writeFile(path.join(root, "runtests.py"), "import sys\nprint('FAIL: test_boundary (tests.Batch)')\nprint('AssertionError: 2 != 3')\nprint('FAILED (failures=1)')\nsys.exit(1)\n");
-    const runtime = new CommandRuntime(manager, new CommandPolicy(), host);
-    const run = new RunCommandTool(manager, runtime);
-    const result = await run.execute({ program: process.platform === "win32" ? "cmd" : "sh", args: process.platform === "win32"
-      ? ["/c", "python runtests.py 2>&1 | findstr FAIL"] : ["-c", "python runtests.py 2>&1 | grep -E 'FAIL|Error'"], intent: "verify" }, context(root));
-    const data = result.data as RunCommandOutput;
-    assert.equal(data.exitCode, 0, JSON.stringify(result));
-    assert.equal(data.validation?.status, "failed"); assert.equal(result.ok, false);
-    assert.equal(data.requestMetadata?.verificationKind, "custom");
-    const projected = projectToolResult(result);
-    assert.equal((projected.data as RunCommandOutput).validation?.status, "failed");
-    const start = new StartCommandTool(manager, runtime); const poll = new PollCommandTool(manager, runtime);
-    let current = await start.execute({ program: process.execPath, args: ["-e", "setTimeout(()=>process.exit(0),100)"], intent: "verify" }, context(root));
-    assert.equal((current.data as RunCommandOutput).requestMetadata?.verificationKind, "custom");
-    while ((current.data as { status: string }).status === "running") current = await poll.execute({ commandId: (current.data as RunCommandOutput).commandId, waitMs: 1000 }, context(root));
-    assert.equal((current.data as RunCommandOutput).requestMetadata?.verificationKind, "custom");
-    assert.equal((current.data as RunCommandOutput).validation?.status, "passed");
-  }));
+  it("reports a masked failure end-to-end and preserves normalized metadata through start/poll/projection", async () =>
+    fixture(async (root, manager) => {
+      // An actual platform shell pipeline; no network and no host mutation outside fixture.
+      await writeFile(
+        path.join(root, "runtests.py"),
+        "import sys\nprint('FAIL: test_boundary (tests.Batch)')\nprint('AssertionError: 2 != 3')\nprint('FAILED (failures=1)')\nsys.exit(1)\n",
+      );
+      const runtime = new CommandRuntime(manager, new CommandPolicy(), host);
+      const run = new RunCommandTool(manager, runtime);
+      const result = await run.execute(
+        {
+          program: process.platform === "win32" ? "cmd" : "sh",
+          args:
+            process.platform === "win32"
+              ? ["/c", "python runtests.py 2>&1 | findstr FAIL"]
+              : ["-c", "python runtests.py 2>&1 | grep -E 'FAIL|Error'"],
+          intent: "verify",
+        },
+        context(root),
+      );
+      const data = result.data as RunCommandOutput;
+      assert.equal(data.exitCode, 0, JSON.stringify(result));
+      assert.equal(data.validation?.status, "failed");
+      assert.equal(result.ok, false);
+      assert.equal(data.requestMetadata?.verificationKind, "custom");
+      const projected = projectToolResult(result);
+      assert.equal((projected.data as RunCommandOutput).validation?.status, "failed");
+      const start = new StartCommandTool(manager, runtime);
+      const poll = new PollCommandTool(manager, runtime);
+      let current = await start.execute(
+        { program: process.execPath, args: ["-e", "setTimeout(()=>process.exit(0),100)"], intent: "verify" },
+        context(root),
+      );
+      assert.equal((current.data as RunCommandOutput).requestMetadata?.verificationKind, "custom");
+      while ((current.data as { status: string }).status === "running")
+        current = await poll.execute(
+          { commandId: (current.data as RunCommandOutput).commandId, waitMs: 1000 },
+          context(root),
+        );
+      assert.equal((current.data as RunCommandOutput).requestMetadata?.verificationKind, "custom");
+      assert.equal((current.data as RunCommandOutput).validation?.status, "passed");
+    }));
 });

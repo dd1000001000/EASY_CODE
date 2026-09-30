@@ -5,11 +5,19 @@ import { renderAssistantMarkdown } from "../markdown.js";
 const props = defineProps<{ text: string }>();
 const html = ref(renderAssistantMarkdown(props.text));
 let renderTimer: ReturnType<typeof setTimeout> | undefined;
-watch(() => props.text, () => {
-  if (renderTimer) return;
-  renderTimer = setTimeout(() => { html.value = renderAssistantMarkdown(props.text); renderTimer = undefined; }, 50);
+watch(
+  () => props.text,
+  () => {
+    if (renderTimer) return;
+    renderTimer = setTimeout(() => {
+      html.value = renderAssistantMarkdown(props.text);
+      renderTimer = undefined;
+    }, 50);
+  },
+);
+onUnmounted(() => {
+  if (renderTimer) clearTimeout(renderTimer);
 });
-onUnmounted(() => { if (renderTimer) clearTimeout(renderTimer); });
 
 async function copyCode(event: MouseEvent): Promise<void> {
   const target = event.target;
@@ -20,8 +28,12 @@ async function copyCode(event: MouseEvent): Promise<void> {
   try {
     await navigator.clipboard.writeText(code.textContent ?? "");
     button.textContent = "Copied";
-    window.setTimeout(() => { if (button.isConnected) button.textContent = "Copy"; }, 1500);
-  } catch { button.textContent = "Copy failed"; }
+    window.setTimeout(() => {
+      if (button.isConnected) button.textContent = "Copy";
+    }, 1500);
+  } catch {
+    button.textContent = "Copy failed";
+  }
 }
 </script>
 

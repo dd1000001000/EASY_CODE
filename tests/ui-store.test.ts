@@ -1,17 +1,9 @@
 import assert from "node:assert/strict";
 
-import type {
-  ApprovalRequest,
-  ImageAttachment,
-  PlanProposal,
-} from "../src/core/types.js";
+import type { ApprovalRequest, ImageAttachment, PlanProposal } from "../src/core/types.js";
 import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
-import type {
-  UIEvent,
-  UISessionInfo,
-  UITranscriptKind,
-} from "../src/ui/contracts.js";
+import type { UIEvent, UISessionInfo, UITranscriptKind } from "../src/ui/contracts.js";
 import {
   DEFAULT_COMPOSER_PLACEHOLDER,
   MAX_COMPOSER_IMAGES,
@@ -41,7 +33,7 @@ function taskGraph(taskCount: number): TaskGraphView {
       id: `task_${index}`,
       title: `Task ${index}`,
       description: "A task",
-      status: index === 0 ? "in_progress" as const : "pending" as const,
+      status: index === 0 ? ("in_progress" as const) : ("pending" as const),
       owner: "main_agent" as const,
       dependencies: index === 0 ? [] : ["task_0"],
       blockedBy: index === 0 ? [] : ["task_0"],
@@ -150,7 +142,10 @@ describe("pure terminal UI state", () => {
     }));
     const initial = createUIState();
     const categorized = applyEvents(initial, events);
-    assert.deepEqual(categorized.transcript.map((entry) => entry.kind), kinds);
+    assert.deepEqual(
+      categorized.transcript.map((entry) => entry.kind),
+      kinds,
+    );
     assert.deepEqual(initial.transcript, []);
 
     let retained = createUIState();
@@ -163,10 +158,7 @@ describe("pure terminal UI state", () => {
     }
     assert.equal(retained.transcript.length, transcriptCount);
     assert.equal(retained.transcript[0]?.text, "0");
-    assert.equal(
-      retained.transcript[transcriptCount - 1]?.text,
-      String(transcriptCount - 1),
-    );
+    assert.equal(retained.transcript[transcriptCount - 1]?.text, String(transcriptCount - 1));
 
     const presentation = {
       type: "file_diff" as const,
@@ -192,14 +184,20 @@ describe("pure terminal UI state", () => {
       id: "stream",
       entry: { kind: "assistant", text: "complete" },
     });
-    assert.deepEqual(replaced.transcript.map((entry) => entry.id), ["before", "stream", "after"]);
+    assert.deepEqual(
+      replaced.transcript.map((entry) => entry.id),
+      ["before", "stream", "after"],
+    );
     assert.equal(replaced.transcript[1]?.text, "complete");
     assert.equal(initial.transcript[1]?.text, "partial");
-    assert.equal(applyEvent(replaced, {
-      type: "transcript.replace",
-      id: "missing",
-      entry: { kind: "assistant", text: "ignored" },
-    }).transcript, replaced.transcript);
+    assert.equal(
+      applyEvent(replaced, {
+        type: "transcript.replace",
+        id: "missing",
+        entry: { kind: "assistant", text: "ignored" },
+      }).transcript,
+      replaced.transcript,
+    );
   });
 
   it("keeps activity transitions stale-safe and task/subagent snapshots bounded", () => {
@@ -219,20 +217,14 @@ describe("pure terminal UI state", () => {
     });
     assert.equal(staleStop, active);
     assert.equal(active.live.activity?.startedAt, 1_777_777_777_000);
-    assert.equal(
-      applyEvent(active, { type: "activity.stop", id: "activity_model" }).live.activity,
-      null,
-    );
+    assert.equal(applyEvent(active, { type: "activity.stop", id: "activity_model" }).live.activity, null);
 
-    const progress = Array.from(
-      { length: MAX_LIVE_PROGRESS_ITEMS + 2 },
-      (_, index) => ({
-        id: `progress_${index}`,
-        kind: index % 2 === 0 ? "step" as const : "tool" as const,
-        label: `Progress ${index}`,
-        status: "running" as const,
-      }),
-    );
+    const progress = Array.from({ length: MAX_LIVE_PROGRESS_ITEMS + 2 }, (_, index) => ({
+      id: `progress_${index}`,
+      kind: index % 2 === 0 ? ("step" as const) : ("tool" as const),
+      label: `Progress ${index}`,
+      status: "running" as const,
+    }));
     const withProgress = applyEvent(initial, {
       type: "progress.set",
       progress,
@@ -240,10 +232,7 @@ describe("pure terminal UI state", () => {
     assert.equal(withProgress.live.progress.length, MAX_LIVE_PROGRESS_ITEMS);
     assert.equal(withProgress.live.progress[0]?.id, "progress_2");
     assert.notEqual(withProgress.live.progress[0], progress[2]);
-    assert.deepEqual(
-      applyEvent(withProgress, { type: "progress.clear" }).live.progress,
-      [],
-    );
+    assert.deepEqual(applyEvent(withProgress, { type: "progress.clear" }).live.progress, []);
 
     const graph = taskGraph(MAX_LIVE_TASKS + 5);
     const withTasks = applyEvent(initial, { type: "tasks.set", tasks: graph });
@@ -265,10 +254,7 @@ describe("pure terminal UI state", () => {
       "a completed DAG is history, not a persistent live footer section",
     );
 
-    const agents = Array.from(
-      { length: MAX_LIVE_SUBAGENTS + 3 },
-      (_, index) => subagent(index),
-    );
+    const agents = Array.from({ length: MAX_LIVE_SUBAGENTS + 3 }, (_, index) => subagent(index));
     const withAgents = applyEvent(initial, {
       type: "subagents.set",
       subagents: agents,
@@ -276,10 +262,7 @@ describe("pure terminal UI state", () => {
     assert.equal(withAgents.live.subagents.length, MAX_LIVE_SUBAGENTS);
     assert.equal(withAgents.live.subagents[0]?.id, "subagent_3");
     assert.notEqual(withAgents.live.subagents[0], agents[3]);
-    assert.deepEqual(
-      applyEvent(withAgents, { type: "subagents.clear" }).live.subagents,
-      [],
-    );
+    assert.deepEqual(applyEvent(withAgents, { type: "subagents.clear" }).live.subagents, []);
   });
 
   it("toggles one complete, sanitized Thinking panel with stale-safe hiding", () => {
@@ -287,10 +270,7 @@ describe("pure terminal UI state", () => {
     const lines = [
       `Inspect api_key=abcde\u001B[31mfghijklmnopqrstuvwxyz`,
       "x".repeat(1_020),
-      ...Array.from(
-        { length: 123 },
-        (_, index) => `reasoning line ${index}`,
-      ),
+      ...Array.from({ length: 123 }, (_, index) => `reasoning line ${index}`),
     ];
     const text = lines.join("\n");
     const initial = createUIState();
@@ -329,14 +309,8 @@ describe("pure terminal UI state", () => {
       panel: { id: 8, body: "A different block replaces the open panel." },
     });
     assert.equal(replacement.live.thinking?.id, 8);
-    assert.equal(
-      applyEvent(replacement, { type: "thinking.hide", id: 7 }),
-      replacement,
-    );
-    assert.equal(
-      applyEvent(replacement, { type: "thinking.hide", id: 8 }).live.thinking,
-      null,
-    );
+    assert.equal(applyEvent(replacement, { type: "thinking.hide", id: 7 }), replacement);
+    assert.equal(applyEvent(replacement, { type: "thinking.hide", id: 8 }).live.thinking, null);
     assert.equal(
       applyEvent(initial, {
         type: "thinking.toggle",
@@ -365,14 +339,8 @@ describe("pure terminal UI state", () => {
     });
     assert.equal(picker.overlay?.rows.length, MAX_OVERLAY_ROWS);
     assert.equal(picker.overlay?.selectedIndex, MAX_OVERLAY_ROWS - 1);
-    assert.equal(
-      applyEvent(picker, { type: "overlay.hide", id: "another-picker" }),
-      picker,
-    );
-    assert.equal(
-      applyEvent(picker, { type: "overlay.hide", id: "model-picker" }).overlay,
-      null,
-    );
+    assert.equal(applyEvent(picker, { type: "overlay.hide", id: "another-picker" }), picker);
+    assert.equal(applyEvent(picker, { type: "overlay.hide", id: "model-picker" }).overlay, null);
 
     const request: ApprovalRequest = {
       id: "approval_run",
@@ -406,11 +374,13 @@ describe("pure terminal UI state", () => {
       proposedAt: CREATED_AT,
       title: "Add authentication",
       overview: "Add login and registration.",
-      steps: [{
-        title: "Implement",
-        description: "Build the feature.",
-        verification: "Run tests.",
-      }],
+      steps: [
+        {
+          title: "Implement",
+          description: "Build the feature.",
+          verification: "Run tests.",
+        },
+      ],
     };
     const review = applyEvent(initial, {
       type: "overlay.show",
@@ -431,10 +401,7 @@ describe("pure terminal UI state", () => {
   });
 
   it("patches, clamps, bounds, and resets the persistent composer", () => {
-    const images = Array.from(
-      { length: MAX_COMPOSER_IMAGES + 2 },
-      (_, index) => image(index),
-    );
+    const images = Array.from({ length: MAX_COMPOSER_IMAGES + 2 }, (_, index) => image(index));
     const initial = createUIState();
     const populated = applyEvent(initial, {
       type: "composer.patch",

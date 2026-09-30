@@ -2,34 +2,68 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chmod, lstat, mkdir, rmdir, unlink } from "node:fs/promises";
 import { createServer, createConnection, type Server, type Socket } from "node:net";
 import { createInterface } from "node:readline";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import {
-  ensurePrivateSocketDirectory, localModelEnvironment, LOCAL_DECISION_PROTOCOL,
-  MAX_IPC_LINE_BYTES, sharedLayaEndpoint, type SharedLayaEndpoint, type SharedLayaOptions,
+  ensurePrivateSocketDirectory,
+  localModelEnvironment,
+  LOCAL_DECISION_PROTOCOL,
+  MAX_IPC_LINE_BYTES,
+  sharedLayaEndpoint,
+  type SharedLayaEndpoint,
+  type SharedLayaOptions,
 } from "./endpoint.js";
 
-interface ServiceOptions extends SharedLayaOptions { idleMs: number }
-interface ClientConnection { socket: Socket; buffer: string; requests: Set<string> }
-interface DecisionRequest { id: string; task: "route" | "delivery"; input: string; client: ClientConnection; canceled: boolean }
+interface ServiceOptions extends SharedLayaOptions {
+  idleMs: number;
+}
+interface ClientConnection {
+  socket: Socket;
+  buffer: string;
+  requests: Set<string>;
+}
+interface DecisionRequest {
+  id: string;
+  task: "route" | "delivery";
+  input: string;
+  client: ClientConnection;
+  canceled: boolean;
+}
 
 function send(socket: Socket, message: Record<string, unknown>): void {
   if (!socket.destroyed) socket.write(JSON.stringify(message) + "\n");
 }
 
 function probeEndpoint(address: string): Promise<boolean> {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     const socket = createConnection(address);
-    const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 1000);
-    socket.once("connect", () => { clearTimeout(timer); socket.destroy(); resolve(true); });
-    socket.once("error", () => { clearTimeout(timer); socket.destroy(); resolve(false); });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(false);
+    }, 1000);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(false);
+    });
   });
 }
 
 function listen(server: Server, address: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const onError = (error: Error) => { server.off("listening", onListening); reject(error); };
-    const onListening = () => { server.off("error", onError); resolve(); };
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
     server.once("error", onError);
     server.once("listening", onListening);
     server.listen({ path: address, readableAll: false, writableAll: false });
@@ -40,8 +74,9 @@ function listen(server: Server, address: string): Promise<void> {
 async function recoverStaleSocket(endpoint: SharedLayaEndpoint): Promise<boolean> {
   if (!endpoint.directory) return false;
   const lock = path.join(endpoint.directory, "recovery.lock");
-  try { await mkdir(lock, { mode: 0o700 }); }
-  catch (error) {
+  try {
+    await mkdir(lock, { mode: 0o700 });
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const info = await lstat(lock);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe Laya socket recovery lock");
@@ -80,46 +115,75 @@ export async function runSharedLayaService(options: ServiceOptions): Promise<voi
   let stopping = false;
   let everUsed = false;
 
-  const server = createServer(socket => {
+  const server = createServer((socket) => {
     const client: ClientConnection = { socket, buffer: "", requests: new Set() };
     clients.add(client);
-    if (emptyTimer) { clearTimeout(emptyTimer); emptyTimer = undefined; }
-    if (initialTimer) { clearTimeout(initialTimer); initialTimer = undefined; }
+    if (emptyTimer) {
+      clearTimeout(emptyTimer);
+      emptyTimer = undefined;
+    }
+    if (initialTimer) {
+      clearTimeout(initialTimer);
+      initialTimer = undefined;
+    }
     socket.setEncoding("utf8");
     socket.setNoDelay(true);
-    if (ready) send(socket, { type: "ready", protocol: LOCAL_DECISION_PROTOCOL,
-      identity: endpoint.identity, ...ready });
-    socket.on("data", chunk => {
+    if (ready)
+      send(socket, { type: "ready", protocol: LOCAL_DECISION_PROTOCOL, identity: endpoint.identity, ...ready });
+    socket.on("data", (chunk) => {
       client.buffer += String(chunk);
       if (Buffer.byteLength(client.buffer) > MAX_IPC_LINE_BYTES) {
-        socket.destroy(new Error("Local decision IPC request exceeds its limit")); return;
+        socket.destroy(new Error("Local decision IPC request exceeds its limit"));
+        return;
       }
       for (let newline = client.buffer.indexOf("\n"); newline >= 0; newline = client.buffer.indexOf("\n")) {
         const line = client.buffer.slice(0, newline);
         client.buffer = client.buffer.slice(newline + 1);
         let message: Record<string, unknown>;
-        try { message = JSON.parse(line) as Record<string, unknown>; }
-        catch { socket.destroy(new Error("Invalid local decision IPC JSON")); return; }
+        try {
+          message = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          socket.destroy(new Error("Invalid local decision IPC JSON"));
+          return;
+        }
         if (message.type === "cancel" && typeof message.id === "string") {
-          const request = queue.find(item => item.id === message.id && item.client === client) ??
+          const request =
+            queue.find((item) => item.id === message.id && item.client === client) ??
             (active?.id === message.id && active.client === client ? active : undefined);
-          if (request) { request.canceled = true; client.requests.delete(request.id); }
+          if (request) {
+            request.canceled = true;
+            client.requests.delete(request.id);
+          }
           continue;
         }
-        if (message.type !== "decide" || typeof message.id !== "string" ||
-            !/^[a-zA-Z0-9-]{1,100}$/u.test(message.id) || client.requests.has(message.id) ||
-            (message.task !== "route" && message.task !== "delivery") ||
-            typeof message.input !== "string" || !message.input.trim() || message.input.length > 2_000_000 ||
-            queue.length >= 64) {
+        if (
+          message.type !== "decide" ||
+          typeof message.id !== "string" ||
+          !/^[a-zA-Z0-9-]{1,100}$/u.test(message.id) ||
+          client.requests.has(message.id) ||
+          (message.task !== "route" && message.task !== "delivery") ||
+          typeof message.input !== "string" ||
+          !message.input.trim() ||
+          message.input.length > 2_000_000 ||
+          queue.length >= 64
+        ) {
           send(socket, { type: "error", id: message.id, error: "Invalid or overloaded local decision request" });
           continue;
         }
-        const request: DecisionRequest = { id: message.id, task: message.task, input: message.input,
-          client, canceled: false };
+        const request: DecisionRequest = {
+          id: message.id,
+          task: message.task,
+          input: message.input,
+          client,
+          canceled: false,
+        };
         client.requests.add(request.id);
         queue.push(request);
         everUsed = true;
-        if (idleTimer) { clearTimeout(idleTimer); idleTimer = undefined; }
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = undefined;
+        }
         dispatch();
       }
     });
@@ -147,7 +211,7 @@ export async function runSharedLayaService(options: ServiceOptions): Promise<voi
   }
 
   function scheduleIdle(): void {
-    if (stopping || active || queue.some(item => !item.canceled)) return;
+    if (stopping || active || queue.some((item) => !item.canceled)) return;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(stop, options.idleMs);
   }
@@ -175,33 +239,51 @@ export async function runSharedLayaService(options: ServiceOptions): Promise<voi
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
     if (await probeEndpoint(endpoint.address)) return; // Another process won startup.
-    if (!await recoverStaleSocket(endpoint)) return;
+    if (!(await recoverStaleSocket(endpoint))) return;
     await listen(server, endpoint.address);
   }
   if (endpoint.directory) await chmod(endpoint.address, 0o600);
-  initialTimer = setTimeout(() => { if (!clients.size) stop(); }, 10_000);
+  initialTimer = setTimeout(() => {
+    if (!clients.size) stop();
+  }, 10_000);
   worker = spawn(options.python, [options.workerPath], {
-    cwd: path.dirname(path.dirname(path.dirname(options.workerPath))), shell: false,
-    windowsHide: true, env: localModelEnvironment(), stdio: ["pipe", "pipe", "pipe"],
+    cwd: path.dirname(path.dirname(path.dirname(options.workerPath))),
+    shell: false,
+    windowsHide: true,
+    env: localModelEnvironment(),
+    stdio: ["pipe", "pipe", "pipe"],
   });
   let stderr = "";
-  worker.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-2_000); });
-  createInterface({ input: worker.stdout }).on("line", line => {
+  worker.stderr.on("data", (chunk) => {
+    stderr = (stderr + String(chunk)).slice(-2_000);
+  });
+  createInterface({ input: worker.stdout }).on("line", (line) => {
     let message: Record<string, unknown>;
-    try { message = JSON.parse(line) as Record<string, unknown>; }
-    catch { workerFailure(new Error("Invalid Laya model worker response")); return; }
+    try {
+      message = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      workerFailure(new Error("Invalid Laya model worker response"));
+      return;
+    }
     if (message.type === "ready") {
       if (typeof message.modelSha256 !== "string" || typeof message.device !== "string") {
-        workerFailure(new Error("Invalid Laya model identity")); return;
+        workerFailure(new Error("Invalid Laya model identity"));
+        return;
       }
       ready = { modelSha256: message.modelSha256, device: message.device };
-      for (const client of clients) send(client.socket, { type: "ready", protocol: LOCAL_DECISION_PROTOCOL,
-        identity: endpoint.identity, ...ready });
+      for (const client of clients)
+        send(client.socket, {
+          type: "ready",
+          protocol: LOCAL_DECISION_PROTOCOL,
+          identity: endpoint.identity,
+          ...ready,
+        });
       dispatch();
       return;
     }
     if (!active || message.id !== active.id) {
-      workerFailure(new Error("Unexpected Laya model response ID")); return;
+      workerFailure(new Error("Unexpected Laya model response ID"));
+      return;
     }
     const request = active;
     active = undefined;
@@ -209,8 +291,10 @@ export async function runSharedLayaService(options: ServiceOptions): Promise<voi
     if (!request.canceled) send(request.client.socket, message);
     dispatch();
   });
-  worker.once("error", error => workerFailure(error));
-  worker.once("exit", code => workerFailure(new Error(`Laya model worker exited (${code ?? "unknown"}): ${stderr.slice(-500)}`)));
+  worker.once("error", (error) => workerFailure(error));
+  worker.once("exit", (code) =>
+    workerFailure(new Error(`Laya model worker exited (${code ?? "unknown"}): ${stderr.slice(-500)}`)),
+  );
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
 }
@@ -220,11 +304,18 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     const raw = process.argv[2];
     if (!raw || raw.length > 8192) throw new Error("Missing local decision service options");
     const options = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as ServiceOptions;
-    if (!options || typeof options.python !== "string" || typeof options.workerPath !== "string" ||
-        typeof options.dataDir !== "string" || !Number.isSafeInteger(options.idleMs) ||
-        !path.isAbsolute(options.python) || !path.isAbsolute(options.workerPath) ||
-        !path.isAbsolute(options.dataDir) ||
-        options.idleMs < 1000 || options.idleMs > 3_600_000)
+    if (
+      !options ||
+      typeof options.python !== "string" ||
+      typeof options.workerPath !== "string" ||
+      typeof options.dataDir !== "string" ||
+      !Number.isSafeInteger(options.idleMs) ||
+      !path.isAbsolute(options.python) ||
+      !path.isAbsolute(options.workerPath) ||
+      !path.isAbsolute(options.dataDir) ||
+      options.idleMs < 1000 ||
+      options.idleMs > 3_600_000
+    )
       throw new Error("Invalid local decision service options");
     await runSharedLayaService(options);
   } catch (error) {

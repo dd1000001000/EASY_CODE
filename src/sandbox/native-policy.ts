@@ -10,7 +10,7 @@ export const NATIVE_PROJECT_READ_ONLY_PROFILE = "easy-code-project-read-only";
 export const NATIVE_SERVICE_PERMISSION_PROFILE = "easy-code-local-service";
 
 function tableEntries(writableRoots: readonly string[]): string {
-  return [...new Set(writableRoots)].map(root => `${JSON.stringify(root)} = true`).join("\n");
+  return [...new Set(writableRoots)].map((root) => `${JSON.stringify(root)} = true`).join("\n");
 }
 
 function filesystemRule(access: "read" | "write"): string {

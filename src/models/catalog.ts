@@ -79,86 +79,126 @@ export interface ModelCatalog {
   readonly sourceHash: string;
 }
 
-const idSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/u);
-const providerIdSchema = z.string().trim().regex(/^[a-z][a-z0-9-]{0,63}$/u);
-const envSchema = z.string().trim().regex(/^[A-Z][A-Z0-9_]*$/u);
-const imageConstraintsSchema = z.object({
-  min_width: z.number().int().positive().optional(),
-  min_height: z.number().int().positive().optional(),
-  max_long_edge: z.number().int().positive().optional(),
-  max_short_edge: z.number().int().positive().optional(),
-  max_aspect_ratio: z.number().positive().optional(),
-  blocked_media_types: z.array(z.string().trim().regex(/^image\/[a-z0-9.+-]+$/u)).default([]),
-  large_image_threshold: z.number().int().positive().optional(),
-  large_image_media_types: z.array(z.string().trim().regex(/^image\/[a-z0-9.+-]+$/u)).default([]),
-}).strict()
+const idSchema = z
+  .string()
+  .trim()
+  .regex(/^[a-z0-9][a-z0-9._-]{0,127}$/u);
+const providerIdSchema = z
+  .string()
+  .trim()
+  .regex(/^[a-z][a-z0-9-]{0,63}$/u);
+const envSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Z][A-Z0-9_]*$/u);
+const imageConstraintsSchema = z
+  .object({
+    min_width: z.number().int().positive().optional(),
+    min_height: z.number().int().positive().optional(),
+    max_long_edge: z.number().int().positive().optional(),
+    max_short_edge: z.number().int().positive().optional(),
+    max_aspect_ratio: z.number().positive().optional(),
+    blocked_media_types: z
+      .array(
+        z
+          .string()
+          .trim()
+          .regex(/^image\/[a-z0-9.+-]+$/u),
+      )
+      .default([]),
+    large_image_threshold: z.number().int().positive().optional(),
+    large_image_media_types: z
+      .array(
+        z
+          .string()
+          .trim()
+          .regex(/^image\/[a-z0-9.+-]+$/u),
+      )
+      .default([]),
+  })
+  .strict()
   .refine(
     (value) => value.large_image_threshold === undefined || value.large_image_media_types.length > 0,
     "large_image_media_types is required with large_image_threshold",
   )
   .refine(
-    (value) => value.max_long_edge === undefined || value.max_short_edge === undefined || value.max_short_edge <= value.max_long_edge,
+    (value) =>
+      value.max_long_edge === undefined ||
+      value.max_short_edge === undefined ||
+      value.max_short_edge <= value.max_long_edge,
     "max_short_edge cannot exceed max_long_edge",
   );
-const providerSchema = z.object({
-  name: z.string().trim().min(1),
-  base_url: z.string().url().refine((value) => {
-    const url = new URL(value);
-    return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
-  }, "must be an HTTPS URL without credentials, query, or fragment"),
-  // Old model registries may contain these inert names. They are never read
-  // as credential sources; the native store is the only persistent authority.
-  env_key: envSchema.optional(),
-  accepted_env_keys: z.array(envSchema).optional(),
-  wire_api: z.enum(["chat_completions", "responses"]),
-  // Optional wire features are disabled unless the registry explicitly opts in.
-  supports_streaming: z.boolean().default(false),
-  supports_stream_usage: z.boolean().default(false),
-  // Non-standard Chat Completions extension. Missing stays disabled so an
-  // a custom OpenAI-compatible endpoint never receives an unknown key.
-  tool_stream: z.boolean().default(false),
-  request_timeout_ms: z.number().int().positive().optional(),
-  max_retries: z.number().int().min(0).max(10).default(3),
-  supports_temperature: z.boolean().default(true),
-  supports_strict_tools: z.boolean().default(true),
-  image_constraints: imageConstraintsSchema.optional(),
-}).strict().superRefine((value, context) => {
-  if (value.tool_stream && !value.supports_streaming) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["tool_stream"],
-      message: "requires supports_streaming = true",
-    });
-  }
-  if (value.tool_stream && value.wire_api !== "chat_completions") {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["tool_stream"],
-      message: "is only valid for the chat_completions wire API",
-    });
-  }
-});
-const modelSchema = z.object({
-  name: z.string().trim().min(1),
-  provider: providerIdSchema,
-  model: z.string().trim().min(1),
-  context_window: z.number().int().min(4096).optional(),
-  input_modalities: z.array(z.enum(["text", "image"])).min(1),
-  tool_calling: z.boolean().default(true),
-  reasoning: z.boolean().default(false),
-}).strict();
-const profileSchema = z.object({
-  model: idSchema,
-  mode: z.enum(["plan", "auto", "code"]),
-  thinking_effort: z.enum(["none", "low", "medium", "high"]),
-}).strict();
-const registrySchema = z.object({
-  schema_version: z.literal(1),
-  default_model: idSchema,
-  providers: z.record(providerIdSchema, providerSchema),
-  models: z.record(idSchema, modelSchema),
-  profiles: z.object({ swe_bench_verified_50: profileSchema }).strict().optional(),
-}).strict();
+const providerSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    base_url: z
+      .string()
+      .url()
+      .refine((value) => {
+        const url = new URL(value);
+        return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
+      }, "must be an HTTPS URL without credentials, query, or fragment"),
+    // Old model registries may contain these inert names. They are never read
+    // as credential sources; the native store is the only persistent authority.
+    env_key: envSchema.optional(),
+    accepted_env_keys: z.array(envSchema).optional(),
+    wire_api: z.enum(["chat_completions", "responses"]),
+    // Optional wire features are disabled unless the registry explicitly opts in.
+    supports_streaming: z.boolean().default(false),
+    supports_stream_usage: z.boolean().default(false),
+    // Non-standard Chat Completions extension. Missing stays disabled so an
+    // a custom OpenAI-compatible endpoint never receives an unknown key.
+    tool_stream: z.boolean().default(false),
+    request_timeout_ms: z.number().int().positive().optional(),
+    max_retries: z.number().int().min(0).max(10).default(3),
+    supports_temperature: z.boolean().default(true),
+    supports_strict_tools: z.boolean().default(true),
+    image_constraints: imageConstraintsSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.tool_stream && !value.supports_streaming) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["tool_stream"],
+        message: "requires supports_streaming = true",
+      });
+    }
+    if (value.tool_stream && value.wire_api !== "chat_completions") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["tool_stream"],
+        message: "is only valid for the chat_completions wire API",
+      });
+    }
+  });
+const modelSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    provider: providerIdSchema,
+    model: z.string().trim().min(1),
+    context_window: z.number().int().min(4096).optional(),
+    input_modalities: z.array(z.enum(["text", "image"])).min(1),
+    tool_calling: z.boolean().default(true),
+    reasoning: z.boolean().default(false),
+  })
+  .strict();
+const profileSchema = z
+  .object({
+    model: idSchema,
+    mode: z.enum(["plan", "auto", "code"]),
+    thinking_effort: z.enum(["none", "low", "medium", "high"]),
+  })
+  .strict();
+const registrySchema = z
+  .object({
+    schema_version: z.literal(1),
+    default_model: idSchema,
+    providers: z.record(providerIdSchema, providerSchema),
+    models: z.record(idSchema, modelSchema),
+    profiles: z.object({ swe_bench_verified_50: profileSchema }).strict().optional(),
+  })
+  .strict();
 
 const packagedRegistryCandidates = [
   fileURLToPath(new URL("../../resources/models.default.toml", import.meta.url)),
@@ -174,28 +214,37 @@ function envPrefix(provider: string): string {
 
 function parseSource(source: string, sourceName: string): ModelCatalog {
   let document: unknown;
-  try { document = parseToml(source) as unknown; }
-  catch { throw new Error(`Unable to parse model registry TOML: ${sourceName}`); }
+  try {
+    document = parseToml(source) as unknown;
+  } catch {
+    throw new Error(`Unable to parse model registry TOML: ${sourceName}`);
+  }
   const parsed = registrySchema.safeParse(document);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    throw new Error(`Invalid model registry ${sourceName}: ${issue?.path.join(".") || "root"}: ${issue?.message || "invalid value"}`);
+    throw new Error(
+      `Invalid model registry ${sourceName}: ${issue?.path.join(".") || "root"}: ${issue?.message || "invalid value"}`,
+    );
   }
 
   const modelsByProvider = new Map<string, ModelCatalogEntry[]>();
   for (const [alias, model] of Object.entries(parsed.data.models)) {
-    if (!parsed.data.providers[model.provider]) throw new Error(`Model ${alias} references unknown provider ${model.provider}`);
+    if (!parsed.data.providers[model.provider])
+      throw new Error(`Model ${alias} references unknown provider ${model.provider}`);
     const entries = modelsByProvider.get(model.provider) ?? [];
-    if (entries.some((entry) => entry.id === model.model)) throw new Error(`Provider ${model.provider} defines model ${model.model} more than once`);
-    entries.push(Object.freeze({
-      alias,
-      id: model.model,
-      label: model.name,
-      vision: model.input_modalities.includes("image") ? "supported" : "unsupported",
-      reasoning: model.reasoning,
-      toolCalling: model.tool_calling,
-      ...(model.context_window === undefined ? {} : { contextWindowTokens: model.context_window }),
-    }));
+    if (entries.some((entry) => entry.id === model.model))
+      throw new Error(`Provider ${model.provider} defines model ${model.model} more than once`);
+    entries.push(
+      Object.freeze({
+        alias,
+        id: model.model,
+        label: model.name,
+        vision: model.input_modalities.includes("image") ? "supported" : "unsupported",
+        reasoning: model.reasoning,
+        toolCalling: model.tool_calling,
+        ...(model.context_window === undefined ? {} : { contextWindowTokens: model.context_window }),
+      }),
+    );
     modelsByProvider.set(model.provider, entries);
   }
   const defaultEntry = parsed.data.models[parsed.data.default_model];
@@ -204,9 +253,10 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
   const providers = Object.entries(parsed.data.providers).map(([provider, value]) => {
     const models = modelsByProvider.get(provider) ?? [];
     if (models.length === 0) throw new Error(`Provider ${provider} has no models`);
-    const defaultForProvider = provider === defaultEntry.provider
-      ? models.find((entry) => entry.alias === parsed.data.default_model) ?? models[0]!
-      : models[0]!;
+    const defaultForProvider =
+      provider === defaultEntry.provider
+        ? (models.find((entry) => entry.alias === parsed.data.default_model) ?? models[0]!)
+        : models[0]!;
     const prefix = envPrefix(provider);
     return Object.freeze({
       provider,
@@ -227,13 +277,25 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
       ...(value.image_constraints
         ? {
             imageConstraints: Object.freeze({
-              ...(value.image_constraints.min_width === undefined ? {} : { minWidth: value.image_constraints.min_width }),
-              ...(value.image_constraints.min_height === undefined ? {} : { minHeight: value.image_constraints.min_height }),
-              ...(value.image_constraints.max_long_edge === undefined ? {} : { maxLongEdge: value.image_constraints.max_long_edge }),
-              ...(value.image_constraints.max_short_edge === undefined ? {} : { maxShortEdge: value.image_constraints.max_short_edge }),
-              ...(value.image_constraints.max_aspect_ratio === undefined ? {} : { maxAspectRatio: value.image_constraints.max_aspect_ratio }),
+              ...(value.image_constraints.min_width === undefined
+                ? {}
+                : { minWidth: value.image_constraints.min_width }),
+              ...(value.image_constraints.min_height === undefined
+                ? {}
+                : { minHeight: value.image_constraints.min_height }),
+              ...(value.image_constraints.max_long_edge === undefined
+                ? {}
+                : { maxLongEdge: value.image_constraints.max_long_edge }),
+              ...(value.image_constraints.max_short_edge === undefined
+                ? {}
+                : { maxShortEdge: value.image_constraints.max_short_edge }),
+              ...(value.image_constraints.max_aspect_ratio === undefined
+                ? {}
+                : { maxAspectRatio: value.image_constraints.max_aspect_ratio }),
               blockedMediaTypes: Object.freeze([...value.image_constraints.blocked_media_types]),
-              ...(value.image_constraints.large_image_threshold === undefined ? {} : { largeImageThreshold: value.image_constraints.large_image_threshold }),
+              ...(value.image_constraints.large_image_threshold === undefined
+                ? {}
+                : { largeImageThreshold: value.image_constraints.large_image_threshold }),
               largeImageMediaTypes: Object.freeze([...value.image_constraints.large_image_media_types]),
             }),
           }
@@ -251,16 +313,28 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
   const profile = parsed.data.profiles?.swe_bench_verified_50;
   const profileModel = profile ? parsed.data.models[profile.model] : undefined;
   if (profile && !profileModel) throw new Error(`Benchmark profile references unknown model alias ${profile.model}`);
-  if (profileModel && !profileModel.tool_calling) throw new Error(`Benchmark profile model ${profile!.model} must support tool calling`);
-  const fallbackProfile: BenchmarkProfile = Object.freeze({ provider: defaultEntry.provider, model: defaultEntry.model, mode: "code", thinkingEffort: "high" });
+  if (profileModel && !profileModel.tool_calling)
+    throw new Error(`Benchmark profile model ${profile!.model} must support tool calling`);
+  const fallbackProfile: BenchmarkProfile = Object.freeze({
+    provider: defaultEntry.provider,
+    model: defaultEntry.model,
+    mode: "code",
+    thinkingEffort: "high",
+  });
   return Object.freeze({
     catalogVersion: 1,
     defaultModelAlias: parsed.data.default_model,
     providers: Object.freeze(providers),
     profiles: Object.freeze({
-      sweBenchVerified50: profile && profileModel
-        ? Object.freeze({ provider: profileModel.provider, model: profileModel.model, mode: profile.mode, thinkingEffort: profile.thinking_effort })
-        : fallbackProfile,
+      sweBenchVerified50:
+        profile && profileModel
+          ? Object.freeze({
+              provider: profileModel.provider,
+              model: profileModel.model,
+              mode: profile.mode,
+              thinkingEffort: profile.thinking_effort,
+            })
+          : fallbackProfile,
     }),
     sourceHash: `sha256:${createHash("sha256").update(source, "utf8").digest("hex")}`,
   });
@@ -281,7 +355,8 @@ function defaultModelIds(providers: readonly ProviderCatalogEntry[]): Readonly<R
 }
 function providerForDefaultModel(catalog: ModelCatalog): ProviderName {
   const provider = catalog.providers.find((entry) =>
-    entry.models.some((model) => model.alias === catalog.defaultModelAlias));
+    entry.models.some((model) => model.alias === catalog.defaultModelAlias),
+  );
   if (!provider) throw new Error("The model registry default model has no provider");
   return provider.provider;
 }
@@ -300,8 +375,11 @@ export function activateModelRegistry(source: string, sourceName = USER_MODEL_RE
 
 export async function ensureUserModelRegistry(registryPath = USER_MODEL_REGISTRY_PATH): Promise<string> {
   await mkdir(path.dirname(registryPath), { recursive: true, mode: 0o700 });
-  try { await writeFile(registryPath, PACKAGED_MODEL_REGISTRY_SOURCE, { encoding: "utf8", flag: "wx", mode: 0o600 }); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  try {
+    await writeFile(registryPath, PACKAGED_MODEL_REGISTRY_SOURCE, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
   await chmod(registryPath, 0o600).catch(() => undefined);
   const source = await readFile(registryPath, "utf8");
   activateModelRegistry(source, registryPath);
@@ -317,17 +395,36 @@ export function providerCatalogEntry(provider: ProviderName): ProviderCatalogEnt
   if (!entry) throw new Error(`Unsupported provider: ${provider}`);
   return entry;
 }
-export function isProviderName(value: unknown): value is ProviderName { return typeof value === "string" && PROVIDER_CATALOG.some((entry) => entry.provider === value); }
+export function isProviderName(value: unknown): value is ProviderName {
+  return typeof value === "string" && PROVIDER_CATALOG.some((entry) => entry.provider === value);
+}
 /** Syntax-only check for durable history whose registry may no longer be active. */
-export function isProviderIdentifier(value: unknown): value is ProviderName { return typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/u.test(value); }
-export function providerLabel(provider: ProviderName): string { return providerCatalogEntry(provider).label; }
-export function providerEnvironment(provider: ProviderName): ProviderEnvironmentCatalog { return providerCatalogEntry(provider).environment; }
-export function providerCredentialConfigKey(provider: ProviderName): `${string}.api-key` { return providerCatalogEntry(provider).configKey; }
-export function sweBenchVerified50Profile(): BenchmarkProfile { return BENCHMARK_PROFILES.sweBenchVerified50; }
-export function modelsForProvider(provider: ProviderName): readonly ModelCatalogEntry[] { return providerCatalogEntry(provider).models; }
+export function isProviderIdentifier(value: unknown): value is ProviderName {
+  return typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/u.test(value);
+}
+export function providerLabel(provider: ProviderName): string {
+  return providerCatalogEntry(provider).label;
+}
+export function providerEnvironment(provider: ProviderName): ProviderEnvironmentCatalog {
+  return providerCatalogEntry(provider).environment;
+}
+export function providerCredentialConfigKey(provider: ProviderName): `${string}.api-key` {
+  return providerCatalogEntry(provider).configKey;
+}
+export function sweBenchVerified50Profile(): BenchmarkProfile {
+  return BENCHMARK_PROFILES.sweBenchVerified50;
+}
+export function modelsForProvider(provider: ProviderName): readonly ModelCatalogEntry[] {
+  return providerCatalogEntry(provider).models;
+}
 export function resolveCatalogModel(provider: ProviderName, value: string): ModelCatalogEntry | undefined {
   const normalized = value.trim().toLowerCase();
-  return modelsForProvider(provider).find((entry) => entry.id.toLowerCase() === normalized || entry.alias.toLowerCase() === normalized || entry.label.toLowerCase() === normalized);
+  return modelsForProvider(provider).find(
+    (entry) =>
+      entry.id.toLowerCase() === normalized ||
+      entry.alias.toLowerCase() === normalized ||
+      entry.label.toLowerCase() === normalized,
+  );
 }
 export function effectiveContextWindow(provider: ProviderName, model: string, configured?: number): number | undefined {
   if (!configured) return undefined;
@@ -337,32 +434,63 @@ export function effectiveContextWindow(provider: ProviderName, model: string, co
 export function requireCatalogModel(provider: ProviderName, value: string): ModelCatalogEntry {
   const model = resolveCatalogModel(provider, value);
   if (model) return model;
-  const supported = modelsForProvider(provider).map((entry) => entry.id).join(", ");
-  throw new Error(`Model ${JSON.stringify(value)} is not in the ${providerLabel(provider)} registry. Supported models: ${supported}`);
+  const supported = modelsForProvider(provider)
+    .map((entry) => entry.id)
+    .join(", ");
+  throw new Error(
+    `Model ${JSON.stringify(value)} is not in the ${providerLabel(provider)} registry. Supported models: ${supported}`,
+  );
 }
-export function modelVisionSupport(provider: ProviderName, model: string): VisionSupport { return resolveCatalogModel(provider, model)?.vision ?? "unknown"; }
-export function modelSupportsVision(provider: ProviderName, model: string): boolean { return modelVisionSupport(provider, model) === "supported"; }
+export function modelVisionSupport(provider: ProviderName, model: string): VisionSupport {
+  return resolveCatalogModel(provider, model)?.vision ?? "unknown";
+}
+export function modelSupportsVision(provider: ProviderName, model: string): boolean {
+  return modelVisionSupport(provider, model) === "supported";
+}
 export function requireVisionModel(provider: ProviderName, model: string): void {
   const support = modelVisionSupport(provider, model);
   if (support === "supported") return;
-  const models = modelsForProvider(provider).filter((entry) => entry.vision === "supported").map((entry) => entry.id).join(", ");
-  throw new Error(`${providerLabel(provider)} model ${model} cannot accept images because ${support === "unknown" ? "its image capability is not verified" : "it is text-only"}. ${models ? `Choose an image-capable model with /model: ${models}` : "Remove the image or select another provider."}`);
+  const models = modelsForProvider(provider)
+    .filter((entry) => entry.vision === "supported")
+    .map((entry) => entry.id)
+    .join(", ");
+  throw new Error(
+    `${providerLabel(provider)} model ${model} cannot accept images because ${support === "unknown" ? "its image capability is not verified" : "it is text-only"}. ${models ? `Choose an image-capable model with /model: ${models}` : "Remove the image or select another provider."}`,
+  );
 }
 export function validateProviderImageAttachments(provider: ProviderName, images: readonly ImageAttachment[]): void {
-  for (const attachment of images) { const issue = providerImageCompatibilityIssue(provider, attachment); if (issue) throw new Error(issue); }
+  for (const attachment of images) {
+    const issue = providerImageCompatibilityIssue(provider, attachment);
+    if (issue) throw new Error(issue);
+  }
 }
-export function providerImageCompatibilityIssue(provider: ProviderName, attachment: ImageAttachment): string | undefined {
+export function providerImageCompatibilityIssue(
+  provider: ProviderName,
+  attachment: ImageAttachment,
+): string | undefined {
   const entry = providerCatalogEntry(provider);
   const constraints = entry.imageConstraints;
   if (!constraints) return undefined;
   const { width, height, mediaType, label } = attachment;
-  if (constraints.minWidth !== undefined && width < constraints.minWidth) return `${label} must be at least ${constraints.minWidth} pixels wide for ${entry.label}.`;
-  if (constraints.minHeight !== undefined && height < constraints.minHeight) return `${label} must be at least ${constraints.minHeight} pixels high for ${entry.label}.`;
-  const longEdge = Math.max(width, height); const shortEdge = Math.min(width, height);
-  if (constraints.maxAspectRatio !== undefined && longEdge / shortEdge > constraints.maxAspectRatio) return `${label} exceeds ${entry.label}'s ${constraints.maxAspectRatio}:1 aspect-ratio limit.`;
-  if (constraints.maxLongEdge !== undefined && longEdge > constraints.maxLongEdge) return `${label} exceeds ${entry.label}'s ${constraints.maxLongEdge}-pixel long-edge limit.`;
-  if (constraints.maxShortEdge !== undefined && shortEdge > constraints.maxShortEdge) return `${label} exceeds ${entry.label}'s ${constraints.maxShortEdge}-pixel short-edge limit.`;
-  if (constraints.blockedMediaTypes.includes(mediaType)) return `${label} uses ${mediaType}, which ${entry.label} does not accept.`;
-  if (constraints.largeImageThreshold !== undefined && longEdge > constraints.largeImageThreshold && !constraints.largeImageMediaTypes.includes(mediaType)) return `${label} must use ${constraints.largeImageMediaTypes.join(" or ")} when its longest edge exceeds ${constraints.largeImageThreshold} pixels for ${entry.label}.`;
+  if (constraints.minWidth !== undefined && width < constraints.minWidth)
+    return `${label} must be at least ${constraints.minWidth} pixels wide for ${entry.label}.`;
+  if (constraints.minHeight !== undefined && height < constraints.minHeight)
+    return `${label} must be at least ${constraints.minHeight} pixels high for ${entry.label}.`;
+  const longEdge = Math.max(width, height);
+  const shortEdge = Math.min(width, height);
+  if (constraints.maxAspectRatio !== undefined && longEdge / shortEdge > constraints.maxAspectRatio)
+    return `${label} exceeds ${entry.label}'s ${constraints.maxAspectRatio}:1 aspect-ratio limit.`;
+  if (constraints.maxLongEdge !== undefined && longEdge > constraints.maxLongEdge)
+    return `${label} exceeds ${entry.label}'s ${constraints.maxLongEdge}-pixel long-edge limit.`;
+  if (constraints.maxShortEdge !== undefined && shortEdge > constraints.maxShortEdge)
+    return `${label} exceeds ${entry.label}'s ${constraints.maxShortEdge}-pixel short-edge limit.`;
+  if (constraints.blockedMediaTypes.includes(mediaType))
+    return `${label} uses ${mediaType}, which ${entry.label} does not accept.`;
+  if (
+    constraints.largeImageThreshold !== undefined &&
+    longEdge > constraints.largeImageThreshold &&
+    !constraints.largeImageMediaTypes.includes(mediaType)
+  )
+    return `${label} must use ${constraints.largeImageMediaTypes.join(" or ")} when its longest edge exceeds ${constraints.largeImageThreshold} pixels for ${entry.label}.`;
   return undefined;
 }

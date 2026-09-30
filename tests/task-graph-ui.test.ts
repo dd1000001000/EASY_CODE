@@ -55,10 +55,7 @@ describe("task DAG terminal UI", () => {
     };
     const rendered = renderTaskGraph(view, { color: false });
 
-    assert.match(
-      rendered,
-      /⊠ 2\. \[implement\] Implement feature \(blocked: Waiting for credentials\)/u,
-    );
+    assert.match(rendered, /⊠ 2\. \[implement\] Implement feature \(blocked: Waiting for credentials\)/u);
     assert.match(rendered, /□ 3\. \[verify\] Run verification/u);
   });
 

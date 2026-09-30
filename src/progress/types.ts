@@ -17,17 +17,9 @@ export const PROGRESS_READ_WARNING_MINIMUM = 5;
 export const PROGRESS_READ_WARNING_RATIO = 0.7;
 
 export type ProgressObservationKind =
-  | "read"
-  | "investigation_terminal"
-  | "verification_terminal"
-  | "infrastructure_failure"
-  | "neutral";
+  "read" | "investigation_terminal" | "verification_terminal" | "infrastructure_failure" | "neutral";
 
-export type ProgressOutcomeClass =
-  | "passed"
-  | "failed"
-  | "timed_out"
-  | "unknown";
+export type ProgressOutcomeClass = "passed" | "failed" | "timed_out" | "unknown";
 
 /**
  * A small, self-contained fact derived while the full ToolExecutionResult is
@@ -119,11 +111,7 @@ export interface ProgressReadWarning {
   repeatedRatio: number;
 }
 
-export type ProgressIncidentPhase =
-  | "review_pending"
-  | "strategy_adjustment"
-  | "resolved"
-  | "review_unavailable";
+export type ProgressIncidentPhase = "review_pending" | "strategy_adjustment" | "resolved" | "review_unavailable";
 
 export interface ProgressIncident {
   reason: "repeated_verified_failure";

@@ -1,17 +1,31 @@
 import { randomUUID } from "node:crypto";
-import { compactionLabel, compactionRunning, type CompactionProgress } from "../ui/compaction.js";
+import { compactionLabel, compactionNoticeKind, type CompactionProgress } from "../ui/compaction.js";
 import type {
-  ApprovalDecision, ApprovalRequest, AssistantPhase, FileDiffPresentation, ImageAttachment,
-  PlanProposal, ProviderStreamEvent, ThinkingEffort,
+  ApprovalDecision,
+  ApprovalRequest,
+  AssistantPhase,
+  FileDiffPresentation,
+  ImageAttachment,
+  PlanProposal,
+  ProviderStreamEvent,
+  ThinkingEffort,
 } from "../core/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
 import type { SubagentView } from "../subagents/types.js";
 import type { UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
 import type {
-  AppInteractionPort, CompletedTurnTiming, CurrentRequestOptions, InteractionChoice,
-  ModelSelectorChoice, PlanReviewDecision, PlanReviewInputOptions,
-  ProviderSelectorChoice, RequestInputOptions, ThinkingEffortSelectorChoice,
-  TimedChoiceOptions, UserSubmission,
+  AppInteractionPort,
+  CompletedTurnTiming,
+  CurrentRequestOptions,
+  InteractionChoice,
+  ModelSelectorChoice,
+  PlanReviewDecision,
+  PlanReviewInputOptions,
+  ProviderSelectorChoice,
+  RequestInputOptions,
+  ThinkingEffortSelectorChoice,
+  TimedChoiceOptions,
+  UserSubmission,
 } from "../ui/interaction-port.js";
 import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
@@ -20,13 +34,27 @@ import { canGrantCommandPrefix, formatCommandApprovalPrefix } from "../command/a
 import type { Language } from "../i18n/language.js";
 import { translate } from "../i18n/catalog.js";
 import { toolRunContinuesAcross, turnContinuesAcross } from "../web-tool-run.js";
-import type { WebChange, WebDecision, WebEntry, WebEntryKind, WebHistoryMarker, WebHistoryPage, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
+import type {
+  WebChange,
+  WebDecision,
+  WebEntry,
+  WebEntryKind,
+  WebHistoryMarker,
+  WebHistoryPage,
+  WebHistoryState,
+  WebPatch,
+  WebView,
+} from "../web-contracts.js";
 import type { ThreadResourceAttachment } from "../resources/types.js";
 
 export const WEB_HISTORY_PAGE_SIZE = 80;
 function userMarker(entry: WebEntry): WebHistoryMarker {
-  return { id: entry.id,
-    preview: (entry.text.replace(/\s+/gu, " ").trim() || (entry.images?.length ? "Image attachment" : "Your message")).slice(0, 120) };
+  return {
+    id: entry.id,
+    preview: (
+      entry.text.replace(/\s+/gu, " ").trim() || (entry.images?.length ? "Image attachment" : "Your message")
+    ).slice(0, 120),
+  };
 }
 
 interface PendingDecision {
@@ -68,9 +96,13 @@ export class WebInteraction implements AppInteractionPort {
   private externalOperation?: AbortController;
   private language: Language = "en_us";
 
-  setLanguage(language: Language): void { this.language = language; }
+  setLanguage(language: Language): void {
+    this.language = language;
+  }
 
-  snapshot(): WebChange { return { sequence: this.sequence, view: this.view() }; }
+  snapshot(): WebChange {
+    return { sequence: this.sequence, view: this.view() };
+  }
   historyPage(options: { before?: string; after?: string; around?: string } = {}): WebHistoryPage {
     if ([options.before, options.after, options.around].filter(Boolean).length > 1) {
       throw new Error("Choose one history cursor.");
@@ -78,16 +110,16 @@ export class WebInteraction implements AppInteractionPort {
     let start = Math.max(0, this.entries.length - WEB_HISTORY_PAGE_SIZE);
     let end = this.entries.length;
     if (options.before) {
-      end = this.entries.findIndex(entry => entry.id === options.before);
+      end = this.entries.findIndex((entry) => entry.id === options.before);
       if (end < 0) throw new Error("History cursor is no longer available.");
       start = Math.max(0, end - WEB_HISTORY_PAGE_SIZE);
     } else if (options.after) {
-      const index = this.entries.findIndex(entry => entry.id === options.after);
+      const index = this.entries.findIndex((entry) => entry.id === options.after);
       if (index < 0) throw new Error("History cursor is no longer available.");
       start = index + 1;
       end = Math.min(this.entries.length, start + WEB_HISTORY_PAGE_SIZE);
     } else if (options.around) {
-      const index = this.entries.findIndex(entry => entry.id === options.around);
+      const index = this.entries.findIndex((entry) => entry.id === options.around);
       if (index < 0) throw new Error("History target is no longer available.");
       start = Math.max(0, index - Math.floor(WEB_HISTORY_PAGE_SIZE / 2));
       end = Math.min(this.entries.length, start + WEB_HISTORY_PAGE_SIZE);
@@ -96,37 +128,52 @@ export class WebInteraction implements AppInteractionPort {
     if (!options.after && start > 0) {
       // Keep a nearby user turn intact without allowing one huge turn to defeat paging.
       for (let index = start; index >= Math.max(0, start - 24); index -= 1) {
-        if (this.entries[index]?.kind === "user") { start = index; break; }
+        if (this.entries[index]?.kind === "user") {
+          start = index;
+          break;
+        }
       }
     }
     // A run of adjacent tool calls must remain one visible row, even when a
     // journal page boundary falls among status notices inside that run.
-    while (start > 0 && (turnContinuesAcross(this.entries, start) || toolRunContinuesAcross(this.entries, start))) start -= 1;
-    while (end < this.entries.length && (turnContinuesAcross(this.entries, end) || toolRunContinuesAcross(this.entries, end))) end += 1;
-    return { entries: this.entries.slice(start, end).map(entry => ({ ...entry })),
-      hasEarlier: start > 0, hasLater: end < this.entries.length };
+    while (start > 0 && (turnContinuesAcross(this.entries, start) || toolRunContinuesAcross(this.entries, start)))
+      start -= 1;
+    while (
+      end < this.entries.length &&
+      (turnContinuesAcross(this.entries, end) || toolRunContinuesAcross(this.entries, end))
+    )
+      end += 1;
+    return {
+      entries: this.entries.slice(start, end).map((entry) => ({ ...entry })),
+      hasEarlier: start > 0,
+      hasLater: end < this.entries.length,
+    };
   }
   historyState(page = this.historyPage()): WebHistoryState {
-    return { epoch: this.historyEpoch, hasEarlier: page.hasEarlier,
-      markers: this.userMarkers.map(marker => ({ ...marker })) };
+    return {
+      epoch: this.historyEpoch,
+      hasEarlier: page.hasEarlier,
+      markers: this.userMarkers.map((marker) => ({ ...marker })),
+    };
   }
   subscribe(listener: (change: WebChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
   loadHistory(entries: readonly WebEntry[]): void {
-    this.compaction = [...entries].reverse().find(entry => entry.compaction)?.compaction ?? null;
-    this.entries = entries.map(entry => ({ ...entry }));
+    this.compaction = [...entries].reverse().find((entry) => entry.compaction)?.compaction ?? null;
+    this.entries = entries.map((entry) => ({ ...entry }));
     this.pendingToolEntries = [];
     for (let index = this.entries.length - 1; index >= 0; index -= 1) {
       const entry = this.entries[index]!;
-      if (entry.kind === "info" || entry.kind === "success" || entry.kind === "warning" || entry.kind === "error") continue;
+      if (entry.kind === "info" || entry.kind === "success" || entry.kind === "warning" || entry.kind === "error")
+        continue;
       if (entry.kind === "tool" && entry.toolStatus === "running") this.pendingToolEntries.push(entry.id);
       break;
     }
     this.entryById.clear();
     for (const entry of this.entries) this.entryById.set(entry.id, entry);
-    this.userMarkers = this.entries.filter(entry => entry.kind === "user").map(userMarker);
+    this.userMarkers = this.entries.filter((entry) => entry.kind === "user").map(userMarker);
     this.historyEpoch = randomUUID();
     this.currentAnswerId = undefined;
     this.currentReasoningId = undefined;
@@ -136,26 +183,38 @@ export class WebInteraction implements AppInteractionPort {
     this.currentTurnStartedAt = undefined;
     this.emit({ kind: "entries.reset", entries: this.entries });
   }
-  presentUser(text: string, images: readonly ImageAttachment[] = [], resources: readonly ThreadResourceAttachment[] = []): void {
+  presentUser(
+    text: string,
+    images: readonly ImageAttachment[] = [],
+    resources: readonly ThreadResourceAttachment[] = [],
+  ): void {
     this.currentTurnId = randomUUID();
     this.currentTurnStartedAt = Date.now();
     const id = this.append("user", text, images);
     const entry = this.entryById.get(id);
     if (entry && resources.length) {
-      entry.resources = resources.map(({ id: resourceId, filename, kind, mediaType, uri }) =>
-        ({ id: resourceId, filename, kind, mediaType, uri }));
+      entry.resources = resources.map(({ id: resourceId, filename, kind, mediaType, uri }) => ({
+        id: resourceId,
+        filename,
+        kind,
+        mediaType,
+        uri,
+      }));
       this.emit({ kind: "entry.replace", entry });
     }
   }
   resolveDecision(id: string, value: string | undefined): boolean {
-    const index = this.decisions.findIndex(item => item.request.id === id);
+    const index = this.decisions.findIndex((item) => item.request.id === id);
     if (index < 0) return false;
     const pending = this.decisions[index];
     if (!pending) return false;
     if (pending.signal?.aborted && value !== undefined) return false;
-    if (value !== undefined && pending.request.kind !== "secret" &&
+    if (
+      value !== undefined &&
+      pending.request.kind !== "secret" &&
       !(pending.request.kind === "plan" && value.startsWith("adjust:")) &&
-      !pending.request.choices?.some(choice => choice.id === value && !choice.disabled)) {
+      !pending.request.choices?.some((choice) => choice.id === value && !choice.disabled)
+    ) {
       return false;
     }
     this.decisions.splice(index, 1);
@@ -169,7 +228,7 @@ export class WebInteraction implements AppInteractionPort {
   private armHeadDecisionTimeout(): void {
     const pending = this.decisions[0];
     if (!pending?.timed || pending.timer || this.closed) return;
-    const choice = pending.request.choices?.find(item => item.id === pending.timed?.idleChoiceId && !item.disabled);
+    const choice = pending.request.choices?.find((item) => item.id === pending.timed?.idleChoiceId && !item.disabled);
     if (!choice || !Number.isSafeInteger(pending.timed.idleTimeoutMs) || pending.timed.idleTimeoutMs <= 0) return;
     pending.timer = setTimeout(() => {
       if (this.closed || pending.signal?.aborted || this.decisions[0] !== pending) return;
@@ -200,11 +259,23 @@ export class WebInteraction implements AppInteractionPort {
   private emit(patch?: WebPatch): void {
     this.sequence += 1;
     const view = this.view();
-    const change: WebChange = { sequence: this.sequence, view,
-      patch: patch ?? { kind: "state", state: {
-        session: view.session, tasks: view.tasks, subagents: view.subagents,
-        activities: view.activities, review: view.review, decision: view.decision, busy: view.busy, compaction: view.compaction,
-      } } };
+    const change: WebChange = {
+      sequence: this.sequence,
+      view,
+      patch: patch ?? {
+        kind: "state",
+        state: {
+          session: view.session,
+          tasks: view.tasks,
+          subagents: view.subagents,
+          activities: view.activities,
+          review: view.review,
+          decision: view.decision,
+          busy: view.busy,
+          compaction: view.compaction,
+        },
+      },
+    };
     for (const listener of this.listeners) listener(change);
   }
   private safe(text: string): string {
@@ -212,23 +283,52 @@ export class WebInteraction implements AppInteractionPort {
   }
   compactionProgress(progress: CompactionProgress): void {
     this.compaction = { ...progress };
-    if (!compactionRunning(progress) && progress.afterChars !== undefined) {
-      const id = this.append(progress.phase === "completed" ? "success" : "warning", compactionLabel(progress, this.language === "zh_cn"));
-      const entry = this.entryById.get(id)!;
-      entry.compaction = { ...progress };
-      this.emit({ kind: "entry.replace", entry });
+    const existing = this.entries.find((entry) => entry.compaction?.operationId === progress.operationId);
+    if (existing) {
+      existing.compaction = { ...progress };
+      existing.text = this.safe(compactionLabel(progress, this.language === "zh_cn"));
+      existing.kind = compactionNoticeKind(progress);
+      this.emit({ kind: "entry.replace", entry: existing });
+    } else {
+      this.append(
+        compactionNoticeKind(progress),
+        compactionLabel(progress, this.language === "zh_cn"),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        progress,
+      );
     }
     this.emit();
   }
-  private append(kind: WebEntryKind, text: string, images?: readonly ImageAttachment[],
-    toolDetails?: WebEntry["toolDetails"], toolName?: string, toolStatus?: WebEntry["toolStatus"]): string {
+  private append(
+    kind: WebEntryKind,
+    text: string,
+    images?: readonly ImageAttachment[],
+    toolDetails?: WebEntry["toolDetails"],
+    toolName?: string,
+    toolStatus?: WebEntry["toolStatus"],
+    compaction?: CompactionProgress,
+  ): string {
     const id = randomUUID();
     const entry: WebEntry = {
-      id, kind, text: this.safe(text), timestamp: Date.now(),
-      ...(this.currentTurnId && (kind === "user" || kind === "assistant" || kind === "thinking" || kind === "tool" || kind === "plan")
-        ? { turnId: this.currentTurnId, turnStartedAt: this.currentTurnStartedAt } : {}),
+      id,
+      kind,
+      text: this.safe(text),
+      timestamp: Date.now(),
+      ...(compaction ? { compaction: { ...compaction } } : {}),
+      ...(compaction?.mode === "automatic" && (this.currentTurnId || compaction.turnId)
+        ? { turnId: this.currentTurnId ?? compaction.turnId, turnStartedAt: this.currentTurnStartedAt }
+        : {}),
+      ...(this.currentTurnId &&
+      (kind === "user" || kind === "assistant" || kind === "thinking" || kind === "tool" || kind === "plan")
+        ? { turnId: this.currentTurnId, turnStartedAt: this.currentTurnStartedAt }
+        : {}),
       ...(images?.length ? { images: images.map(({ id, label, mediaType }) => ({ id, label, mediaType })) } : {}),
-      ...(toolDetails?.length ? { toolDetails: toolDetails.map(item => ({ label: this.safe(item.label), value: this.safe(item.value) })) } : {}),
+      ...(toolDetails?.length
+        ? { toolDetails: toolDetails.map((item) => ({ label: this.safe(item.label), value: this.safe(item.value) })) }
+        : {}),
       ...(toolName ? { toolName: this.safe(toolName) } : {}),
       ...(toolStatus ? { toolStatus } : {}),
     };
@@ -256,31 +356,52 @@ export class WebInteraction implements AppInteractionPort {
     const entry = this.currentAnswerId ? this.entryById.get(this.currentAnswerId) : undefined;
     if (entry?.answerState === "finalizing") this.setAnswerState(entry.id, "streaming");
   }
-  private awaitDecision(request: WebDecision, signal?: AbortSignal,
-    timed?: Readonly<TimedChoiceOptions>): Promise<string | undefined> {
+  private awaitDecision(
+    request: WebDecision,
+    signal?: AbortSignal,
+    timed?: Readonly<TimedChoiceOptions>,
+  ): Promise<string | undefined> {
     if (this.closed || signal?.aborted) return Promise.resolve(undefined);
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       const onAbort = () => this.resolveDecision(request.id, undefined);
       this.decisions.push({ request, resolve, signal, onAbort, timed });
       signal?.addEventListener("abort", onAbort, { once: true });
-      if (signal?.aborted) { this.resolveDecision(request.id, undefined); return; }
+      if (signal?.aborted) {
+        this.resolveDecision(request.id, undefined);
+        return;
+      }
       this.armHeadDecisionTimeout();
       this.emit();
     });
   }
 
-  write(text: string): void { this.append(this.busy ? "assistant" : "info", text); }
-  info(text: string): void { this.append("info", text); }
-  success(text: string): void { this.append("success", text); }
-  warning(text: string): void { this.append("warning", text); }
-  error(text: string): void { this.append("error", text); }
+  write(text: string): void {
+    this.append(this.busy ? "assistant" : "info", text);
+  }
+  info(text: string): void {
+    this.append("info", text);
+  }
+  success(text: string): void {
+    this.append("success", text);
+  }
+  warning(text: string): void {
+    this.append("warning", text);
+  }
+  error(text: string): void {
+    this.append("error", text);
+  }
   status(_text: string): void {
     // The browser has dedicated activity, tool, task, subagent and decision
     // surfaces. Runtime progress text is transient implementation detail and
     // must not become hidden history or later leak into a command panel.
   }
-  toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string,
-    details?: WebEntry["toolDetails"]): void {
+  toolCompleted(
+    toolName: string,
+    ok: boolean,
+    summary?: string,
+    error?: string,
+    details?: WebEntry["toolDetails"],
+  ): void {
     const text = `${ok ? "✓" : "✗"} ${toolName}${summary ? ` — ${summary}` : ""}${error ? `\n${error}` : ""}`;
     const pendingId = this.pendingToolEntries.shift();
     const pending = pendingId ? this.entryById.get(pendingId) : undefined;
@@ -292,7 +413,8 @@ export class WebInteraction implements AppInteractionPort {
     pending.toolName = this.safe(toolName);
     pending.toolStatus = ok ? "completed" : "failed";
     pending.toolDetails = details?.length
-      ? details.map(item => ({ label: this.safe(item.label), value: this.safe(item.value) })) : undefined;
+      ? details.map((item) => ({ label: this.safe(item.label), value: this.safe(item.value) }))
+      : undefined;
     this.emit({ kind: "entry.replace", entry: pending });
   }
   threadTitleChanged(title: string): void {
@@ -306,16 +428,26 @@ export class WebInteraction implements AppInteractionPort {
     this.emit();
   }
   showTaskGraphSnapshot(graph: Readonly<TaskGraphView>): void {
-    this.append("info", `Tasks ${graph.completed}/${graph.total}\n${graph.tasks.map(task => `${task.status === "completed" ? "✓" : "○"} ${task.title} (${task.status})`).join("\n")}`);
+    this.append(
+      "info",
+      `Tasks ${graph.completed}/${graph.total}\n${graph.tasks.map((task) => `${task.status === "completed" ? "✓" : "○"} ${task.title} (${task.status})`).join("\n")}`,
+    );
   }
-  clearTaskGraph(): void { this.tasks = null; this.emit(); }
+  clearTaskGraph(): void {
+    this.tasks = null;
+    this.emit();
+  }
   subagents(agents: readonly Readonly<SubagentView>[]): void {
-    this.subagentsView = agents.map(agent => ({ ...agent })); this.emit();
+    this.subagentsView = agents.map((agent) => ({ ...agent }));
+    this.emit();
   }
   showSubagentsSnapshot(agents: readonly Readonly<SubagentView>[]): void {
-    this.append("info", agents.length
-      ? `Subagents\n${agents.map(agent => `${agent.status}: ${agent.taskTitle} (${agent.id})`).join("\n")}`
-      : "No subagents in this Thread.");
+    this.append(
+      "info",
+      agents.length
+        ? `Subagents\n${agents.map((agent) => `${agent.status}: ${agent.taskTitle} (${agent.id})`).join("\n")}`
+        : "No subagents in this Thread.",
+    );
   }
   modelStream(event: Readonly<ProviderStreamEvent>): void {
     if (event.kind === "started") {
@@ -335,7 +467,10 @@ export class WebInteraction implements AppInteractionPort {
       this.replace(this.currentReasoningId, (entry?.text ?? "") + event.text);
     } else if (event.kind === "text_delta") {
       if (!this.currentAnswerId) this.currentAnswerId = this.append("assistant", "");
-      this.setAnswerState(this.currentAnswerId, this.currentStreamPhase === "final_answer" ? "finalizing" : "streaming");
+      this.setAnswerState(
+        this.currentAnswerId,
+        this.currentStreamPhase === "final_answer" ? "finalizing" : "streaming",
+      );
       const entry = this.entryById.get(this.currentAnswerId);
       this.replace(this.currentAnswerId, (entry?.text ?? "") + event.text);
     } else if (event.kind === "tool_call_delta") {
@@ -363,7 +498,7 @@ export class WebInteraction implements AppInteractionPort {
     return this.reasoningNumber;
   }
   showReasoning(id: number | "last"): boolean {
-    const entries = this.entries.filter(entry => entry.kind === "thinking");
+    const entries = this.entries.filter((entry) => entry.kind === "thinking");
     return id === "last" ? entries.length > 0 : Boolean(entries[id - 1]);
   }
   showAdjustment(id: number | "last"): boolean {
@@ -374,9 +509,15 @@ export class WebInteraction implements AppInteractionPort {
     this.append("user", text, images as ImageAttachment[]);
   }
   peerMessage(senderThreadId: string, text: string, outgoing = false): void {
-    const id = this.append("assistant", `${outgoing ? "To" : "From"} Thread ${senderThreadId} · ${outgoing ? "queued" : "Agent"}\n${text}`);
+    const id = this.append(
+      "assistant",
+      `${outgoing ? "To" : "From"} Thread ${senderThreadId} · ${outgoing ? "queued" : "Agent"}\n${text}`,
+    );
     const entry = this.entryById.get(id);
-    if (entry) { entry.peerThreadId = senderThreadId; this.emit({ kind: "entry.replace", entry }); }
+    if (entry) {
+      entry.peerThreadId = senderThreadId;
+      this.emit({ kind: "entry.replace", entry });
+    }
   }
   finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean {
     const completedAt = timing?.completedAt ?? Date.now();
@@ -386,8 +527,12 @@ export class WebInteraction implements AppInteractionPort {
       answer.text = this.safe(text);
       const downgraded: WebEntry[] = [];
       for (const entry of this.entries) {
-        if (entry.turnId === answer.turnId && entry.kind === "assistant" && entry.id !== answer.id &&
-            entry.answerState === "finalizing") {
+        if (
+          entry.turnId === answer.turnId &&
+          entry.kind === "assistant" &&
+          entry.id !== answer.id &&
+          entry.answerState === "finalizing"
+        ) {
           entry.answerState = "streaming";
           downgraded.push(entry);
         }
@@ -404,63 +549,128 @@ export class WebInteraction implements AppInteractionPort {
     return true;
   }
   startActivity(text: string, kind?: UIActivityKind, toolName?: string): string {
-    const id = randomUUID(); this.activities.set(id, { id, text, kind }); this.emit();
+    const id = randomUUID();
+    this.activities.set(id, { id, text, kind });
+    this.emit();
     if (kind === "tool" && toolName) {
       const pending = this.entryById.get(this.pendingToolEntries[0] ?? "");
       if (pending?.toolName !== toolName || pending.toolStatus !== "running") {
         this.interruptPendingTools();
-        this.pendingToolEntries.push(this.append("tool", `Calling ${toolName}`, undefined,
-          undefined, toolName, "running"));
+        this.pendingToolEntries.push(
+          this.append("tool", `Calling ${toolName}`, undefined, undefined, toolName, "running"),
+        );
       }
     }
     return id;
   }
   stopActivity(activityId?: string): void {
-    if (activityId) this.activities.delete(activityId); else this.activities.clear();
+    if (activityId) this.activities.delete(activityId);
+    else this.activities.clear();
     this.emit();
   }
   startReview(): string {
-    const id = randomUUID(); this.review = { id, phase: "main_brief", startedAt: Date.now() }; this.emit(); return id;
+    const id = randomUUID();
+    this.review = { id, phase: "main_brief", startedAt: Date.now() };
+    this.emit();
+    return id;
   }
   updateReview(id: string, phase: UIReviewPhase): void {
-    if (this.review?.id !== id) return; this.review = { ...this.review, phase }; this.emit();
+    if (this.review?.id !== id) return;
+    this.review = { ...this.review, phase };
+    this.emit();
   }
   stopReview(id?: string): void {
-    if (id && this.review?.id !== id) return; this.review = null; this.emit();
+    if (id && this.review?.id !== id) return;
+    this.review = null;
+    this.emit();
   }
   async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const value = await this.awaitDecision({
-      id: randomUUID(), kind: "approval", title: this.safe(request.title),
-      description: this.safe(`${request.description}\n${request.commandPreview ?? ""}\n${request.network ? `Network: ${request.network.effect} ${request.network.destination ?? ""}` : ""}`),
-      choices: [
-        { id: "reject", label: translate(this.language, "ui.reject") },
-        { id: "allow_once", label: translate(this.language, "cli.allowOnce") },
-        ...(canGrantCommandPrefix(request.commandPrefix)
-          ? [{ id: "allow_prefix", label: translate(this.language, "cli.allowThread"), detail: this.safe(formatCommandApprovalPrefix(request.commandPrefix)) }]
-          : []),
-      ],
-    }, request.signal, { idleTimeoutMs: this.decisionTimeoutMs, idleChoiceId: "allow_once" });
+    const value = await this.awaitDecision(
+      {
+        id: randomUUID(),
+        kind: "approval",
+        title: this.safe(request.title),
+        description: this.safe(
+          `${request.description}\n${request.commandPreview ?? ""}\n${request.network ? `Network: ${request.network.effect} ${request.network.destination ?? ""}` : ""}`,
+        ),
+        choices: [
+          { id: "reject", label: translate(this.language, "ui.reject") },
+          { id: "allow_once", label: translate(this.language, "cli.allowOnce") },
+          ...(canGrantCommandPrefix(request.commandPrefix)
+            ? [
+                {
+                  id: "allow_prefix",
+                  label: translate(this.language, "cli.allowThread"),
+                  detail: this.safe(formatCommandApprovalPrefix(request.commandPrefix)),
+                },
+              ]
+            : []),
+        ],
+      },
+      request.signal,
+      { idleTimeoutMs: this.decisionTimeoutMs, idleChoiceId: "allow_once" },
+    );
     return value === "allow_once" || value === "allow_prefix" ? value : "reject";
   }
-  selectChoice(title: string, choices: readonly InteractionChoice[], initialId?: string,
-    timed?: Readonly<TimedChoiceOptions>): Promise<string | undefined> {
-    return this.awaitDecision({ id: randomUUID(), kind: "choice", title: this.safe(title), choices,
-      ...(initialId ? { initialId } : {}) }, timed?.signal, timed);
+  selectChoice(
+    title: string,
+    choices: readonly InteractionChoice[],
+    initialId?: string,
+    timed?: Readonly<TimedChoiceOptions>,
+  ): Promise<string | undefined> {
+    return this.awaitDecision(
+      { id: randomUUID(), kind: "choice", title: this.safe(title), choices, ...(initialId ? { initialId } : {}) },
+      timed?.signal,
+      timed,
+    );
   }
-  selectProvider(choices: readonly ProviderSelectorChoice[], initialProvider: ProviderSelectorChoice["provider"]): Promise<ProviderSelectorChoice["provider"] | undefined> {
-    return this.selectChoice(translate(this.language, "cli.providerSelect"), choices.map(item => ({ id: item.provider, label: item.label,
-      detail: translate(this.language, item.apiKeyConfigured ? "cli.apiConfigured" : "cli.apiRequired") })), initialProvider) as Promise<ProviderSelectorChoice["provider"] | undefined>;
+  selectProvider(
+    choices: readonly ProviderSelectorChoice[],
+    initialProvider: ProviderSelectorChoice["provider"],
+  ): Promise<ProviderSelectorChoice["provider"] | undefined> {
+    return this.selectChoice(
+      translate(this.language, "cli.providerSelect"),
+      choices.map((item) => ({
+        id: item.provider,
+        label: item.label,
+        detail: translate(this.language, item.apiKeyConfigured ? "cli.apiConfigured" : "cli.apiRequired"),
+      })),
+      initialProvider,
+    ) as Promise<ProviderSelectorChoice["provider"] | undefined>;
   }
-  selectModel(providerName: string, choices: readonly ModelSelectorChoice[], initialModel?: string): Promise<string | undefined> {
-    return this.selectChoice(translate(this.language, "cli.modelSelect", { provider: providerName }), choices.map(item => ({ id: item.id, label: item.label,
-      detail: item.vision ? `Vision: ${JSON.stringify(item.vision)}` : undefined })), initialModel);
+  selectModel(
+    providerName: string,
+    choices: readonly ModelSelectorChoice[],
+    initialModel?: string,
+  ): Promise<string | undefined> {
+    return this.selectChoice(
+      translate(this.language, "cli.modelSelect", { provider: providerName }),
+      choices.map((item) => ({
+        id: item.id,
+        label: item.label,
+        detail: item.vision ? `Vision: ${JSON.stringify(item.vision)}` : undefined,
+      })),
+      initialModel,
+    );
   }
-  selectThinkingEffort(providerName: string, model: string, choices: readonly ThinkingEffortSelectorChoice[], initialEffort: ThinkingEffort): Promise<ThinkingEffort | undefined> {
-    return this.selectChoice(translate(this.language, "cli.effortSelect", { provider: providerName, model }), choices.map(item => ({ id: item.id, label: item.label,
-      detail: translate(this.language, item.applied ? "cli.applied" : "cli.savedNotApplied") })), initialEffort) as Promise<ThinkingEffort | undefined>;
+  selectThinkingEffort(
+    providerName: string,
+    model: string,
+    choices: readonly ThinkingEffortSelectorChoice[],
+    initialEffort: ThinkingEffort,
+  ): Promise<ThinkingEffort | undefined> {
+    return this.selectChoice(
+      translate(this.language, "cli.effortSelect", { provider: providerName, model }),
+      choices.map((item) => ({
+        id: item.id,
+        label: item.label,
+        detail: translate(this.language, item.applied ? "cli.applied" : "cli.savedNotApplied"),
+      })),
+      initialEffort,
+    ) as Promise<ThinkingEffort | undefined>;
   }
   async readSecret(prompt: string): Promise<string> {
-    return await this.awaitDecision({ id: randomUUID(), kind: "secret", title: this.safe(prompt) }) ?? "";
+    return (await this.awaitDecision({ id: randomUUID(), kind: "secret", title: this.safe(prompt) })) ?? "";
   }
   showPlan(_plan: Readonly<PlanProposal>): void {
     // AgentRuntime already presents the complete plan as its final assistant
@@ -470,34 +680,63 @@ export class WebInteraction implements AppInteractionPort {
   }
   async reviewPlan(options?: Readonly<PlanReviewInputOptions>): Promise<PlanReviewDecision> {
     void options;
-    const value = await this.awaitDecision({ id: randomUUID(), kind: "plan", title: translate(this.language, "cli.reviewPlan"),
-      choices: [{ id: "approve", label: translate(this.language, "ui.approveRun") }, { id: "reject", label: translate(this.language, "ui.reject") },
-        { id: "adjust", label: translate(this.language, "ui.requestChanges") }] },
-      undefined, { idleTimeoutMs: this.decisionTimeoutMs, idleChoiceId: "approve" });
+    const value = await this.awaitDecision(
+      {
+        id: randomUUID(),
+        kind: "plan",
+        title: translate(this.language, "cli.reviewPlan"),
+        choices: [
+          { id: "approve", label: translate(this.language, "ui.approveRun") },
+          { id: "reject", label: translate(this.language, "ui.reject") },
+          { id: "adjust", label: translate(this.language, "ui.requestChanges") },
+        ],
+      },
+      undefined,
+      { idleTimeoutMs: this.decisionTimeoutMs, idleChoiceId: "approve" },
+    );
     if (value?.startsWith("adjust:")) return { action: "adjust", feedback: value.slice(7) };
     return value === "approve" || value === "reject" ? { action: value } : { action: "defer" };
   }
   async withCancellableExternalOperation<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    const controller = new AbortController(); this.externalOperation = controller;
-    try { return await operation(controller.signal); }
-    finally { if (this.externalOperation === controller) this.externalOperation = undefined; }
+    const controller = new AbortController();
+    this.externalOperation = controller;
+    try {
+      return await operation(controller.signal);
+    } finally {
+      if (this.externalOperation === controller) this.externalOperation = undefined;
+    }
   }
   configureStreaming(): void {}
   setContextTokensProvider(): void {}
-  isInteractive(): boolean { return true; }
-  beginShell(session: Readonly<UISessionInfo>): boolean { this.setSessionInfo(session); return true; }
-  isInlineShell(): boolean { return true; }
-  setSessionInfo(session: Readonly<UISessionInfo>): void { this.session = { ...session }; this.emit(); }
+  isInteractive(): boolean {
+    return true;
+  }
+  beginShell(session: Readonly<UISessionInfo>): boolean {
+    this.setSessionInfo(session);
+    return true;
+  }
+  isInlineShell(): boolean {
+    return true;
+  }
+  setSessionInfo(session: Readonly<UISessionInfo>): void {
+    this.session = { ...session };
+    this.emit();
+  }
   showSessionHeader(): void {}
   readPrompt(_prompt: string, _options: RequestInputOptions): Promise<UserSubmission | null> {
     throw new Error("The Web host submits messages through the session API.");
   }
-  setCurrentRequest(_text: string, _images?: readonly Readonly<ImageAttachment>[], _options?: Readonly<CurrentRequestOptions>): void {
+  setCurrentRequest(
+    _text: string,
+    _images?: readonly Readonly<ImageAttachment>[],
+    _options?: Readonly<CurrentRequestOptions>,
+  ): void {
     if (!this.currentTurnId) {
       this.currentTurnId = randomUUID();
       this.currentTurnStartedAt = Date.now();
     }
-    this.busy = true; this.emit();
+    this.busy = true;
+    this.emit();
   }
   private interruptPendingTools(): void {
     for (const id of this.pendingToolEntries) {
@@ -511,8 +750,11 @@ export class WebInteraction implements AppInteractionPort {
   }
   clearCurrentRequest(): void {
     this.downgradeProvisionalAnswer();
-    if (this.currentTurnId && !this.entries.some(entry => entry.turnId === this.currentTurnId && entry.turnCompletedAt !== undefined)) {
-      const terminal = [...this.entries].reverse().find(entry => entry.turnId === this.currentTurnId);
+    if (
+      this.currentTurnId &&
+      !this.entries.some((entry) => entry.turnId === this.currentTurnId && entry.turnCompletedAt !== undefined)
+    ) {
+      const terminal = [...this.entries].reverse().find((entry) => entry.turnId === this.currentTurnId);
       if (terminal) {
         terminal.turnCompletedAt = Date.now();
         this.emit({ kind: "entry.replace", entry: terminal });
@@ -530,12 +772,22 @@ export class WebInteraction implements AppInteractionPort {
     this.currentTurnStartedAt = undefined;
     this.emit();
   }
-  async sealCurrentRequestSteering<T>(seal: () => T | undefined | Promise<T | undefined>): Promise<T | undefined> { return seal(); }
+  async sealCurrentRequestSteering<T>(seal: () => T | undefined | Promise<T | undefined>): Promise<T | undefined> {
+    return seal();
+  }
   resetForNewThread(session: Readonly<UISessionInfo>): void {
-    this.entries = []; this.tasks = null; this.subagentsView = []; this.activities.clear(); this.review = null;
+    this.entries = [];
+    this.tasks = null;
+    this.subagentsView = [];
+    this.activities.clear();
+    this.review = null;
     this.pendingToolEntries = [];
-    this.currentAnswerId = undefined; this.currentReasoningId = undefined; this.currentStreamId = undefined; this.currentStreamPhase = undefined;
-    this.currentTurnId = undefined; this.currentTurnStartedAt = undefined;
+    this.currentAnswerId = undefined;
+    this.currentReasoningId = undefined;
+    this.currentStreamId = undefined;
+    this.currentStreamPhase = undefined;
+    this.currentTurnId = undefined;
+    this.currentTurnStartedAt = undefined;
     this.entryById.clear();
     this.userMarkers = [];
     this.historyEpoch = randomUUID();
@@ -544,21 +796,47 @@ export class WebInteraction implements AppInteractionPort {
     this.emit();
   }
   clearHostedSession(): void {
-    this.entries = []; this.tasks = null; this.subagentsView = []; this.activities.clear(); this.review = null;
+    this.entries = [];
+    this.tasks = null;
+    this.subagentsView = [];
+    this.activities.clear();
+    this.review = null;
     this.pendingToolEntries = [];
-    this.currentAnswerId = undefined; this.currentReasoningId = undefined; this.currentStreamId = undefined; this.currentStreamPhase = undefined;
-    this.currentTurnId = undefined; this.currentTurnStartedAt = undefined;
+    this.currentAnswerId = undefined;
+    this.currentReasoningId = undefined;
+    this.currentStreamId = undefined;
+    this.currentStreamPhase = undefined;
+    this.currentTurnId = undefined;
+    this.currentTurnStartedAt = undefined;
     this.entryById.clear();
     this.userMarkers = [];
     this.historyEpoch = randomUUID();
-    this.session = null; this.busy = false; this.cancelPendingDecisions();
+    this.session = null;
+    this.busy = false;
+    this.cancelPendingDecisions();
     this.emit({ kind: "entries.reset", entries: [] });
     this.emit();
   }
-  clearScreen(): void { this.entries = []; this.entryById.clear(); this.userMarkers = []; this.pendingToolEntries = []; this.currentAnswerId = undefined; this.currentReasoningId = undefined; this.currentStreamId = undefined; this.currentStreamPhase = undefined; this.currentTurnId = undefined; this.currentTurnStartedAt = undefined; this.historyEpoch = randomUUID(); this.emit({ kind: "entries.reset", entries: [] }); }
-  emergencyRestore(): void { this.clearCurrentRequest(); }
+  clearScreen(): void {
+    this.entries = [];
+    this.entryById.clear();
+    this.userMarkers = [];
+    this.pendingToolEntries = [];
+    this.currentAnswerId = undefined;
+    this.currentReasoningId = undefined;
+    this.currentStreamId = undefined;
+    this.currentStreamPhase = undefined;
+    this.currentTurnId = undefined;
+    this.currentTurnStartedAt = undefined;
+    this.historyEpoch = randomUUID();
+    this.emit({ kind: "entries.reset", entries: [] });
+  }
+  emergencyRestore(): void {
+    this.clearCurrentRequest();
+  }
   close(): void {
-    this.closed = true; this.externalOperation?.abort();
+    this.closed = true;
+    this.externalOperation?.abort();
     this.cancelPendingDecisions();
     this.listeners.clear();
   }

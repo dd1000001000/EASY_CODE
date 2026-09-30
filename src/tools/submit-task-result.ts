@@ -1,55 +1,36 @@
 import { z } from "zod";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
-import type {
-  AgentTool,
-  TaskNode,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
-import {
-  MAX_SUBAGENT_EVIDENCE_CHARS,
-  MAX_SUBAGENT_SUMMARY_CHARS,
-  sanitizeSubagentText,
-  type SubagentTaskReport,
-} from "../subagents/types.js";
+import type { AgentTool, TaskNode, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
+import { MAX_SUBAGENT_EVIDENCE_CHARS, sanitizeSubagentText, type SubagentTaskReport } from "../subagents/types.js";
 import { toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import { displayTextSchema } from "../utils/bounded-text.js";
 
 const MAX_SUBAGENT_COMPLETION_EVIDENCE = 16;
 
-function boundedAgentText(maximum: number): z.ZodPipeline<
-  z.ZodEffects<z.ZodString, string, string>,
-  z.ZodString
-> {
-  return z
-    .string()
-    .max(maximum)
-    .transform(sanitizeSubagentText)
-    .pipe(z.string().min(1).max(maximum));
+function boundedAgentText(maximum: number): z.ZodPipeline<z.ZodEffects<z.ZodString, string, string>, z.ZodString> {
+  return z.string().max(maximum).transform(sanitizeSubagentText).pipe(z.string().min(1).max(maximum));
 }
 
-export function createSubmitTaskResultInputSchema(limits = DEFAULT_RUNTIME_LIMITS) { return z.discriminatedUnion("outcome", [
-  z
-    .object({
-      outcome: z.literal("completed"),
-      summary: displayTextSchema(limits.subagentSummaryMaxChars, sanitizeSubagentText),
-      evidence: z
-        .array(boundedAgentText(MAX_SUBAGENT_EVIDENCE_CHARS))
-        .min(1)
-        .max(MAX_SUBAGENT_COMPLETION_EVIDENCE),
-    })
-    .strict(),
-  z
-    .object({
-      outcome: z.literal("blocked"),
-      summary: displayTextSchema(limits.subagentSummaryMaxChars, sanitizeSubagentText),
-      blocker: boundedAgentText(MAX_SUBAGENT_EVIDENCE_CHARS),
-    })
-    .strict(),
-]); }
+export function createSubmitTaskResultInputSchema(limits = DEFAULT_RUNTIME_LIMITS) {
+  return z.discriminatedUnion("outcome", [
+    z
+      .object({
+        outcome: z.literal("completed"),
+        summary: displayTextSchema(limits.subagentSummaryMaxChars, sanitizeSubagentText),
+        evidence: z.array(boundedAgentText(MAX_SUBAGENT_EVIDENCE_CHARS)).min(1).max(MAX_SUBAGENT_COMPLETION_EVIDENCE),
+      })
+      .strict(),
+    z
+      .object({
+        outcome: z.literal("blocked"),
+        summary: displayTextSchema(limits.subagentSummaryMaxChars, sanitizeSubagentText),
+        blocker: boundedAgentText(MAX_SUBAGENT_EVIDENCE_CHARS),
+      })
+      .strict(),
+  ]);
+}
 export const submitTaskResultInputSchema = createSubmitTaskResultInputSchema();
 
 export type SubmitTaskResultInput = z.infer<typeof submitTaskResultInputSchema>;
@@ -63,49 +44,56 @@ type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks"> & Pick<Par
 export class SubmitTaskResultTool implements AgentTool {
   readonly name = "submit_task_result" as const;
   readonly mutating = true;
-  get inputSchema() { return createSubmitTaskResultInputSchema(this.limits); }
-  get definition(): ToolDefinition { return {
-    type: "function",
-    function: {
-      name: this.name,
-      strict: true,
-      ...documentToolSchema(this.name, {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          outcome: {
-            type: "string",
-            enum: ["completed", "blocked"],
-          },
-          summary: {
-            type: "string",
-            minLength: 1,
-            maxLength: this.limits.subagentSummaryMaxChars,
-          },
-          evidence: {
-            type: "array",
-            minItems: 1,
-            maxItems: MAX_SUBAGENT_COMPLETION_EVIDENCE,
-            items: {
+  get inputSchema() {
+    return createSubmitTaskResultInputSchema(this.limits);
+  }
+  get definition(): ToolDefinition {
+    return {
+      type: "function",
+      function: {
+        name: this.name,
+        strict: true,
+        ...documentToolSchema(this.name, {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            outcome: {
+              type: "string",
+              enum: ["completed", "blocked"],
+            },
+            summary: {
+              type: "string",
+              minLength: 1,
+              maxLength: this.limits.subagentSummaryMaxChars,
+            },
+            evidence: {
+              type: "array",
+              minItems: 1,
+              maxItems: MAX_SUBAGENT_COMPLETION_EVIDENCE,
+              items: {
+                type: "string",
+                minLength: 1,
+                maxLength: MAX_SUBAGENT_EVIDENCE_CHARS,
+              },
+            },
+            blocker: {
               type: "string",
               minLength: 1,
               maxLength: MAX_SUBAGENT_EVIDENCE_CHARS,
             },
           },
-          blocker: {
-            type: "string",
-            minLength: 1,
-            maxLength: MAX_SUBAGENT_EVIDENCE_CHARS,
-          },
-        },
-        required: ["outcome", "summary"],
-      }),
-    },
-  }; }
+          required: ["outcome", "summary"],
+        }),
+      },
+    };
+  }
 
   private readonly task: BoundTask;
 
-  constructor(task: Readonly<BoundTask>, private readonly limits = DEFAULT_RUNTIME_LIMITS) {
+  constructor(
+    task: Readonly<BoundTask>,
+    private readonly limits = DEFAULT_RUNTIME_LIMITS,
+  ) {
     this.task = {
       id: task.id,
       title: task.title,
@@ -114,10 +102,7 @@ export class SubmitTaskResultTool implements AgentTool {
     };
   }
 
-  async execute(
-    input: unknown,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult> {
+  async execute(input: unknown, _context: ToolContext): Promise<ToolExecutionResult> {
     try {
       if (this.task.status !== "in_progress") {
         throw new Error(`Bound task ${this.task.id} is not in progress`);
@@ -153,9 +138,7 @@ export class SubmitTaskResultTool implements AgentTool {
           taskId: report.taskId,
           ...(this.task.title ? { taskTitle: this.task.title } : {}),
           outcome: report.outcome,
-          ...(report.outcome === "completed"
-            ? { evidenceCount: report.completionEvidence.length }
-            : {}),
+          ...(report.outcome === "completed" ? { evidenceCount: report.completionEvidence.length } : {}),
         },
         subagentTaskReport: report,
       };

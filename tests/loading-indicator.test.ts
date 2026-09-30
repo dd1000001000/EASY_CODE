@@ -4,12 +4,7 @@ import { PassThrough } from "node:stream";
 
 import { Terminal } from "../src/cli/terminal.js";
 import { ContextManager } from "../src/context/manager.js";
-import type {
-  AgentTool,
-  ModelProvider,
-  SessionState,
-  ToolExecutionResult,
-} from "../src/core/types.js";
+import type { AgentTool, ModelProvider, SessionState, ToolExecutionResult } from "../src/core/types.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import { describe, it } from "./harness.js";
 import { baseSessionState } from "./session-state.js";
@@ -18,9 +13,7 @@ class TtyOutput extends PassThrough {
   readonly isTTY = true;
 }
 
-async function withoutAnimationSuppressors<T>(
-  action: () => T | Promise<T>,
-): Promise<T> {
+async function withoutAnimationSuppressors<T>(action: () => T | Promise<T>): Promise<T> {
   const previousCi = process.env.CI;
   const previousTerm = process.env.TERM;
   const previousNoColor = process.env.NO_COLOR;
@@ -62,10 +55,7 @@ function runtimeState(mode: "auto" | "code"): SessionState {
   };
 }
 
-function runtimeFor(
-  provider: ModelProvider,
-  lifecycle: string[],
-): AgentRuntime {
+function runtimeFor(provider: ModelProvider, lifecycle: string[]): AgentRuntime {
   return new AgentRuntime({
     provider,
     toolCatalog: snapshotToolSet([]),
@@ -94,14 +84,16 @@ describe("model request loading indicator", () => {
               message: {
                 role: "assistant",
                 content: null,
-                tool_calls: [{
-                  id: "call_select_mode",
-                  type: "function",
-                  function: {
-                    name: "select_mode",
-                    arguments: '{"mode":"code","reason":"Scoped change."}',
+                tool_calls: [
+                  {
+                    id: "call_select_mode",
+                    type: "function",
+                    function: {
+                      name: "select_mode",
+                      arguments: '{"mode":"code","reason":"Scoped change."}',
+                    },
                   },
-                }],
+                ],
               },
             }
           : {
@@ -153,10 +145,7 @@ describe("model request loading indicator", () => {
 
     assert.equal(result.reason, "failed");
     assert.match(result.text, /offline/u);
-    assert.deepEqual(lifecycle, [
-      "start:Waiting for mock-model response",
-      "end",
-    ]);
+    assert.deepEqual(lifecycle, ["start:Waiting for mock-model response", "end"]);
   });
 
   it("times execution and blocks the failed command without hiding unrelated command capabilities", async () => {
@@ -181,14 +170,16 @@ describe("model request loading indicator", () => {
             message: {
               role: "assistant",
               content: null,
-              tool_calls: [{
-                id: `call_run_${requestCount}`,
-                type: "function",
-                function: {
-                  name: "run_command",
-                  arguments: '{"program":"node","intent":"inspect"}',
+              tool_calls: [
+                {
+                  id: `call_run_${requestCount}`,
+                  type: "function",
+                  function: {
+                    name: "run_command",
+                    arguments: '{"program":"node","intent":"inspect"}',
+                  },
                 },
-              }],
+              ],
             },
           };
         }
@@ -264,10 +255,7 @@ describe("model request loading indicator", () => {
     assert.equal(advertisedTools[1]?.includes("start_command"), true);
     assert.equal(advertisedTools[2]?.includes("run_command"), true);
     assert.equal(advertisedTools[2]?.includes("start_command"), true);
-    assert.deepEqual(lifecycle, [
-      "tool-start:run_command",
-      "tool-end:run_command:tool-token",
-    ]);
+    assert.deepEqual(lifecycle, ["tool-start:run_command", "tool-end:run_command:tool-token"]);
 
     // The breaker belongs to one AgentRuntime.run call (one user turn), not to
     // the reusable CommandRuntime or the next user request.
@@ -300,14 +288,16 @@ describe("model request loading indicator", () => {
             message: {
               role: "assistant",
               content: null,
-              tool_calls: [{
-                id: `call_retry_${requestCount}`,
-                type: "function",
-                function: {
-                  name: "run_command",
-                  arguments: '{"program":"node","intent":"inspect"}',
+              tool_calls: [
+                {
+                  id: `call_retry_${requestCount}`,
+                  type: "function",
+                  function: {
+                    name: "run_command",
+                    arguments: '{"program":"node","intent":"inspect"}',
+                  },
                 },
-              }],
+              ],
             },
           };
         }

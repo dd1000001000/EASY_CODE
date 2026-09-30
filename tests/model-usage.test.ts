@@ -6,15 +6,10 @@ import path from "node:path";
 import type { ModelUsageRecord } from "../src/core/types.js";
 import { createStorage } from "../src/storage/index.js";
 import { ThreadStore } from "../src/threads/index.js";
-import {
-  aggregateModelUsage,
-  parseModelUsageRecord,
-} from "../src/usage/model-usage.js";
+import { aggregateModelUsage, parseModelUsageRecord } from "../src/usage/model-usage.js";
 import { describe, it } from "./harness.js";
 
-function record(
-  overrides: Partial<ModelUsageRecord> = {},
-): ModelUsageRecord {
+function record(overrides: Partial<ModelUsageRecord> = {}): ModelUsageRecord {
   return {
     actor: "main_agent",
     purpose: "agent_step",
@@ -55,13 +50,15 @@ describe("model usage accounting", () => {
     const removedProvider = record({ provider: "retired-provider", model: "legacy-model" });
     assert.deepEqual(parseModelUsageRecord(removedProvider), removedProvider);
     assert.deepEqual(
-      parseModelUsageRecord(record({
-        usage: {
-          promptTokens: 7,
-          completionTokens: undefined,
-          cachedInputTokens: undefined,
-        },
-      }))?.usage,
+      parseModelUsageRecord(
+        record({
+          usage: {
+            promptTokens: 7,
+            completionTokens: undefined,
+            cachedInputTokens: undefined,
+          },
+        }),
+      )?.usage,
       { promptTokens: 7 },
     );
 
@@ -189,10 +186,7 @@ describe("model usage accounting", () => {
     assert.equal(summary.byModel["qwen/qwen3.7-plus"]?.requests, 2);
     assert.equal(summary.byModel["qwen/qwen3.7-plus"]?.totalTokens, 110);
     assert.equal(summary.byModel["deepseek/deepseek-v4-flash"]?.totalTokens, 250);
-    assert.equal(
-      summary.byModel["glm-coding-plan/glm-5.3-flash"]?.totalTokens,
-      40,
-    );
+    assert.equal(summary.byModel["glm-coding-plan/glm-5.3-flash"]?.totalTokens, 40);
   });
 
   it("persists completed usage events and rejects invalid journal payloads", () => {
@@ -233,24 +227,26 @@ describe("model usage accounting", () => {
         assert.equal(threads.modelUsageSummary(threadId).totalTokens, 100);
         assert.equal(threads.modelUsageSummary(threadId).unreportedRequests, 1);
         assert.throws(
-          () => threads.appendEvent(threadId, {
-            turnId: "turn_usage_bad",
-            type: "model.usage",
-            phase: "failed",
-            payload: record({ turnId: "turn_usage_bad" }),
-          }),
+          () =>
+            threads.appendEvent(threadId, {
+              turnId: "turn_usage_bad",
+              type: "model.usage",
+              phase: "failed",
+              payload: record({ turnId: "turn_usage_bad" }),
+            }),
           /valid completed usage record/u,
         );
         assert.throws(
-          () => threads.appendEvent(threadId, {
-            turnId: "turn_usage_bad",
-            type: "model.usage",
-            phase: "completed",
-            payload: {
-              ...record({ turnId: "turn_usage_bad" }),
-              usage: { promptTokens: -1 },
-            },
-          }),
+          () =>
+            threads.appendEvent(threadId, {
+              turnId: "turn_usage_bad",
+              type: "model.usage",
+              phase: "completed",
+              payload: {
+                ...record({ turnId: "turn_usage_bad" }),
+                usage: { promptTokens: -1 },
+              },
+            }),
           /valid completed usage record/u,
         );
         assert.equal(threads.modelUsageSummary(threadId).requests, 2);

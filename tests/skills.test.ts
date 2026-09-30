@@ -6,13 +6,19 @@ import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
 import { createSkillMarkdown, parseSkillMarkdown } from "../src/skills/format.js";
 import { SkillStore } from "../src/skills/store.js";
-import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "../src/tools/skill-tools.js";
+import {
+  CreateSkillTool,
+  DeleteSkillTool,
+  ListSkillsTool,
+  ModifySkillTool,
+  ReadSkillTool,
+} from "../src/tools/skill-tools.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { describe, it } from "./harness.js";
 
-async function fixture(run: (value: {
-  project: string; nested: string; home: string; trash: string; store: SkillStore;
-}) => Promise<void>): Promise<void> {
+async function fixture(
+  run: (value: { project: string; nested: string; home: string; trash: string; store: SkillStore }) => Promise<void>,
+): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-skills-"));
   const project = path.join(root, "project");
   const nested = path.join(project, "src");
@@ -32,9 +38,14 @@ async function fixture(run: (value: {
 
 describe("EASY CODE Skill resources", () => {
   it("parses OpenAI-style frontmatter and rejects invalid Skill names and missing workflows", () => {
-    const markdown = createSkillMarkdown("review-api", "Review API changes when asked.", "Inspect the diff and report risks.");
+    const markdown = createSkillMarkdown(
+      "review-api",
+      "Review API changes when asked.",
+      "Inspect the diff and report risks.",
+    );
     assert.deepEqual(parseSkillMarkdown(markdown, "review-api"), {
-      name: "review-api", description: "Review API changes when asked.",
+      name: "review-api",
+      description: "Review API changes when asked.",
     });
     assert.throws(() => parseSkillMarkdown(markdown, "different"), /must match/u);
     assert.throws(() => createSkillMarkdown("../escape", "x", "y"), /Skill name/u);
@@ -66,24 +77,33 @@ describe("EASY CODE Skill resources", () => {
       const otherStore = new SkillStore(secondProject, home, trash);
       assert.equal(await otherStore.projectRoot(), await realpath(secondProject));
       const listing = await otherStore.list();
-      assert.deepEqual(listing.global.map(skill => skill.name), ["common-check"]);
+      assert.deepEqual(
+        listing.global.map((skill) => skill.name),
+        ["common-check"],
+      );
       assert.deepEqual(listing.project, []);
     });
   });
 
   it("keeps supporting files, rejects stale edits and archives only the selected Skill", async () => {
     await fixture(async ({ project, trash, store }) => {
-      const initial = await store.create("project", "review-code", "Review changed code.",
-        "Use the checklist.", [{ path: "references/checklist.md", content: "Check behavior." }]);
+      const initial = await store.create("project", "review-code", "Review changed code.", "Use the checklist.", [
+        { path: "references/checklist.md", content: "Check behavior." },
+      ]);
       assert.deepEqual(initial.files, ["SKILL.md", "references/checklist.md"]);
-      const changed = await store.modify("project", "review-code", initial.version,
+      const changed = await store.modify(
+        "project",
+        "review-code",
+        initial.version,
         createSkillMarkdown("review-code", "Review code when requested.", "Follow the checklist."),
-        [{ operation: "upsert", path: "assets/template.md", content: "Template" }]);
-      assert.equal((await store.read("project", "review-code", "references/checklist.md")).content,
-        "Check behavior.");
+        [{ operation: "upsert", path: "assets/template.md", content: "Template" }],
+      );
+      assert.equal((await store.read("project", "review-code", "references/checklist.md")).content, "Check behavior.");
       assert.ok(changed.files.includes("assets/template.md"));
-      await assert.rejects(store.modify("project", "review-code", initial.version,
-        createSkillMarkdown("review-code", "old", "old")), /changed since it was read/u);
+      await assert.rejects(
+        store.modify("project", "review-code", initial.version, createSkillMarkdown("review-code", "old", "old")),
+        /changed since it was read/u,
+      );
       await assert.rejects(store.delete("project", "review-code", initial.version), /changed since it was read/u);
       const archived = await store.delete("project", "review-code", changed.version);
       assert.equal(path.dirname(archived.archivedAt), await realpath(trash));
@@ -95,8 +115,10 @@ describe("EASY CODE Skill resources", () => {
 
   it("rejects traversal and linked Skill directories without touching outside files", async () => {
     await fixture(async ({ project, store }) => {
-      await assert.rejects(store.create("project", "safe", "Safe Skill", "Do work.",
-        [{ path: "../outside.md", content: "bad" }]), /unsafe segment/u);
+      await assert.rejects(
+        store.create("project", "safe", "Safe Skill", "Do work.", [{ path: "../outside.md", content: "bad" }]),
+        /unsafe segment/u,
+      );
       await assert.rejects(store.read("project", "../outside"), /Skill name/u);
       const outside = path.join(project, "outside.md");
       await writeFile(outside, "kept");
@@ -104,7 +126,7 @@ describe("EASY CODE Skill resources", () => {
       await mkdir(skillRoot, { recursive: true });
       try {
         await symlink(project, path.join(skillRoot, "linked"), "junction");
-        assert.ok((await store.list()).warnings.some(warning => warning.includes("linked")));
+        assert.ok((await store.list()).warnings.some((warning) => warning.includes("linked")));
         await assert.rejects(store.read("project", "linked"), /symlink|junction|redirect|not a real directory/u);
       } catch (error) {
         if (!(["EPERM", "EACCES"] as unknown[]).includes((error as NodeJS.ErrnoException).code)) throw error;
@@ -112,7 +134,7 @@ describe("EASY CODE Skill resources", () => {
       await mkdir(path.join(skillRoot, "linked-file"));
       try {
         await symlink(outside, path.join(skillRoot, "linked-file", "SKILL.md"), "file");
-        assert.ok((await store.list()).warnings.some(warning => warning.includes("linked-file")));
+        assert.ok((await store.list()).warnings.some((warning) => warning.includes("linked-file")));
         await assert.rejects(store.read("project", "linked-file"), /symlink|junction/u);
       } catch (error) {
         if (!(["EPERM", "EACCES"] as unknown[]).includes((error as NodeJS.ErrnoException).code)) throw error;
@@ -132,8 +154,12 @@ describe("EASY CODE Skill resources", () => {
       await writeFile(lock, JSON.stringify({ pid: 99999999, at: Date.now() - 120_000 }));
       const oldTime = new Date(Date.now() - 120_000);
       await utimes(lock, oldTime, oldTime);
-      const result = await store.modify("project", "recoverable", created.version,
-        createSkillMarkdown("recoverable", "Recovered Skill.", "Check the files again."));
+      const result = await store.modify(
+        "project",
+        "recoverable",
+        created.version,
+        createSkillMarkdown("recoverable", "Recovered Skill.", "Check the files again."),
+      );
       assert.notEqual(result.version, created.version);
       await assert.rejects(stat(lock), { code: "ENOENT" });
     });
@@ -143,28 +169,57 @@ describe("EASY CODE Skill resources", () => {
     await fixture(async ({ project, home, trash }) => {
       const workspace = await WorkspaceManager.create(project);
       const store = new SkillStore(project, home, trash);
-      const context = { workspaceRoot: project, mode: "code", threadId: "thread_a", turnId: "turn_a",
-        agentRole: "main_agent" } as ToolContext;
+      const context = {
+        workspaceRoot: project,
+        mode: "code",
+        threadId: "thread_a",
+        turnId: "turn_a",
+        agentRole: "main_agent",
+      } as ToolContext;
       const list = new ListSkillsTool(workspace, store);
       const read = new ReadSkillTool(workspace, store);
       const create = new CreateSkillTool(workspace, store);
       const modify = new ModifySkillTool(workspace, store);
       const remove = new DeleteSkillTool(workspace, store);
-      assert.equal(create.approvalTarget({ scope: "global", name: "helper" }).name,
-        "create_skill:global:helper");
-      assert.equal(remove.approvalTarget({ scope: "project", name: "helper" }).name,
-        "delete_skill:project:helper");
-      assert.equal((await create.execute({ scope: "project", name: "helper",
-        description: "Help on request.", instructions: "Provide help." }, context)).ok, true);
+      assert.equal(create.approvalTarget({ scope: "global", name: "helper" }).name, "create_skill:global:helper");
+      assert.equal(remove.approvalTarget({ scope: "project", name: "helper" }).name, "delete_skill:project:helper");
+      assert.equal(
+        (
+          await create.execute(
+            { scope: "project", name: "helper", description: "Help on request.", instructions: "Provide help." },
+            context,
+          )
+        ).ok,
+        true,
+      );
       assert.equal((await list.execute({}, context)).ok, true);
       const loaded = await read.execute({ scope: "project", name: "helper" }, context);
       assert.equal(loaded.ok, true);
       const version = (loaded.data as { version: string }).version;
-      assert.equal((await modify.execute({ scope: "project", name: "helper", expectedVersion: version,
-        skillMarkdown: createSkillMarkdown("helper", "Help on demand.", "Provide verified help.") }, context)).ok, true);
+      assert.equal(
+        (
+          await modify.execute(
+            {
+              scope: "project",
+              name: "helper",
+              expectedVersion: version,
+              skillMarkdown: createSkillMarkdown("helper", "Help on demand.", "Provide verified help."),
+            },
+            context,
+          )
+        ).ok,
+        true,
+      );
       const fresh = await read.execute({ scope: "project", name: "helper" }, context);
-      assert.equal((await remove.execute({ scope: "project", name: "helper",
-        expectedVersion: (fresh.data as { version: string }).version }, context)).ok, true);
+      assert.equal(
+        (
+          await remove.execute(
+            { scope: "project", name: "helper", expectedVersion: (fresh.data as { version: string }).version },
+            context,
+          )
+        ).ok,
+        true,
+      );
       assert.equal((await list.execute({}, context)).ok, true);
     });
   });

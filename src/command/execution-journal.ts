@@ -1,4 +1,14 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../core/types.js";
@@ -13,13 +23,24 @@ export class ExecutionJournal {
 
   assertRecovered(): void {
     if (!this.directory || !existsSync(this.directory)) return;
-    if (existsSync(path.join(this.directory, "recovery.lock")) || readdirSync(this.directory).some(name => name.endsWith(".lease") && !ownedLeases.has(path.join(this.directory!, name)))) {
-      throw new Error("Unfinished command lease found; execution/cleanup is unknown. Inspect the environment before resuming mutations");
+    if (
+      existsSync(path.join(this.directory, "recovery.lock")) ||
+      readdirSync(this.directory).some(
+        (name) => name.endsWith(".lease") && !ownedLeases.has(path.join(this.directory!, name)),
+      )
+    ) {
+      throw new Error(
+        "Unfinished command lease found; execution/cleanup is unknown. Inspect the environment before resuming mutations",
+      );
     }
   }
 
   hasUnfinishedLeases(): boolean {
-    return Boolean(this.directory && existsSync(this.directory) && readdirSync(this.directory).some(name => name.endsWith(".lease")));
+    return Boolean(
+      this.directory &&
+      existsSync(this.directory) &&
+      readdirSync(this.directory).some((name) => name.endsWith(".lease")),
+    );
   }
 
   /** Repair only records that contain authoritative proof that Windows never
@@ -27,16 +48,27 @@ export class ExecutionJournal {
   reconcileDeterministicNotStarted(): string[] {
     if (!this.directory || !existsSync(this.directory)) return [];
     const recovered: string[] = [];
-    for (const name of readdirSync(this.directory).filter(value => value.endsWith(".lease"))) {
+    for (const name of readdirSync(this.directory).filter((value) => value.endsWith(".lease"))) {
       const commandId = name.slice(0, -6);
       if (!/^[a-zA-Z0-9_-]+$/u.test(commandId)) continue;
       const eventFile = this.file(commandId)!;
       let source: string;
-      try { source = readFileSync(eventFile, "utf8"); } catch { continue; }
+      try {
+        source = readFileSync(eventFile, "utf8");
+      } catch {
+        continue;
+      }
       if (!source.endsWith("\n")) continue;
       let events: RecordedCommandLifecycleEvent[];
-      try { events = source.split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { continue; }
-      if (events.some(event => event.commandId !== commandId)) continue;
+      try {
+        events = source
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+      } catch {
+        continue;
+      }
+      if (events.some((event) => event.commandId !== commandId)) continue;
       const evidence = deterministicNotStartedEvidence(events);
       if (!evidence) continue;
       this.record(commandId, "not_started_reconciled", evidence);
@@ -55,10 +87,24 @@ export class ExecutionJournal {
     const filename = path.join(this.directory, `${commandId}.lease`);
     const fd = openSync(filename, "wx", 0o600);
     try {
-      writeSync(fd, JSON.stringify({ version: 2, commandId, threadId: context.threadId, turnId: context.turnId,
-        hostname: os.hostname(), ownerPid: process.pid, processIdentity: currentProcessIdentity(), state: "preparing", events: this.file(commandId) }));
+      writeSync(
+        fd,
+        JSON.stringify({
+          version: 2,
+          commandId,
+          threadId: context.threadId,
+          turnId: context.turnId,
+          hostname: os.hostname(),
+          ownerPid: process.pid,
+          processIdentity: currentProcessIdentity(),
+          state: "preparing",
+          events: this.file(commandId),
+        }),
+      );
       fsyncSync(fd);
-    } finally { closeSync(fd); }
+    } finally {
+      closeSync(fd);
+    }
     ownedLeases.add(filename);
     this.record(commandId, "preparing", { threadId: context.threadId });
   }
@@ -69,10 +115,18 @@ export class ExecutionJournal {
   }
 
   record(commandId: string, type: string, payload: unknown): void {
-    const file = this.file(commandId); if (!file) return;
+    const file = this.file(commandId);
+    if (!file) return;
     const descriptor = openSync(file, "a", 0o600);
-    try { writeSync(descriptor, JSON.stringify({ version: 1, commandId, type, payload, at: new Date().toISOString() }) + "\n"); fsyncSync(descriptor); }
-    finally { closeSync(descriptor); }
+    try {
+      writeSync(
+        descriptor,
+        JSON.stringify({ version: 1, commandId, type, payload, at: new Date().toISOString() }) + "\n",
+      );
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
   }
 
   complete(commandId: string): void {

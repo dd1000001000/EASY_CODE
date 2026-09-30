@@ -38,9 +38,7 @@ export interface MenuSelectorNavigation {
    * binding is active; the selector remains hidden until that acknowledgement
    * arrives so the first visible arrow cannot escape to terminal scrollback.
    */
-  activate(
-    onNavigate: (direction: MenuNavigationDirection) => void,
-  ): MenuSelectorNavigationActivation;
+  activate(onNavigate: (direction: MenuNavigationDirection) => void): MenuSelectorNavigationActivation;
 }
 
 export interface MenuSelectorOptions {
@@ -62,10 +60,7 @@ const SHOW_CURSOR = "\u001B[?25h";
 const DEFAULT_MAX_LABEL_CODE_POINTS = 96;
 
 /** Escape controls and bidi formatting so untrusted labels cannot control the terminal. */
-export function safeMenuLabel(
-  value: string,
-  maxCodePoints = DEFAULT_MAX_LABEL_CODE_POINTS,
-): string {
+export function safeMenuLabel(value: string, maxCodePoints = DEFAULT_MAX_LABEL_CODE_POINTS): string {
   let result = "";
   for (const character of value.replace(/[\r\n\t]/gu, " ")) {
     const codePoint = character.codePointAt(0) ?? 0;
@@ -77,14 +72,10 @@ export function safeMenuLabel(
       (codePoint >= 0x2028 && codePoint <= 0x202e) ||
       (codePoint >= 0x2060 && codePoint <= 0x2069) ||
       codePoint === 0xfeff;
-    result += unsafe
-      ? `\\u{${codePoint.toString(16).padStart(4, "0")}}`
-      : character;
+    result += unsafe ? `\\u{${codePoint.toString(16).padStart(4, "0")}}` : character;
   }
   const characters = Array.from(result);
-  return characters.length <= maxCodePoints
-    ? result
-    : `${characters.slice(0, maxCodePoints).join("")}…`;
+  return characters.length <= maxCodePoints ? result : `${characters.slice(0, maxCodePoints).join("")}…`;
 }
 
 export function renderMenu(
@@ -199,9 +190,15 @@ export function selectMenuIndex(
     const armIdleTimer = (): void => {
       if (settled || !rendered || idleTimer || options.idleTimeoutMs === undefined) return;
       const timeoutIndex = options.idleSelectionIndex;
-      if (!Number.isSafeInteger(options.idleTimeoutMs) || options.idleTimeoutMs <= 0 ||
-        timeoutIndex === undefined || !Number.isSafeInteger(timeoutIndex) ||
-        timeoutIndex < 0 || timeoutIndex >= choiceCount) return;
+      if (
+        !Number.isSafeInteger(options.idleTimeoutMs) ||
+        options.idleTimeoutMs <= 0 ||
+        timeoutIndex === undefined ||
+        !Number.isSafeInteger(timeoutIndex) ||
+        timeoutIndex < 0 ||
+        timeoutIndex >= choiceCount
+      )
+        return;
       idleTimer = setTimeout(() => {
         // A pending Esc may be waiting for its short CSI disambiguation window.
         // Never let the unattended approval timer race past that user input.
@@ -210,8 +207,11 @@ export function selectMenuIndex(
           return;
         }
         let allowed = true;
-        try { allowed = options.canConfirm?.() ?? true; }
-        catch { allowed = false; }
+        try {
+          allowed = options.canConfirm?.() ?? true;
+        } catch {
+          allowed = false;
+        }
         finish(allowed ? timeoutIndex : undefined);
       }, options.idleTimeoutMs);
     };
@@ -239,19 +239,17 @@ export function selectMenuIndex(
     };
     const parseCsiU = (
       body: string,
-    ): {
-      readonly keyCode: number;
-      readonly modifier?: number;
-      readonly event?: 1 | 2 | 3;
-    } | undefined => {
+    ):
+      | {
+          readonly keyCode: number;
+          readonly modifier?: number;
+          readonly event?: 1 | 2 | 3;
+        }
+      | undefined => {
       const fields = body.split(";");
       if (fields.length < 1 || fields.length > 3) return undefined;
       const keyFields = fields[0]?.split(":") ?? [];
-      if (
-        keyFields.length < 1 ||
-        keyFields.length > 3 ||
-        !keyFields.every(isSafeProtocolInteger)
-      ) return undefined;
+      if (keyFields.length < 1 || keyFields.length > 3 || !keyFields.every(isSafeProtocolInteger)) return undefined;
       const keyCode = Number(keyFields[0]);
 
       let modifier: number | undefined;
@@ -262,7 +260,8 @@ export function selectMenuIndex(
           modifierFields.length < 1 ||
           modifierFields.length > 2 ||
           !isPositiveSafeProtocolInteger(modifierFields[0] ?? "")
-        ) return undefined;
+        )
+          return undefined;
         modifier = Number(modifierFields[0]);
         if (modifierFields.length === 2) {
           if (!/^[123]$/u.test(modifierFields[1] ?? "")) return undefined;
@@ -273,10 +272,9 @@ export function selectMenuIndex(
         const textCodePoints = fields[2]?.split(":") ?? [];
         if (
           textCodePoints.length < 1 ||
-          !textCodePoints.every((value) =>
-            isSafeProtocolInteger(value) && Number(value) <= 0x10ffff
-          )
-        ) return undefined;
+          !textCodePoints.every((value) => isSafeProtocolInteger(value) && Number(value) <= 0x10ffff)
+        )
+          return undefined;
       }
       return { keyCode, modifier, event };
     };
@@ -286,15 +284,9 @@ export function selectMenuIndex(
       if (!match) return false;
       const modifier = Number(match[1]);
       if (!Number.isSafeInteger(modifier) || modifier < 1) return false;
-      return match[2] === undefined
-        ? undefined
-        : Number(match[2]) as 1 | 2 | 3;
+      return match[2] === undefined ? undefined : (Number(match[2]) as 1 | 2 | 3);
     };
-    const handleControlSequence = (
-      introducer: "[" | "O" | undefined,
-      body: string,
-      final: string,
-    ): void => {
+    const handleControlSequence = (introducer: "[" | "O" | undefined, body: string, final: string): void => {
       if (final === "A" || final === "B") {
         if (introducer === "O") {
           if (body !== "") return;
@@ -402,10 +394,7 @@ export function selectMenuIndex(
       try {
         onData(chunk);
       } catch {
-        finish(
-          undefined,
-          new Error("Unable to process the interactive selection."),
-        );
+        finish(undefined, new Error("Unable to process the interactive selection."));
       }
     };
     const onEnd = (): void => finish(undefined);
@@ -430,7 +419,10 @@ export function selectMenuIndex(
       input.once("end", onEnd);
       input.once("close", onClose);
       options.signal?.addEventListener("abort", onAbort, { once: true });
-      if (options.signal?.aborted) { finish(undefined); return; }
+      if (options.signal?.aborted) {
+        finish(undefined);
+        return;
+      }
       input.once("error", onError);
       input.resume();
       // An out-of-band host may invoke its listener synchronously while it is
@@ -442,10 +434,7 @@ export function selectMenuIndex(
         try {
           move(direction === "up" ? -1 : 1);
         } catch {
-          finish(
-            undefined,
-            new Error("Unable to render the interactive selection."),
-          );
+          finish(undefined, new Error("Unable to render the interactive selection."));
         }
       });
       releaseNavigation = navigationActivation?.release.bind(navigationActivation);
@@ -454,19 +443,18 @@ export function selectMenuIndex(
         // Keep the overlay invisible until VS Code confirms that Up/Down have
         // been rebound. TTY input is already in Raw Mode, so an unavailable
         // host can safely resolve `false` and use the normal terminal path.
-        void navigationReady.catch(() => false).then(() => {
-          if (settled) return;
-          renderEnabled = true;
-          try {
-            render();
-            armIdleTimer();
-          } catch {
-            finish(
-              undefined,
-              new Error("Unable to render the interactive selection."),
-            );
-          }
-        });
+        void navigationReady
+          .catch(() => false)
+          .then(() => {
+            if (settled) return;
+            renderEnabled = true;
+            try {
+              render();
+              armIdleTimer();
+            } catch {
+              finish(undefined, new Error("Unable to render the interactive selection."));
+            }
+          });
       } else {
         renderEnabled = true;
         render();

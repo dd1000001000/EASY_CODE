@@ -1,7 +1,4 @@
-import {
-  sanitizeTerminalText,
-  truncateToWidth,
-} from "../render/layout.js";
+import { sanitizeTerminalText, truncateToWidth } from "../render/layout.js";
 import type { ScreenOutput } from "../render/screen-writer.js";
 import { OutputDrainMonitor } from "../render/output-drain-monitor.js";
 
@@ -35,21 +32,10 @@ const RESET_STYLE = "\u001B[0m";
  * integration to enable a mode without restoring it on close.
  */
 export const FULL_SCREEN_ENTER_SEQUENCE =
-  ALTERNATE_SCREEN_ON +
-  ALTERNATE_SCROLL_ON +
-  CURSOR_HIDE +
-  BRACKETED_PASTE_ON +
-  AUTOWRAP_OFF +
-  CLEAR_SCREEN +
-  HOME;
+  ALTERNATE_SCREEN_ON + ALTERNATE_SCROLL_ON + CURSOR_HIDE + BRACKETED_PASTE_ON + AUTOWRAP_OFF + CLEAR_SCREEN + HOME;
 
 export const FULL_SCREEN_EXIT_SEQUENCE =
-  RESET_STYLE +
-  ALTERNATE_SCROLL_OFF +
-  BRACKETED_PASTE_OFF +
-  AUTOWRAP_ON +
-  CURSOR_SHOW +
-  ALTERNATE_SCREEN_OFF;
+  RESET_STYLE + ALTERNATE_SCROLL_OFF + BRACKETED_PASTE_OFF + AUTOWRAP_ON + CURSOR_SHOW + ALTERNATE_SCREEN_OFF;
 
 export type FullScreenDimensionSource = number | (() => number | undefined);
 
@@ -113,9 +99,7 @@ export class FullScreenWriter {
   constructor();
   constructor(output: ScreenOutput);
   constructor(options: FullScreenWriterOptions);
-  constructor(
-    outputOrOptions: ScreenOutput | FullScreenWriterOptions = process.stdout,
-  ) {
+  constructor(outputOrOptions: ScreenOutput | FullScreenWriterOptions = process.stdout) {
     if (isScreenOutput(outputOrOptions)) {
       this.output = outputOrOptions;
     } else {
@@ -186,31 +170,16 @@ export class FullScreenWriter {
   resize(): boolean;
   resize(size: Partial<FullScreenSize>): boolean;
   resize(columns: number, rows: number): boolean;
-  resize(
-    sizeOrColumns?: Partial<FullScreenSize> | number,
-    explicitRows?: number,
-  ): boolean {
+  resize(sizeOrColumns?: Partial<FullScreenSize> | number, explicitRows?: number): boolean {
     if (this.closed) return false;
     const observed = this.readSize();
-    const requested = typeof sizeOrColumns === "number"
-      ? { columns: sizeOrColumns, rows: explicitRows }
-      : sizeOrColumns ?? {};
+    const requested =
+      typeof sizeOrColumns === "number" ? { columns: sizeOrColumns, rows: explicitRows } : (sizeOrColumns ?? {});
     const nextSize = {
-      columns: normalizeDimension(
-        requested.columns ?? observed.columns,
-        DEFAULT_COLUMNS,
-        MAX_COLUMNS,
-      ),
-      rows: normalizeDimension(
-        requested.rows ?? observed.rows,
-        DEFAULT_ROWS,
-        MAX_ROWS,
-      ),
+      columns: normalizeDimension(requested.columns ?? observed.columns, DEFAULT_COLUMNS, MAX_COLUMNS),
+      rows: normalizeDimension(requested.rows ?? observed.rows, DEFAULT_ROWS, MAX_ROWS),
     };
-    if (
-      nextSize.columns === this.currentSize.columns &&
-      nextSize.rows === this.currentSize.rows
-    ) {
+    if (nextSize.columns === this.currentSize.columns && nextSize.rows === this.currentSize.rows) {
       return false;
     }
 
@@ -285,11 +254,7 @@ export class FullScreenWriter {
         DEFAULT_COLUMNS,
         MAX_COLUMNS,
       ),
-      rows: normalizeDimension(
-        readDimension(this.rowsSource) ?? this.output.rows,
-        DEFAULT_ROWS,
-        MAX_ROWS,
-      ),
+      rows: normalizeDimension(readDimension(this.rowsSource) ?? this.output.rows, DEFAULT_ROWS, MAX_ROWS),
     };
   }
 
@@ -298,26 +263,16 @@ export class FullScreenWriter {
     // The exit sequence is best-effort even when ordinary frame production is
     // paused, otherwise a failed UI can leave the user's terminal in the
     // alternate buffer with the cursor hidden.
-    return this.outputDrain.write(
-      value,
-      value === FULL_SCREEN_EXIT_SEQUENCE,
-    );
+    return this.outputDrain.write(value, value === FULL_SCREEN_EXIT_SEQUENCE);
   }
 }
 
-function normalizeFrame(
-  sourceRows: readonly string[],
-  size: FullScreenSize,
-): readonly string[] {
-  return Array.from(
-    { length: size.rows },
-    (_, index) => normalizeRow(sourceRows[index] ?? "", size.columns),
-  );
+function normalizeFrame(sourceRows: readonly string[], size: FullScreenSize): readonly string[] {
+  return Array.from({ length: size.rows }, (_, index) => normalizeRow(sourceRows[index] ?? "", size.columns));
 }
 
 function normalizeRow(value: string, columns: number): string {
-  const safe = sanitizeTerminalText(value, { allowSgr: true })
-    .replace(/\n/gu, " ");
+  const safe = sanitizeTerminalText(value, { allowSgr: true }).replace(/\n/gu, " ");
   return truncateToWidth(safe, columns, { preserveAnsi: true });
 }
 
@@ -329,15 +284,11 @@ function cursorPosition(row: number, column: number): string {
   return `\u001B[${row};${column}H`;
 }
 
-function isScreenOutput(
-  value: ScreenOutput | FullScreenWriterOptions,
-): value is ScreenOutput {
+function isScreenOutput(value: ScreenOutput | FullScreenWriterOptions): value is ScreenOutput {
   return typeof (value as ScreenOutput).write === "function";
 }
 
-function readDimension(
-  source: FullScreenDimensionSource | undefined,
-): number | undefined {
+function readDimension(source: FullScreenDimensionSource | undefined): number | undefined {
   if (typeof source !== "function") return source;
   try {
     return source();
@@ -346,11 +297,7 @@ function readDimension(
   }
 }
 
-function normalizeDimension(
-  value: number | undefined,
-  fallback: number,
-  maximum: number,
-): number {
+function normalizeDimension(value: number | undefined, fallback: number, maximum: number): number {
   if (!Number.isFinite(value) || (value ?? 0) < 1) return fallback;
   return Math.min(maximum, Math.max(1, Math.floor(value ?? fallback)));
 }

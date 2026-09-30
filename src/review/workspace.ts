@@ -4,12 +4,17 @@ import { mkdir, readFile, writeFile, lstat, readlink, realpath, symlink } from "
 import { WorkspaceManager } from "../workspace/manager.js";
 import type { WorkspaceSnapshot, WorkspaceSnapshotEntry } from "../workspace/snapshot.js";
 import { sha256 } from "../utils/hash.js";
-import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
+import type { RuntimeLimits } from "../config/runtime-limits.js";
 
 export function reviewFingerprint(snapshot: WorkspaceSnapshot): string {
   if (snapshot.truncated) throw new Error("Incomplete workspace inventory; review cannot certify this snapshot");
-  return `sha256:${sha256(JSON.stringify({ files: [...snapshot.files.values()]
-    .map(entry => [entry.path, entry.kind, entry.hash, entry.size]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) }))}`;
+  return `sha256:${sha256(
+    JSON.stringify({
+      files: [...snapshot.files.values()]
+        .map((entry) => [entry.path, entry.kind, entry.hash, entry.size])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    }),
+  )}`;
 }
 
 const REVIEW_DEPENDENCY_DIRECTORIES = ["node_modules", ".venv", "venv"] as const;
@@ -67,10 +72,18 @@ async function readSnapshotEntry(
 /** No shared checkout and no git control files. Explicit temporary copies are
  * retained for recovery; never use a model-selected path or silently recopy a
  * modified experiment as the original snapshot. */
-export async function createReviewCopies(workspace: WorkspaceManager, id: string, expected: string,
+export async function createReviewCopies(
+  workspace: WorkspaceManager,
+  id: string,
+  expected: string,
   maxBytes = 128 * 1024 * 1024,
-  options: { limits?: Readonly<RuntimeLimits>; signal?: AbortSignal;
-    offline?: boolean; changedPaths?: readonly string[] } = {}) {
+  options: {
+    limits?: Readonly<RuntimeLimits>;
+    signal?: AbortSignal;
+    offline?: boolean;
+    changedPaths?: readonly string[];
+  } = {},
+) {
   if (!/^review_[a-f0-9-]{36}$/u.test(id)) throw new Error("Invalid Runtime review identity");
   const snapshot = await workspace.captureSnapshot();
   if (reviewFingerprint(snapshot) !== expected) throw new Error("Workspace changed before review snapshot");
@@ -98,44 +111,63 @@ export async function createReviewCopies(workspace: WorkspaceManager, id: string
   // resolution prevents writes through these links to the original workspace;
   // they exist only so independent tests can use the already installed toolchain.
   const dependencyLinks: Record<string, string> = {};
-  if (!options.offline) for (const folder of workspace.folders) for (const name of REVIEW_DEPENDENCY_DIRECTORIES) {
-    const source = path.join(folder.path, name);
-    let target: string;
-    try {
-      if (!(await lstat(source)).isDirectory()) continue;
-      target = await realpath(source);
-    } catch { continue; }
-    if (!isInside(folder.path, target)) throw new Error(`Review dependency leaves project folder ${folder.key}: ${name}`);
-    const relative = workspace.folders.length === 1 ? name : path.posix.join(folder.key, name);
-    const link = path.join(root, ...relative.split("/"));
-    await mkdir(path.dirname(link), { recursive: true });
-    await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
-    dependencyLinks[relative] = target;
-  }
-  if (reviewFingerprint(await workspace.captureSnapshot()) !== expected) throw new Error("Workspace changed during review copy");
-  await writeFile(path.join(directory, "binding.json"), JSON.stringify({ id, snapshotId: expected, root, baseline,
-    materializedSymlinks, dependencyLinks }), { flag: "wx", mode: 0o600 });
+  if (!options.offline)
+    for (const folder of workspace.folders)
+      for (const name of REVIEW_DEPENDENCY_DIRECTORIES) {
+        const source = path.join(folder.path, name);
+        let target: string;
+        try {
+          if (!(await lstat(source)).isDirectory()) continue;
+          target = await realpath(source);
+        } catch {
+          continue;
+        }
+        if (!isInside(folder.path, target))
+          throw new Error(`Review dependency leaves project folder ${folder.key}: ${name}`);
+        const relative = workspace.folders.length === 1 ? name : path.posix.join(folder.key, name);
+        const link = path.join(root, ...relative.split("/"));
+        await mkdir(path.dirname(link), { recursive: true });
+        await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+        dependencyLinks[relative] = target;
+      }
+  if (reviewFingerprint(await workspace.captureSnapshot()) !== expected)
+    throw new Error("Workspace changed during review copy");
+  await writeFile(
+    path.join(directory, "binding.json"),
+    JSON.stringify({ id, snapshotId: expected, root, baseline, materializedSymlinks, dependencyLinks }),
+    { flag: "wx", mode: 0o600 },
+  );
   return { directory, root, baseline, materializedSymlinks, dependencyLinks };
 }
 
 export async function restoreReviewCopies(directory: string, id: string, snapshotId: string) {
   const expected = path.join(await realpath(os.tmpdir()), `easy-code-${id}`);
-  if (path.resolve(directory) !== expected || (await lstat(directory)).isSymbolicLink()) throw new Error("Invalid review directory");
+  if (path.resolve(directory) !== expected || (await lstat(directory)).isSymbolicLink())
+    throw new Error("Invalid review directory");
   const binding = JSON.parse(await readFile(path.join(directory, "binding.json"), "utf8"));
   if (binding.id !== id || binding.snapshotId !== snapshotId) throw new Error("Review snapshot binding mismatch");
   const root = path.join(directory, "reviewer");
-  if (await realpath(root) !== root) throw new Error("Redirected review copy");
-  if (!binding.baseline ||
-    !Array.isArray(binding.materializedSymlinks)) throw new Error("Missing review snapshot manifest");
+  if ((await realpath(root)) !== root) throw new Error("Redirected review copy");
+  if (!binding.baseline || !Array.isArray(binding.materializedSymlinks))
+    throw new Error("Missing review snapshot manifest");
   const dependencyLinks = (binding.dependencyLinks ?? {}) as Record<string, string>;
   for (const [relative, expected] of Object.entries(dependencyLinks)) {
     const segments = relative.split("/");
     const name = segments.at(-1);
-    if (!name || segments.some(segment => !segment || segment === "." || segment === "..") ||
-      !REVIEW_DEPENDENCY_DIRECTORIES.includes(name as typeof REVIEW_DEPENDENCY_DIRECTORIES[number]) ||
-      !path.isAbsolute(expected) || await realpath(path.join(root, ...segments)) !== expected)
+    if (
+      !name ||
+      segments.some((segment) => !segment || segment === "." || segment === "..") ||
+      !REVIEW_DEPENDENCY_DIRECTORIES.includes(name as (typeof REVIEW_DEPENDENCY_DIRECTORIES)[number]) ||
+      !path.isAbsolute(expected) ||
+      (await realpath(path.join(root, ...segments))) !== expected
+    )
       throw new Error("Review dependency binding mismatch");
   }
-  return { directory, root, baseline: binding.baseline as Record<string, string>,
-    materializedSymlinks: binding.materializedSymlinks as string[], dependencyLinks };
+  return {
+    directory,
+    root,
+    baseline: binding.baseline as Record<string, string>,
+    materializedSymlinks: binding.materializedSymlinks as string[],
+    dependencyLinks,
+  };
 }

@@ -20,12 +20,14 @@ export function compactionV2Input(input: CompactionFixtureInput) {
   const activeConstraints = input.activeConstraints ?? [];
   const userCorrections = input.userCorrections ?? [];
   const supersededRequests = input.supersededRequests ?? [];
-  const coveredMessageIndices = [...new Set([
-    input.primaryRequestIndex,
-    ...activeConstraints.map((item) => item.sourceMessageIndex),
-    ...userCorrections.map((item) => item.sourceMessageIndex),
-    ...supersededRequests.map((item) => item.sourceMessageIndex),
-  ])].sort((left, right) => left - right);
+  const coveredMessageIndices = [
+    ...new Set([
+      input.primaryRequestIndex,
+      ...activeConstraints.map((item) => item.sourceMessageIndex),
+      ...userCorrections.map((item) => item.sourceMessageIndex),
+      ...supersededRequests.map((item) => item.sourceMessageIndex),
+    ]),
+  ].sort((left, right) => left - right);
   return {
     formatVersion: 2,
     primaryRequest: {
@@ -56,9 +58,7 @@ export function compactionV2Input(input: CompactionFixtureInput) {
   };
 }
 
-export function persistedCompactionV2Summary(
-  input: ReturnType<typeof compactionV2Input>,
-): string {
+export function persistedCompactionV2Summary(input: ReturnType<typeof compactionV2Input>): string {
   const { coverageCheck: _coverageCheck, intentLedger: _intentLedger, ...summary } = input;
   return JSON.stringify(summary);
 }

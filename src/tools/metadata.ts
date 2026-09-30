@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { PromptToolMetadata } from "../prompt-bundle/catalog.js";
-import {
-  canonicalJson,
-  computeToolSchemaHash,
-  loadPromptBundleCatalog,
-} from "../prompt-bundle/index.js";
+import { canonicalJson, computeToolSchemaHash, loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 
 const CONTRACT_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 
@@ -23,9 +19,7 @@ function isObject(value: unknown): value is JsonObject {
 function cloneSchema(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => cloneSchema(item));
   if (!isObject(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [key, cloneSchema(item)]),
-  );
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneSchema(item)]));
 }
 
 function documentProperties(
@@ -42,9 +36,7 @@ function documentProperties(
     }
     for (const [index, alternative] of alternatives.entries()) {
       if (!isObject(alternative)) {
-        throw new Error(
-          `Tool ${metadata.id} schema ${keyword}[${index}] must be an object`,
-        );
+        throw new Error(`Tool ${metadata.id} schema ${keyword}[${index}] must be an object`);
       }
       documentProperties(alternative, prefix, metadata, consumed);
     }
@@ -77,15 +69,10 @@ function documentProperties(
  * Runtime structure remains in TypeScript; every model-visible description is
  * loaded from the already verified, immutable process Catalog.
  */
-export function documentToolSchema(
-  toolId: string,
-  parameters: JsonObject,
-): DocumentedToolSchema {
+export function documentToolSchema(toolId: string, parameters: JsonObject): DocumentedToolSchema {
   const metadata = loadPromptBundleCatalog().getTool(toolId);
   if (!CONTRACT_VERSION_PATTERN.test(metadata.contractVersion)) {
-    throw new Error(
-      `Prompt Bundle tool ${toolId} has invalid contractVersion ${metadata.contractVersion}`,
-    );
+    throw new Error(`Prompt Bundle tool ${toolId} has invalid contractVersion ${metadata.contractVersion}`);
   }
   const documented = cloneSchema(parameters);
   if (!isObject(documented)) throw new Error(`Tool ${toolId} parameters must be an object`);

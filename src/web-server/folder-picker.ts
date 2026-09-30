@@ -85,12 +85,25 @@ export async function pickLocalFolder(signal?: AbortSignal): Promise<string | un
   let program: string;
   let args: string[];
   if (process.platform === "win32") {
-    program = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const script = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n" + WINDOWS_FOLDER_PICKER;
-    args = ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
+    program = path.win32.join(
+      process.env.SystemRoot ?? "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const script =
+      "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n" + WINDOWS_FOLDER_PICKER;
+    args = [
+      "-NoProfile",
+      "-NonInteractive",
+      "-STA",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ];
   } else if (process.platform === "darwin") {
     program = "/usr/bin/osascript";
-    args = ["-e", "POSIX path of (choose folder with prompt \"Choose an EASY CODE project folder\")"];
+    args = ["-e", 'POSIX path of (choose folder with prompt "Choose an EASY CODE project folder")'];
   } else if (existsSync("/usr/bin/zenity")) {
     program = "/usr/bin/zenity";
     args = ["--file-selection", "--directory", "--title=Choose an EASY CODE project folder"];
@@ -102,10 +115,16 @@ export async function pickLocalFolder(signal?: AbortSignal): Promise<string | un
     const child = spawn(program, args, { windowsHide: true, shell: false, signal, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let errorOutput = "";
-    child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); if (output.length > 8192) child.kill(); });
-    child.stderr?.on("data", (chunk: Buffer) => { errorOutput += chunk.toString("utf8"); if (errorOutput.length > 8192) child.kill(); });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      if (output.length > 8192) child.kill();
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      errorOutput += chunk.toString("utf8");
+      if (errorOutput.length > 8192) child.kill();
+    });
     child.once("error", reject);
-    child.once("close", code => {
+    child.once("close", (code) => {
       if (code === 0) resolve(output.trim() || undefined);
       else if (code === 1 && !errorOutput.trim()) resolve(undefined);
       else reject(new Error(`Folder picker failed${errorOutput.trim() ? `: ${errorOutput.trim()}` : "."}`));

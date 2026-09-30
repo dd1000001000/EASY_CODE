@@ -8,7 +8,10 @@ import process from "node:process";
 import { CommandRuntime } from "../dist/command/runtime.js";
 import { resolveEasyCodePaths } from "../dist/config/defaults.js";
 import { NativeSandboxBackend } from "../dist/sandbox/native-backend.js";
-import { WorkspaceMutationLock, wrapAgentToolsWithWorkspaceMutationLock } from "../dist/subagents/workspace-mutation-lock.js";
+import {
+  WorkspaceMutationLock,
+  wrapAgentToolsWithWorkspaceMutationLock,
+} from "../dist/subagents/workspace-mutation-lock.js";
 import { WorkspaceManager } from "../dist/workspace/manager.js";
 
 const checkout = process.cwd();
@@ -17,17 +20,34 @@ const secondary = await mkdtemp(path.join(checkout, ".easy-code-service-secondar
 const sandboxData = await mkdtemp(path.join(os.tmpdir(), "easy-code-service-sandbox-"));
 const nativeDataDir = process.platform === "win32" ? resolveEasyCodePaths().dataDir : sandboxData;
 const projectId = "project_12345678-1234-4123-8123-123456789abc";
-const workspace = await WorkspaceManager.create({ projectId, revision: 1, primaryFolderId: "folder_primary",
+const workspace = await WorkspaceManager.create({
+  projectId,
+  revision: 1,
+  primaryFolderId: "folder_primary",
   folders: [
     { id: "folder_primary", projectId, key: "primary", path: root, active: true, addedRevision: 1, sortOrder: 0 },
-    { id: "folder_secondary", projectId, key: "secondary", path: secondary, active: true, addedRevision: 1, sortOrder: 1 },
-  ] });
-const runtime = new CommandRuntime(workspace, undefined,
-  new NativeSandboxBackend(workspace, { dataDir: nativeDataDir }), undefined, {
+    {
+      id: "folder_secondary",
+      projectId,
+      key: "secondary",
+      path: secondary,
+      active: true,
+      addedRevision: 1,
+      sortOrder: 1,
+    },
+  ],
+});
+const runtime = new CommandRuntime(
+  workspace,
+  undefined,
+  new NativeSandboxBackend(workspace, { dataDir: nativeDataDir }),
+  undefined,
+  {
     lifecycleDirectory: path.join(sandboxData, "command-leases"),
     quarantinePath: path.join(sandboxData, "command-quarantine.json"),
     boundaryStatePath: path.join(sandboxData, "command-boundary.json"),
-  });
+  },
+);
 const context = {
   workspaceRoot: root,
   mode: "code",
@@ -39,15 +59,28 @@ const context = {
   commandTimeoutMs: 5_000,
   maxOutputChars: 4_096,
 };
-const [runTool, startTool] = wrapAgentToolsWithWorkspaceMutationLock([
-  { name: "run_command", mutating: true, execute: async (input, toolContext) => ({
-    ok: true, data: await runtime.run(input, toolContext),
-  }) },
-  { name: "start_command", mutating: true, execute: async (input, toolContext) => {
-    const { backgroundKind, ...request } = input;
-    return { ok: true, data: await runtime.start(request, toolContext, backgroundKind) };
-  }, whenCommandSettled: (commandId) => runtime.whenSettled(commandId) },
-], new WorkspaceMutationLock());
+const [runTool, startTool] = wrapAgentToolsWithWorkspaceMutationLock(
+  [
+    {
+      name: "run_command",
+      mutating: true,
+      execute: async (input, toolContext) => ({
+        ok: true,
+        data: await runtime.run(input, toolContext),
+      }),
+    },
+    {
+      name: "start_command",
+      mutating: true,
+      execute: async (input, toolContext) => {
+        const { backgroundKind, ...request } = input;
+        return { ok: true, data: await runtime.start(request, toolContext, backgroundKind) };
+      },
+      whenCommandSettled: (commandId) => runtime.whenSettled(commandId),
+    },
+  ],
+  new WorkspaceMutationLock(),
+);
 
 async function freePort() {
   const listener = net.createServer();
@@ -61,14 +94,18 @@ try {
   const port = await freePort();
   const server = `require('node:http').createServer((req,res)=>res.end('service-ok')).listen(${port},'127.0.0.1')`;
   const client = `require('node:http').get('http://127.0.0.1:${port}',r=>{let body='';r.on('data',x=>body+=x);r.on('end',()=>{console.log(r.statusCode,body);process.exit(r.statusCode===200&&body==='service-ok'?0:2)})}).on('error',e=>{console.error(e.code);process.exit(3)})`;
-  const started = await startTool.execute({ program: process.execPath, args: ["-e", server], intent: "run",
-    backgroundKind: "service", timeoutMs: 20_000 }, context);
+  const started = await startTool.execute(
+    { program: process.execPath, args: ["-e", server], intent: "run", backgroundKind: "service", timeoutMs: 20_000 },
+    context,
+  );
   assert.equal(started.data?.status, "running", `service did not start: ${JSON.stringify(started)}`);
   const handle = started.data.commandId;
   let ready = false;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const result = await runTool.execute({ program: process.execPath, args: ["-e", client], intent: "test",
-      timeoutMs: 3_000 }, context);
+    const result = await runTool.execute(
+      { program: process.execPath, args: ["-e", client], intent: "test", timeoutMs: 3_000 },
+      context,
+    );
     if (result.data?.status === "exited" && result.data.exitCode === 0) {
       ready = true;
       break;
@@ -80,34 +117,62 @@ try {
   assert.equal(ready, true, "separate native sandbox command could not reach the service");
   console.log("same-agent HTTP probe: ok");
 
-  const secondRoot = await runTool.execute({ program: process.execPath,
-    args: ["-e", "require('node:fs').writeFileSync('service-client.txt','MULTI_ROOT_SERVICE_OK')"],
-    cwd: "secondary", intent: "run", timeoutMs: 3_000 }, context);
+  const secondRoot = await runTool.execute(
+    {
+      program: process.execPath,
+      args: ["-e", "require('node:fs').writeFileSync('service-client.txt','MULTI_ROOT_SERVICE_OK')"],
+      cwd: "secondary",
+      intent: "run",
+      timeoutMs: 3_000,
+    },
+    context,
+  );
   assert.equal(secondRoot.data?.exitCode, 0, JSON.stringify(secondRoot));
   assert.equal(await readFile(path.join(secondary, "service-client.txt"), "utf8"), "MULTI_ROOT_SERVICE_OK");
   console.log("service sandbox second project folder: ok");
 
   if (process.platform === "linux") {
-    const external = await runTool.execute({ program: process.execPath, args: ["-e",
-      "const s=require('node:net').connect({host:'1.1.1.1',port:80,timeout:1500});s.on('connect',()=>process.exit(4));s.on('error',()=>process.exit(0));s.on('timeout',()=>process.exit(0))"],
-      intent: "test", timeoutMs: 3_000 }, context);
+    const external = await runTool.execute(
+      {
+        program: process.execPath,
+        args: [
+          "-e",
+          "const s=require('node:net').connect({host:'1.1.1.1',port:80,timeout:1500});s.on('connect',()=>process.exit(4));s.on('error',()=>process.exit(0));s.on('timeout',()=>process.exit(0))",
+        ],
+        intent: "test",
+        timeoutMs: 3_000,
+      },
+      context,
+    );
     assert.equal(external.data?.exitCode, 0, "service sandbox allowed direct external networking");
     console.log("direct external network denial: ok");
 
-    const child = await startTool.execute({ program: process.execPath, args: ["-e", "setInterval(()=>{},1000)"],
-      intent: "run", backgroundKind: "job", timeoutMs: 10_000 }, context);
+    const child = await startTool.execute(
+      {
+        program: process.execPath,
+        args: ["-e", "setInterval(()=>{},1000)"],
+        intent: "run",
+        backgroundKind: "job",
+        timeoutMs: 10_000,
+      },
+      context,
+    );
     assert.equal(child.data?.status, "running", "service sandbox did not start a dependent job");
     const childStopped = await runtime.cancel(child.data.commandId, context);
     assert.equal(childStopped.status, "canceled");
     assert.equal(childStopped.lifecycle?.cleanup, "confirmed", "dependent job cleanup was not confirmed");
-    const stillReady = await runTool.execute({ program: process.execPath, args: ["-e", client],
-      intent: "test", timeoutMs: 3_000 }, context);
+    const stillReady = await runTool.execute(
+      { program: process.execPath, args: ["-e", client], intent: "test", timeoutMs: 3_000 },
+      context,
+    );
     assert.equal(stillReady.data?.exitCode, 0, "canceling a dependent job stopped the service");
     console.log("dependent job cancellation: ok");
   }
 
-  const other = runTool.execute({ program: process.execPath, args: ["-e", "console.log('other agent')"],
-    intent: "run" }, { ...context, threadId: "another-thread" });
+  const other = runTool.execute(
+    { program: process.execPath, args: ["-e", "console.log('other agent')"], intent: "run" },
+    { ...context, threadId: "another-thread" },
+  );
   const otherEarly = await Promise.race([
     other.then(() => "completed"),
     new Promise((resolve) => setTimeout(() => resolve("waiting"), 500)),
@@ -120,8 +185,10 @@ try {
   assert.equal(canceled.lifecycle?.cleanup, "confirmed", JSON.stringify(canceled));
   const otherResult = await other;
   assert.equal(otherResult.data?.exitCode, 0);
-  const after = await runTool.execute({ program: process.execPath, args: ["-e", client], intent: "test",
-    timeoutMs: 3_000 }, context);
+  const after = await runTool.execute(
+    { program: process.execPath, args: ["-e", client], intent: "test", timeoutMs: 3_000 },
+    context,
+  );
   assert.notEqual(after.data?.exitCode, 0, "service remained reachable after cancellation");
   console.log("service cancellation and lock release: ok");
 } finally {

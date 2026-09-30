@@ -4,25 +4,16 @@ import os from "node:os";
 import path from "node:path";
 
 import { createDefaultEasyCodeConfig } from "../src/config/index.js";
-import {
-  PACKAGED_PROMPT_BUNDLE_MANIFEST_HASH,
-  EASY_CODE_RUNTIME_VERSION,
-} from "../src/prompt-bundle/generated.js";
+import { PACKAGED_PROMPT_BUNDLE_MANIFEST_HASH, EASY_CODE_RUNTIME_VERSION } from "../src/prompt-bundle/generated.js";
 import {
   activePromptBundleBinding,
   ensurePromptBundleForTesting,
   loadPromptBundleCatalog,
 } from "../src/prompt-bundle/manager.js";
-import {
-  computeToolSchemaHash,
-  parsePromptBundleManifest,
-} from "../src/prompt-bundle/manifest.js";
+import { computeToolSchemaHash, parsePromptBundleManifest } from "../src/prompt-bundle/manifest.js";
 import { getEasyCodeHome } from "../src/prompt-bundle/paths.js";
 import { createSessionState } from "../src/runtime/state.js";
-import {
-  deserializeSessionState,
-  serializeSessionState,
-} from "../src/threads/serialization.js";
+import { deserializeSessionState, serializeSessionState } from "../src/threads/serialization.js";
 import { describe, it } from "./harness.js";
 
 const packagedBundleDirectory = path.join(process.cwd(), "resources", "prompt-bundle");
@@ -70,10 +61,7 @@ describe("Prompt Bundle infrastructure", () => {
       assert.match(binding.toolCatalogHash, /^sha256:[a-f0-9]{64}$/u);
       const rendered = catalog.render("runtime/context-pressure-suggest.md", { percent: 60 });
       assert.match(rendered, /60%/u);
-      assert.throws(
-        () => catalog.render("runtime/context-pressure-suggest.md", {}),
-        /missing percent/u,
-      );
+      assert.throws(() => catalog.render("runtime/context-pressure-suggest.md", {}), /missing percent/u);
       assert.throws(
         () => catalog.render("runtime/context-pressure-suggest.md", { percent: 60, extra: true }),
         /unknown extra/u,
@@ -138,14 +126,15 @@ describe("Prompt Bundle infrastructure", () => {
 
   it("rejects traversal and computes stable schema hashes independently of key order", () => {
     assert.throws(
-      () => parsePromptBundleManifest({
-        formatVersion: 1,
-        bundleVersion: "1.0.0",
-        runtimeCompatibility: { min: "0.1.0", maxExclusive: "0.2.0" },
-        files: { "../escape.md": { sha256: `sha256:${"0".repeat(64)}`, bytes: 0 } },
-        tools: {},
-        bundleHash: `sha256:${"0".repeat(64)}`,
-      }),
+      () =>
+        parsePromptBundleManifest({
+          formatVersion: 1,
+          bundleVersion: "1.0.0",
+          runtimeCompatibility: { min: "0.1.0", maxExclusive: "0.2.0" },
+          files: { "../escape.md": { sha256: `sha256:${"0".repeat(64)}`, bytes: 0 } },
+          tools: {},
+          bundleHash: `sha256:${"0".repeat(64)}`,
+        }),
       /escapes|normalized/u,
     );
     assert.equal(
@@ -170,15 +159,13 @@ describe("Prompt Bundle infrastructure", () => {
 
     const missingBinding = { ...serialized } as Record<string, unknown>;
     delete missingBinding.promptBundle;
+    assert.throws(() => deserializeSessionState(missingBinding), /Invalid serialized session state/u);
     assert.throws(
-      () => deserializeSessionState(missingBinding),
-      /Invalid serialized session state/u,
-    );
-    assert.throws(
-      () => deserializeSessionState({
-        ...serialized,
-        promptBundle: { ...binding, manifestHash: "sha256:not-a-hash" },
-      }),
+      () =>
+        deserializeSessionState({
+          ...serialized,
+          promptBundle: { ...binding, manifestHash: "sha256:not-a-hash" },
+        }),
       /Invalid serialized session state/u,
     );
   });

@@ -8,10 +8,7 @@ import { returnPlanExecutionToReview } from "../src/plans/plan.js";
 import { cloneSessionState } from "../src/runtime/state.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
-import {
-  deserializeSessionState,
-  serializeSessionState,
-} from "../src/threads/serialization.js";
+import { deserializeSessionState, serializeSessionState } from "../src/threads/serialization.js";
 import { describe, it } from "./harness.js";
 import { baseSessionState } from "./session-state.js";
 
@@ -25,11 +22,13 @@ function review(): PlanReviewState {
       proposedAt: "2026-08-27T00:00:00.000Z",
       title: "Add authentication",
       overview: "Add the approved local login and registration flow.",
-      steps: [{
-        title: "Implement authentication",
-        description: "Add login and registration with per-user state.",
-        verification: "Verify login, logout, and account isolation.",
-      }],
+      steps: [
+        {
+          title: "Implement authentication",
+          description: "Add login and registration with per-user state.",
+          verification: "Verify login, logout, and account isolation.",
+        },
+      ],
     },
   };
 }
@@ -124,10 +123,7 @@ describe("plan review persistence", () => {
           feedback: "Use a modal dialog.",
         },
       });
-      assert.equal(
-        store.recover(initial.threadId).planReview?.feedback,
-        "Use a modal dialog.",
-      );
+      assert.equal(store.recover(initial.threadId).planReview?.feedback, "Use a modal dialog.");
 
       store.appendEvent(initial.threadId, {
         type: "plan.approved",
@@ -137,10 +133,7 @@ describe("plan review persistence", () => {
           revision: pending.proposal.revision,
         },
       });
-      assert.equal(
-        store.recover(initial.threadId).planReview?.status,
-        "approved_pending_execution",
-      );
+      assert.equal(store.recover(initial.threadId).planReview?.status, "approved_pending_execution");
 
       store.appendEvent(initial.threadId, {
         turnId: "turn_execute_plan",
@@ -248,10 +241,7 @@ describe("plan review persistence", () => {
       assert.equal(resumed.planReview?.status, "awaiting_review");
       assert.equal(resumed.planReview?.proposal.id, pending.proposal.id);
       assert.equal(resumed.planReview?.proposal.revision, pending.proposal.revision);
-      assert.equal(
-        Object.prototype.hasOwnProperty.call(resumed.planReview ?? {}, "approvedAt"),
-        false,
-      );
+      assert.equal(Object.prototype.hasOwnProperty.call(resumed.planReview ?? {}, "approvedAt"), false);
 
       store.appendEvent(initial.threadId, {
         type: "plan.approved",

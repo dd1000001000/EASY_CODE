@@ -19,12 +19,16 @@ describe("MCP tool adapter", () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
-      assert.deepEqual(listed.tools.map(tool => tool.name), ["echo"]);
+      assert.deepEqual(
+        listed.tools.map((tool) => tool.name),
+        ["echo"],
+      );
       const result = await createMcpTool("smoke", listed.tools[0]!, client).execute({ text: "MCP_OK" }, {} as never);
       assert.deepEqual(result.content, [{ type: "text", text: "MCP_OK" }]);
       assert.equal((result.data as { mcpContent: { text: string }[] }).mcpContent[0]?.text, "MCP_OK");
       const projected = JSON.parse(toolResultForModel({ ...result, evidenceId: "evidence_small" }, 64_000)) as {
-        content: { text: string }[]; data: Record<string, unknown>;
+        content: { text: string }[];
+        data: Record<string, unknown>;
       };
       assert.equal(projected.content[0]?.text, "MCP_OK");
       assert.equal(projected.data.completeResultInEvidence, true);
@@ -36,13 +40,22 @@ describe("MCP tool adapter", () => {
 
   it("namespaces untrusted tools and requires approval even with read-only annotations", async () => {
     const calls: unknown[] = [];
-    const client = { async callTool(input: unknown) {
-      calls.push(input);
-      return { content: [{ type: "text", text: "found" }], isError: false };
-    } } as unknown as Pick<Client, "callTool">;
-    const listed = { name: "search", description: "Search files", inputSchema: {
-      type: "object", properties: { query: { type: "string" } }, required: ["query"],
-    }, annotations: { readOnlyHint: true } } as Tool;
+    const client = {
+      async callTool(input: unknown) {
+        calls.push(input);
+        return { content: [{ type: "text", text: "found" }], isError: false };
+      },
+    } as unknown as Pick<Client, "callTool">;
+    const listed = {
+      name: "search",
+      description: "Search files",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+      annotations: { readOnlyHint: true },
+    } as Tool;
     const tool = createMcpTool("reader", listed, client);
     assert.match(tool.name, /^mcp_reader_search_[0-9a-f]{8}$/u);
     assert.equal(toolRequiresApproval(tool), true);
@@ -58,10 +71,12 @@ describe("MCP tool adapter", () => {
 
   it("uses cancellation and a progress-resetting idle timeout for MCP calls", async () => {
     let options: Record<string, unknown> | undefined;
-    const client = { async callTool(_input: unknown, received: Record<string, unknown>) {
-      options = received;
-      return { content: [{ type: "text", text: "done" }] };
-    } } as unknown as Pick<Client, "callTool">;
+    const client = {
+      async callTool(_input: unknown, received: Record<string, unknown>) {
+        options = received;
+        return { content: [{ type: "text", text: "done" }] };
+      },
+    } as unknown as Pick<Client, "callTool">;
     const controller = new AbortController();
     const tool = createMcpTool("slow", { name: "work", inputSchema: { type: "object" } } as Tool, client);
     await tool.execute({}, { signal: controller.signal, limits: { mcpIdleTimeoutMs: 345_000 } } as never);
@@ -72,17 +87,29 @@ describe("MCP tool adapter", () => {
   });
 
   it("binds reusable approval to the selected MCP tool rather than the whole catalog", async () => {
-    const client = { async callTool() { return { content: [] }; } } as unknown as Pick<Client, "callTool">;
-    const listed = (descriptionA: string, descriptionB: string) => [
-      { name: "a", description: descriptionA, inputSchema: { type: "object" } },
-      { name: "b", description: descriptionB, inputSchema: { type: "object" } },
-    ] as Tool[];
+    const client = {
+      async callTool() {
+        return { content: [] };
+      },
+    } as unknown as Pick<Client, "callTool">;
+    const listed = (descriptionA: string, descriptionB: string) =>
+      [
+        { name: "a", description: descriptionA, inputSchema: { type: "object" } },
+        { name: "b", description: descriptionB, inputSchema: { type: "object" } },
+      ] as Tool[];
     const identity = async (tools: Tool[]) => {
       const catalog = new ToolCatalog();
-      catalog.registerSource(new StaticToolSource("mcp", createMcpCatalogTools("server", tools, client, "server-v1"), "external"));
+      catalog.registerSource(
+        new StaticToolSource("mcp", createMcpCatalogTools("server", tools, client, "server-v1"), "external"),
+      );
       const snapshot = await catalog.snapshot();
-      const call = snapshot.tools.find(tool => tool.definition.function.description.startsWith("Call an inspected"))!;
-      return toolApprovalIdentity(call, { name: "a", argumentsJson: "{}" }, snapshot.bindings.get(call.name), process.cwd()).key;
+      const call = snapshot.tools.find((tool) => tool.definition.function.description.startsWith("Call an inspected"))!;
+      return toolApprovalIdentity(
+        call,
+        { name: "a", argumentsJson: "{}" },
+        snapshot.bindings.get(call.name),
+        process.cwd(),
+      ).key;
     };
     const original = await identity(listed("first", "second"));
     assert.equal(await identity(listed("first", "second changed")), original);
@@ -96,11 +123,14 @@ describe("MCP tool adapter", () => {
 
   it("searches large catalogs and pages oversized schemas without losing callable tools", async () => {
     const calls: unknown[] = [];
-    const client = { async callTool(input: unknown) {
-      calls.push(input);
-      return { content: [{ type: "text", text: "called" }] };
-    } } as unknown as Pick<Client, "callTool">;
-    const tools = Array.from({ length: 140 }, (_, index) => ({ name: `tool_${index}`,
+    const client = {
+      async callTool(input: unknown) {
+        calls.push(input);
+        return { content: [{ type: "text", text: "called" }] };
+      },
+    } as unknown as Pick<Client, "callTool">;
+    const tools = Array.from({ length: 140 }, (_, index) => ({
+      name: `tool_${index}`,
       inputSchema: { type: "object", description: index === 139 ? "x".repeat(40_000) : "small" },
     })) as Tool[];
     const catalog = createMcpCatalogTools("large", tools, client);
@@ -120,18 +150,31 @@ describe("MCP tool adapter", () => {
 
   it("keeps full oversized and non-text MCP results for evidence recall", async () => {
     const long = "A".repeat(60_000);
-    const client = { async callTool() { return { content: [
-      { type: "text", text: long }, { type: "image", data: "encoded-image", mimeType: "image/png" },
-    ] }; } } as unknown as Pick<Client, "callTool">;
+    const client = {
+      async callTool() {
+        return {
+          content: [
+            { type: "text", text: long },
+            { type: "image", data: "encoded-image", mimeType: "image/png" },
+          ],
+        };
+      },
+    } as unknown as Pick<Client, "callTool">;
     const tool = createMcpTool("large", { name: "read", inputSchema: { type: "object" } } as Tool, client);
     const result = await tool.execute({}, {} as never);
-    assert.ok(result.content?.some(item => item.type === "text" && item.text === long));
-    assert.ok(result.content?.some(item => item.type === "structured" &&
-      (item.value as { storedInEvidence?: boolean }).storedInEvidence === true));
-    assert.equal(((result.data as { mcpContent: { text: string }[] }).mcpContent[0]!).text, long);
+    assert.ok(result.content?.some((item) => item.type === "text" && item.text === long));
+    assert.ok(
+      result.content?.some(
+        (item) =>
+          item.type === "structured" && (item.value as { storedInEvidence?: boolean }).storedInEvidence === true,
+      ),
+    );
+    assert.equal((result.data as { mcpContent: { text: string }[] }).mcpContent[0]!.text, long);
     assert.equal((result.data as { mcpContent: { type: string }[] }).mcpContent[1]?.type, "image");
     const projected = JSON.parse(toolResultForModel({ ...result, evidenceId: "evidence_test" }, 64_000)) as {
-      evidenceId: string; content: { text: string }[]; data: { completeResultInEvidence: boolean };
+      evidenceId: string;
+      content: { text: string }[];
+      data: { completeResultInEvidence: boolean };
     };
     assert.equal(projected.evidenceId, "evidence_test");
     assert.ok(projected.content[0]?.text.startsWith("AAAA"));
@@ -140,78 +183,123 @@ describe("MCP tool adapter", () => {
 
   it("connects to a remote server with more than 128 advertised tools", async () => {
     const server = createServer(async (request, response) => {
-      if (request.method === "DELETE") { response.writeHead(202).end(); return; }
-      if (request.method === "GET") { response.writeHead(405).end(); return; }
+      if (request.method === "DELETE") {
+        response.writeHead(202).end();
+        return;
+      }
+      if (request.method === "GET") {
+        response.writeHead(405).end();
+        return;
+      }
       let body = "";
       for await (const chunk of request) body += chunk.toString();
       const message = JSON.parse(body) as { id?: number; method: string };
-      if (message.id === undefined) { response.writeHead(202).end(); return; }
-      const result = message.method === "initialize"
-        ? { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "large", version: "1" } }
-        : { tools: Array.from({ length: 130 }, (_, index) => ({ name: `tool_${index}`,
-          inputSchema: { type: "object" } })) };
+      if (message.id === undefined) {
+        response.writeHead(202).end();
+        return;
+      }
+      const result =
+        message.method === "initialize"
+          ? { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "large", version: "1" } }
+          : {
+              tools: Array.from({ length: 130 }, (_, index) => ({
+                name: `tool_${index}`,
+                inputSchema: { type: "object" },
+              })),
+            };
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     const connections = new McpConnections(new WorkspaceManager(process.cwd()));
     try {
-      assert.equal(await connections.connect("large", { transport: "http",
-        url: `http://127.0.0.1:${address.port}/mcp`, auth: "none", headers: {}, query: {}, enabled: false }), 130);
+      assert.equal(
+        await connections.connect("large", {
+          transport: "http",
+          url: `http://127.0.0.1:${address.port}/mcp`,
+          auth: "none",
+          headers: {},
+          query: {},
+          enabled: false,
+        }),
+        130,
+      );
       assert.equal(connections.listTools().length, 3);
       assert.equal(connections.status("large").toolCount, 130);
       assert.deepEqual(connections.connectedServers(), [{ id: "large", toolCount: 130 }]);
     } finally {
       await connections.close();
       server.closeAllConnections();
-      await new Promise<void>(resolve => server.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
   it("connects to a remote Streamable HTTP tool with an environment bearer token", async () => {
     const observed: Array<{ authorization: string; tenant: string; url: string }> = [];
     const server = createServer(async (request, response) => {
-      if (request.method === "DELETE") { response.writeHead(202).end(); return; }
-      if (request.method === "GET") { response.writeHead(405).end(); return; }
+      if (request.method === "DELETE") {
+        response.writeHead(202).end();
+        return;
+      }
+      if (request.method === "GET") {
+        response.writeHead(405).end();
+        return;
+      }
       let body = "";
       for await (const chunk of request) body += chunk.toString();
-      observed.push({ authorization: request.headers.authorization ?? "",
-        tenant: String(request.headers["x-tenant"] ?? ""), url: request.url ?? "" });
+      observed.push({
+        authorization: request.headers.authorization ?? "",
+        tenant: String(request.headers["x-tenant"] ?? ""),
+        url: request.url ?? "",
+      });
       const message = JSON.parse(body) as { id?: number; method: string; params?: { arguments?: { text?: string } } };
-      if (message.id === undefined) { response.writeHead(202).end(); return; }
-      const result = message.method === "initialize"
-        ? { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "remote-test", version: "1" } }
-        : message.method === "tools/list"
-          ? { tools: [{ name: "echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } }] }
-          : { content: [{ type: "text", text: message.params?.arguments?.text ?? "" }] };
+      if (message.id === undefined) {
+        response.writeHead(202).end();
+        return;
+      }
+      const result =
+        message.method === "initialize"
+          ? {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "remote-test", version: "1" },
+            }
+          : message.method === "tools/list"
+            ? { tools: [{ name: "echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } }] }
+            : { content: [{ type: "text", text: message.params?.arguments?.text ?? "" }] };
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     const previous = process.env.EASY_CODE_MCP_TEST_TOKEN;
     process.env.EASY_CODE_MCP_TEST_TOKEN = "test-bearer";
     const connections = new McpConnections(new WorkspaceManager(process.cwd()));
     try {
-      const count = await connections.connect("remote", { transport: "http",
-        url: `http://127.0.0.1:${address.port}/mcp`, auth: "bearer",
+      const count = await connections.connect("remote", {
+        transport: "http",
+        url: `http://127.0.0.1:${address.port}/mcp`,
+        auth: "bearer",
         bearerTokenEnvVar: "EASY_CODE_MCP_TEST_TOKEN",
-        headers: { "X-Tenant": { value: "alpha" } }, query: { region: { value: "east" } }, enabled: false });
+        headers: { "X-Tenant": { value: "alpha" } },
+        query: { region: { value: "east" } },
+        enabled: false,
+      });
       assert.equal(count, 1);
       const result = await connections.listTools()[0]!.execute({ text: "REMOTE_OK" }, {} as never);
       assert.deepEqual(result.content, [{ type: "text", text: "REMOTE_OK" }]);
-      assert.ok(observed.every(value => value.authorization === "Bearer test-bearer"));
-      assert.ok(observed.every(value => value.tenant === "alpha"));
-      assert.ok(observed.every(value => value.url.includes("region=east")));
+      assert.ok(observed.every((value) => value.authorization === "Bearer test-bearer"));
+      assert.ok(observed.every((value) => value.tenant === "alpha"));
+      assert.ok(observed.every((value) => value.url.includes("region=east")));
     } finally {
       await connections.close();
       if (previous === undefined) delete process.env.EASY_CODE_MCP_TEST_TOKEN;
       else process.env.EASY_CODE_MCP_TEST_TOKEN = previous;
       server.closeAllConnections();
-      await new Promise<void>(resolve => server.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
@@ -225,34 +313,51 @@ describe("MCP tool adapter", () => {
         stream = response;
         return;
       }
-      if (request.method !== "POST" || request.url !== "/message") { response.writeHead(404).end(); return; }
+      if (request.method !== "POST" || request.url !== "/message") {
+        response.writeHead(404).end();
+        return;
+      }
       let body = "";
       for await (const chunk of request) body += chunk.toString();
       const message = JSON.parse(body) as { id?: number; method: string; params?: { arguments?: { text?: string } } };
       response.writeHead(202).end();
       if (message.id === undefined) return;
-      const result = message.method === "initialize"
-        ? { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "sse-test", version: "1" } }
-        : message.method === "tools/list"
-          ? { tools: [{ name: "echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } }] }
-          : { content: [{ type: "text", text: message.params?.arguments?.text ?? "" }] };
+      const result =
+        message.method === "initialize"
+          ? {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "sse-test", version: "1" },
+            }
+          : message.method === "tools/list"
+            ? { tools: [{ name: "echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } }] }
+            : { content: [{ type: "text", text: message.params?.arguments?.text ?? "" }] };
       stream?.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`);
     });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     origin = `http://127.0.0.1:${address.port}`;
     const connections = new McpConnections(new WorkspaceManager(process.cwd()));
     try {
-      assert.equal(await connections.connect("legacy", { transport: "sse", url: `${origin}/sse`,
-        auth: "none", headers: {}, query: {}, enabled: false }), 1);
+      assert.equal(
+        await connections.connect("legacy", {
+          transport: "sse",
+          url: `${origin}/sse`,
+          auth: "none",
+          headers: {},
+          query: {},
+          enabled: false,
+        }),
+        1,
+      );
       const result = await connections.listTools()[0]!.execute({ text: "SSE_OK" }, {} as never);
       assert.deepEqual(result.content, [{ type: "text", text: "SSE_OK" }]);
     } finally {
       await connections.close();
       stream?.end();
       server.closeAllConnections();
-      await new Promise<void>(resolve => server.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });

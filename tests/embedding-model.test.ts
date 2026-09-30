@@ -80,12 +80,7 @@ interface EmbeddingModelModule {
     loadEnvPaths?: () => Promise<unknown>;
     openResponse?: (url: string) => Promise<Readable & { headers?: Record<string, string> }>;
     randomToken?: () => string;
-    downloadFile?: (input: {
-      url: string;
-      destinationPath: string;
-      size: number;
-      sha256: string;
-    }) => Promise<unknown>;
+    downloadFile?: (input: { url: string; destinationPath: string; size: number; sha256: string }) => Promise<unknown>;
     fsp?: unknown;
     sleep?: (milliseconds: number) => Promise<void>;
   }): Promise<ModelResult>;
@@ -94,10 +89,7 @@ interface EmbeddingModelModule {
     loadEnvPaths?: () => Promise<unknown>;
   }): Promise<string>;
   serializedManifest(manifest?: EmbeddingManifest): string;
-  verifyEmbeddingModel(options?: {
-    manifest?: EmbeddingManifest;
-    modelDirectory?: string;
-  }): Promise<ModelResult>;
+  verifyEmbeddingModel(options?: { manifest?: EmbeddingManifest; modelDirectory?: string }): Promise<ModelResult>;
 }
 
 interface PostinstallValidationModule {
@@ -117,12 +109,8 @@ interface PostinstallValidationModule {
 }
 
 const require = createRequire(import.meta.url);
-const embeddingModel = require(
-  path.join(process.cwd(), "scripts", "embedding-model.cjs"),
-) as EmbeddingModelModule;
-const postinstall = require(
-  path.join(process.cwd(), "scripts", "postinstall.cjs"),
-) as PostinstallValidationModule;
+const embeddingModel = require(path.join(process.cwd(), "scripts", "embedding-model.cjs")) as EmbeddingModelModule;
+const postinstall = require(path.join(process.cwd(), "scripts", "postinstall.cjs")) as PostinstallValidationModule;
 
 function sha256(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -146,10 +134,9 @@ function fixtureManifest(files: Array<{ path: string; content: Buffer }>): Embed
 
 function response(contents: Buffer): Readable & { headers: Record<string, string> } {
   const midpoint = Math.max(1, Math.floor(contents.length / 2));
-  return Object.assign(
-    Readable.from([contents.subarray(0, midpoint), contents.subarray(midpoint)]),
-    { headers: { "content-length": String(contents.length) } },
-  );
+  return Object.assign(Readable.from([contents.subarray(0, midpoint), contents.subarray(midpoint)]), {
+    headers: { "content-length": String(contents.length) },
+  });
 }
 
 describe("embedding model installer", () => {
@@ -174,10 +161,7 @@ describe("embedding model installer", () => {
       }),
     });
     assert.equal(receivedName, "easy-code:");
-    assert.equal(
-      resolved,
-      path.resolve(cache, "models", "paraphrase-multilingual-MiniLM-L12-v2"),
-    );
+    assert.equal(resolved, path.resolve(cache, "models", "paraphrase-multilingual-MiniLM-L12-v2"));
   });
 
   it("downloads to verified atomic files, writes the manifest, and reuses a complete cache", async () => {
@@ -206,10 +190,7 @@ describe("embedding model installer", () => {
       assert.equal(requests, 2);
       assert.equal(readFileSync(path.join(root, first.path), "utf8"), first.content.toString());
       assert.equal(readFileSync(path.join(root, second.path), "utf8"), second.content.toString());
-      assert.equal(
-        readFileSync(path.join(root, "manifest.json"), "utf8"),
-        embeddingModel.serializedManifest(manifest),
-      );
+      assert.equal(readFileSync(path.join(root, "manifest.json"), "utf8"), embeddingModel.serializedManifest(manifest));
 
       const reused = await embeddingModel.prepareEmbeddingModel({
         manifest,
@@ -224,10 +205,7 @@ describe("embedding model installer", () => {
       await embeddingModel.verifyEmbeddingModel({ manifest, modelDirectory: root });
 
       writeFileSync(path.join(root, first.path), "tampered", "utf8");
-      await assert.rejects(
-        embeddingModel.verifyEmbeddingModel({ manifest, modelDirectory: root }),
-        /size|SHA256/iu,
-      );
+      await assert.rejects(embeddingModel.verifyEmbeddingModel({ manifest, modelDirectory: root }), /size|SHA256/iu);
       assert.equal(
         readdirSync(root).some((name) => name.includes(".download-") || name.includes(".write-")),
         false,
@@ -409,7 +387,10 @@ describe("embedding model installer", () => {
         /SHA256/iu,
       );
       assert.equal(readFileSync(destinationPath, "utf8"), "previous-good-file");
-      assert.equal(readdirSync(root).some((name) => name.includes(".download-")), false);
+      assert.equal(
+        readdirSync(root).some((name) => name.includes(".download-")),
+        false,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -449,7 +430,10 @@ describe("embedding model installer", () => {
       );
       assert.equal(responseDestroyed, true);
       assert.equal(readFileSync(destinationPath, "utf8"), previousContents);
-      assert.equal(readdirSync(root).some((name) => name.includes(".download-")), false);
+      assert.equal(
+        readdirSync(root).some((name) => name.includes(".download-")),
+        false,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -459,10 +443,9 @@ describe("embedding model installer", () => {
     const root = mkdtempSync(path.join(tmpdir(), "easy-code-embedding-deadline-"));
     const destinationPath = path.join(root, "model.onnx");
     const expected = Buffer.from("eventual-download");
-    const slowResponse = Object.assign(
-      new Readable({ read() {} }),
-      { headers: { "content-length": String(expected.length) } },
-    );
+    const slowResponse = Object.assign(new Readable({ read() {} }), {
+      headers: { "content-length": String(expected.length) },
+    });
     const destroy = slowResponse.destroy.bind(slowResponse);
     let responseDestroyed = false;
     slowResponse.destroy = ((error?: Error) => {
@@ -489,7 +472,10 @@ describe("embedding model installer", () => {
         /absolute deadline/iu,
       );
       assert.equal(responseDestroyed, true);
-      assert.equal(readdirSync(root).some((name) => name.includes(".download-")), false);
+      assert.equal(
+        readdirSync(root).some((name) => name.includes(".download-")),
+        false,
+      );
     } finally {
       slowResponse.destroy();
       rmSync(root, { recursive: true, force: true });
@@ -541,11 +527,7 @@ describe("embedding model installer", () => {
                     inputNames: ["input_ids", "attention_mask", "token_type_ids"],
                     outputNames: ["last_hidden_state"],
                     run: async (feeds: Record<string, FakeTensor>) => {
-                      assert.deepEqual(Object.keys(feeds).sort(), [
-                        "attention_mask",
-                        "input_ids",
-                        "token_type_ids",
-                      ]);
+                      assert.deepEqual(Object.keys(feeds).sort(), ["attention_mask", "input_ids", "token_type_ids"]);
                       return {
                         last_hidden_state: {
                           dims: [1, 3, 384],
@@ -563,10 +545,7 @@ describe("embedding model installer", () => {
           }),
         },
       );
-      assert.equal(
-        loadedModelPath,
-        path.join(root, "onnx", "model_quantized.onnx"),
-      );
+      assert.equal(loadedModelPath, path.join(root, "onnx", "model_quantized.onnx"));
       assert.equal(released, true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -600,11 +579,7 @@ describe("embedding model installer", () => {
     await postinstall.validateOrama({
       loadOrama: async () => ({
         create: async () => ({}),
-        insertMultiple: async (
-          _database: unknown,
-          batch: readonly InstallCheckDocument[],
-          batchSize?: number,
-        ) => {
+        insertMultiple: async (_database: unknown, batch: readonly InstallCheckDocument[], batchSize?: number) => {
           events.push("insertMultiple");
           insertBatchSize = batchSize;
           for (const document of batch) {
@@ -641,19 +616,11 @@ describe("embedding model installer", () => {
     });
 
     assert.equal(insertBatchSize, 100);
-    assert.deepEqual(insertedDocuments.map((document) => document.id), [
-      "easy_code_vector_a",
-      "easy_code_vector_b",
-      "easy_code_vector_c",
-      "easy_code_vector_d",
-    ]);
-    assert.deepEqual(events, [
-      "insertMultiple",
-      "search",
-      "search",
-      "remove:easy_code_vector_a",
-      "search",
-    ]);
+    assert.deepEqual(
+      insertedDocuments.map((document) => document.id),
+      ["easy_code_vector_a", "easy_code_vector_b", "easy_code_vector_c", "easy_code_vector_d"],
+    );
+    assert.deepEqual(events, ["insertMultiple", "search", "search", "remove:easy_code_vector_a", "search"]);
     assert.equal(searchOptions.length, 3);
     const firstSearch = searchOptions[0];
     assert.ok(firstSearch);
@@ -683,10 +650,7 @@ function writeProviderFixture(manifest: unknown = PROVIDER_MODEL_MANIFEST): stri
     JSON.stringify({ model_type: "bert", hidden_size: 384, pad_token_id: 0 }),
   );
   writeFileSync(path.join(directory, "tokenizer.json"), "{}");
-  writeFileSync(
-    path.join(directory, "tokenizer_config.json"),
-    JSON.stringify({ pad_token: "<pad>" }),
-  );
+  writeFileSync(path.join(directory, "tokenizer_config.json"), JSON.stringify({ pad_token: "<pad>" }));
   writeFileSync(path.join(directory, "special_tokens_map.json"), "{}");
   writeFileSync(path.join(directory, "onnx", "model_quantized.onnx"), "fixture");
   return directory;
@@ -718,7 +682,7 @@ function providerTokenizer(): EmbeddingTokenizer {
     },
     // Deliberately differs from config.json's pad_token_id to match the pinned
     // multilingual tokenizer conversion used in production.
-    token_to_id: (token) => token === "<pad>" ? 1 : undefined,
+    token_to_id: (token) => (token === "<pad>" ? 1 : undefined),
   };
 }
 
@@ -756,9 +720,7 @@ describe("local embedding provider", () => {
         const ids = feeds.input_ids as ProviderFakeTensor;
         captured.push(ids);
         const [batchSize, sequenceLength] = ids.dims as readonly [number, number];
-        const values = new Float32Array(
-          batchSize * sequenceLength * EMBEDDING_DIMENSION,
-        );
+        const values = new Float32Array(batchSize * sequenceLength * EMBEDDING_DIMENSION);
         for (let batch = 0; batch < batchSize; batch += 1) {
           for (let token = 0; token < sequenceLength; token += 1) {
             const offset = (batch * sequenceLength + token) * EMBEDDING_DIMENSION;
@@ -790,10 +752,7 @@ describe("local embedding provider", () => {
       });
       const vectors = await provider.embed(["short", "long"]);
       assert.deepEqual(captured[0]?.dims, [2, 4]);
-      assert.deepEqual(
-        Array.from(captured[0]!.data, Number),
-        [101, 11, 102, 1, 101, 21, 22, 102],
-      );
+      assert.deepEqual(Array.from(captured[0]!.data, Number), [101, 11, 102, 1, 101, 21, 22, 102]);
       assert.ok(Math.abs((vectors[0]?.[0] ?? 0) - Math.SQRT1_2) < 1e-6);
       assert.ok(Math.abs((vectors[0]?.[1] ?? 0) - Math.SQRT1_2) < 1e-6);
       assert.ok(Math.abs((vectors[1]?.[0] ?? 0) - 1) < 1e-6);
@@ -853,9 +812,7 @@ describe("local embedding provider", () => {
         runs += 1;
         const input = feeds.input_ids as ProviderFakeTensor;
         const [batchSize, sequenceLength] = input.dims as readonly [number, number];
-        const values = new Float32Array(
-          batchSize * sequenceLength * EMBEDDING_DIMENSION,
-        );
+        const values = new Float32Array(batchSize * sequenceLength * EMBEDDING_DIMENSION);
         for (let batch = 0; batch < batchSize; batch += 1) {
           for (let token = 0; token < sequenceLength; token += 1) {
             values[(batch * sequenceLength + token) * EMBEDDING_DIMENSION] = 1;
@@ -894,7 +851,10 @@ describe("local embedding provider", () => {
       assert.equal(tokenizerCreations, 1);
       assert.equal(sessionCreations, 1);
       assert.equal(runs, 3);
-      assert.deepEqual(results.map((result) => result.length), [1, 1, 2]);
+      assert.deepEqual(
+        results.map((result) => result.length),
+        [1, 1, 2],
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

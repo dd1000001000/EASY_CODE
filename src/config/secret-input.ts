@@ -21,9 +21,7 @@ export async function readSecretInput(
 ): Promise<string> {
   if (!input.isTTY) return readPipedSecret(input);
   if (typeof input.setRawMode !== "function") {
-    throw new Error(
-      "Hidden terminal input is unavailable. Pipe the API key through standard input instead.",
-    );
+    throw new Error("Hidden terminal input is unavailable. Pipe the API key through standard input instead.");
   }
   return readHiddenSecret(input, output, prompt);
 }
@@ -49,10 +47,7 @@ function readPipedSecret(input: SecretInputStream): Promise<string> {
       else resolve(value.replace(/\r?\n$/u, ""));
     };
     const onData = (chunk: Buffer | string): void => {
-      byteCount +=
-        typeof chunk === "string"
-          ? Buffer.byteLength(chunk, "utf8")
-          : chunk.byteLength;
+      byteCount += typeof chunk === "string" ? Buffer.byteLength(chunk, "utf8") : chunk.byteLength;
       value += typeof chunk === "string" ? chunk : decoder.write(chunk);
       if (byteCount > MAX_SECRET_BYTES) {
         finish(new Error("API key input is too long."));
@@ -75,11 +70,7 @@ function readPipedSecret(input: SecretInputStream): Promise<string> {
   });
 }
 
-function readHiddenSecret(
-  input: SecretInputStream,
-  output: SecretOutputStream,
-  prompt: string,
-): Promise<string> {
+function readHiddenSecret(input: SecretInputStream, output: SecretOutputStream, prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     let value = "";
     let settled = false;
@@ -149,10 +140,8 @@ function readHiddenSecret(
         }
       }
     };
-    const onEnd = (): void =>
-      finish(new Error("Terminal input ended before the API key was submitted."));
-    const onClose = (): void =>
-      finish(new Error("Terminal input closed before the API key was submitted."));
+    const onEnd = (): void => finish(new Error("Terminal input ended before the API key was submitted."));
+    const onClose = (): void => finish(new Error("Terminal input closed before the API key was submitted."));
     const onError = (): void => finish(new Error("Unable to read API key from the terminal."));
 
     try {

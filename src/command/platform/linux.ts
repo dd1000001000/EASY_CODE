@@ -10,19 +10,46 @@ export function terminateLinuxProcessTree(process: KillableSubprocess, graceMs: 
 
 export class LinuxCommandWorker implements CommandWorkerPlatform {
   readonly detached = true;
-  startupTimeoutMs(limits: Readonly<RuntimeLimits>): number { return limits.sandboxStartupPosixMs; }
-  launchEnvironment(prepared: PreparedCommand) { return prepared.environment; }
-  stdinMode(): "ignore" { return "ignore"; }
-  needsAttachment(): boolean { return false; }
-  async attach(): Promise<void> { /* POSIX worker starts in its own process group. */ }
-  continueWorker(): void { /* No handshake. */ }
-  hasSupervisor(): boolean { return false; }
+  startupTimeoutMs(limits: Readonly<RuntimeLimits>): number {
+    return limits.sandboxStartupPosixMs;
+  }
+  launchEnvironment(prepared: PreparedCommand) {
+    return prepared.environment;
+  }
+  stdinMode(): "ignore" {
+    return "ignore";
+  }
+  needsAttachment(): boolean {
+    return false;
+  }
+  async attach(): Promise<void> {
+    /* POSIX worker starts in its own process group. */
+  }
+  continueWorker(): void {
+    /* No handshake. */
+  }
+  hasSupervisor(): boolean {
+    return false;
+  }
   cooperativeStop(process: WorkerProcess): boolean {
     if (!process.pid) return false;
-    try { globalThis.process.kill(process.pid, "SIGTERM"); return true; } catch { return false; }
+    try {
+      globalThis.process.kill(process.pid, "SIGTERM");
+      return true;
+    } catch {
+      return false;
+    }
   }
-  async quiesce(): Promise<void> { throw new Error("No Linux job supervisor"); }
-  async cleanupRequested(): Promise<void> { throw new Error("Unexpected cleanup request on Linux"); }
-  forceStop(process: WorkerProcess) { return terminateLinuxProcessTree(process, 1_500); }
-  stopAttached(): undefined { return undefined; }
+  async quiesce(): Promise<void> {
+    throw new Error("No Linux job supervisor");
+  }
+  async cleanupRequested(): Promise<void> {
+    throw new Error("Unexpected cleanup request on Linux");
+  }
+  forceStop(process: WorkerProcess) {
+    return terminateLinuxProcessTree(process, 1_500);
+  }
+  stopAttached(): undefined {
+    return undefined;
+  }
 }

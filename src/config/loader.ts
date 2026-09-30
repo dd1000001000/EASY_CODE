@@ -4,30 +4,12 @@ import path from "node:path";
 import { parse as parseToml } from "toml";
 import { ZodError } from "zod";
 
-import type {
-  EasyCodeConfig,
-  ProviderConfig,
-  ProviderName,
-} from "../core/types.js";
-import {
-  PROVIDER_CATALOG,
-  providerEnvironment,
-} from "../models/catalog.js";
-import {
-  SystemKeyringCredentialStore,
-  type ApiKeyCredentialStore,
-} from "./credentials.js";
-import {
-  createDefaultEasyCodeConfig,
-  resolveEasyCodePaths,
-  type EasyCodePaths,
-} from "./defaults.js";
+import type { EasyCodeConfig, ProviderConfig, ProviderName } from "../core/types.js";
+import { PROVIDER_CATALOG, providerEnvironment } from "../models/catalog.js";
+import { SystemKeyringCredentialStore, type ApiKeyCredentialStore } from "./credentials.js";
+import { createDefaultEasyCodeConfig, resolveEasyCodePaths, type EasyCodePaths } from "./defaults.js";
 import { validateEasyCodeConfig } from "./schema.js";
-import {
-  normalizeCurrentTomlConfig,
-  type EasyCodeConfigLayer,
-  type ProviderConfigLayer,
-} from "./toml-format.js";
+import { normalizeCurrentTomlConfig, type EasyCodeConfigLayer, type ProviderConfigLayer } from "./toml-format.js";
 import { DEFAULT_RUNTIME_LIMITS } from "./runtime-limits.js";
 
 type UnknownRecord = Record<string, unknown>;
@@ -62,23 +44,15 @@ function isRecord(value: unknown): value is UnknownRecord {
 }
 
 function compact<T extends Record<string, unknown>>(value: T): T {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  ) as T;
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
 }
 
-function applyProviderLayer(
-  base: ProviderConfig,
-  layer: ProviderConfigLayer | undefined,
-): ProviderConfig {
+function applyProviderLayer(base: ProviderConfig, layer: ProviderConfigLayer | undefined): ProviderConfig {
   if (!layer) return base;
   return { ...base, ...compact(layer) } as ProviderConfig;
 }
 
-function applyLayer(
-  base: EasyCodeConfig,
-  layer: EasyCodeConfigLayer,
-): EasyCodeConfig {
+function applyLayer(base: EasyCodeConfig, layer: EasyCodeConfigLayer): EasyCodeConfig {
   const topLevel = compact({
     provider: layer.provider,
     mode: layer.mode,
@@ -104,26 +78,38 @@ function applyLayer(
     ...base,
     ...topLevel,
     limits: {
-      ...base.limits, ...layer.limits,
-      steps: layer.limits?.steps === undefined ? base.limits.steps
-        : isRecord(layer.limits.steps) ? { ...base.limits.steps, ...layer.limits.steps }
-          : layer.limits.steps,
-      maxResponseTokens: layer.limits?.maxResponseTokens === undefined ? base.limits.maxResponseTokens
-        : isRecord(layer.limits.maxResponseTokens) ? { ...base.limits.maxResponseTokens, ...layer.limits.maxResponseTokens }
-          : layer.limits.maxResponseTokens,
-      maxConcurrentSubagents: layer.limits?.maxConcurrentSubagents === undefined ? base.limits.maxConcurrentSubagents
-        : isRecord(layer.limits.maxConcurrentSubagents) ? { ...base.limits.maxConcurrentSubagents, ...layer.limits.maxConcurrentSubagents }
-          : layer.limits.maxConcurrentSubagents,
-      providerStreamIdleTimeoutMs: layer.limits?.providerStreamIdleTimeoutMs === undefined
-        ? base.limits.providerStreamIdleTimeoutMs
-        : isRecord(layer.limits.providerStreamIdleTimeoutMs)
-          ? { ...base.limits.providerStreamIdleTimeoutMs, ...layer.limits.providerStreamIdleTimeoutMs }
-          : layer.limits.providerStreamIdleTimeoutMs,
-      providerBufferedTimeoutMs: layer.limits?.providerBufferedTimeoutMs === undefined
-        ? base.limits.providerBufferedTimeoutMs
-        : isRecord(layer.limits.providerBufferedTimeoutMs)
-          ? { ...base.limits.providerBufferedTimeoutMs, ...layer.limits.providerBufferedTimeoutMs }
-          : layer.limits.providerBufferedTimeoutMs,
+      ...base.limits,
+      ...layer.limits,
+      steps:
+        layer.limits?.steps === undefined
+          ? base.limits.steps
+          : isRecord(layer.limits.steps)
+            ? { ...base.limits.steps, ...layer.limits.steps }
+            : layer.limits.steps,
+      maxResponseTokens:
+        layer.limits?.maxResponseTokens === undefined
+          ? base.limits.maxResponseTokens
+          : isRecord(layer.limits.maxResponseTokens)
+            ? { ...base.limits.maxResponseTokens, ...layer.limits.maxResponseTokens }
+            : layer.limits.maxResponseTokens,
+      maxConcurrentSubagents:
+        layer.limits?.maxConcurrentSubagents === undefined
+          ? base.limits.maxConcurrentSubagents
+          : isRecord(layer.limits.maxConcurrentSubagents)
+            ? { ...base.limits.maxConcurrentSubagents, ...layer.limits.maxConcurrentSubagents }
+            : layer.limits.maxConcurrentSubagents,
+      providerStreamIdleTimeoutMs:
+        layer.limits?.providerStreamIdleTimeoutMs === undefined
+          ? base.limits.providerStreamIdleTimeoutMs
+          : isRecord(layer.limits.providerStreamIdleTimeoutMs)
+            ? { ...base.limits.providerStreamIdleTimeoutMs, ...layer.limits.providerStreamIdleTimeoutMs }
+            : layer.limits.providerStreamIdleTimeoutMs,
+      providerBufferedTimeoutMs:
+        layer.limits?.providerBufferedTimeoutMs === undefined
+          ? base.limits.providerBufferedTimeoutMs
+          : isRecord(layer.limits.providerBufferedTimeoutMs)
+            ? { ...base.limits.providerBufferedTimeoutMs, ...layer.limits.providerBufferedTimeoutMs }
+            : layer.limits.providerBufferedTimeoutMs,
     },
     providers,
   } as EasyCodeConfig;
@@ -136,16 +122,16 @@ async function readTomlLayer(configPath: string): Promise<EasyCodeConfigLayer> {
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return {};
     const code = isNodeError(error) ? ` (${error.code})` : "";
-    throw new EasyCodeConfigError(
-      `Unable to read configuration file${code}: ${configPath}`,
-      configPath,
-    );
+    throw new EasyCodeConfigError(`Unable to read configuration file${code}: ${configPath}`, configPath);
   }
 
   try {
     const document = parseToml(source) as unknown;
-    if (isRecord(document) && isRecord(document.providers) &&
-        Object.values(document.providers).some(value => isRecord(value) && "api_key" in value)) {
+    if (
+      isRecord(document) &&
+      isRecord(document.providers) &&
+      Object.values(document.providers).some((value) => isRecord(value) && "api_key" in value)
+    ) {
       throw new EasyCodeConfigError(
         `Provider API keys in TOML are no longer supported: ${configPath}. Remove api_key and use easy-code config set <provider>.api-key.`,
         configPath,
@@ -159,17 +145,11 @@ async function readTomlLayer(configPath: string): Promise<EasyCodeConfigLayer> {
   } catch (error) {
     if (error instanceof EasyCodeConfigError) throw error;
     // Parser messages can echo source lines, which could contain an API key.
-    throw new EasyCodeConfigError(
-      `Unable to parse TOML configuration file: ${configPath}`,
-      configPath,
-    );
+    throw new EasyCodeConfigError(`Unable to parse TOML configuration file: ${configPath}`, configPath);
   }
 }
 
-function assertSafeWorkspaceLayer(
-  layer: EasyCodeConfigLayer,
-  configPath: string,
-): void {
+function assertSafeWorkspaceLayer(layer: EasyCodeConfigLayer, configPath: string): void {
   const forbidden: string[] = [];
   if (layer.approvalModel !== undefined) forbidden.push("approval_model");
   for (const [provider, providerLayer] of Object.entries(layer.providers ?? {})) {
@@ -201,16 +181,11 @@ function envValue(env: NodeJS.ProcessEnv, ...names: string[]): string | undefine
   return undefined;
 }
 
-function envInteger(
-  env: NodeJS.ProcessEnv,
-  ...names: string[]
-): number | undefined {
+function envInteger(env: NodeJS.ProcessEnv, ...names: string[]): number | undefined {
   const value = envValue(env, ...names);
   if (value === undefined) return undefined;
   if (!/^\d+$/.test(value)) {
-    throw new EasyCodeConfigError(
-      `Environment variable ${names[0]} must be a non-negative integer`,
-    );
+    throw new EasyCodeConfigError(`Environment variable ${names[0]} must be a non-negative integer`);
   }
   return Number(value);
 }
@@ -227,17 +202,22 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
       const parsed: unknown = JSON.parse(encodedLimits);
       if (!isRecord(parsed)) throw new Error();
       limits = parsed;
-    } catch { throw new EasyCodeConfigError("EASY_CODE_LIMITS_JSON must be a JSON object"); }
+    } catch {
+      throw new EasyCodeConfigError("EASY_CODE_LIMITS_JSON must be a JSON object");
+    }
   }
   const providerLayers = Object.fromEntries(
     PROVIDER_CATALOG.map(({ provider }) => {
       const names = providerEnvironment(provider);
-      return [provider, compact({
-        baseUrl: envValue(env, ...names.baseUrl),
-        model: envValue(env, ...names.model),
-        timeoutMs: envInteger(env, ...names.timeoutMs),
-        maxRetries: envInteger(env, ...names.maxRetries),
-      })];
+      return [
+        provider,
+        compact({
+          baseUrl: envValue(env, ...names.baseUrl),
+          model: envValue(env, ...names.model),
+          timeoutMs: envInteger(env, ...names.timeoutMs),
+          maxRetries: envInteger(env, ...names.maxRetries),
+        }),
+      ];
     }),
   );
   return compact({
@@ -274,21 +254,21 @@ async function credentialLayer(
   };
 
   const entries = await Promise.all(
-    PROVIDER_CATALOG.map(async ({ provider }) => [
-      provider,
-      compact({ apiKey: await read(provider) }),
-    ] as const),
+    PROVIDER_CATALOG.map(async ({ provider }) => [provider, compact({ apiKey: await read(provider) })] as const),
   );
   return { providers: Object.fromEntries(entries) };
 }
 
 function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
-  const providers = Object.fromEntries(Object.entries(config.providers).map(
-    ([provider, providerConfig]) => [provider, {
-      ...providerConfig,
-      baseUrl: providerConfig.baseUrl.replace(/\/+$/, ""),
-    }],
-  ));
+  const providers = Object.fromEntries(
+    Object.entries(config.providers).map(([provider, providerConfig]) => [
+      provider,
+      {
+        ...providerConfig,
+        baseUrl: providerConfig.baseUrl.replace(/\/+$/, ""),
+      },
+    ]),
+  );
   return {
     ...config,
     workspaceRoot: path.resolve(cwd, config.workspaceRoot),
@@ -301,9 +281,7 @@ function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
 }
 
 function validationMessage(error: ZodError): string {
-  return error.issues
-    .map((issue) => `${issue.path.join(".") || "config"}: ${issue.message}`)
-    .join("; ");
+  return error.issues.map((issue) => `${issue.path.join(".") || "config"}: ${issue.message}`).join("; ");
 }
 
 /**
@@ -311,41 +289,20 @@ function validationMessage(error: ZodError): string {
  * provider's effective endpoint. Explicit path options are applied last.
  * Explicit loader path/workspace options determine where configuration is found.
  */
-export async function loadEasyCodeConfig(
-  options: LoadEasyCodeConfigOptions = {},
-): Promise<EasyCodeConfig> {
+export async function loadEasyCodeConfig(options: LoadEasyCodeConfigOptions = {}): Promise<EasyCodeConfig> {
   const env = options.env ?? process.env;
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const generatedPaths = resolveEasyCodePaths(options.appName ?? "easy-code");
   const paths: EasyCodePaths = {
-    configDir: path.resolve(
-      options.configDir ??
-        envValue(env, "EASY_CODE_CONFIG_DIR") ??
-        generatedPaths.configDir,
-    ),
-    dataDir: path.resolve(
-      options.dataDir ??
-        envValue(env, "EASY_CODE_DATA_DIR") ??
-        generatedPaths.dataDir,
-    ),
-    cacheDir: path.resolve(
-      options.cacheDir ??
-        envValue(env, "EASY_CODE_CACHE_DIR") ??
-        generatedPaths.cacheDir,
-    ),
+    configDir: path.resolve(options.configDir ?? envValue(env, "EASY_CODE_CONFIG_DIR") ?? generatedPaths.configDir),
+    dataDir: path.resolve(options.dataDir ?? envValue(env, "EASY_CODE_DATA_DIR") ?? generatedPaths.dataDir),
+    cacheDir: path.resolve(options.cacheDir ?? envValue(env, "EASY_CODE_CACHE_DIR") ?? generatedPaths.cacheDir),
   };
-  const workspaceRoot = path.resolve(
-    options.workspaceRoot ??
-      envValue(env, "EASY_CODE_WORKSPACE_ROOT") ??
-      cwd,
-  );
+  const workspaceRoot = path.resolve(options.workspaceRoot ?? envValue(env, "EASY_CODE_WORKSPACE_ROOT") ?? cwd);
 
-  const userConfigPath = path.resolve(
-    options.userConfigPath ?? path.join(paths.configDir, "config.toml"),
-  );
+  const userConfigPath = path.resolve(options.userConfigPath ?? path.join(paths.configDir, "config.toml"));
   const workspaceConfigPath = path.resolve(
-    options.workspaceConfigPath ??
-      path.join(workspaceRoot, ".easycode", "config.toml"),
+    options.workspaceConfigPath ?? path.join(workspaceRoot, ".easycode", "config.toml"),
   );
 
   const [userLayer, workspaceLayer] = await Promise.all([
@@ -358,9 +315,10 @@ export async function loadEasyCodeConfig(
   config = applyLayer(config, userLayer);
   config = applyLayer(config, workspaceLayer);
   config = applyLayer(config, environment);
-  config = applyLayer(config, await credentialLayer(
-    options.credentialStore ?? new SystemKeyringCredentialStore(), config,
-  ));
+  config = applyLayer(
+    config,
+    await credentialLayer(options.credentialStore ?? new SystemKeyringCredentialStore(), config),
+  );
   config = applyLayer(
     config,
     compact({
@@ -377,9 +335,7 @@ export async function loadEasyCodeConfig(
     return validateEasyCodeConfig(config);
   } catch (error) {
     if (error instanceof ZodError) {
-      throw new EasyCodeConfigError(
-        `Invalid EASY CODE configuration: ${validationMessage(error)}`,
-      );
+      throw new EasyCodeConfigError(`Invalid EASY CODE configuration: ${validationMessage(error)}`);
     }
     throw error;
   }

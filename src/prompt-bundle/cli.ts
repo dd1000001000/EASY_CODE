@@ -3,11 +3,7 @@ import path from "node:path";
 import chalk from "chalk";
 import type { Command } from "commander";
 
-import {
-  activePromptBundleBinding,
-  ensurePromptBundle,
-  loadPromptBundleCatalog,
-} from "./manager.js";
+import { activePromptBundleBinding, ensurePromptBundle, loadPromptBundleCatalog } from "./manager.js";
 import { getEasyCodeHome } from "./paths.js";
 
 function printBundleSummary(): void {
@@ -26,9 +22,7 @@ function printBundleSummary(): void {
 
 /** Register integrity diagnostics for the fixed, non-configurable Bundle. */
 export function registerPromptBundleCommands(program: Command): Command {
-  const prompts = program
-    .command("prompts")
-    .description("inspect or repair the trusted EASY CODE prompt/tool Bundle");
+  const prompts = program.command("prompts").description("inspect or repair the trusted EASY CODE prompt/tool Bundle");
 
   prompts
     .command("doctor")

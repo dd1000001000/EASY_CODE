@@ -8,7 +8,9 @@ const path = require("node:path");
 
 async function main() {
   const view = await import(pathToFileURL(path.join(__dirname, "../dist/ui/tui/disclosure-view.js")).href);
-  const { FullScreenWriter } = await import(pathToFileURL(path.join(__dirname, "../dist/ui/tui/full-screen-writer.js")).href);
+  const { FullScreenWriter } = await import(
+    pathToFileURL(path.join(__dirname, "../dist/ui/tui/full-screen-writer.js")).href
+  );
   const body = "source code: const value = compute(input); 验证失败，需要继续调查。\n".repeat(20);
   const median = (run) => {
     const samples = [];
@@ -24,8 +26,11 @@ async function main() {
     const started = performance.now();
     let state = view.createDisclosureViewState({
       nodes: Array.from({ length: count }, (_, index) => ({ id: String(index), kind: "text", text: body })),
-      columns: 120, rows: 40,
-      headerLines: ["header"], composerLines: ["Request >"], footerLines: ["status"],
+      columns: 120,
+      rows: 40,
+      headerLines: ["header"],
+      composerLines: ["Request >"],
+      footerLines: ["status"],
     });
     const initialMs = Number((performance.now() - started).toFixed(3));
     const output = { isTTY: true, columns: 120, rows: 40, write: () => true };
@@ -38,7 +43,9 @@ async function main() {
       return view.renderDisclosureView(state);
     };
     results.push({
-      nodes: count, characters: count * body.length, initialMs,
+      nodes: count,
+      characters: count * body.length,
+      initialMs,
       renderMs: median(() => view.renderDisclosureView(state)),
       scrollRefreshMs: median(scroll),
       idleRefreshMs: median(() => {
@@ -53,4 +60,7 @@ async function main() {
   console.log("Warm medians in milliseconds; writer uses a no-op sink, not a real terminal FPS measurement.");
 }
 
-main().catch((error) => { console.error(error); process.exitCode = 1; });
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

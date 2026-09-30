@@ -5,8 +5,8 @@ export class AgentRuntime extends ProductionAgentRuntime {
   constructor(dependencies: AgentRuntimeDependencies) {
     super({
       ...dependencies,
-      authorizeToolExecution: dependencies.authorizeToolExecution ??
-        (async request => request.binding?.sourceId === "builtin"),
+      authorizeToolExecution:
+        dependencies.authorizeToolExecution ?? (async (request) => request.binding?.sourceId === "builtin"),
     });
   }
 }

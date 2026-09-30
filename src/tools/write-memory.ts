@@ -1,11 +1,6 @@
 import { z } from "zod";
 
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { estimatedTokens } from "../context/token-budget.js";
 import { assertDurableMemory } from "../memory/admission.js";
@@ -15,10 +10,7 @@ import {
   MIN_MEMORY_CONTENT_CHARS,
   type MemoryManager,
 } from "../memory/memory-manager.js";
-import {
-  containsSensitiveInformation,
-  redactSensitiveInformation,
-} from "../memory/sensitive.js";
+import { containsSensitiveInformation, redactSensitiveInformation } from "../memory/sensitive.js";
 import { projectMemoryIdFromRoot } from "../memory/memory-manager.js";
 import { displayTextSchema, projectHeadTailText } from "../utils/bounded-text.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
@@ -26,13 +18,7 @@ import { assertMatchingWorkspace, toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import type { MemoryToolSession } from "./memory-tool-session.js";
 
-const memoryCategorySchema = z.enum([
-  "preference",
-  "convention",
-  "architecture",
-  "decision",
-  "environment",
-]);
+const memoryCategorySchema = z.enum(["preference", "convention", "architecture", "decision", "environment"]);
 const memoryContentSchema = z.string().trim().min(MIN_MEMORY_CONTENT_CHARS);
 const memoryReasonSchema = displayTextSchema(MAX_MEMORY_REASON_CHARS);
 const memoryIdSchema = z.string().trim().regex(MEMORY_ID_PATTERN);
@@ -43,14 +29,16 @@ const memoryIdSchema = z.string().trim().regex(MEMORY_ID_PATTERN);
  * Harmless write-side fields may be present for another operation and are
  * ignored; read-side fields remain unknown and are rejected before execution.
  */
-export const writeMemoryInputSchema = z.object({
-  operation: z.enum(["remember", "revise", "forget", "move"]),
-  scope: z.enum(["global", "project"]).optional(),
-  memoryId: memoryIdSchema.optional(),
-  content: memoryContentSchema.optional(),
-  category: memoryCategorySchema.optional(),
-  reason: memoryReasonSchema,
-}).strict();
+export const writeMemoryInputSchema = z
+  .object({
+    operation: z.enum(["remember", "revise", "forget", "move"]),
+    scope: z.enum(["global", "project"]).optional(),
+    memoryId: memoryIdSchema.optional(),
+    content: memoryContentSchema.optional(),
+    category: memoryCategorySchema.optional(),
+    reason: memoryReasonSchema,
+  })
+  .strict();
 
 export type WriteMemoryInput = z.infer<typeof writeMemoryInputSchema>;
 
@@ -81,13 +69,7 @@ export class WriteMemoryTool implements AgentTool {
             },
             category: {
               type: "string",
-              enum: [
-                "preference",
-                "convention",
-                "architecture",
-                "decision",
-                "environment",
-              ],
+              enum: ["preference", "convention", "architecture", "decision", "environment"],
             },
             reason: {
               type: "string",
@@ -181,8 +163,7 @@ export class WriteMemoryTool implements AgentTool {
         this.assertSafeWrite(content, parsed.reason);
         return {
           ok: true,
-          summary:
-            `Revision of long-term memory ${memoryId} was staged and will commit only if this turn succeeds.`,
+          summary: `Revision of long-term memory ${memoryId} was staged and will commit only if this turn succeeds.`,
           data: { staged: true, operation: parsed.operation, memoryId, truncated: contentTruncated },
           memoryMutation: {
             action: "revise",
@@ -198,8 +179,7 @@ export class WriteMemoryTool implements AgentTool {
       this.assertSafeWrite(undefined, parsed.reason);
       return {
         ok: true,
-        summary:
-          `Expiration of long-term memory ${memoryId} was staged and will commit only if this turn succeeds.`,
+        summary: `Expiration of long-term memory ${memoryId} was staged and will commit only if this turn succeeds.`,
         data: { staged: true, operation: parsed.operation, memoryId },
         memoryMutation: {
           action: "forget",
@@ -213,11 +193,7 @@ export class WriteMemoryTool implements AgentTool {
     }
   }
 
-  private requireField<T>(
-    value: T | undefined,
-    field: string,
-    operation: WriteMemoryInput["operation"],
-  ): T {
+  private requireField<T>(value: T | undefined, field: string, operation: WriteMemoryInput["operation"]): T {
     if (value === undefined) {
       throw new Error(`write_memory ${operation} requires field \"${field}\"`);
     }
@@ -227,13 +203,11 @@ export class WriteMemoryTool implements AgentTool {
   private assertSafeWrite(content: string | undefined, reason: string): void {
     if (
       (content !== undefined &&
-        (containsSensitiveInformation(content) ||
-          redactSensitiveInformation(content) !== content)) ||
+        (containsSensitiveInformation(content) || redactSensitiveInformation(content) !== content)) ||
       containsSensitiveInformation(reason) ||
       redactSensitiveInformation(reason) !== reason
     ) {
       throw new Error("Sensitive information cannot be staged as long-term memory");
     }
   }
-
 }

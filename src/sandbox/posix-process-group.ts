@@ -10,8 +10,12 @@ export async function stopPosixProcessGroup(
 ): Promise<boolean> {
   if (!Number.isSafeInteger(pid) || pid <= 1) return false;
   const send = (value: NodeJS.Signals | 0): "present" | "gone" | "unknown" => {
-    try { signal(-pid, value); return "present"; }
-    catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown"; }
+    try {
+      signal(-pid, value);
+      return "present";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown";
+    }
   };
   for (const action of ["SIGTERM", "SIGKILL"] as const) {
     const sent = send(action);
@@ -24,7 +28,7 @@ export async function stopPosixProcessGroup(
       if (state === "unknown") return false;
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
-      await new Promise<void>(resolve => setTimeout(resolve, Math.min(25, remaining)));
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(25, remaining)));
     }
   }
   return false;

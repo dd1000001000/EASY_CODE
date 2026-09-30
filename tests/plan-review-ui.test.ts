@@ -46,10 +46,7 @@ class TtyOutput extends PassThrough {
   readonly rows = 30;
 }
 
-async function waitForText(
-  read: () => string,
-  expected: RegExp,
-): Promise<void> {
+async function waitForText(read: () => string, expected: RegExp): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (expected.test(read())) return;
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -65,18 +62,21 @@ function plan(): PlanProposal {
     proposedAt: "2026-08-27T00:00:00.000Z",
     title: "Add authentication",
     overview: "Add login and registration before course selection.",
-    steps: [{
-      title: "Implement the UI",
-      description: "Add login, registration, and signed-in states.",
-      verification: "Verify login, logout, and two isolated accounts.",
-    }],
+    steps: [
+      {
+        title: "Implement the UI",
+        description: "Add login, registration, and signed-in states.",
+        verification: "Verify login, logout, and two isolated accounts.",
+      },
+    ],
   };
 }
 
 describe("plan review terminal UI", () => {
   it("approves only the supplied current plan after an unattended menu timeout", async () => {
     const input = new TtyInput();
-    const output = new TtyOutput(); output.resume();
+    const output = new TtyOutput();
+    output.resume();
     const terminal = new Terminal(input, output);
     const decision = await terminal.reviewPlan({ plan: plan(), idleTimeoutMs: 15 });
     assert.deepEqual(decision, { action: "approve" });
@@ -103,9 +103,7 @@ describe("plan review terminal UI", () => {
 
   it("treats arbitrary Unicode text as direct adjustment feedback", async () => {
     const secret = "abcdefghijklmnopqrstuvwxyz";
-    const terminal = new ScriptedPlanTerminal([
-      `请把登录框改成弹窗\u001B[31m api_key=${secret}`,
-    ]);
+    const terminal = new ScriptedPlanTerminal([`请把登录框改成弹窗\u001B[31m api_key=${secret}`]);
     const decision = await terminal.reviewPlan();
 
     assert.equal(decision.action, "adjust");
@@ -182,15 +180,18 @@ describe("plan review terminal UI", () => {
       });
       output.resume();
       const terminal = new Terminal(input, output);
-      assert.equal(terminal.beginShell({
-        threadId: "thread_plan_review",
-        workspaceRoot: "F:\\projects\\plan-review",
-        mode: "auto",
-        provider: "deepseek",
-        model: "deepseek-v4-flash",
-        thinkingEffort: "medium",
-        contextTokens: 0,
-      }), true);
+      assert.equal(
+        terminal.beginShell({
+          threadId: "thread_plan_review",
+          workspaceRoot: "F:\\projects\\plan-review",
+          mode: "auto",
+          provider: "deepseek",
+          model: "deepseek-v4-flash",
+          thinkingEffort: "medium",
+          contextTokens: 0,
+        }),
+        true,
+      );
       terminal.showPlan(plan());
       let settled = false;
       const review = terminal.reviewPlan().then((decision) => {
@@ -232,15 +233,18 @@ describe("plan review terminal UI", () => {
       const output = new TtyOutput();
       output.resume();
       const terminal = new Terminal(input, output);
-      assert.equal(terminal.beginShell({
-        threadId: "thread_numbered_plan_review",
-        workspaceRoot: "F:\\projects\\plan-review",
-        mode: "auto",
-        provider: "deepseek",
-        model: "deepseek-v4-flash",
-        thinkingEffort: "medium",
-        contextTokens: 0,
-      }), true);
+      assert.equal(
+        terminal.beginShell({
+          threadId: "thread_numbered_plan_review",
+          workspaceRoot: "F:\\projects\\plan-review",
+          mode: "auto",
+          provider: "deepseek",
+          model: "deepseek-v4-flash",
+          thinkingEffort: "medium",
+          contextTokens: 0,
+        }),
+        true,
+      );
 
       const review = terminal.reviewPlan();
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -258,9 +262,7 @@ describe("plan review terminal UI", () => {
         };
       };
       assert.deepEqual(
-        state.uiState.transcript
-          .filter((entry) => entry.kind === "user")
-          .map((entry) => entry.text),
+        state.uiState.transcript.filter((entry) => entry.kind === "user").map((entry) => entry.text),
         ["A\nB"],
       );
       terminal.close();

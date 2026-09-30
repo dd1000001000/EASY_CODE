@@ -52,6 +52,8 @@ export const CURRENT_JOURNAL_EVENT_TYPES = [
   "context.compaction.transport_failed",
   "context.history.evicted",
   "context.maintenance.checked",
+  "context.auto.started",
+  "context.auto.finished",
   "context.manual.started",
   "context.manual.finished",
   "context.memory.gated",
@@ -116,18 +118,10 @@ export const CURRENT_JOURNAL_EVENT_TYPES = [
 ] as const;
 
 export type JournalEventType = (typeof CURRENT_JOURNAL_EVENT_TYPES)[number];
-export type CommandJournalEventType = Extract<
-  JournalEventType,
-  `command.${string}` | `network.${string}`
->;
-export type ContextCompactionJournalEventType = Extract<
-  JournalEventType,
-  `context.compaction.${string}`
->;
+export type CommandJournalEventType = Extract<JournalEventType, `command.${string}` | `network.${string}`>;
+export type ContextCompactionJournalEventType = Extract<JournalEventType, `context.compaction.${string}`>;
 
-const CURRENT_JOURNAL_EVENT_TYPE_SET: ReadonlySet<string> = new Set(
-  CURRENT_JOURNAL_EVENT_TYPES,
-);
+const CURRENT_JOURNAL_EVENT_TYPE_SET: ReadonlySet<string> = new Set(CURRENT_JOURNAL_EVENT_TYPES);
 
 export function isJournalEventType(value: unknown): value is JournalEventType {
   return typeof value === "string" && CURRENT_JOURNAL_EVENT_TYPE_SET.has(value);

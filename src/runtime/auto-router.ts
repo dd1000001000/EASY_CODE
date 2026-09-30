@@ -65,10 +65,7 @@ export interface AutoRouteContextProjection {
 }
 
 /** Ephemeral observability hook for the exact controller request on the wire. */
-export type AutoRouteRequestObserver = (
-  request: Readonly<ModelRequest>,
-  attempt: number,
-) => void;
+export type AutoRouteRequestObserver = (request: Readonly<ModelRequest>, attempt: number) => void;
 
 /**
  * `select_mode` is a Runtime-only control tool. It is deliberately defined
@@ -174,69 +171,61 @@ function sanitizeRouteContextText(value: string): string {
 function boundedRouteText(value: string, limit: number): string {
   if (limit <= 0) return "";
   if (value.length <= limit) return value;
-  const marker = loadPromptBundleCatalog().readText(
-    "controllers/prior-context-truncated.md",
-  );
+  const marker = loadPromptBundleCatalog().readText("controllers/prior-context-truncated.md");
   if (limit <= marker.length + 4) return value.slice(0, limit);
   const available = Math.max(0, limit - marker.length);
   const head = Math.ceil(available / 2);
   return `${value.slice(0, head)}${marker}${value.slice(-(available - head))}`;
 }
 
-export function projectAutoRouteContext(
-  context: AutoRouteContext | undefined,
-): AutoRouteContextProjection {
+export function projectAutoRouteContext(context: AutoRouteContext | undefined): AutoRouteContextProjection {
   if (!context) return { content: "", priorMessageBoundary: 0 };
   const sections: string[] = [];
   const summary = sanitizeRouteContextText(
-    boundedRouteText(
-      context.workingSummary ?? "",
-      MAX_AUTO_ROUTE_SUMMARY_CHARS * 2,
-    ),
+    boundedRouteText(context.workingSummary ?? "", MAX_AUTO_ROUTE_SUMMARY_CHARS * 2),
   );
   if (summary) {
-    sections.push(loadPromptBundleCatalog().render("controllers/thread-summary.md", {
-      content: boundedRouteText(summary, MAX_AUTO_ROUTE_SUMMARY_CHARS),
-    }).trimEnd());
+    sections.push(
+      loadPromptBundleCatalog()
+        .render("controllers/thread-summary.md", {
+          content: boundedRouteText(summary, MAX_AUTO_ROUTE_SUMMARY_CHARS),
+        })
+        .trimEnd(),
+    );
   }
 
   const priorMessages = context.priorMessages ?? [];
   const eligible = priorMessages
     .map((message, originalIndex) => ({ message, originalIndex }))
-    .filter((entry): entry is {
-      message: Extract<ChatMessage, { role: "user" | "assistant" }>;
-      originalIndex: number;
-    } => entry.message.role === "user" || entry.message.role === "assistant")
+    .filter(
+      (
+        entry,
+      ): entry is {
+        message: Extract<ChatMessage, { role: "user" | "assistant" }>;
+        originalIndex: number;
+      } => entry.message.role === "user" || entry.message.role === "assistant",
+    )
     .filter((entry) => Boolean(entry.message.content?.trim()))
     .slice(-MAX_AUTO_ROUTE_MESSAGES)
     .map(({ message, originalIndex }) => {
       const content = boundedRouteText(
-        sanitizeRouteContextText(
-          boundedRouteText(
-            message.content ?? "",
-            MAX_AUTO_ROUTE_MESSAGE_CHARS * 2,
-          ),
-        ),
+        sanitizeRouteContextText(boundedRouteText(message.content ?? "", MAX_AUTO_ROUTE_MESSAGE_CHARS * 2)),
         MAX_AUTO_ROUTE_MESSAGE_CHARS,
       );
       return {
         originalIndex,
-        content: loadPromptBundleCatalog().render(
-          message.role === "user"
-            ? "controllers/prior-user.md"
-            : "controllers/prior-assistant.md",
-          { content },
-        ).trimEnd(),
+        content: loadPromptBundleCatalog()
+          .render(message.role === "user" ? "controllers/prior-user.md" : "controllers/prior-assistant.md", { content })
+          .trimEnd(),
       };
     });
 
-  const emptyWrapper = loadPromptBundleCatalog().render("controllers/prior-thread-context.md", {
-    content: "",
-  }).trimEnd();
-  const contentBudget = Math.max(
-    0,
-    MAX_AUTO_ROUTE_CONTEXT_CHARS - emptyWrapper.length,
-  );
+  const emptyWrapper = loadPromptBundleCatalog()
+    .render("controllers/prior-thread-context.md", {
+      content: "",
+    })
+    .trimEnd();
+  const contentBudget = Math.max(0, MAX_AUTO_ROUTE_CONTEXT_CHARS - emptyWrapper.length);
   let remaining = contentBudget - sections.join("\n\n").length;
   const selected: Array<{ content: string; originalIndex: number }> = [];
   for (let index = eligible.length - 1; index >= 0 && remaining > 0; index -= 1) {
@@ -252,16 +241,16 @@ export function projectAutoRouteContext(
   const priorMessageBoundary = selected[0]?.originalIndex ?? priorMessages.length;
   if (!sections.length) return { content: "", priorMessageBoundary };
   return {
-    content: loadPromptBundleCatalog().render("controllers/prior-thread-context.md", {
-      content: sections.join("\n\n"),
-    }).trimEnd(),
+    content: loadPromptBundleCatalog()
+      .render("controllers/prior-thread-context.md", {
+        content: sections.join("\n\n"),
+      })
+      .trimEnd(),
     priorMessageBoundary,
   };
 }
 
-export function buildAutoRouteContext(
-  context: AutoRouteContext | undefined,
-): string {
+export function buildAutoRouteContext(context: AutoRouteContext | undefined): string {
   return projectAutoRouteContext(context).content;
 }
 
@@ -274,45 +263,45 @@ function buildRouterMessages(
 ): ChatMessage[] {
   const priorContext = buildAutoRouteContext(context);
   const currentRequest = boundedRouteText(
-    sanitizeRouteContextText(
-      boundedRouteText(userInput, MAX_AUTO_ROUTE_CURRENT_REQUEST_CHARS * 2),
-    ),
+    sanitizeRouteContextText(boundedRouteText(userInput, MAX_AUTO_ROUTE_CURRENT_REQUEST_CHARS * 2)),
     MAX_AUTO_ROUTE_CURRENT_REQUEST_CHARS,
   );
   const catalog = loadPromptBundleCatalog();
-  const retryInstruction = retry
-    ? catalog.readText("controllers/auto-router-retry.md").trimEnd()
-    : "";
+  const retryInstruction = retry ? catalog.readText("controllers/auto-router-retry.md").trimEnd() : "";
   const controllerPolicyPrefix = controllerPolicy?.trim()
     ? catalog.render("controllers/auto-router-policy-prefix.md", {
         controllerPolicy: controllerPolicy.trim(),
       })
     : "";
   const namingInstruction = context?.threadNeedsTitle
-    ? `\n\n${catalog.readText("controllers/thread-title-unclaimed.md").trim()}` : "";
+    ? `\n\n${catalog.readText("controllers/thread-title-unclaimed.md").trim()}`
+    : "";
   return [
     {
       role: "system",
-      content: catalog.render("controllers/auto-router.md", {
-        controllerPolicyPrefix,
-        retryInstruction,
-      }).trimEnd() + namingInstruction,
+      content:
+        catalog
+          .render("controllers/auto-router.md", {
+            controllerPolicyPrefix,
+            retryInstruction,
+          })
+          .trimEnd() + namingInstruction,
     },
     {
       role: "user",
       content: priorContext
-        ? `${priorContext}\n\n${catalog.render("controllers/current-request.md", {
-            content: currentRequest,
-          }).trimEnd()}`
+        ? `${priorContext}\n\n${catalog
+            .render("controllers/current-request.md", {
+              content: currentRequest,
+            })
+            .trimEnd()}`
         : currentRequest,
       ...(images.length ? { images: [...images] } : {}),
     },
   ];
 }
 
-type ParsedAutoRouteDecision =
-  | Omit<AutoModeSelection, "attempts">
-  | Omit<AutoDirectResponse, "attempts">;
+type ParsedAutoRouteDecision = Omit<AutoModeSelection, "attempts"> | Omit<AutoDirectResponse, "attempts">;
 
 function parseAutoRouteDecision(
   message: Extract<ChatMessage, { role: "assistant" }>,
@@ -324,8 +313,7 @@ function parseAutoRouteDecision(
   if (
     !call ||
     call.type !== "function" ||
-    (call.function.name !== SELECT_MODE_TOOL_NAME &&
-      call.function.name !== RESPOND_DIRECTLY_TOOL_NAME)
+    (call.function.name !== SELECT_MODE_TOOL_NAME && call.function.name !== RESPOND_DIRECTLY_TOOL_NAME)
   ) {
     return undefined;
   }
@@ -339,17 +327,20 @@ function parseAutoRouteDecision(
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const record = input as Record<string, unknown>;
   const keys = Object.keys(record).sort();
-  const allowedKeys = call.function.name === RESPOND_DIRECTLY_TOOL_NAME
-    ? ["content", "threadTitle"] : ["mode", "reason", "threadTitle"];
-  if (keys.some(key => !allowedKeys.includes(key))) return undefined;
+  const allowedKeys =
+    call.function.name === RESPOND_DIRECTLY_TOOL_NAME ? ["content", "threadTitle"] : ["mode", "reason", "threadTitle"];
+  if (keys.some((key) => !allowedKeys.includes(key))) return undefined;
   if (threadNeedsTitle && !keys.includes("threadTitle")) return undefined;
   let threadTitle: string | undefined;
   if (record.threadTitle !== undefined) {
     if (typeof record.threadTitle !== "string") return undefined;
     const candidate = sanitizeRouteContextText(record.threadTitle);
     if (candidate) {
-      try { threadTitle = normalizeThreadTitle(candidate); }
-      catch { return undefined; }
+      try {
+        threadTitle = normalizeThreadTitle(candidate);
+      } catch {
+        return undefined;
+      }
     } else if (threadNeedsTitle) return undefined;
   }
   if (call.function.name === RESPOND_DIRECTLY_TOOL_NAME) {
@@ -358,10 +349,7 @@ function parseAutoRouteDecision(
     const content = boundedText(sanitizeRouteContextText(record.content), MAX_AUTO_DIRECT_RESPONSE_CHARS);
     if (!content || content.length > MAX_AUTO_DIRECT_RESPONSE_CHARS) return undefined;
     const reasoningContent = message.reasoning_content?.trim()
-      ? boundedRouteText(
-          sanitizeRouteContextText(message.reasoning_content),
-          MAX_AUTO_DIRECT_REASONING_CHARS,
-        )
+      ? boundedRouteText(sanitizeRouteContextText(message.reasoning_content), MAX_AUTO_DIRECT_REASONING_CHARS)
       : undefined;
     return {
       kind: "direct_response",
@@ -395,9 +383,7 @@ function routeAttempt(
     attempt,
     outcome,
     ...(response.usage ? { usage: { ...response.usage } } : {}),
-    ...(response.finishReason !== undefined
-      ? { finishReason: response.finishReason }
-      : {}),
+    ...(response.finishReason !== undefined ? { finishReason: response.finishReason } : {}),
   };
 }
 
@@ -418,15 +404,14 @@ export async function determineAutoRoute(
     let response: Awaited<ReturnType<ModelProvider["complete"]>>;
     try {
       const request: ModelRequest = {
-        messages: buildRouterMessages(
-          userInput,
-          images,
-          context,
-          attempt > 0,
-          controllerPolicy,
-        ).map(message => directOnly && message.role === "system"
-          ? { ...message, content: `${message.content}\n\nThe work mode was already selected as DIRECT. Answer with respond_directly only; do not select a different mode.` }
-          : message),
+        messages: buildRouterMessages(userInput, images, context, attempt > 0, controllerPolicy).map((message) =>
+          directOnly && message.role === "system"
+            ? {
+                ...message,
+                content: `${message.content}\n\nThe work mode was already selected as DIRECT. Answer with respond_directly only; do not select a different mode.`,
+              }
+            : message,
+        ),
         tools: directOnly ? [respondDirectlyTool()] : [...autoRouteToolDefinitions()],
         signal,
         temperature: 0,
@@ -445,13 +430,18 @@ export async function determineAutoRoute(
       }
       throw error;
     }
-    const decision = incompleteModelOutput(response) ? undefined
+    const decision = incompleteModelOutput(response)
+      ? undefined
       : parseAutoRouteDecision(response.message, context?.threadNeedsTitle);
     const accepted = directOnly && decision?.kind !== "direct_response" ? undefined : decision;
-    attempts.push(
-      routeAttempt(attempt + 1, accepted?.kind ?? "invalid", response),
-    );
+    attempts.push(routeAttempt(attempt + 1, accepted?.kind ?? "invalid", response));
     if (accepted) return { ...accepted, attempts: [...attempts] };
   }
-  return { kind: "route", mode: "code", reason: "Auto routing content corrections exhausted; continue with ordinary Code workflow and unchanged command permissions.", attempts };
+  return {
+    kind: "route",
+    mode: "code",
+    reason:
+      "Auto routing content corrections exhausted; continue with ordinary Code workflow and unchanged command permissions.",
+    attempts,
+  };
 }

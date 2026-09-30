@@ -12,13 +12,27 @@ class ImmutableMap<K, V> implements ReadonlyMap<K, V> {
     this.#values = new Map(entries);
   }
 
-  get size(): number { return this.#values.size; }
-  get(key: K): V | undefined { return this.#values.get(key); }
-  has(key: K): boolean { return this.#values.has(key); }
-  entries(): MapIterator<[K, V]> { return this.#values.entries(); }
-  keys(): MapIterator<K> { return this.#values.keys(); }
-  values(): MapIterator<V> { return this.#values.values(); }
-  [Symbol.iterator](): MapIterator<[K, V]> { return this.#values[Symbol.iterator](); }
+  get size(): number {
+    return this.#values.size;
+  }
+  get(key: K): V | undefined {
+    return this.#values.get(key);
+  }
+  has(key: K): boolean {
+    return this.#values.has(key);
+  }
+  entries(): MapIterator<[K, V]> {
+    return this.#values.entries();
+  }
+  keys(): MapIterator<K> {
+    return this.#values.keys();
+  }
+  values(): MapIterator<V> {
+    return this.#values.values();
+  }
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.#values[Symbol.iterator]();
+  }
   forEach(callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void {
     this.#values.forEach((value, key) => callbackfn.call(thisArg, value, key, this));
   }
@@ -116,26 +130,29 @@ function snapshotTool(tool: AgentTool, observer?: WorkspaceToolObserver): AgentT
     metadata: frozenMetadata,
     ...(tool.approvalTarget ? { approvalTarget: tool.approvalTarget } : {}),
     ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
-    execute: (input: unknown, context: Parameters<AgentTool["execute"]>[1]) => observer
-      ? observer.execute(tool, input, context) : tool.execute(input, context),
+    execute: (input: unknown, context: Parameters<AgentTool["execute"]>[1]) =>
+      observer ? observer.execute(tool, input, context) : tool.execute(input, context),
   });
 }
 
 function catalogHash(bindings: readonly Omit<ToolCatalogBinding, "catalogRevision" | "catalogHash">[]): string {
   // Tool order is provider-visible and affects prompt-cache identity, so it is
   // deliberately part of the catalog hash rather than normalized away.
-  const canonical = bindings
-    .map(({ toolId, modelName, sourceId, sourceKind, sourceVersion, schemaHash: schema, metadataHash: metadata }) => ({
-      toolId, modelName, sourceId, sourceKind, sourceVersion: sourceVersion ?? null,
-      schemaHash: schema, metadataHash: metadata,
-    }));
+  const canonical = bindings.map(
+    ({ toolId, modelName, sourceId, sourceKind, sourceVersion, schemaHash: schema, metadataHash: metadata }) => ({
+      toolId,
+      modelName,
+      sourceId,
+      sourceKind,
+      sourceVersion: sourceVersion ?? null,
+      schemaHash: schema,
+      metadataHash: metadata,
+    }),
+  );
   return `sha256:${createHash("sha256").update(canonicalJson(canonical)).digest("hex")}`;
 }
 
-export function snapshotToolSet(
-  tools: readonly AgentTool[],
-  revision = 1,
-): ToolCatalogSnapshot {
+export function snapshotToolSet(tools: readonly AgentTool[], revision = 1): ToolCatalogSnapshot {
   const names = new Set<string>();
   const ids = new Set<string>();
   const snapshotTools = tools.map((tool) => snapshotTool(tool));
@@ -209,8 +226,9 @@ export class ToolCatalog {
   }
 
   async snapshot(): Promise<ToolCatalogSnapshot> {
-    const sources = [...this.sources.values()].sort((left, right) =>
-      (left.priority ?? 100) - (right.priority ?? 100) || left.id.localeCompare(right.id));
+    const sources = [...this.sources.values()].sort(
+      (left, right) => (left.priority ?? 100) - (right.priority ?? 100) || left.id.localeCompare(right.id),
+    );
     const tools: AgentTool[] = [];
     const partialBindings: Array<Omit<ToolCatalogBinding, "catalogRevision" | "catalogHash">> = [];
     const names = new Set<string>();
@@ -220,7 +238,7 @@ export class ToolCatalog {
         await source.start?.();
         this.startedSources.add(source.id);
       }
-      const listed = [...await source.listTools()];
+      const listed = [...(await source.listTools())];
       if (source.kind === "external") listed.sort((left, right) => left.name.localeCompare(right.name));
       for (const tool of listed) {
         const metadata = validateSourceTool(source, tool);

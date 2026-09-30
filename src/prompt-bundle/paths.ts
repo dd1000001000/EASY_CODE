@@ -17,4 +17,3 @@ export function getPackagedPromptBundleDirectory(): string {
 export function promptBundleDirectoryName(bundleVersion: string): string {
   return `prompt-${bundleVersion}`;
 }
-

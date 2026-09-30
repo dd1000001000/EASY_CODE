@@ -41,29 +41,30 @@ function deferred<T>(): Deferred<T> {
 }
 
 function graph(taskIds: readonly string[]): TaskGraph {
-  return applyTaskGraphOperation(undefined, {
-    action: "create",
-    goal: "Coordinate isolated child tasks",
-    tasks: taskIds.map((id) => ({
-      id,
-      title: `Task ${id}`,
-      description: `Complete only ${id}`,
-      dependencies: [],
-      inputs: [],
-      expectedArtifacts: [`artifact-${id}`],
-      completionChecks: [`${id} is verified`],
-      failureHandling: `Release ${id} for reassignment`,
-    })),
-  }, {
-    turnId: "turn_create_subagent_graph",
-    now: () => new Date("2026-08-27T10:00:00.000Z"),
-  });
+  return applyTaskGraphOperation(
+    undefined,
+    {
+      action: "create",
+      goal: "Coordinate isolated child tasks",
+      tasks: taskIds.map((id) => ({
+        id,
+        title: `Task ${id}`,
+        description: `Complete only ${id}`,
+        dependencies: [],
+        inputs: [],
+        expectedArtifacts: [`artifact-${id}`],
+        completionChecks: [`${id} is verified`],
+        failureHandling: `Release ${id} for reassignment`,
+      })),
+    },
+    {
+      turnId: "turn_create_subagent_graph",
+      now: () => new Date("2026-08-27T10:00:00.000Z"),
+    },
+  );
 }
 
-function context(
-  taskGraph: Readonly<TaskGraph> | undefined,
-  overrides: Partial<ToolContext> = {},
-): ToolContext {
+function context(taskGraph: Readonly<TaskGraph> | undefined, overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     workspaceRoot: process.cwd(),
     mode: "code",
@@ -92,8 +93,10 @@ function idFactory(ids: readonly string[]): () => string {
   };
 }
 
-function lifecycle(result: Readonly<ToolExecutionResult>, action: SubagentLifecycleUpdate["action"]):
-SubagentLifecycleUpdate {
+function lifecycle(
+  result: Readonly<ToolExecutionResult>,
+  action: SubagentLifecycleUpdate["action"],
+): SubagentLifecycleUpdate {
   const update = result.subagentLifecycle;
   assert.ok(update, `Expected a ${action} lifecycle update`);
   assert.equal(update.action, action);
@@ -105,10 +108,12 @@ function completedOutcome(taskId: string): SubagentExecutionOutcome {
     taskId,
     outcome: "completed",
     summary: `Completed ${taskId} in an isolated context.`,
-    completionEvidence: [{
-      check: `${taskId} is verified`,
-      evidence: `${taskId} focused verification passed`,
-    }],
+    completionEvidence: [
+      {
+        check: `${taskId} is verified`,
+        evidence: `${taskId} focused verification passed`,
+      },
+    ],
   };
   return {
     report,
@@ -119,11 +124,7 @@ function completedOutcome(taskId: string): SubagentExecutionOutcome {
   };
 }
 
-function resultArtifact(
-  agentId: string,
-  taskId: string,
-  environmentId: string,
-): ResultArtifact {
+function resultArtifact(agentId: string, taskId: string, environmentId: string): ResultArtifact {
   return {
     id: "artifact_00000000-0000-4000-8000-000000000099",
     agentId,
@@ -158,7 +159,32 @@ describe("SubagentCoordinator", () => {
         createAgentId: idFactory([AGENT_ONE]),
         run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
       });
-      const spawned = await coordinator.spawn({
+      const spawned = await coordinator.spawn(
+        {
+          action: "spawn",
+          task: {
+            title: "Inspect",
+            description: "Inspect an isolated source.",
+            completionChecks: ["Evidence is reported"],
+          },
+          instructions: "Inspect only.",
+          ...(child ? { thinkingEffort: child } : {}),
+        },
+        context(undefined, { thinkingEffort: parent }),
+      );
+      assert.equal(spawned.subagentAssignment?.thinkingEffort, expected);
+      assert.equal(coordinator.snapshot("thread_subagent_coordinator")[0]?.thinkingEffort, expected);
+      assert.equal(
+        (spawned.data as { concurrency: { limit: number } }).concurrency.limit,
+        maxConcurrentSubagents(parent),
+      );
+    }
+  });
+
+  it("rejects effort above the parent before allocating a child, for both assignment forms", async () => {
+    const taskForms: SpawnSubagentRequest[] = [
+      { action: "spawn", taskId: "inspect", instructions: "Inspect only." },
+      {
         action: "spawn",
         task: {
           title: "Inspect",
@@ -166,28 +192,14 @@ describe("SubagentCoordinator", () => {
           completionChecks: ["Evidence is reported"],
         },
         instructions: "Inspect only.",
-        ...(child ? { thinkingEffort: child } : {}),
-      }, context(undefined, { thinkingEffort: parent }));
-      assert.equal(spawned.subagentAssignment?.thinkingEffort, expected);
-      assert.equal(coordinator.snapshot("thread_subagent_coordinator")[0]?.thinkingEffort, expected);
-      assert.equal((spawned.data as { concurrency: { limit: number } }).concurrency.limit,
-        maxConcurrentSubagents(parent));
-    }
-  });
-
-  it("rejects effort above the parent before allocating a child, for both assignment forms", async () => {
-    const taskForms: SpawnSubagentRequest[] = [
-      { action: "spawn", taskId: "inspect", instructions: "Inspect only." },
-      { action: "spawn", task: { title: "Inspect", description: "Inspect an isolated source.",
-        completionChecks: ["Evidence is reported"] }, instructions: "Inspect only." },
+      },
     ];
     for (const task of taskForms) {
       const coordinator = new SubagentCoordinator({
         createAgentId: idFactory([AGENT_ONE]),
         run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
       });
-      const parentContext = context("taskId" in task ? graph(["inspect"]) : undefined,
-        { thinkingEffort: "low" });
+      const parentContext = context("taskId" in task ? graph(["inspect"]) : undefined, { thinkingEffort: "low" });
       await assert.rejects(
         coordinator.spawn({ ...task, thinkingEffort: "medium" }, parentContext),
         /cannot exceed the parent's low/u,
@@ -204,28 +216,33 @@ describe("SubagentCoordinator", () => {
       createAgentId: idFactory([AGENT_ONE]),
       run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      task: { title: "Inspect", description: "Inspect an isolated source.",
-        completionChecks: ["Evidence is reported"] },
-      instructions: "Inspect only.",
-      thinkingEffort: "low",
-    }, context(undefined, { thinkingEffort: "high" }));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        task: {
+          title: "Inspect",
+          description: "Inspect an isolated source.",
+          completionChecks: ["Evidence is reported"],
+        },
+        instructions: "Inspect only.",
+        thinkingEffort: "low",
+      },
+      context(undefined, { thinkingEffort: "high" }),
+    );
     const assignment = spawned.subagentAssignment;
     assert.ok(assignment);
     const restored = new SubagentCoordinator({
       run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
     });
-    restored.restore({ parentThreadId: "thread_subagent_coordinator",
-      createdByTurnId: "turn_subagent_coordinator", assignment }, { deferActivation: true });
+    restored.restore(
+      { parentThreadId: "thread_subagent_coordinator", createdByTurnId: "turn_subagent_coordinator", assignment },
+      { deferActivation: true },
+    );
     assert.equal(restored.snapshot("thread_subagent_coordinator")[0]?.thinkingEffort, "low");
   });
 
   it("scales the default concurrency limit as 2, 2, 4, and 8", async () => {
-    assert.deepEqual(
-      (["none", "low", "medium", "high"] as const).map(maxConcurrentSubagents),
-      [2, 2, 4, 8],
-    );
+    assert.deepEqual((["none", "low", "medium", "high"] as const).map(maxConcurrentSubagents), [2, 2, 4, 8]);
 
     for (const [thinkingEffort, limit] of [
       ["none", 2],
@@ -235,40 +252,50 @@ describe("SubagentCoordinator", () => {
     ] as const) {
       // Isolate the simultaneous cap from the independent per-turn creation budget.
       const limits = { ...defaultRuntimeLimits(), maxSubagentsPerTurn: 9 };
-      const ids = Array.from({ length: limit + 1 }, (_value, index) =>
-        `subagent_00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`);
+      const ids = Array.from(
+        { length: limit + 1 },
+        (_value, index) => `subagent_00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`,
+      );
       const coordinator = new SubagentCoordinator({
         createAgentId: idFactory(ids),
         run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
       });
       let latestActive = 0;
       for (let index = 0; index < limit; index += 1) {
-        const spawned = await coordinator.spawn({
-          action: "spawn",
-          task: {
-            title: `Standalone ${index + 1}`,
-            description: "Perform isolated verification without a DAG.",
-            completionChecks: ["Verification is reported"],
+        const spawned = await coordinator.spawn(
+          {
+            action: "spawn",
+            task: {
+              title: `Standalone ${index + 1}`,
+              description: "Perform isolated verification without a DAG.",
+              completionChecks: ["Verification is reported"],
+            },
+            instructions: "Keep the result concise.",
           },
-          instructions: "Keep the result concise.",
-        }, context(undefined, { thinkingEffort, limits }));
-        const concurrency = (spawned.data as {
-          concurrency: { active: number; limit: number };
-        }).concurrency;
+          context(undefined, { thinkingEffort, limits }),
+        );
+        const concurrency = (
+          spawned.data as {
+            concurrency: { active: number; limit: number };
+          }
+        ).concurrency;
         latestActive = concurrency.active;
         assert.equal(concurrency.limit, limit);
       }
       assert.equal(latestActive, limit);
       await assert.rejects(
-        coordinator.spawn({
-          action: "spawn",
-          task: {
-            title: "One too many",
-            description: "This assignment must exceed the limit.",
-            completionChecks: ["It is never started"],
+        coordinator.spawn(
+          {
+            action: "spawn",
+            task: {
+              title: "One too many",
+              description: "This assignment must exceed the limit.",
+              completionChecks: ["It is never started"],
+            },
+            instructions: "Do not run.",
           },
-          instructions: "Do not run.",
-        }, context(undefined, { thinkingEffort, limits })),
+          context(undefined, { thinkingEffort, limits }),
+        ),
         new RegExp(`concurrency limit is ${limit}`, "u"),
       );
     }
@@ -282,10 +309,19 @@ describe("SubagentCoordinator", () => {
       createAgentId: idFactory([AGENT_ONE, AGENT_TWO, AGENT_THREE]),
       run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
     });
-    const spawn = (thinkingEffort: "low" | "medium") => coordinator.spawn({
-      action: "spawn", task: { title: "Inspect", description: "Inspect isolated source.",
-        completionChecks: ["Evidence is reported"] }, instructions: "Inspect only.",
-    }, context(undefined, { thinkingEffort, limits }));
+    const spawn = (thinkingEffort: "low" | "medium") =>
+      coordinator.spawn(
+        {
+          action: "spawn",
+          task: {
+            title: "Inspect",
+            description: "Inspect isolated source.",
+            completionChecks: ["Evidence is reported"],
+          },
+          instructions: "Inspect only.",
+        },
+        context(undefined, { thinkingEffort, limits }),
+      );
     await spawn("low");
     await spawn("low");
     await assert.rejects(spawn("low"), /concurrency limit is 2/u);
@@ -303,9 +339,13 @@ describe("SubagentCoordinator", () => {
     });
 
     for (const thinkingEffort of ["none", "low", "medium", "high"] as const) {
-      assert.doesNotThrow(() => coordinator.assertAuthorized(context(undefined, {
-        thinkingEffort,
-      })));
+      assert.doesNotThrow(() =>
+        coordinator.assertAuthorized(
+          context(undefined, {
+            thinkingEffort,
+          }),
+        ),
+      );
     }
     assert.throws(
       () => coordinator.assertAuthorized(context(taskGraph, { agentRole: "subagent" })),
@@ -329,11 +369,14 @@ describe("SubagentCoordinator", () => {
       },
     });
 
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "inspect",
-      instructions: "Inspect only the assigned task and return concise evidence.",
-    }, context(taskGraph));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "inspect",
+        instructions: "Inspect only the assigned task and return concise evidence.",
+      },
+      context(taskGraph),
+    );
     assert.equal(spawned.ok, true);
     assert.equal(requests.length, 0, "prepared children must not start before Runtime commit");
     const assigned = spawned.taskGraphUpdate?.tasks.find((task) => task.id === "inspect");
@@ -341,9 +384,11 @@ describe("SubagentCoordinator", () => {
     assert.equal(assigned?.owner, "subagent");
     assert.equal(assigned?.assignedAgentId, AGENT_ONE);
     assert.equal(spawned.subagentTaskOperation?.action, "claim");
-    const spawnedAgent = (spawned.data as {
-      agent: { taskGraphId: string; taskId: string; taskTitle: string };
-    }).agent;
+    const spawnedAgent = (
+      spawned.data as {
+        agent: { taskGraphId: string; taskId: string; taskTitle: string };
+      }
+    ).agent;
     assert.equal(spawnedAgent.taskGraphId, taskGraph.id);
     assert.equal(spawnedAgent.taskId, "inspect");
     assert.equal(spawnedAgent.taskTitle, "Task inspect");
@@ -355,20 +400,23 @@ describe("SubagentCoordinator", () => {
     assert.equal(requests[0]?.record.taskId, "inspect");
     assert.equal(requests[0]?.record.taskTitle, "Task inspect");
 
-    const status = await coordinator.status({ action: "status" }, context(
-      spawned.taskGraphUpdate as TaskGraph,
-    ));
-    const statusAgent = (status.data as {
-      agents: Array<{ taskId: string; taskTitle: string }>;
-    }).agents[0];
+    const status = await coordinator.status({ action: "status" }, context(spawned.taskGraphUpdate as TaskGraph));
+    const statusAgent = (
+      status.data as {
+        agents: Array<{ taskId: string; taskTitle: string }>;
+      }
+    ).agents[0];
     assert.equal(statusAgent?.taskId, "inspect");
     assert.equal(statusAgent?.taskTitle, "Task inspect");
 
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(spawned.taskGraphUpdate as TaskGraph));
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(spawned.taskGraphUpdate as TaskGraph),
+    );
     assert.equal(waited.subagentTaskOperation?.action, "complete");
     assert.equal(waited.taskGraphUpdate?.status, "completed");
     coordinator.commitLifecycle(lifecycle(waited, "observe"));
@@ -388,8 +436,7 @@ describe("SubagentCoordinator", () => {
       baseCommit: "1".repeat(40),
       resultCommit: "2".repeat(40),
       parentArtifactIds: [],
-      changedFiles: Array.from({ length: 3_000 }, (_value, index) =>
-        `generated/private-${index}.txt`),
+      changedFiles: Array.from({ length: 3_000 }, (_value, index) => `generated/private-${index}.txt`),
       createdAt: "2026-08-27T10:00:01.000Z",
       updatedAt: "2026-08-27T10:00:02.000Z",
     };
@@ -418,18 +465,24 @@ describe("SubagentCoordinator", () => {
         resultArtifact: artifact,
       }),
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "inspect",
-      instructions: "Inspect the bounded artifact lineage path.",
-    }, context(taskGraph));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "inspect",
+        instructions: "Inspect the bounded artifact lineage path.",
+      },
+      context(taskGraph),
+    );
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
 
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(spawned.taskGraphUpdate as TaskGraph));
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(spawned.taskGraphUpdate as TaskGraph),
+    );
     assert.equal(waited.subagentTaskOperation?.action, "complete");
     if (waited.subagentTaskOperation?.action !== "complete") {
       throw new Error("Expected a completed subagent transition");
@@ -441,20 +494,22 @@ describe("SubagentCoordinator", () => {
     assert.equal("logicalWorkspaceRoot" in (reference ?? {}), false);
     assert.ok(JSON.stringify(waited.taskGraphUpdate).length < 10_000);
 
-    const publicAgent = (waited.data as {
-      agents: Array<{
-        environment?: {
-          kind: string;
-          executionRoot?: string;
-          logicalWorkspaceRoot?: string;
-        };
-        resultArtifact?: {
-          changedFileCount: number;
-          changedFiles?: string[];
-          logicalWorkspaceRoot?: string;
-        };
-      }>;
-    }).agents[0];
+    const publicAgent = (
+      waited.data as {
+        agents: Array<{
+          environment?: {
+            kind: string;
+            executionRoot?: string;
+            logicalWorkspaceRoot?: string;
+          };
+          resultArtifact?: {
+            changedFileCount: number;
+            changedFiles?: string[];
+            logicalWorkspaceRoot?: string;
+          };
+        }>;
+      }
+    ).agents[0];
     const publicArtifact = publicAgent?.resultArtifact;
     assert.equal(publicArtifact?.changedFileCount, 3_000);
     assert.equal(publicArtifact?.changedFiles, undefined);
@@ -470,11 +525,7 @@ describe("SubagentCoordinator", () => {
       createAgentId: idFactory([AGENT_ONE]),
       run: async (request) => ({
         ...completedOutcome(request.task.id),
-        resultArtifact: resultArtifact(
-          request.record.id,
-          request.task.id,
-          request.record.environmentId,
-        ),
+        resultArtifact: resultArtifact(request.record.id, request.task.id, request.record.environmentId),
       }),
       handoff: async (artifact) => {
         handedOff.push(artifact.id);
@@ -488,41 +539,51 @@ describe("SubagentCoordinator", () => {
       },
     });
     const initial = graph(["inspect"]);
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "inspect",
-      instructions: "Produce the final DAG result.",
-    }, context(initial));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "inspect",
+        instructions: "Produce the final DAG result.",
+      },
+      context(initial),
+    );
     const claimed = spawned.taskGraphUpdate as TaskGraph;
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
     await Promise.resolve();
     await Promise.resolve();
 
     await assert.rejects(
-      coordinator.handoff({
-        action: "handoff",
-        agentId: AGENT_ONE,
-        destination: "local",
-      }, context(claimed)),
+      coordinator.handoff(
+        {
+          action: "handoff",
+          agentId: AGENT_ONE,
+          destination: "local",
+        },
+        context(claimed),
+      ),
       /complete task graph finishes/u,
     );
 
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(claimed));
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(claimed),
+    );
     const completed = waited.taskGraphUpdate as TaskGraph;
     assert.equal(completed.status, "completed");
-    const delivered = await coordinator.handoff({
-      action: "handoff",
-      agentId: AGENT_ONE,
-      destination: "local",
-    }, context(completed));
+    const delivered = await coordinator.handoff(
+      {
+        action: "handoff",
+        agentId: AGENT_ONE,
+        destination: "local",
+      },
+      context(completed),
+    );
     assert.equal(delivered.ok, true);
-    assert.deepEqual(handedOff, [
-      "artifact_00000000-0000-4000-8000-000000000099",
-    ]);
+    assert.deepEqual(handedOff, ["artifact_00000000-0000-4000-8000-000000000099"]);
 
     const standalone = new SubagentCoordinator({
       createAgentId: idFactory([AGENT_TWO]),
@@ -540,11 +601,7 @@ describe("SubagentCoordinator", () => {
         changes: [],
         commands: [],
         presentations: [],
-        resultArtifact: resultArtifact(
-          request.record.id,
-          request.task.id,
-          request.record.environmentId,
-        ),
+        resultArtifact: resultArtifact(request.record.id, request.task.id, request.record.environmentId),
       }),
       handoff: async (artifact) => ({
         ...artifact,
@@ -555,73 +612,95 @@ describe("SubagentCoordinator", () => {
       }),
     });
     const standaloneContext = context(undefined);
-    const standaloneSpawned = await standalone.spawn({
-      action: "spawn",
-      task: {
-        title: "Standalone delivery",
-        description: "Produce an independent child result.",
-        completionChecks: ["Standalone delivery is verified"],
+    const standaloneSpawned = await standalone.spawn(
+      {
+        action: "spawn",
+        task: {
+          title: "Standalone delivery",
+          description: "Produce an independent child result.",
+          completionChecks: ["Standalone delivery is verified"],
+        },
+        instructions: "Produce the independent result.",
       },
-      instructions: "Produce the independent result.",
-    }, standaloneContext);
+      standaloneContext,
+    );
     standalone.commitLifecycle(lifecycle(standaloneSpawned, "activate"));
-    await standalone.wait({
-      action: "wait",
-      agentIds: [AGENT_TWO],
-      timeoutMs: 100,
-    }, standaloneContext);
-    const standaloneDelivered = await standalone.handoff({
-      action: "handoff",
-      agentId: AGENT_TWO,
-      destination: "local",
-    }, standaloneContext);
+    await standalone.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_TWO],
+        timeoutMs: 100,
+      },
+      standaloneContext,
+    );
+    const standaloneDelivered = await standalone.handoff(
+      {
+        action: "handoff",
+        agentId: AGENT_TWO,
+        destination: "local",
+      },
+      standaloneContext,
+    );
     assert.equal(standaloneDelivered.ok, true);
   });
 
   it("rejects DAG handoff when a completed graph has multiple terminal leaves", async () => {
     const initial = graph(["inspect", "docs"]);
-    const docsStarted = applyTaskGraphOperation(initial, {
-      action: "start",
-      taskId: "docs",
-    }, { turnId: "turn_docs_start" });
-    const docsCompleted = applyTaskGraphOperation(docsStarted, {
-      action: "complete",
-      taskId: "docs",
-      evidence: ["docs focused validation passed"],
-    }, { turnId: "turn_docs_complete" });
+    const docsStarted = applyTaskGraphOperation(
+      initial,
+      {
+        action: "start",
+        taskId: "docs",
+      },
+      { turnId: "turn_docs_start" },
+    );
+    const docsCompleted = applyTaskGraphOperation(
+      docsStarted,
+      {
+        action: "complete",
+        taskId: "docs",
+        evidence: ["docs focused validation passed"],
+      },
+      { turnId: "turn_docs_complete" },
+    );
     const coordinator = new SubagentCoordinator({
       createAgentId: idFactory([AGENT_ONE]),
       run: async (request) => ({
         ...completedOutcome(request.task.id),
-        resultArtifact: resultArtifact(
-          request.record.id,
-          request.task.id,
-          request.record.environmentId,
-        ),
+        resultArtifact: resultArtifact(request.record.id, request.task.id, request.record.environmentId),
       }),
       handoff: async (artifact) => artifact,
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "inspect",
-      instructions: "Complete one of two DAG leaves.",
-    }, context(docsCompleted));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "inspect",
+        instructions: "Complete one of two DAG leaves.",
+      },
+      context(docsCompleted),
+    );
     const claimed = spawned.taskGraphUpdate as TaskGraph;
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(claimed));
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(claimed),
+    );
     const completed = waited.taskGraphUpdate as TaskGraph;
     assert.equal(completed.status, "completed");
 
     await assert.rejects(
-      coordinator.handoff({
-        action: "handoff",
-        agentId: AGENT_ONE,
-        destination: "local",
-      }, context(completed)),
+      coordinator.handoff(
+        {
+          action: "handoff",
+          agentId: AGENT_ONE,
+          destination: "local",
+        },
+        context(completed),
+      ),
       /exactly one terminal leaf/u,
     );
   });
@@ -637,10 +716,12 @@ describe("SubagentCoordinator", () => {
             taskId: request.task.id,
             outcome: "completed",
             summary: "Standalone inspection completed.",
-            completionEvidence: [{
-              check: request.task.completionChecks[0] as string,
-              evidence: "The focused inspection passed.",
-            }],
+            completionEvidence: [
+              {
+                check: request.task.completionChecks[0] as string,
+                evidence: "The focused inspection passed.",
+              },
+            ],
           },
           reason: "completed",
           changes: [],
@@ -650,15 +731,18 @@ describe("SubagentCoordinator", () => {
       },
     });
     const standaloneContext = context(undefined, { thinkingEffort: "medium" });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      task: {
-        title: "Inspect authentication",
-        description: "Inspect authentication without creating a task DAG.",
-        completionChecks: ["Authentication findings are verified"],
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        task: {
+          title: "Inspect authentication",
+          description: "Inspect authentication without creating a task DAG.",
+          completionChecks: ["Authentication findings are verified"],
+        },
+        instructions: "Return only concrete findings.",
       },
-      instructions: "Return only concrete findings.",
-    }, standaloneContext);
+      standaloneContext,
+    );
 
     assert.equal(spawned.taskGraphUpdate, undefined);
     assert.equal(spawned.subagentTaskOperation, undefined);
@@ -670,11 +754,14 @@ describe("SubagentCoordinator", () => {
     assert.equal(requests[0]?.record.assignmentKind, "standalone");
     assert.equal(requests[0]?.record.thinkingEffort, "medium");
 
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, standaloneContext);
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      standaloneContext,
+    );
     assert.equal(waited.taskGraphUpdate, undefined);
     assert.equal(waited.subagentTaskOperation, undefined);
     assert.equal(waited.subagentAssignment?.kind, "standalone");
@@ -691,23 +778,29 @@ describe("SubagentCoordinator", () => {
       run: async () => completedOutcome("inspect"),
     });
     await assert.rejects(
-      coordinator.spawn({
-        action: "spawn",
-        task: {
-          title: "Bypass graph",
-          description: "This must not bypass an active graph.",
-          completionChecks: ["Never runs"],
+      coordinator.spawn(
+        {
+          action: "spawn",
+          task: {
+            title: "Bypass graph",
+            description: "This must not bypass an active graph.",
+            completionChecks: ["Never runs"],
+          },
+          instructions: "Do not run.",
         },
-        instructions: "Do not run.",
-      }, context(graph(["inspect"]))),
+        context(graph(["inspect"])),
+      ),
       /Standalone child assignments are unavailable/u,
     );
     await assert.rejects(
-      coordinator.spawn({
-        action: "spawn",
-        taskId: "inspect",
-        instructions: "A DAG task cannot be claimed without a graph.",
-      }, context(undefined)),
+      coordinator.spawn(
+        {
+          action: "spawn",
+          taskId: "inspect",
+          instructions: "A DAG task cannot be claimed without a graph.",
+        },
+        context(undefined),
+      ),
       /active task DAG/u,
     );
   });
@@ -723,20 +816,26 @@ describe("SubagentCoordinator", () => {
         return completedOutcome(request.task.id);
       },
     });
-    const prepared = await coordinator.spawn({
-      action: "spawn",
-      taskId: "first",
-      instructions: "Prepare the first child.",
-    }, context(initialGraph));
+    const prepared = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "first",
+        instructions: "Prepare the first child.",
+      },
+      context(initialGraph),
+    );
     coordinator.rollbackLifecycle(lifecycle(prepared, "activate"));
     assert.equal(runs, 0);
     assert.deepEqual(coordinator.snapshot(context(initialGraph).threadId), []);
 
-    const replacement = await coordinator.spawn({
-      action: "spawn",
-      taskId: "second",
-      instructions: "The rolled-back reservation must not consume the only slot.",
-    }, context(initialGraph));
+    const replacement = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "second",
+        instructions: "The rolled-back reservation must not consume the only slot.",
+      },
+      context(initialGraph),
+    );
     assert.equal(replacement.ok, true);
     assert.equal(replacement.subagentLifecycle?.agentId, AGENT_TWO);
   });
@@ -755,43 +854,58 @@ describe("SubagentCoordinator", () => {
       },
     });
 
-    const first = await coordinator.spawn({
-      action: "spawn",
-      taskId: "backend",
-      instructions: "Implement the backend branch.",
-    }, context(initialGraph));
+    const first = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "backend",
+        instructions: "Implement the backend branch.",
+      },
+      context(initialGraph),
+    );
     const firstGraph = first.taskGraphUpdate as TaskGraph;
-    const second = await coordinator.spawn({
-      action: "spawn",
-      taskId: "frontend",
-      instructions: "Implement the frontend branch.",
-    }, context(firstGraph));
+    const second = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "frontend",
+        instructions: "Implement the frontend branch.",
+      },
+      context(firstGraph),
+    );
     const parallelGraph = second.taskGraphUpdate as TaskGraph;
     assert.deepEqual(taskGraphView(parallelGraph).startableTasks, ["remaining"]);
     await assert.rejects(
-      coordinator.spawn({
-        action: "spawn",
-        taskId: "remaining",
-        instructions: "Exceed the configured child limit.",
-      }, context(parallelGraph)),
+      coordinator.spawn(
+        {
+          action: "spawn",
+          taskId: "remaining",
+          instructions: "Exceed the configured child limit.",
+        },
+        context(parallelGraph),
+      ),
       /concurrency limit is 2/u,
     );
 
     coordinator.commitLifecycle(lifecycle(first, "activate"));
     coordinator.commitLifecycle(lifecycle(second, "activate"));
     assert.equal(requests.size, 2);
-    const firstFollowUp = await coordinator.followUp({
-      action: "follow_up",
-      agentId: AGENT_ONE,
-      message: "First inspect the API boundary.",
-    }, context(parallelGraph));
+    const firstFollowUp = await coordinator.followUp(
+      {
+        action: "follow_up",
+        agentId: AGENT_ONE,
+        message: "First inspect the API boundary.",
+      },
+      context(parallelGraph),
+    );
     assert.deepEqual(requests.get(AGENT_ONE)?.drainFollowUps(), []);
     coordinator.commitLifecycle(lifecycle(firstFollowUp, "deliver_follow_up"));
-    const secondFollowUp = await coordinator.followUp({
-      action: "follow_up",
-      agentId: AGENT_ONE,
-      message: "Then run the focused backend test.",
-    }, context(parallelGraph));
+    const secondFollowUp = await coordinator.followUp(
+      {
+        action: "follow_up",
+        agentId: AGENT_ONE,
+        message: "Then run the focused backend test.",
+      },
+      context(parallelGraph),
+    );
     coordinator.commitLifecycle(lifecycle(secondFollowUp, "deliver_follow_up"));
     assert.deepEqual(requests.get(AGENT_ONE)?.drainFollowUps(), [
       "First inspect the API boundary.",
@@ -801,25 +915,29 @@ describe("SubagentCoordinator", () => {
 
     backend.resolve(completedOutcome("backend"));
     frontend.resolve(completedOutcome("frontend"));
-    const observedBackend = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(parallelGraph));
+    const observedBackend = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(parallelGraph),
+    );
     assert.equal(observedBackend.subagentTaskOperation?.action, "complete");
     const afterBackend = observedBackend.taskGraphUpdate as TaskGraph;
     coordinator.commitLifecycle(lifecycle(observedBackend, "observe"));
 
-    const observedFrontend = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_TWO],
-      timeoutMs: 100,
-    }, context(afterBackend));
+    const observedFrontend = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_TWO],
+        timeoutMs: 100,
+      },
+      context(afterBackend),
+    );
     assert.equal(observedFrontend.subagentTaskOperation?.action, "complete");
     coordinator.commitLifecycle(lifecycle(observedFrontend, "observe"));
-    assert.equal(observedFrontend.taskGraphUpdate?.tasks.filter(
-      (task) => task.status === "completed",
-    ).length, 2);
+    assert.equal(observedFrontend.taskGraphUpdate?.tasks.filter((task) => task.status === "completed").length, 2);
   });
 
   it("delivers more than 32 parent follow-ups without rejecting or dropping later messages", async () => {
@@ -828,15 +946,22 @@ describe("SubagentCoordinator", () => {
     let request: SubagentExecutionRequest | undefined;
     const coordinator = new SubagentCoordinator({
       createAgentId: idFactory([AGENT_ONE]),
-      run: (value) => { request = value; return child.promise; },
+      run: (value) => {
+        request = value;
+        return child.promise;
+      },
     });
-    const spawned = await coordinator.spawn({ action: "spawn", taskId: "backend",
-      instructions: "Implement the backend branch." }, context(taskGraph));
+    const spawned = await coordinator.spawn(
+      { action: "spawn", taskId: "backend", instructions: "Implement the backend branch." },
+      context(taskGraph),
+    );
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
     const assignedGraph = spawned.taskGraphUpdate as TaskGraph;
     for (let index = 0; index < 40; index += 1) {
-      const result = await coordinator.followUp({ action: "follow_up", agentId: AGENT_ONE,
-        message: `Guidance ${index}` }, context(assignedGraph));
+      const result = await coordinator.followUp(
+        { action: "follow_up", agentId: AGENT_ONE, message: `Guidance ${index}` },
+        context(assignedGraph),
+      );
       assert.equal(result.ok, true);
       coordinator.commitLifecycle(lifecycle(result, "deliver_follow_up"));
     }
@@ -847,8 +972,10 @@ describe("SubagentCoordinator", () => {
     const snapshot = await coordinator.status({ action: "status" }, context(assignedGraph));
     assert.equal((snapshot.data as { agents: Array<{ followUpCount: number }> }).agents[0]?.followUpCount, 40);
     child.resolve(completedOutcome("backend"));
-    const observed = await coordinator.wait({ action: "wait", agentIds: [AGENT_ONE], timeoutMs: 100 },
-      context(assignedGraph));
+    const observed = await coordinator.wait(
+      { action: "wait", agentIds: [AGENT_ONE], timeoutMs: 100 },
+      context(assignedGraph),
+    );
     assert.equal(observed.subagentTaskOperation?.action, "complete");
   });
 
@@ -864,34 +991,34 @@ describe("SubagentCoordinator", () => {
         presentations: [],
       }),
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "verify",
-      instructions: "Run focused verification.",
-    }, context(initialGraph));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "verify",
+        instructions: "Run focused verification.",
+      },
+      context(initialGraph),
+    );
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
 
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(spawned.taskGraphUpdate as TaskGraph));
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(spawned.taskGraphUpdate as TaskGraph),
+    );
     assert.equal(waited.subagentTaskOperation?.action, "release");
     const released = waited.taskGraphUpdate?.tasks.find((task) => task.id === "verify");
     assert.equal(released?.status, "pending");
     assert.equal(released?.owner, "main_agent");
     assert.equal(released?.assignedAgentId, undefined);
-    assert.equal(
-      (waited.data as { error?: string }).error,
-      "Focused verification failed.",
-    );
+    assert.equal((waited.data as { error?: string }).error, "Focused verification failed.");
     const artifacts = coordinator.commitLifecycle(lifecycle(waited, "observe"));
     assert.equal(artifacts?.agentId, AGENT_ONE);
     assert.deepEqual(artifacts?.changes, []);
-    assert.equal(
-      coordinator.pendingArtifactMerges("thread_subagent_coordinator").length,
-      1,
-    );
+    assert.equal(coordinator.pendingArtifactMerges("thread_subagent_coordinator").length, 1);
     assert.equal(coordinator.hasOutstanding("thread_subagent_coordinator"), true);
     coordinator.finalizeArtifactMerge(AGENT_ONE);
     assert.equal(coordinator.hasOutstanding("thread_subagent_coordinator"), false);
@@ -905,41 +1032,52 @@ describe("SubagentCoordinator", () => {
       run: (request) => {
         childSignal = request.signal;
         return new Promise<SubagentExecutionOutcome>((resolve) => {
-          request.signal.addEventListener("abort", () => resolve({
-            reason: "stopped",
-            error: "Stopped by parent.",
-            changes: [],
-            commands: [],
-            presentations: [],
-          }), { once: true });
+          request.signal.addEventListener(
+            "abort",
+            () =>
+              resolve({
+                reason: "stopped",
+                error: "Stopped by parent.",
+                changes: [],
+                commands: [],
+                presentations: [],
+              }),
+            { once: true },
+          );
         });
       },
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "long_running",
-      instructions: "Wait for a parent cancellation.",
-    }, context(initialGraph));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "long_running",
+        instructions: "Wait for a parent cancellation.",
+      },
+      context(initialGraph),
+    );
     const claimedGraph = spawned.taskGraphUpdate as TaskGraph;
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
 
-    const stopped = await coordinator.stop({
-      action: "stop",
-      agentId: AGENT_ONE,
-      reason: "The result is no longer needed.",
-    }, context(claimedGraph));
+    const stopped = await coordinator.stop(
+      {
+        action: "stop",
+        agentId: AGENT_ONE,
+        reason: "The result is no longer needed.",
+      },
+      context(claimedGraph),
+    );
     assert.equal(childSignal?.aborted, false);
     coordinator.commitLifecycle(lifecycle(stopped, "request_stop"));
     assert.equal(childSignal?.aborted, true);
-    assert.equal(
-      (stopped.data as { agent: { status: string } }).agent.status,
-      "stopping",
+    assert.equal((stopped.data as { agent: { status: string } }).agent.status, "stopping");
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(claimedGraph),
     );
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(claimedGraph));
     assert.equal(waited.subagentTaskOperation?.action, "release");
     assert.equal(waited.taskGraphUpdate?.tasks[0]?.status, "pending");
     coordinator.commitLifecycle(lifecycle(waited, "observe"));
@@ -953,26 +1091,35 @@ describe("SubagentCoordinator", () => {
       createAgentId: idFactory([AGENT_ONE]),
       run: async () => late.promise,
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "race",
-      instructions: "Return only after the parent cancellation race.",
-    }, context(initialGraph));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "race",
+        instructions: "Return only after the parent cancellation race.",
+      },
+      context(initialGraph),
+    );
     const claimedGraph = spawned.taskGraphUpdate as TaskGraph;
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
-    const stopped = await coordinator.stop({
-      action: "stop",
-      agentId: AGENT_ONE,
-      reason: "Cancel before the late completion is accepted.",
-    }, context(claimedGraph));
+    const stopped = await coordinator.stop(
+      {
+        action: "stop",
+        agentId: AGENT_ONE,
+        reason: "Cancel before the late completion is accepted.",
+      },
+      context(claimedGraph),
+    );
     coordinator.commitLifecycle(lifecycle(stopped, "request_stop"));
     late.resolve(completedOutcome("race"));
 
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(claimedGraph));
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(claimedGraph),
+    );
     assert.equal(waited.subagentTaskOperation?.action, "release");
     assert.equal(waited.taskGraphUpdate?.tasks[0]?.status, "pending");
   });
@@ -992,19 +1139,18 @@ describe("SubagentCoordinator", () => {
         assert.equal(request.isPauseRequested(), true);
         return {
           ...completedOutcome(request.task.id),
-          resultArtifact: resultArtifact(
-            request.record.id,
-            request.task.id,
-            request.record.environmentId,
-          ),
+          resultArtifact: resultArtifact(request.record.id, request.task.id, request.record.environmentId),
         };
       },
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "pause_finalize_race",
-      instructions: "Return the verified result after finalization settles.",
-    }, context(initialGraph));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "pause_finalize_race",
+        instructions: "Return the verified result after finalization settles.",
+      },
+      context(initialGraph),
+    );
     const claimedGraph = spawned.taskGraphUpdate as TaskGraph;
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
     await finalizationEntered.promise;
@@ -1016,22 +1162,19 @@ describe("SubagentCoordinator", () => {
 
     const [record] = coordinator.snapshot(context(initialGraph).threadId);
     assert.equal(record?.status, "completed");
-    assert.equal(
-      record?.resultArtifact?.id,
-      "artifact_00000000-0000-4000-8000-000000000099",
-    );
+    assert.equal(record?.resultArtifact?.id, "artifact_00000000-0000-4000-8000-000000000099");
 
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 0,
-    }, context(claimedGraph));
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 0,
+      },
+      context(claimedGraph),
+    );
     assert.equal(waited.subagentTaskOperation?.action, "complete");
     const artifacts = coordinator.commitLifecycle(lifecycle(waited, "observe"));
-    assert.equal(
-      artifacts?.resultArtifact?.id,
-      "artifact_00000000-0000-4000-8000-000000000099",
-    );
+    assert.equal(artifacts?.resultArtifact?.id, "artifact_00000000-0000-4000-8000-000000000099");
   });
 
   it("lets a durable prepared stop win when completion settles before local commit", async () => {
@@ -1041,28 +1184,37 @@ describe("SubagentCoordinator", () => {
       createAgentId: idFactory([AGENT_ONE]),
       run: async () => late.promise,
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "durable_stop_race",
-      instructions: "Exercise event-before-effect cancellation ordering.",
-    }, context(initialGraph));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "durable_stop_race",
+        instructions: "Exercise event-before-effect cancellation ordering.",
+      },
+      context(initialGraph),
+    );
     const claimedGraph = spawned.taskGraphUpdate as TaskGraph;
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
-    const preparedStop = await coordinator.stop({
-      action: "stop",
-      agentId: AGENT_ONE,
-      reason: "The durable cancellation intent must win.",
-    }, context(claimedGraph));
+    const preparedStop = await coordinator.stop(
+      {
+        action: "stop",
+        agentId: AGENT_ONE,
+        reason: "The durable cancellation intent must win.",
+      },
+      context(claimedGraph),
+    );
 
     late.resolve(completedOutcome("durable_stop_race"));
     await Promise.resolve();
     await Promise.resolve();
     coordinator.commitLifecycle(lifecycle(preparedStop, "request_stop"));
-    const waited = await coordinator.wait({
-      action: "wait",
-      agentIds: [AGENT_ONE],
-      timeoutMs: 100,
-    }, context(claimedGraph));
+    const waited = await coordinator.wait(
+      {
+        action: "wait",
+        agentIds: [AGENT_ONE],
+        timeoutMs: 100,
+      },
+      context(claimedGraph),
+    );
     assert.equal(waited.subagentTaskOperation?.action, "release");
     assert.equal(waited.taskGraphUpdate?.tasks[0]?.status, "pending");
   });
@@ -1074,17 +1226,17 @@ describe("SubagentCoordinator", () => {
       createAgentId: idFactory([AGENT_ONE]),
       run: async () => running.promise,
     });
-    const spawned = await coordinator.spawn({
-      action: "spawn",
-      taskId: "settled",
-      instructions: "Finish after the discard guard is verified.",
-    }, context(initialGraph));
+    const spawned = await coordinator.spawn(
+      {
+        action: "spawn",
+        taskId: "settled",
+        instructions: "Finish after the discard guard is verified.",
+      },
+      context(initialGraph),
+    );
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
 
-    assert.throws(
-      () => coordinator.discardThread("thread_subagent_coordinator"),
-      /still running/u,
-    );
+    assert.throws(() => coordinator.discardThread("thread_subagent_coordinator"), /still running/u);
     running.resolve(completedOutcome("settled"));
     await coordinator.shutdown("thread_subagent_coordinator");
     assert.equal(coordinator.hasOutstanding("thread_subagent_coordinator"), true);

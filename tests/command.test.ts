@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ApprovalRequest, CommandAuditEntry, ToolContext } from "../src/core/types.js";
 import {
@@ -13,10 +12,7 @@ import {
   sanitizeCommandOutput,
   type RunCommandInput,
 } from "../src/command/index.js";
-import type {
-  CommandExecutionBackend,
-  PreparedCommand,
-} from "../src/sandbox/index.js";
+import type { CommandExecutionBackend, PreparedCommand } from "../src/sandbox/index.js";
 import {
   CancelCommandTool,
   PollCommandTool,
@@ -26,7 +22,11 @@ import {
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 import { decodeCommandGrant } from "../src/command/command-grant.js";
-import { canGrantCommandPrefix, isCommandApprovalPrefixGranted, grantCommandApprovalPrefix } from "../src/command/approval.js";
+import {
+  canGrantCommandPrefix,
+  isCommandApprovalPrefixGranted,
+  grantCommandApprovalPrefix,
+} from "../src/command/approval.js";
 import { sha256 } from "../src/utils/hash.js";
 
 class HostCommandBackend implements CommandExecutionBackend {
@@ -39,9 +39,7 @@ class HostCommandBackend implements CommandExecutionBackend {
     };
   }
 
-  async prepare(
-    request: Parameters<CommandExecutionBackend["prepare"]>[0],
-  ): Promise<PreparedCommand> {
+  async prepare(request: Parameters<CommandExecutionBackend["prepare"]>[0]): Promise<PreparedCommand> {
     return {
       executablePath: request.command.executablePath,
       args: [...request.command.args],
@@ -62,22 +60,36 @@ describe("command validation change integration", () => {
       await writeFile(filename, weakened);
       const tools = commandTools(manager);
       try {
-        const output = await tools.runtime.run({ program: process.execPath, args: ["test.cjs"],
-          intent: "verify", verificationKind: "smoke_test" }, {
-          ...context(root, { approve: true, timeoutMs: 5000 }),
-          validationPriorChanges: [{ path: "test.cjs", operation: "update", beforeHash: sha256(original),
-            afterHash: sha256(weakened), source: "file_tool", status: "applied", timestamp: "now" }],
-        });
+        const output = await tools.runtime.run(
+          { program: process.execPath, args: ["test.cjs"], intent: "verify", verificationKind: "smoke_test" },
+          {
+            ...context(root, { approve: true, timeoutMs: 5000 }),
+            validationPriorChanges: [
+              {
+                path: "test.cjs",
+                operation: "update",
+                beforeHash: sha256(original),
+                afterHash: sha256(weakened),
+                source: "file_tool",
+                status: "applied",
+                timestamp: "now",
+              },
+            ],
+          },
+        );
         assert.equal(output.validation?.status, "passed");
         assert.equal(output.validation?.standard?.status, "changed");
         assert.deepEqual(output.validation?.standard?.changedPaths, ["test.cjs"]);
-      } finally { await tools.runtime.cancelAll(); }
+      } finally {
+        await tools.runtime.cancelAll();
+      }
     });
   });
   it("retains command metadata through polling and marks a recorded test change non-comparable", async () => {
     await withWorkspace(async (root, manager) => {
       const filename = path.join(root, "test.cjs");
-      const original = "const t=require('node:test');const a=require('node:assert/strict');t('boundary',async()=>{await new Promise(r=>setTimeout(r,100));a.equal(2,3)});\n";
+      const original =
+        "const t=require('node:test');const a=require('node:assert/strict');t('boundary',async()=>{await new Promise(r=>setTimeout(r,100));a.equal(2,3)});\n";
       await writeFile(filename, original);
       const tools = commandTools(manager);
       const args = ["--test", "--test-reporter=tap", "test.cjs"];
@@ -91,25 +103,36 @@ describe("command validation change integration", () => {
         assert.deepEqual(repeated.requestMetadata, output.requestMetadata);
         const revised = original.replace("a.equal(2,3)", "a.equal(2,2)");
         await writeFile(filename, revised);
-        const weakened = await tools.runtime.run({ program: process.execPath, args, intent: "verify" }, {
-          ...runContext,
-          validationPriorChanges: [{ path: "test.cjs", operation: "update", beforeHash: sha256(original),
-            afterHash: sha256(revised), source: "file_tool", status: "applied", timestamp: "now" }],
-        });
+        const weakened = await tools.runtime.run(
+          { program: process.execPath, args, intent: "verify" },
+          {
+            ...runContext,
+            validationPriorChanges: [
+              {
+                path: "test.cjs",
+                operation: "update",
+                beforeHash: sha256(original),
+                afterHash: sha256(revised),
+                source: "file_tool",
+                status: "applied",
+                timestamp: "now",
+              },
+            ],
+          },
+        );
         assert.equal(weakened.validation?.status, "passed");
         assert.equal(weakened.validation?.standard?.status, "changed");
         assert.deepEqual(weakened.validation?.standard?.changedPaths, ["test.cjs"]);
-      } finally { await tools.runtime.cancelAll(); }
+      } finally {
+        await tools.runtime.cancelAll();
+      }
     });
   });
 });
 
 class RunCommandTool extends ProductionRunCommandTool {
   constructor(manager: WorkspaceManager) {
-    super(
-      manager,
-      new CommandRuntime(manager, new CommandPolicy(), new HostCommandBackend()),
-    );
+    super(manager, new CommandRuntime(manager, new CommandPolicy(), new HostCommandBackend()));
   }
 }
 
@@ -202,20 +225,24 @@ function explicitShellInput(command: string): RunCommandInput {
 
 describe("command runtime", () => {
   it("normalizes shell hosts and sanitizes command output", () => {
-    assert.deepEqual(
-      normalizeExplicitShellArgs("cmd", ["/c", "dir"]),
-      ["/d", "/c", "dir"],
-    );
-    assert.deepEqual(
-      normalizeExplicitShellArgs("cmd", ["/c", "dir", "/d"]),
-      ["/d", "/c", "dir", "/d"],
-    );
-    assert.deepEqual(
-      normalizeExplicitShellArgs("powershell", ["-Command", "Get-ChildItem"]),
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-ChildItem"],
-    );
-    assert.deepEqual(normalizeExplicitShellArgs("pwsh", ["-File", "check.ps1"]),
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "check.ps1"]);
+    assert.deepEqual(normalizeExplicitShellArgs("cmd", ["/c", "dir"]), ["/d", "/c", "dir"]);
+    assert.deepEqual(normalizeExplicitShellArgs("cmd", ["/c", "dir", "/d"]), ["/d", "/c", "dir", "/d"]);
+    assert.deepEqual(normalizeExplicitShellArgs("powershell", ["-Command", "Get-ChildItem"]), [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-ChildItem",
+    ]);
+    assert.deepEqual(normalizeExplicitShellArgs("pwsh", ["-File", "check.ps1"]), [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "check.ps1",
+    ]);
     assert.equal(
       sanitizeCommandOutput("cmd /c set TOKEN=top-secret-token-value").includes("top-secret-token-value"),
       false,
@@ -315,8 +342,10 @@ describe("command runtime", () => {
     await withWorkspace(async (root, manager) => {
       const tool = new RunCommandTool(manager);
       const planApprovals: ApprovalRequest[] = [];
-      const plan = await tool.execute(explicitShellInput("echo approved-plan"),
-        context(root, { mode: "plan", approve: true, approvals: planApprovals }));
+      const plan = await tool.execute(
+        explicitShellInput("echo approved-plan"),
+        context(root, { mode: "plan", approve: true, approvals: planApprovals }),
+      );
       assert.equal(plan.ok, true);
       assert.equal(planApprovals.length, 1);
 
@@ -336,14 +365,8 @@ describe("command runtime", () => {
         (never.data as { policyDecision: { reason: string } }).policyDecision.reason,
         /approval could not be obtained/u,
       );
-      assert.equal(
-        (never.data as { failure: { kind: string; code: string } }).failure.kind,
-        "approval",
-      );
-      assert.equal(
-        (never.data as { failure: { code: string } }).failure.code,
-        "approval_unavailable",
-      );
+      assert.equal((never.data as { failure: { kind: string; code: string } }).failure.kind, "approval");
+      assert.equal((never.data as { failure: { code: string } }).failure.code, "approval_unavailable");
     });
   });
 
@@ -397,26 +420,17 @@ describe("command runtime", () => {
       );
       assert.equal(inline.ok, false);
       assert.match(inline.summary, /denied/iu);
-      assert.deepEqual(
-        (inline.data as { failure: { kind: string; code: string } }).failure,
-        {
-          kind: "approval",
-          code: "approval_not_granted",
-          message: "Command requires authorization; approval was not granted",
-          processStarted: false,
-          retryable: false,
-        },
-      );
+      assert.deepEqual((inline.data as { failure: { kind: string; code: string } }).failure, {
+        kind: "approval",
+        code: "approval_not_granted",
+        message: "Command requires authorization; approval was not granted",
+        processStarted: false,
+        retryable: false,
+      });
       assert.equal(escaped.ok, false);
       assert.match(escaped.error ?? "", /traversal|workspace/iu);
-      assert.equal(
-        (escaped.data as { failure: { kind: string; code: string } }).failure.kind,
-        "policy",
-      );
-      assert.equal(
-        (escaped.data as { failure: { code: string } }).failure.code,
-        "policy.cwd_boundary",
-      );
+      assert.equal((escaped.data as { failure: { kind: string; code: string } }).failure.kind, "policy");
+      assert.equal((escaped.data as { failure: { code: string } }).failure.code, "policy.cwd_boundary");
       assert.equal(
         (escaped.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
         "policy.cwd_boundary",
@@ -427,12 +441,27 @@ describe("command runtime", () => {
   it("sends Benchmark commands to its fixed container backend without approvals", async () => {
     await withWorkspace(async (root, manager) => {
       let seen = false;
-      const backend: CommandExecutionBackend = { describe: () => ({ backend: "benchmark-container", enforced: true, filesystem: "container", network: "denied" }),
-        prepare: async request => { seen = true; assert.equal(request.command.executablePath, "curl"); throw new Error("offline fixture"); } };
+      const backend: CommandExecutionBackend = {
+        describe: () => ({
+          backend: "benchmark-container",
+          enforced: true,
+          filesystem: "container",
+          network: "denied",
+        }),
+        prepare: async (request) => {
+          seen = true;
+          assert.equal(request.command.executablePath, "curl");
+          throw new Error("offline fixture");
+        },
+      };
       const approvals: ApprovalRequest[] = [];
       const runtime = new CommandRuntime(manager, undefined, backend, undefined, { networkProfile: "benchmark" });
-      const result = await runtime.run({ program: "curl", args: ["https://example.invalid"], intent: "run", executionScope: "host" }, context(root, { approvals, commandExecutionMode: "unrestricted" }));
-      assert.equal(seen, true); assert.equal(approvals.length, 0);
+      const result = await runtime.run(
+        { program: "curl", args: ["https://example.invalid"], intent: "run", executionScope: "host" },
+        context(root, { approvals, commandExecutionMode: "unrestricted" }),
+      );
+      assert.equal(seen, true);
+      assert.equal(approvals.length, 0);
       assert.equal(result.failure?.kind, "sandbox");
       assert.equal(result.sandbox.backend, "benchmark-container");
     });
@@ -441,12 +470,27 @@ describe("command runtime", () => {
   it("resolves reviewer-only programs in its offline worker but still requires approval", async () => {
     await withWorkspace(async (root, manager) => {
       let seen = false;
-      const backend: CommandExecutionBackend = { describe: () => ({ backend: "benchmark-container", enforced: true, filesystem: "container", network: "denied" }),
-        prepare: async request => { seen = true; assert.equal(request.command.executablePath, "worker-only-python"); throw new Error("offline fixture"); } };
+      const backend: CommandExecutionBackend = {
+        describe: () => ({
+          backend: "benchmark-container",
+          enforced: true,
+          filesystem: "container",
+          network: "denied",
+        }),
+        prepare: async (request) => {
+          seen = true;
+          assert.equal(request.command.executablePath, "worker-only-python");
+          throw new Error("offline fixture");
+        },
+      };
       const approvals: ApprovalRequest[] = [];
       const runtime = new CommandRuntime(manager, undefined, backend, undefined, { networkProfile: "review_offline" });
-      const result = await runtime.run({ program: "worker-only-python", args: ["--version"], intent: "inspect" }, context(root, { approvals, approve: true }));
-      assert.equal(approvals.length, 1); assert.equal(seen, true);
+      const result = await runtime.run(
+        { program: "worker-only-python", args: ["--version"], intent: "inspect" },
+        context(root, { approvals, approve: true }),
+      );
+      assert.equal(approvals.length, 1);
+      assert.equal(seen, true);
       const prefix = approvals[0]!.commandPrefix;
       assert.equal(canGrantCommandPrefix(prefix), false);
       assert.equal(isCommandApprovalPrefixGranted([], prefix), false);
@@ -464,7 +508,10 @@ describe("command runtime", () => {
         explicitShellInput("echo must-not-run"),
       ]) {
         const approvals: ApprovalRequest[] = [];
-        const result = await tool.execute(input, context(root, { mode: "plan", commandExecutionMode: "unrestricted", approvals }));
+        const result = await tool.execute(
+          input,
+          context(root, { mode: "plan", commandExecutionMode: "unrestricted", approvals }),
+        );
         assert.equal(result.ok, true, JSON.stringify(result));
         assert.equal(approvals.length, 0);
       }
@@ -493,7 +540,10 @@ describe("command runtime", () => {
       assert.equal(await readFile(path.join(root, "generated.txt"), "utf8"), "made by command");
       const output = result.data as { workspaceDelta: { created: string[] } };
       assert.deepEqual(output.workspaceDelta.created, ["generated.txt"]);
-      assert.equal(manager.getChangeSet().some((change) => change.path === "generated.txt"), true);
+      assert.equal(
+        manager.getChangeSet().some((change) => change.path === "generated.txt"),
+        true,
+      );
       assert.equal(audit.length, 1);
     });
   });
@@ -524,9 +574,9 @@ describe("command runtime", () => {
       assert.equal(output.exitCode, 0);
       assert.deepEqual(output.workspaceDelta.deleted, ["temporary.txt"]);
       assert.equal(output.failure, undefined);
-      const deletion = manager.getChangeSet().find(
-        (change) => change.path === "temporary.txt" && change.operation === "deleted_by_command",
-      );
+      const deletion = manager
+        .getChangeSet()
+        .find((change) => change.path === "temporary.txt" && change.operation === "deleted_by_command");
       assert.equal(deletion?.status, "verified");
     });
   });
@@ -543,14 +593,8 @@ describe("command runtime", () => {
       assert.equal(result.ok, false);
       assert.equal(approvals.length, 0);
       assert.match(result.summary, /denied/iu);
-      assert.equal(
-        (result.data as { failure: { kind: string; code: string } }).failure.kind,
-        "approval",
-      );
-      assert.equal(
-        (result.data as { failure: { code: string } }).failure.code,
-        "approval_unavailable",
-      );
+      assert.equal((result.data as { failure: { kind: string; code: string } }).failure.kind, "approval");
+      assert.equal((result.data as { failure: { code: string } }).failure.code, "approval_unavailable");
     });
   });
 
@@ -562,14 +606,8 @@ describe("command runtime", () => {
         { program: "node", args: ["approval.cjs"], intent: "run" },
         context(root, { approve: false }),
       );
-      assert.equal(
-        (rejected.data as { failure: { kind: string; code: string } }).failure.kind,
-        "approval",
-      );
-      assert.equal(
-        (rejected.data as { failure: { code: string } }).failure.code,
-        "approval_not_granted",
-      );
+      assert.equal((rejected.data as { failure: { kind: string; code: string } }).failure.kind, "approval");
+      assert.equal((rejected.data as { failure: { code: string } }).failure.code, "approval_not_granted");
 
       const unavailable = await tool.execute(
         { program: "node", args: ["approval.cjs"], intent: "run" },
@@ -580,14 +618,8 @@ describe("command runtime", () => {
           },
         },
       );
-      assert.equal(
-        (unavailable.data as { failure: { kind: string; code: string } }).failure.kind,
-        "approval",
-      );
-      assert.equal(
-        (unavailable.data as { failure: { code: string } }).failure.code,
-        "approval_unavailable",
-      );
+      assert.equal((unavailable.data as { failure: { kind: string; code: string } }).failure.kind, "approval");
+      assert.equal((unavailable.data as { failure: { code: string } }).failure.code, "approval_unavailable");
     });
   });
 
@@ -595,43 +627,19 @@ describe("command runtime", () => {
     await withWorkspace(async (root, manager) => {
       const tools = commandTools(manager);
       const owner = context(root, { approve: true });
-      const invalid = await tools.run.execute(
-        { action: "run", program: "node", intent: "inspect" },
-        owner,
-      );
-      assert.equal(
-        (invalid.data as { failure: { kind: string } }).failure.kind,
-        "parameter",
-      );
+      const invalid = await tools.run.execute({ action: "run", program: "node", intent: "inspect" }, owner);
+      assert.equal((invalid.data as { failure: { kind: string } }).failure.kind, "parameter");
 
       await writeFile(path.join(root, "exit-seven.cjs"), "process.exit(7);\n", "utf8");
-      const exited = await tools.run.execute(
-        { program: "node", args: ["exit-seven.cjs"], intent: "test" },
-        owner,
-      );
+      const exited = await tools.run.execute({ program: "node", args: ["exit-seven.cjs"], intent: "test" }, owner);
       assert.equal(exited.ok, false);
-      assert.equal(
-        (exited.data as { failure: { kind: string; processStarted: boolean } }).failure.kind,
-        "exit",
-      );
-      assert.equal(
-        (exited.data as { failure: { processStarted: boolean } }).failure.processStarted,
-        true,
-      );
+      assert.equal((exited.data as { failure: { kind: string; processStarted: boolean } }).failure.kind, "exit");
+      assert.equal((exited.data as { failure: { processStarted: boolean } }).failure.processStarted, true);
 
-      const unknown = await tools.poll.execute(
-        { commandId: "command_00000000-0000-4000-8000-000000000000" },
-        owner,
-      );
+      const unknown = await tools.poll.execute({ commandId: "command_00000000-0000-4000-8000-000000000000" }, owner);
       assert.equal(unknown.ok, false);
-      assert.equal(
-        (unknown.data as { failure: { kind: string; code: string } }).failure.kind,
-        "runtime",
-      );
-      assert.equal(
-        (unknown.data as { failure: { code: string } }).failure.code,
-        "unknown_handle",
-      );
+      assert.equal((unknown.data as { failure: { kind: string; code: string } }).failure.kind, "runtime");
+      assert.equal((unknown.data as { failure: { code: string } }).failure.code, "unknown_handle");
     });
   });
 
@@ -675,10 +683,7 @@ describe("command runtime", () => {
       assert.equal(inaccessible.ok, false);
       assert.match(inaccessible.error ?? "", /unknown or inaccessible/iu);
 
-      const completed = await tools.poll.execute(
-        { commandId: running.commandId, waitMs: 2_000 },
-        owner,
-      );
+      const completed = await tools.poll.execute({ commandId: running.commandId, waitMs: 2_000 }, owner);
       assert.equal(completed.ok, true);
       const output = completed.data as {
         status: string;
@@ -765,18 +770,11 @@ describe("command runtime", () => {
       );
       const commandId = (started.data as { commandId: string }).commandId;
       const controller = new AbortController();
-      const waiting = tools.runtime.status(
-        commandId,
-        { ...owner, signal: controller.signal },
-        30_000,
-      );
+      const waiting = tools.runtime.status(commandId, { ...owner, signal: controller.signal }, 30_000);
       const abortStartedAt = Date.now();
       controller.abort();
 
-      await assert.rejects(
-        waiting,
-        (error: unknown) => error instanceof Error && error.name === "AbortError",
-      );
+      await assert.rejects(waiting, (error: unknown) => error instanceof Error && error.name === "AbortError");
       assert.ok(Date.now() - abortStartedAt < 1_000, "status wait did not abort promptly");
       assert.equal(tools.runtime.hasRunningCommands(), true);
       await tools.cancel.execute({ commandId }, owner);
@@ -808,10 +806,7 @@ describe("command runtime", () => {
         { ...owner, agentId: "agent-other" },
         { ...owner, assignedTaskId: "task-other" },
       ]) {
-        await assert.rejects(
-          tools.runtime.status(commandId, inaccessible),
-          /unknown or inaccessible/iu,
-        );
+        await assert.rejects(tools.runtime.status(commandId, inaccessible), /unknown or inaccessible/iu);
       }
 
       const acrossTurn = await tools.runtime.status(commandId, {
@@ -844,14 +839,8 @@ describe("command runtime", () => {
       );
       assert.equal(result.ok, false);
       assert.equal((result.data as { status: string }).status, "timed_out");
-      assert.equal(
-        (result.data as { failure: { kind: string; processStarted: boolean } }).failure.kind,
-        "timeout",
-      );
-      assert.equal(
-        (result.data as { failure: { processStarted: boolean } }).failure.processStarted,
-        true,
-      );
+      assert.equal((result.data as { failure: { kind: string; processStarted: boolean } }).failure.kind, "timeout");
+      assert.equal((result.data as { failure: { processStarted: boolean } }).failure.processStarted, true);
       const childPid = Number.parseInt(await readFile(path.join(root, "child.pid"), "utf8"), 10);
       assert.equal(Number.isInteger(childPid), true);
       assert.equal(processIsAlive(childPid), false, "timed-out descendant is still running");
@@ -941,7 +930,7 @@ describe("command runtime", () => {
   });
 
   it("classifies npm scripts as approval-required workspace execution", async () => {
-    await withWorkspace(async (root, manager) => {
+    await withWorkspace(async (_root, manager) => {
       const resolver = new CommandResolver(manager);
       const input = { program: "npm", args: ["run", "test"], intent: "test" as const };
       const resolved = await resolver.resolve(input);

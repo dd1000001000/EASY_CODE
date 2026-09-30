@@ -12,9 +12,10 @@ export function pastedTextPreview(content: string): string {
 }
 
 export function composeMessage(draft: string, pastedTexts: readonly PastedText[]): string {
-  const attachments = pastedTexts.map((item, index) =>
-    `[Pasted text ${index + 1}]\n${item.content}\n[/Pasted text ${index + 1}]`);
-  return [draft, ...attachments].filter(part => part.trim()).join("\n\n");
+  const attachments = pastedTexts.map(
+    (item, index) => `[Pasted text ${index + 1}]\n${item.content}\n[/Pasted text ${index + 1}]`,
+  );
+  return [draft, ...attachments].filter((part) => part.trim()).join("\n\n");
 }
 
 /** Match a command name only while the composer contains a bare slash prefix. */
@@ -22,7 +23,7 @@ export function matchingSlashCommands(draft: string, commands: readonly string[]
   const match = /^\/([a-z0-9_-]*)$/iu.exec(draft);
   if (!match) return [];
   const prefix = match[1]!.toLowerCase();
-  return commands.filter(command => command.startsWith(prefix));
+  return commands.filter((command) => command.startsWith(prefix));
 }
 
 export function composerPrimaryAction(busy: boolean, hasContent: boolean): "send" | "stop" {
@@ -32,7 +33,10 @@ export function composerPrimaryAction(busy: boolean, hasContent: boolean): "send
 export type ComposerEnterAction = "none" | "send" | "newline" | "suppress";
 
 export function composerEnterAction(
-  event: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "metaKey" | "altKey" | "isComposing" | "keyCode" | "repeat">,
+  event: Pick<
+    KeyboardEvent,
+    "key" | "shiftKey" | "ctrlKey" | "metaKey" | "altKey" | "isComposing" | "keyCode" | "repeat"
+  >,
   compositionActive = false,
   compositionJustEnded = false,
 ): ComposerEnterAction {

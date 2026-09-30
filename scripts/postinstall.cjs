@@ -3,16 +3,17 @@
 const MINIMUM_NODE_VERSION = [20, 11, 0];
 
 function assertSupportedNodeVersion(version = process.versions.node) {
-  const parts = version.split(".").slice(0, 3).map((part) => Number.parseInt(part, 10));
+  const parts = version
+    .split(".")
+    .slice(0, 3)
+    .map((part) => Number.parseInt(part, 10));
   const [major = 0, minor = 0, patch = 0] = parts;
   const [minimumMajor, minimumMinor, minimumPatch] = MINIMUM_NODE_VERSION;
   const supported =
     parts.length === 3 &&
     parts.every((part) => Number.isInteger(part)) &&
     (major > minimumMajor ||
-      (major === minimumMajor &&
-        (minor > minimumMinor ||
-          (minor === minimumMinor && patch >= minimumPatch))));
+      (major === minimumMajor && (minor > minimumMinor || (minor === minimumMinor && patch >= minimumPatch))));
 
   if (!supported) {
     process.stderr.write(
@@ -38,8 +39,11 @@ async function installationDataDir(options = {}) {
   const compiled = path.join(__dirname, "..", "dist", "config", "loader.js");
   if (!fs.existsSync(compiled)) throw new Error("Built configuration loader is required before installing Laya");
   const { loadEasyCodeConfig } = await import(pathToFileURL(compiled).href);
-  const config = await loadEasyCodeConfig({ cwd: require("node:os").homedir(), credentialStore: false,
-    workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml") });
+  const config = await loadEasyCodeConfig({
+    cwd: require("node:os").homedir(),
+    credentialStore: false,
+    workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml"),
+  });
   return config.dataDir;
 }
 
@@ -51,7 +55,9 @@ function ensureUserModelRegistry(options = {}) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   try {
     fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
-    try { fs.chmodSync(destination, 0o600); } catch {}
+    try {
+      fs.chmodSync(destination, 0o600);
+    } catch {}
     return { created: true, path: destination };
   } catch (error) {
     if (error && error.code === "EEXIST") return { created: false, path: destination };
@@ -80,7 +86,9 @@ function shouldDeferLocalSourcePromptInstall(options = {}) {
   const packageRoot = path.resolve(options.packageRoot || path.join(__dirname, ".."));
   const exists = options.existsSync || fs.existsSync;
   const globalInstall = ["1", "true"].includes(
-    String(env.npm_config_global || "").trim().toLowerCase(),
+    String(env.npm_config_global || "")
+      .trim()
+      .toLowerCase(),
   );
   if (env.npm_lifecycle_event !== "postinstall" || globalInstall || !env.INIT_CWD) {
     return false;
@@ -98,9 +106,7 @@ function errorMessage(error) {
 }
 
 function importedDefault(value) {
-  return value && typeof value === "object" && "default" in value
-    ? value.default
-    : value;
+  return value && typeof value === "object" && "default" in value ? value.default : value;
 }
 
 async function installBundledPromptResources(options = {}) {
@@ -135,7 +141,7 @@ async function recordInstallResource(resource, options = {}) {
 async function checkSandboxPrerequisites(options = {}) {
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
-  const report = message => stdout.write(`EASY CODE: ${message}\n`);
+  const report = (message) => stdout.write(`EASY CODE: ${message}\n`);
   try {
     let service = options.service;
     let installedConfig;
@@ -143,40 +149,53 @@ async function checkSandboxPrerequisites(options = {}) {
     if (!service) {
       const compiled = path.join(__dirname, "..", "dist");
       if (shouldDeferLocalSourcePromptInstall()) {
-        report("Source dependency installation precedes build. After building, run easy-code sandbox setup; no stale dist installer is executed.");
+        report(
+          "Source dependency installation precedes build. After building, run easy-code sandbox setup; no stale dist installer is executed.",
+        );
         return { ready: false, status: "source_build_pending", deferred: true };
       }
-      const { NativeSandboxStartupService } = await import(pathToFileURL(path.join(compiled, "sandbox", "native-startup.js")).href);
+      const { NativeSandboxStartupService } = await import(
+        pathToFileURL(path.join(compiled, "sandbox", "native-startup.js")).href
+      );
       const { loadEasyCodeConfig } = await import(pathToFileURL(path.join(compiled, "config", "loader.js")).href);
       // Load user configuration, never the project from which npm was launched.
-      installedConfig = await loadEasyCodeConfig({ cwd: require("node:os").homedir(), credentialStore: false,
-        workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml") });
+      installedConfig = await loadEasyCodeConfig({
+        cwd: require("node:os").homedir(),
+        credentialStore: false,
+        workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml"),
+      });
       ({ recordOwnedResource } = await import(pathToFileURL(path.join(compiled, "install", "ownership.js")).href));
-      for (const kind of ["data", "config", "cache"]) recordOwnedResource({ kind, path: installedConfig[kind + "Dir"] });
+      for (const kind of ["data", "config", "cache"])
+        recordOwnedResource({ kind, path: installedConfig[kind + "Dir"] });
       recordOwnedResource({ kind: "config", path: path.join(require("node:os").homedir(), ".easy_code") });
       service = new NativeSandboxStartupService(installedConfig.limits, installedConfig.dataDir, report);
     }
     report("Verifying the installed native command sandbox.");
     const result = await service.setup();
     if (installedConfig && recordOwnedResource) {
-      for (const kind of ["data", "config", "cache"]) recordOwnedResource({ kind, path: installedConfig[kind + "Dir"] });
+      for (const kind of ["data", "config", "cache"])
+        recordOwnedResource({ kind, path: installedConfig[kind + "Dir"] });
     }
     const ready = result.readiness.status === "ready";
-    if (ready) report(`Native command sandbox ready: ${result.readiness.details[0] || "enforced filesystem/network probe passed."}`);
-    else stderr.write(`EASY CODE: sandbox NOT ready: ${result.message}\n${result.readiness.details.join("\n")}\nComplete Windows authorization if requested, then run easy-code sandbox setup. No host fallback.\n`);
+    if (ready)
+      report(
+        `Native command sandbox ready: ${result.readiness.details[0] || "enforced filesystem/network probe passed."}`,
+      );
+    else
+      stderr.write(
+        `EASY CODE: sandbox NOT ready: ${result.message}\n${result.readiness.details.join("\n")}\nComplete Windows authorization if requested, then run easy-code sandbox setup. No host fallback.\n`,
+      );
     return { ready, status: result.readiness.status };
   } catch (error) {
-    stderr.write(`EASY CODE: automatic sandbox setup failed: ${errorMessage(error)}. Run easy-code sandbox setup to resume; no host fallback.\n`);
+    stderr.write(
+      `EASY CODE: automatic sandbox setup failed: ${errorMessage(error)}. Run easy-code sandbox setup to resume; no host fallback.\n`,
+    );
     return { ready: false, status: "setup_failed" };
   }
 }
 
 function assertIntegerArray(value, label) {
-  if (
-    !Array.isArray(value) ||
-    value.length === 0 ||
-    value.some((item) => !Number.isSafeInteger(item) || item < 0)
-  ) {
+  if (!Array.isArray(value) || value.length === 0 || value.some((item) => !Number.isSafeInteger(item) || item < 0)) {
     throw new Error(`Embedding tokenizer returned invalid ${label}`);
   }
   return value;
@@ -199,36 +218,40 @@ async function validateOrama(options = {}) {
       embedding: "vector[2]",
     },
   });
-  await orama.insertMultiple(database, [
-    {
-      id: "easy_code_vector_a",
-      workspaceId: "install_check",
-      status: "active",
-      priority: 0.95,
-      embedding: [0.9, 0.1],
-    },
-    {
-      id: "easy_code_vector_b",
-      workspaceId: "other_workspace",
-      status: "active",
-      priority: 0.95,
-      embedding: [1, 0],
-    },
-    {
-      id: "easy_code_vector_c",
-      workspaceId: "install_check",
-      status: "active",
-      priority: 0.2,
-      embedding: [1, 0],
-    },
-    {
-      id: "easy_code_vector_d",
-      workspaceId: "install_check",
-      status: "inactive",
-      priority: 0.95,
-      embedding: [1, 0],
-    },
-  ], 100);
+  await orama.insertMultiple(
+    database,
+    [
+      {
+        id: "easy_code_vector_a",
+        workspaceId: "install_check",
+        status: "active",
+        priority: 0.95,
+        embedding: [0.9, 0.1],
+      },
+      {
+        id: "easy_code_vector_b",
+        workspaceId: "other_workspace",
+        status: "active",
+        priority: 0.95,
+        embedding: [1, 0],
+      },
+      {
+        id: "easy_code_vector_c",
+        workspaceId: "install_check",
+        status: "active",
+        priority: 0.2,
+        embedding: [1, 0],
+      },
+      {
+        id: "easy_code_vector_d",
+        workspaceId: "install_check",
+        status: "inactive",
+        priority: 0.95,
+        embedding: [1, 0],
+      },
+    ],
+    100,
+  );
   const searchOptions = {
     mode: "vector",
     vector: { property: "embedding", value: [1, 0] },
@@ -256,7 +279,7 @@ async function validateOrama(options = {}) {
       throw new Error("@orama/orama repeated vector search self-test returned an unexpected result");
     }
   }
-  if (await orama.remove(database, "easy_code_vector_a") !== true) {
+  if ((await orama.remove(database, "easy_code_vector_a")) !== true) {
     throw new Error("@orama/orama vector removal self-test failed");
   }
   const removedResult = await orama.search(database, searchOptions);
@@ -279,13 +302,12 @@ async function validateTokenizerAndOnnx(modelResult, options = {}) {
   const readFile = options.readFile || fs.promises.readFile;
   const loadTokenizer = options.loadTokenizer || (() => import("@huggingface/tokenizers"));
   const loadOnnx = options.loadOnnx || (() => import("onnxruntime-node"));
-  const [tokenizersModule, onnxModule, tokenizerSource, tokenizerConfigSource] =
-    await Promise.all([
-      loadTokenizer(),
-      loadOnnx(),
-      readFile(path.join(modelResult.modelDirectory, "tokenizer.json"), "utf8"),
-      readFile(path.join(modelResult.modelDirectory, "tokenizer_config.json"), "utf8"),
-    ]);
+  const [tokenizersModule, onnxModule, tokenizerSource, tokenizerConfigSource] = await Promise.all([
+    loadTokenizer(),
+    loadOnnx(),
+    readFile(path.join(modelResult.modelDirectory, "tokenizer.json"), "utf8"),
+    readFile(path.join(modelResult.modelDirectory, "tokenizer_config.json"), "utf8"),
+  ]);
   const tokenizersDefault = importedDefault(tokenizersModule);
   const Tokenizer = tokenizersModule.Tokenizer || tokenizersDefault?.Tokenizer;
   if (typeof Tokenizer !== "function") {
@@ -310,16 +332,10 @@ async function validateTokenizerAndOnnx(modelResult, options = {}) {
     throw new Error(`Embedding tokenizer configuration is invalid JSON: ${errorMessage(error)}`);
   }
   const tokenizer = new Tokenizer(tokenizerJson, tokenizerConfig);
-  const encoded = tokenizer.encode(
-    "EASY CODE remembers stable project conventions.",
-    { return_token_type_ids: true },
-  );
+  const encoded = tokenizer.encode("EASY CODE remembers stable project conventions.", { return_token_type_ids: true });
   const maximum = modelResult.manifest.maxSequenceLength;
   const ids = assertIntegerArray(encoded && encoded.ids, "input IDs").slice(0, maximum);
-  const attention = assertIntegerArray(
-    encoded && encoded.attention_mask,
-    "attention mask",
-  ).slice(0, ids.length);
+  const attention = assertIntegerArray(encoded && encoded.attention_mask, "attention mask").slice(0, ids.length);
   if (attention.length !== ids.length) {
     throw new Error("Embedding tokenizer returned mismatched input and attention lengths");
   }
@@ -331,20 +347,18 @@ async function validateTokenizerAndOnnx(modelResult, options = {}) {
   }
 
   const dimensions = [1, ids.length];
-  const tensor = (values) => new ort.Tensor(
-    "int64",
-    BigInt64Array.from(values, (value) => BigInt(value)),
-    dimensions,
-  );
+  const tensor = (values) =>
+    new ort.Tensor(
+      "int64",
+      BigInt64Array.from(values, (value) => BigInt(value)),
+      dimensions,
+    );
   let session;
   try {
-    session = await ort.InferenceSession.create(
-      path.join(modelResult.modelDirectory, "onnx", "model_quantized.onnx"),
-      { executionProviders: ["cpu"] },
-    );
-    const inputNames = Array.isArray(session.inputNames)
-      ? session.inputNames
-      : [...(session.inputNames || [])];
+    session = await ort.InferenceSession.create(path.join(modelResult.modelDirectory, "onnx", "model_quantized.onnx"), {
+      executionProviders: ["cpu"],
+    });
+    const inputNames = Array.isArray(session.inputNames) ? session.inputNames : [...(session.inputNames || [])];
     const feeds = {};
     for (const inputName of inputNames) {
       if (inputName === "input_ids") feeds[inputName] = tensor(ids);
@@ -356,9 +370,7 @@ async function validateTokenizerAndOnnx(modelResult, options = {}) {
       throw new Error("Embedding ONNX model is missing required inputs");
     }
     const outputs = await session.run(feeds);
-    const outputName = outputs.last_hidden_state
-      ? "last_hidden_state"
-      : session.outputNames && session.outputNames[0];
+    const outputName = outputs.last_hidden_state ? "last_hidden_state" : session.outputNames && session.outputNames[0];
     const output = outputName && outputs[outputName];
     if (
       !output ||
@@ -406,7 +418,13 @@ async function runPostinstall(options = {}) {
     stdout.write(`EASY CODE: user model registry ${registry.created ? "created" : "preserved"} at ${registry.path}.\n`);
   } catch (error) {
     stderr.write(`EASY CODE: model registry installation failed: ${errorMessage(error)}\n`);
-    return { promptBundleReady: false, sqliteReady: false, modelReady: false, vectorStackReady: false, extensionResult: undefined };
+    return {
+      promptBundleReady: false,
+      sqliteReady: false,
+      modelReady: false,
+      vectorStackReady: false,
+      extensionResult: undefined,
+    };
   }
 
   try {
@@ -416,7 +434,7 @@ async function runPostinstall(options = {}) {
         ? "EASY CODE: source dependency install detected; Prompt Bundle activation is deferred until after the source build.\n"
         : promptResult && promptResult.deferred
           ? "EASY CODE: Prompt Bundle installation is deferred until the first CLI launch.\n"
-        : "EASY CODE: versioned Prompt Bundle is installed and verified.\n",
+          : "EASY CODE: versioned Prompt Bundle is installed and verified.\n",
     );
   } catch (error) {
     stderr.write(`EASY CODE: Prompt Bundle installation failed: ${errorMessage(error)}\n`);
@@ -461,7 +479,7 @@ async function runPostinstall(options = {}) {
     modelResult = await prepareModel(options.modelOptions || {});
     stdout.write(
       `EASY CODE: local embedding model is ready (${modelResult.downloaded?.length || 0} downloaded, ` +
-      `${modelResult.reused?.length || 0} reused).\n`,
+        `${modelResult.reused?.length || 0} reused).\n`,
     );
   } catch (error) {
     stderr.write(`EASY CODE: embedding model installation failed: ${errorMessage(error)}\n`);
@@ -511,21 +529,35 @@ async function runPostinstall(options = {}) {
     const dataDir = await installationDataDir(options.decisionRuntimeOptions || {});
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     await recordInstallResource({ kind: "data", path: dataDir }, options);
-    stdout.write("EASY CODE: Preparing the private local Laya decision runtime. Python dependencies may take several minutes to install.\n");
+    stdout.write(
+      "EASY CODE: Preparing the private local Laya decision runtime. Python dependencies may take several minutes to install.\n",
+    );
     decisionRuntimeResult = await prepareDecisionRuntime({ ...(options.decisionRuntimeOptions || {}), dataDir });
-    stdout.write(`EASY CODE: local Laya decision runtime is ready (${decisionRuntimeResult.reused ? "reused" : "installed"}).\n`);
+    stdout.write(
+      `EASY CODE: local Laya decision runtime is ready (${decisionRuntimeResult.reused ? "reused" : "installed"}).\n`,
+    );
   } catch (error) {
     stderr.write(`EASY CODE: local Laya decision runtime installation failed: ${errorMessage(error)}\n`);
-    return { promptBundleReady: true, sqliteReady: true, modelReady: true,
-      vectorStackReady: true, documentConverterReady: true, layaReady: false,
-      modelResult, documentConverterResult, extensionResult: undefined };
+    return {
+      promptBundleReady: true,
+      sqliteReady: true,
+      modelReady: true,
+      vectorStackReady: true,
+      documentConverterReady: true,
+      layaReady: false,
+      modelResult,
+      documentConverterResult,
+      extensionResult: undefined,
+    };
   }
 
   try {
     const result = await installExtension();
     for (const program of result.installed) {
-      await recordInstallResource({ kind: "extension", name: "dd1000001000.easy-code-image-paste",
-        path: program, method: "vscode-cli" }, options);
+      await recordInstallResource(
+        { kind: "extension", name: "dd1000001000.easy-code-image-paste", path: program, method: "vscode-cli" },
+        options,
+      );
     }
     if (result.installed.length) {
       stdout.write(
@@ -536,14 +568,10 @@ async function runPostinstall(options = {}) {
         "EASY CODE: VS Code was not found. Run `node scripts/install-vscode-extension.cjs` after installing VS Code.\n",
       );
     } else if (result.reason === "missing-vsix") {
-      stderr.write(
-        "EASY CODE: bundled VS Code extension was not found; CLI installation will continue.\n",
-      );
+      stderr.write("EASY CODE: bundled VS Code extension was not found; CLI installation will continue.\n");
     }
     for (const failure of result.failed) {
-      stderr.write(
-        `EASY CODE: could not install the VS Code extension via ${failure.program}: ${failure.detail}\n`,
-      );
+      stderr.write(`EASY CODE: could not install the VS Code extension via ${failure.program}: ${failure.detail}\n`);
     }
     return {
       promptBundleReady: true,
@@ -558,9 +586,7 @@ async function runPostinstall(options = {}) {
       extensionResult: result,
     };
   } catch (error) {
-    stderr.write(
-      `EASY CODE: VS Code extension installation check failed: ${errorMessage(error)}\n`,
-    );
+    stderr.write(`EASY CODE: VS Code extension installation check failed: ${errorMessage(error)}\n`);
     return {
       promptBundleReady: true,
       sqliteReady: true,

@@ -1,13 +1,5 @@
 import assert from "node:assert/strict";
-import {
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -22,11 +14,7 @@ interface InstallResult {
 }
 
 interface InstallerModule {
-  findVsCodeClis(options?: {
-    env?: NodeJS.ProcessEnv;
-    packageRoot?: string;
-    platform?: NodeJS.Platform;
-  }): string[];
+  findVsCodeClis(options?: { env?: NodeJS.ProcessEnv; packageRoot?: string; platform?: NodeJS.Platform }): string[];
   isInside(candidate: string, root: string, platform?: NodeJS.Platform): boolean;
   installBundledVsCodeExtension(options?: {
     env?: NodeJS.ProcessEnv;
@@ -41,10 +29,7 @@ interface InstallerModule {
       error?: Error;
     };
   }): InstallResult;
-  safeInstallerEnvironment(
-    source?: NodeJS.ProcessEnv,
-    platform?: NodeJS.Platform,
-  ): NodeJS.ProcessEnv;
+  safeInstallerEnvironment(source?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): NodeJS.ProcessEnv;
 }
 
 interface PostinstallModule {
@@ -101,16 +86,10 @@ interface VsixVerifierModule {
 }
 
 const require = createRequire(import.meta.url);
-const installer = require(
-  path.join(process.cwd(), "scripts", "install-vscode-extension.cjs"),
-) as InstallerModule;
-const postinstall = require(
-  path.join(process.cwd(), "scripts", "postinstall.cjs"),
-) as PostinstallModule;
+const installer = require(path.join(process.cwd(), "scripts", "install-vscode-extension.cjs")) as InstallerModule;
+const postinstall = require(path.join(process.cwd(), "scripts", "postinstall.cjs")) as PostinstallModule;
 const installPromptBundleFixture = async (): Promise<{ deferred: boolean }> => ({ deferred: false });
-const vsixVerifier = require(
-  path.join(process.cwd(), "scripts", "verify-vscode-extension.cjs"),
-) as VsixVerifierModule;
+const vsixVerifier = require(path.join(process.cwd(), "scripts", "verify-vscode-extension.cjs")) as VsixVerifierModule;
 
 describe("VS Code extension installer", () => {
   it("defers Prompt Bundle activation only for the repository-local dependency install", async () => {
@@ -175,7 +154,11 @@ describe("VS Code extension installer", () => {
         throw new Error("database must not be reached");
       },
       stdout: { write: () => undefined },
-      stderr: { write: (message) => { stderr += message; } },
+      stderr: {
+        write: (message) => {
+          stderr += message;
+        },
+      },
     });
     assert.equal(result.promptBundleReady, false);
     assert.equal(result.sqliteReady, false);
@@ -227,11 +210,7 @@ describe("VS Code extension installer", () => {
     const root = mkdtempSync(path.join(tmpdir(), "easy-code-vscode-home-"));
     try {
       const home = path.join(root, "home");
-      const cli = path.join(
-        home,
-        "Applications",
-        process.platform === "win32" ? "code.cmd" : "code",
-      );
+      const cli = path.join(home, "Applications", process.platform === "win32" ? "code.cmd" : "code");
       mkdirSync(path.dirname(cli), { recursive: true });
       writeFileSync(cli, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n", {
         mode: 0o700,
@@ -262,11 +241,7 @@ describe("VS Code extension installer", () => {
         process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
         { mode: 0o700 },
       );
-      symlinkSync(
-        realDirectory,
-        linkDirectory,
-        process.platform === "win32" ? "junction" : "dir",
-      );
+      symlinkSync(realDirectory, linkDirectory, process.platform === "win32" ? "junction" : "dir");
       const launchPath = path.join(linkDirectory, executableName);
       const programs = installer.findVsCodeClis({
         env: { EASY_CODE_VSCODE_CLI: launchPath },
@@ -280,17 +255,20 @@ describe("VS Code extension installer", () => {
   });
 
   it("does not forward provider secrets to the VS Code installer", () => {
-    const environment = installer.safeInstallerEnvironment({
-      HOME: "/home/tester",
-      PATH: "/usr/bin",
-      VSCODE_IPC_HOOK_CLI: "/tmp/vscode.sock",
-      QWEN_API_KEY: "qwen-secret",
-      DEEPSEEK_API_KEY: "deepseek-secret",
-      ZAI_API_KEY: "glm-secret",
-      GLM_API_KEY: "glm-alias-secret",
-      GLM_CODING_PLAN_API_KEY: "glm-coding-plan-secret",
-      KIMI_API_KEY: "kimi-secret",
-    }, "linux");
+    const environment = installer.safeInstallerEnvironment(
+      {
+        HOME: "/home/tester",
+        PATH: "/usr/bin",
+        VSCODE_IPC_HOOK_CLI: "/tmp/vscode.sock",
+        QWEN_API_KEY: "qwen-secret",
+        DEEPSEEK_API_KEY: "deepseek-secret",
+        ZAI_API_KEY: "glm-secret",
+        GLM_API_KEY: "glm-alias-secret",
+        GLM_CODING_PLAN_API_KEY: "glm-coding-plan-secret",
+        KIMI_API_KEY: "kimi-secret",
+      },
+      "linux",
+    );
     assert.equal(environment.HOME, "/home/tester");
     assert.equal(environment.VSCODE_IPC_HOOK_CLI, "/tmp/vscode.sock");
     assert.equal(environment.QWEN_API_KEY, undefined);
@@ -307,10 +285,7 @@ describe("VS Code extension installer", () => {
       const consumer = path.join(root, "consumer");
       const shimDirectory = path.join(consumer, "node_modules", ".bin");
       mkdirSync(shimDirectory, { recursive: true });
-      const shim = path.join(
-        shimDirectory,
-        process.platform === "win32" ? "code.cmd" : "code",
-      );
+      const shim = path.join(shimDirectory, process.platform === "win32" ? "code.cmd" : "code");
       writeFileSync(shim, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n", {
         mode: 0o700,
       });
@@ -366,51 +341,54 @@ describe("VS Code extension installer", () => {
     let stdout = "";
     const decisionDataDir = mkdtempSync(path.join(tmpdir(), "easy-code-laya-install-test-"));
     try {
-    const result = await postinstall.runPostinstall({
-      installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
-      installPromptBundle: installPromptBundleFixture,
-      prepareModel: async () => {
-        order.push("model");
-        return {
-          modelDirectory: path.join(tmpdir(), "embedding-model-fixture"),
-          manifest: { dimension: 384, maxSequenceLength: 128 },
-          downloaded: ["onnx/model_quantized.onnx"],
-          reused: ["tokenizer.json"],
-        };
-      },
-      validateStack: async () => {
-        order.push("runtime");
-      },
-      prepareDocumentConverter: async () => {
-        order.push("documents");
-        return { runtime: path.join(tmpdir(), "markitdown-fixture"), python: "python" };
-      },
-      decisionRuntimeOptions: { dataDir: decisionDataDir },
-      prepareDecisionRuntime: async () => {
-        order.push("laya");
-        return { runtime: path.join(decisionDataDir, "runtimes", "laya-decision-onnx"),
-          python: "python", reused: false };
-      },
-      recordResource: async () => undefined,
-      installExtension: () => {
-        order.push("extension");
-        return { skipped: true, reason: "missing-vscode", installed: [], failed: [] };
-      },
-      stdout: {
-        write: (message) => {
-          stdout += message;
+      const result = await postinstall.runPostinstall({
+        installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
+        installPromptBundle: installPromptBundleFixture,
+        prepareModel: async () => {
+          order.push("model");
+          return {
+            modelDirectory: path.join(tmpdir(), "embedding-model-fixture"),
+            manifest: { dimension: 384, maxSequenceLength: 128 },
+            downloaded: ["onnx/model_quantized.onnx"],
+            reused: ["tokenizer.json"],
+          };
         },
-      },
-      stderr: { write: () => undefined },
-    });
+        validateStack: async () => {
+          order.push("runtime");
+        },
+        prepareDocumentConverter: async () => {
+          order.push("documents");
+          return { runtime: path.join(tmpdir(), "markitdown-fixture"), python: "python" };
+        },
+        decisionRuntimeOptions: { dataDir: decisionDataDir },
+        prepareDecisionRuntime: async () => {
+          order.push("laya");
+          return {
+            runtime: path.join(decisionDataDir, "runtimes", "laya-decision-onnx"),
+            python: "python",
+            reused: false,
+          };
+        },
+        recordResource: async () => undefined,
+        installExtension: () => {
+          order.push("extension");
+          return { skipped: true, reason: "missing-vscode", installed: [], failed: [] };
+        },
+        stdout: {
+          write: (message) => {
+            stdout += message;
+          },
+        },
+        stderr: { write: () => undefined },
+      });
 
-    assert.deepEqual(order, ["model", "runtime", "documents", "laya", "extension"]);
-    assert.equal(result.sqliteReady, true);
-    assert.equal(result.promptBundleReady, true);
-    assert.equal(result.modelReady, true);
-    assert.equal(result.vectorStackReady, true);
-    assert.match(stdout, /1 downloaded, 1 reused/u);
-    assert.match(stdout, /vector search, tokenizer, and ONNX inference are ready/u);
+      assert.deepEqual(order, ["model", "runtime", "documents", "laya", "extension"]);
+      assert.equal(result.sqliteReady, true);
+      assert.equal(result.promptBundleReady, true);
+      assert.equal(result.modelReady, true);
+      assert.equal(result.vectorStackReady, true);
+      assert.match(stdout, /1 downloaded, 1 reused/u);
+      assert.match(stdout, /vector search, tokenizer, and ONNX inference are ready/u);
     } finally {
       rmSync(decisionDataDir, { recursive: true, force: true });
     }
@@ -424,16 +402,29 @@ describe("VS Code extension installer", () => {
       const result = await postinstall.runPostinstall({
         installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
         installPromptBundle: installPromptBundleFixture,
-        prepareModel: async () => ({ modelDirectory: dataDir,
-          manifest: { dimension: 384, maxSequenceLength: 128 }, downloaded: [], reused: [] }),
+        prepareModel: async () => ({
+          modelDirectory: dataDir,
+          manifest: { dimension: 384, maxSequenceLength: 128 },
+          downloaded: [],
+          reused: [],
+        }),
         validateStack: async () => undefined,
         prepareDocumentConverter: async () => ({ runtime: "documents", python: "python" }),
         decisionRuntimeOptions: { dataDir },
-        prepareDecisionRuntime: async () => { throw new Error("Laya fixture failed"); },
+        prepareDecisionRuntime: async () => {
+          throw new Error("Laya fixture failed");
+        },
         recordResource: async () => undefined,
-        installExtension: () => { extensionCalled = true;
-          return { skipped: true, installed: [], failed: [] }; },
-        stdout: { write: () => undefined }, stderr: { write: message => { stderr += message; } },
+        installExtension: () => {
+          extensionCalled = true;
+          return { skipped: true, installed: [], failed: [] };
+        },
+        stdout: { write: () => undefined },
+        stderr: {
+          write: (message) => {
+            stderr += message;
+          },
+        },
       });
       assert.equal((result as typeof result & { layaReady?: boolean }).layaReady, false);
       assert.equal(extensionCalled, false);
@@ -461,7 +452,11 @@ describe("VS Code extension installer", () => {
         return { skipped: false, installed: [], failed: [] };
       },
       stdout: { write: () => undefined },
-      stderr: { write: (message) => { stderr += message; } },
+      stderr: {
+        write: (message) => {
+          stderr += message;
+        },
+      },
     });
     assert.equal(preparationFailure.modelReady, false);
     assert.equal(preparationFailure.vectorStackReady, false);
@@ -487,7 +482,11 @@ describe("VS Code extension installer", () => {
         return { skipped: false, installed: [], failed: [] };
       },
       stdout: { write: () => undefined },
-      stderr: { write: (message) => { stderr += message; } },
+      stderr: {
+        write: (message) => {
+          stderr += message;
+        },
+      },
     });
     assert.equal(runtimeFailure.modelReady, true);
     assert.equal(runtimeFailure.vectorStackReady, false);
@@ -520,21 +519,11 @@ describe("VS Code extension installer", () => {
         "lib/menu-navigation-bridge.js",
         "lib/paste-command-queue.js",
       ]) {
-        copyFileSync(
-          path.join(source, ...relative.split("/")),
-          path.join(target, ...relative.split("/")),
-        );
+        copyFileSync(path.join(source, ...relative.split("/")), path.join(target, ...relative.split("/")));
       }
       const extensionPath = path.join(target, "extension.js");
-      writeFileSync(
-        extensionPath,
-        `${readFileSync(extensionPath, "utf8")}\n// stale source fixture\n`,
-        "utf8",
-      );
-      assert.throws(
-        () => vsixVerifier.verifyBundledVsix({ packageRoot: root }),
-        /source changed after packaging/u,
-      );
+      writeFileSync(extensionPath, `${readFileSync(extensionPath, "utf8")}\n// stale source fixture\n`, "utf8");
+      assert.throws(() => vsixVerifier.verifyBundledVsix({ packageRoot: root }), /source changed after packaging/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

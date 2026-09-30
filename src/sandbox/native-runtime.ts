@@ -1,7 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { resolveEasyCodePaths } from "../config/defaults.js";
 
 export const NATIVE_SANDBOX_RUNTIME_PACKAGE = "@openai/codex";
@@ -18,12 +17,32 @@ export function nativeSandboxTarget(
 ): NativeSandboxTarget {
   const key = `${platform}/${architecture}`;
   const targets: Readonly<Record<string, NativeSandboxTarget>> = {
-    "win32/x64": { packageName: "@openai/codex-win32-x64", targetTriple: "x86_64-pc-windows-msvc", binaryName: "codex.exe" },
-    "win32/arm64": { packageName: "@openai/codex-win32-arm64", targetTriple: "aarch64-pc-windows-msvc", binaryName: "codex.exe" },
+    "win32/x64": {
+      packageName: "@openai/codex-win32-x64",
+      targetTriple: "x86_64-pc-windows-msvc",
+      binaryName: "codex.exe",
+    },
+    "win32/arm64": {
+      packageName: "@openai/codex-win32-arm64",
+      targetTriple: "aarch64-pc-windows-msvc",
+      binaryName: "codex.exe",
+    },
     "darwin/x64": { packageName: "@openai/codex-darwin-x64", targetTriple: "x86_64-apple-darwin", binaryName: "codex" },
-    "darwin/arm64": { packageName: "@openai/codex-darwin-arm64", targetTriple: "aarch64-apple-darwin", binaryName: "codex" },
-    "linux/x64": { packageName: "@openai/codex-linux-x64", targetTriple: "x86_64-unknown-linux-musl", binaryName: "codex" },
-    "linux/arm64": { packageName: "@openai/codex-linux-arm64", targetTriple: "aarch64-unknown-linux-musl", binaryName: "codex" },
+    "darwin/arm64": {
+      packageName: "@openai/codex-darwin-arm64",
+      targetTriple: "aarch64-apple-darwin",
+      binaryName: "codex",
+    },
+    "linux/x64": {
+      packageName: "@openai/codex-linux-x64",
+      targetTriple: "x86_64-unknown-linux-musl",
+      binaryName: "codex",
+    },
+    "linux/arm64": {
+      packageName: "@openai/codex-linux-arm64",
+      targetTriple: "aarch64-unknown-linux-musl",
+      binaryName: "codex",
+    },
   };
   const target = targets[key];
   if (!target) throw new Error(`Unsupported native sandbox platform: ${key}`);
@@ -52,22 +71,28 @@ export function nativeSandboxHome(dataDir = resolveEasyCodePaths().dataDir): str
   return path.join(dataDir, "native-sandbox", "runtime-home-v2");
 }
 
-export function nativeSandboxWorker(): string {
-  return fileURLToPath(new URL("native-worker.js", import.meta.url));
-}
-
 function validatedLocalProxyURL(value: string): string {
   const url = new URL(value);
-  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !/^\d+$/u.test(url.port) ||
-      Number(url.port) < 1024 || Number(url.port) > 65535 || url.pathname !== "/" || url.search || url.hash) {
-    throw new Error("Native sandbox proxy must be an authenticated or unauthenticated HTTP URL on 127.0.0.1 with an explicit unprivileged port");
+  if (
+    url.protocol !== "http:" ||
+    url.hostname !== "127.0.0.1" ||
+    !/^\d+$/u.test(url.port) ||
+    Number(url.port) < 1024 ||
+    Number(url.port) > 65535 ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(
+      "Native sandbox proxy must be an authenticated or unauthenticated HTTP URL on 127.0.0.1 with an explicit unprivileged port",
+    );
   }
   return url.href;
 }
 
 function validatedProxyPorts(values: readonly number[]): number[] {
   const ports = [...new Set(values)];
-  if (ports.some(port => !Number.isInteger(port) || port < 1024 || port > 65535) || ports.length > 128) {
+  if (ports.some((port) => !Number.isInteger(port) || port < 1024 || port > 65535) || ports.length > 128) {
     throw new Error("Native sandbox proxy port list contains an invalid port");
   }
   return ports.sort((a, b) => a - b);
@@ -97,8 +122,25 @@ export function nativeSandboxEnvironment(
   windowsProxyPorts: readonly number[] = [],
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
-  for (const key of ["SystemRoot", "WINDIR", "COMSPEC", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-    "TEMP", "TMP", "TMPDIR", "HOME", "PATH", "PATHEXT", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ"]) {
+  for (const key of [
+    "SystemRoot",
+    "WINDIR",
+    "COMSPEC",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "PATH",
+    "PATHEXT",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+  ]) {
     if (source[key] !== undefined) environment[key] = source[key];
   }
   // This variable is private to the child process. EASY CODE never changes the

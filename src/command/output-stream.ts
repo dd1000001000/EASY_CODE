@@ -3,14 +3,24 @@ import type { OutputDigest } from "./types.js";
 
 const ANSI_OSC = /\u001B\][^\u0007]*(?:\u0007|\u001B\\)/gu;
 const ANSI_CSI = /\u001B\[[0-?]*[ -/]*[@-~]/gu;
-const UNSAFE_TERMINAL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/gu;
+const UNSAFE_TERMINAL_CHARACTERS =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/gu;
 
 const SECRET_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\b(?:qwen|deepseek|kimi|glm(?:[-_]coding[-_]plan)?|zai|zhipuai|openai|anthropic)[-_]?(?:api[-_]?)?key\s*[:=]\s*[^\s,;]+/giu, "[REDACTED]"],
-  [/\b(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|authorization|password|passwd|secret)\s*[:=]\s*[^\s,;]+/giu, "[REDACTED]"],
+  [
+    /\b(?:qwen|deepseek|kimi|glm(?:[-_]coding[-_]plan)?|zai|zhipuai|openai|anthropic)[-_]?(?:api[-_]?)?key\s*[:=]\s*[^\s,;]+/giu,
+    "[REDACTED]",
+  ],
+  [
+    /\b(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|authorization|password|passwd|secret)\s*[:=]\s*[^\s,;]+/giu,
+    "[REDACTED]",
+  ],
   [/\bBearer\s+[A-Za-z0-9._~+\/-]{8,}={0,2}/giu, "[REDACTED]"],
   [/\bsk-[A-Za-z0-9_-]{12,}\b/gu, "[REDACTED]"],
-  [/(\B--?(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|authorization|password|passwd|secret)\s+)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/giu, "$1[REDACTED]"],
+  [
+    /(\B--?(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|authorization|password|passwd|secret)\s+)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/giu,
+    "$1[REDACTED]",
+  ],
   [/:\/\/([^\s/:@]+):([^\s/@]+)@/gu, "://$1:[REDACTED]@"],
 ];
 
@@ -31,10 +41,7 @@ export function sanitizeCommandOutput(value: string): string {
  * inside labels such as `api_key` to defeat a later redaction pass.
  */
 export function stripTerminalControls(value: string): string {
-  return value
-    .replace(ANSI_OSC, "")
-    .replace(ANSI_CSI, "")
-    .replace(UNSAFE_TERMINAL_CHARACTERS, "");
+  return value.replace(ANSI_OSC, "").replace(ANSI_CSI, "").replace(UNSAFE_TERMINAL_CHARACTERS, "");
 }
 
 /** Bounded, streaming output retention with head/tail diagnostics. */
@@ -49,7 +56,10 @@ export class OutputCollector {
   private finished = false;
   private _totalBytes = 0;
 
-  constructor(private readonly maxChars: number, private readonly archiveText?: (text: string) => void) {
+  constructor(
+    private readonly maxChars: number,
+    private readonly archiveText?: (text: string) => void,
+  ) {
     const bounded = Math.max(256, maxChars);
     this.headLimit = Math.ceil(bounded / 2);
     this.tailLimit = Math.floor(bounded / 2);
@@ -79,9 +89,7 @@ export class OutputCollector {
     }
 
     const truncated = this.retainedChars > this.maxChars;
-    const text = truncated
-      ? `${this.head}\n... [output truncated] ...\n${this.tail}`
-      : this.head + this.tail;
+    const text = truncated ? `${this.head}\n... [output truncated] ...\n${this.tail}` : this.head + this.tail;
     return {
       head: this.head,
       tail: this.tail,
@@ -114,9 +122,7 @@ export class OutputCollector {
     return {
       head,
       tail,
-      text: truncated
-        ? `${head}\n... [output truncated] ...\n${tail}`
-        : head + tail,
+      text: truncated ? `${head}\n... [output truncated] ...\n${tail}` : head + tail,
       totalBytes: this._totalBytes,
       truncated,
     };

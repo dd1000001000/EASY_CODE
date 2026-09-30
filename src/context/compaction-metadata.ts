@@ -15,9 +15,7 @@ export function createCompactionMetadata(input: {
   readonly benefit: Readonly<CompactionBenefitEvaluation>;
   readonly acceptedAt?: string;
 }): ContextCompactionMetadata {
-  const source = JSON.stringify(
-    input.state.messages.slice(0, input.sourceEndMessageIndex),
-  );
+  const source = JSON.stringify(input.state.messages.slice(0, input.sourceEndMessageIndex));
   return {
     formatVersion: CURRENT_PROTOCOL.compactionMetadata,
     sourceStartMessageIndex: input.sourceStartMessageIndex,

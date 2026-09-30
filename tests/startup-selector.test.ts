@@ -19,10 +19,7 @@ import {
 import { Terminal } from "../src/cli/terminal.js";
 import type { ApiKeyCredentialStore } from "../src/config/credentials.js";
 import type { ProviderName, ThinkingEffort } from "../src/core/types.js";
-import type {
-  SandboxReadiness,
-  SandboxStartupService,
-} from "../src/sandbox/index.js";
+import type { SandboxReadiness, SandboxStartupService } from "../src/sandbox/index.js";
 import { describe, it } from "./harness.js";
 
 const TEST_ENVIRONMENT = [
@@ -225,9 +222,7 @@ async function withStartupApp(
   const root = mkdtempSync(path.join(os.tmpdir(), "easy-code-startup-selector-"));
   const workspace = path.join(root, "workspace");
   mkdirSync(workspace);
-  const previous = new Map(
-    TEST_ENVIRONMENT.map((name) => [name, process.env[name]] as const),
-  );
+  const previous = new Map(TEST_ENVIRONMENT.map((name) => [name, process.env[name]] as const));
   process.env.EASY_CODE_CONFIG_DIR = path.join(root, "config");
   process.env.EASY_CODE_DATA_DIR = path.join(root, "data");
   process.env.EASY_CODE_CACHE_DIR = path.join(root, "cache");
@@ -265,9 +260,7 @@ async function withStartupApp(
   }
 }
 
-function sandboxReadiness(
-  status: SandboxReadiness["status"],
-): SandboxReadiness {
+function sandboxReadiness(status: SandboxReadiness["status"]): SandboxReadiness {
   return {
     status,
     platform: "linux",
@@ -304,13 +297,7 @@ describe("three-stage model selector", () => {
   });
 
   it("renders per-effort applicability without changing the selector height", () => {
-    const lines = renderThinkingEffortSelector(
-      "Zhipu GLM",
-      "glm-5.3",
-      THINKING_CHOICES,
-      0,
-      false,
-    );
+    const lines = renderThinkingEffortSelector("Zhipu GLM", "glm-5.3", THINKING_CHOICES, 0, false);
 
     assert.equal(lines.length, THINKING_CHOICES.length + 2);
     assert.match(lines[0] ?? "", /Select thinking effort for Zhipu GLM \/ glm-5\.3/u);
@@ -340,24 +327,16 @@ describe("three-stage model selector", () => {
     input.write("\u001B[B\r");
     assert.equal(await modelSelection, "qwen3.7-plus");
 
-    const thinkingSelection = selectThinkingEffort(
-      "Alibaba Qwen",
-      "qwen3.7-plus",
-      THINKING_CHOICES,
-      {
-        input,
-        output,
-        initialEffort: "medium",
-        color: false,
-      },
-    );
+    const thinkingSelection = selectThinkingEffort("Alibaba Qwen", "qwen3.7-plus", THINKING_CHOICES, {
+      input,
+      output,
+      initialEffort: "medium",
+      color: false,
+    });
     input.write("\u001B[B\r");
     assert.equal(await thinkingSelection, "high");
 
-    assert.deepEqual(
-      input.rawModeTransitions,
-      [true, false, true, false, true, false],
-    );
+    assert.deepEqual(input.rawModeTransitions, [true, false, true, false, true, false]);
     assert.match(transcript(), /\u001B\[\?25l/u);
     assert.match(transcript(), /\u001B\[\?25h/u);
   });
@@ -376,12 +355,7 @@ describe("three-stage model selector", () => {
     input.write("\r");
     assert.equal(await selection, "qwen");
 
-    const effort = terminal.selectThinkingEffort(
-      "Alibaba Qwen",
-      "qwen3.7-plus",
-      THINKING_CHOICES,
-      "medium",
-    );
+    const effort = terminal.selectThinkingEffort("Alibaba Qwen", "qwen3.7-plus", THINKING_CHOICES, "medium");
     input.write("\r");
     assert.equal(await effort, "medium");
 
@@ -405,17 +379,12 @@ describe("three-stage model selector", () => {
     assert.equal(await selection, undefined);
     assert.deepEqual(input.rawModeTransitions, [true, false]);
 
-    const thinkingSelection = selectThinkingEffort(
-      "Alibaba Qwen",
-      "qwen3.7-plus",
-      THINKING_CHOICES,
-      {
-        input,
-        output,
-        initialEffort: "medium",
-        color: false,
-      },
-    );
+    const thinkingSelection = selectThinkingEffort("Alibaba Qwen", "qwen3.7-plus", THINKING_CHOICES, {
+      input,
+      output,
+      initialEffort: "medium",
+      color: false,
+    });
     input.write("\u0003");
 
     assert.equal(await thinkingSelection, undefined);
@@ -424,11 +393,7 @@ describe("three-stage model selector", () => {
 
   it("shows providers first, then only DeepSeek models, and saves a missing key", async () => {
     const secret = "deepseek-startup-secret";
-    const terminal = new ScriptedStartupTerminal(
-      "deepseek",
-      "deepseek-flash",
-      secret,
-    );
+    const terminal = new ScriptedStartupTerminal("deepseek", "deepseek-flash", secret);
     const store = new MemoryCredentialStore();
 
     await withStartupApp(terminal, store, async (app) => {
@@ -454,9 +419,7 @@ describe("three-stage model selector", () => {
     );
     assert.deepEqual(
       terminal.modelChoices.map((choice) => choice.id),
-      [
-        "deepseek-flash",
-      ],
+      ["deepseek-flash"],
     );
     assert.equal(terminal.thinkingProviderLabel, "DeepSeek");
     assert.equal(terminal.thinkingModel, "deepseek-flash");
@@ -475,22 +438,14 @@ describe("three-stage model selector", () => {
     assert.equal(terminal.secretPrompts.length, 1);
     assert.match(terminal.secretPrompts[0] ?? "", /Enter the DeepSeek API key/u);
     assert.match(terminal.transcript, /Saved deepseek\.api-key/u);
-    assert.match(
-      terminal.transcript,
-      /Selected DeepSeek \/ deepseek-flash \/ thinking medium/u,
-    );
+    assert.match(terminal.transcript, /Selected DeepSeek \/ deepseek-flash \/ thinking medium/u);
     assert.match(terminal.transcript, /"thinkingEffort": "medium"/u);
     assert.match(terminal.transcript, /"thinkingApplied": false/u);
     assert.doesNotMatch(terminal.transcript, new RegExp(secret, "u"));
   });
 
   it("shows all Alibaba Qwen models and does not rewrite an existing key", async () => {
-    const terminal = new ScriptedStartupTerminal(
-      "qwen",
-      "qwen3.5-flash",
-      "unused",
-      "high",
-    );
+    const terminal = new ScriptedStartupTerminal("qwen", "qwen3.5-flash", "unused", "high");
     const store = new MemoryCredentialStore();
     store.values.set("qwen", "configured-qwen-key");
 
@@ -523,10 +478,7 @@ describe("three-stage model selector", () => {
       ["none", "low", "medium", "high"],
     );
     assert.ok(terminal.thinkingChoices.every((choice) => !choice.applied));
-    assert.match(
-      terminal.transcript,
-      /Selected Alibaba Qwen \/ qwen3.5-flash \/ thinking high/u,
-    );
+    assert.match(terminal.transcript, /Selected Alibaba Qwen \/ qwen3.5-flash \/ thinking high/u);
     assert.match(terminal.transcript, /"thinkingEffort": "high"/u);
     assert.match(terminal.transcript, /"thinkingApplied": false/u);
     assert.doesNotMatch(terminal.transcript, /configured-qwen-key/u);
@@ -534,12 +486,7 @@ describe("three-stage model selector", () => {
 
   it("shows Kimi K3 capabilities and stores its independent Coding Plan key", async () => {
     const secret = "kimi-coding-plan-startup-secret";
-    const terminal = new ScriptedStartupTerminal(
-      "kimi",
-      "k3",
-      secret,
-      "none",
-    );
+    const terminal = new ScriptedStartupTerminal("kimi", "k3", secret, "none");
     const store = new MemoryCredentialStore();
 
     await withStartupApp(terminal, store, async (app) => {
@@ -565,21 +512,13 @@ describe("three-stage model selector", () => {
     assert.deepEqual(store.writes, ["kimi"]);
     assert.match(terminal.secretPrompts[0] ?? "", /Enter the Kimi Coding Plan API key/u);
     assert.match(terminal.transcript, /Saved kimi\.api-key/u);
-    assert.match(
-      terminal.transcript,
-      /Selected Kimi Coding Plan \/ k3 \/ thinking none \(saved, not applied\)/u,
-    );
+    assert.match(terminal.transcript, /Selected Kimi Coding Plan \/ k3 \/ thinking none \(saved, not applied\)/u);
     assert.doesNotMatch(terminal.transcript, new RegExp(secret, "u"));
   });
 
   it("shows only GLM models and stores a missing GLM key", async () => {
     const secret = "glm-startup-secret";
-    const terminal = new ScriptedStartupTerminal(
-      "glm",
-      "glm-5.3-flash",
-      secret,
-      "none",
-    );
+    const terminal = new ScriptedStartupTerminal("glm", "glm-5.3-flash", secret, "none");
     const store = new MemoryCredentialStore();
 
     await withStartupApp(terminal, store, async (app) => {
@@ -609,10 +548,7 @@ describe("three-stage model selector", () => {
     assert.deepEqual(store.writes, ["glm"]);
     assert.match(terminal.secretPrompts[0] ?? "", /Enter the Zhipu GLM API key/u);
     assert.match(terminal.transcript, /Saved glm\.api-key/u);
-    assert.match(
-      terminal.transcript,
-      /Selected Zhipu GLM \/ glm-5\.3-flash \/ thinking none \(saved, not applied\)/u,
-    );
+    assert.match(terminal.transcript, /Selected Zhipu GLM \/ glm-5\.3-flash \/ thinking none \(saved, not applied\)/u);
     assert.match(terminal.transcript, /"thinkingEffort": "none"/u);
     assert.match(terminal.transcript, /"thinkingApplied": false/u);
     assert.doesNotMatch(terminal.transcript, new RegExp(secret, "u"));
@@ -621,12 +557,7 @@ describe("three-stage model selector", () => {
   it("stores a missing GLM Coding Plan key without touching standard GLM", async () => {
     const standardSecret = "existing-standard-glm-secret";
     const codingPlanSecret = "glm-coding-plan-startup-secret";
-    const terminal = new ScriptedStartupTerminal(
-      "glm-coding-plan",
-      "glm-5.3-flash",
-      codingPlanSecret,
-      "high",
-    );
+    const terminal = new ScriptedStartupTerminal("glm-coding-plan", "glm-5.3-flash", codingPlanSecret, "high");
     const store = new MemoryCredentialStore();
     store.values.set("glm", standardSecret);
 
@@ -647,27 +578,14 @@ describe("three-stage model selector", () => {
     assert.equal(store.values.get("glm"), standardSecret);
     assert.equal(store.values.get("glm-coding-plan"), codingPlanSecret);
     assert.deepEqual(store.writes, ["glm-coding-plan"]);
-    assert.match(
-      terminal.secretPrompts[0] ?? "",
-      /Enter the GLM Coding Plan API key/u,
-    );
+    assert.match(terminal.secretPrompts[0] ?? "", /Enter the GLM Coding Plan API key/u);
     assert.match(terminal.transcript, /Saved glm-coding-plan\.api-key/u);
-    assert.match(
-      terminal.transcript,
-      /Selected GLM Coding Plan \/ glm-5\.3-flash \/ thinking high/u,
-    );
-    assert.doesNotMatch(
-      terminal.transcript,
-      new RegExp(`${standardSecret}|${codingPlanSecret}`, "u"),
-    );
+    assert.match(terminal.transcript, /Selected GLM Coding Plan \/ glm-5\.3-flash \/ thinking high/u);
+    assert.doesNotMatch(terminal.transcript, new RegExp(`${standardSecret}|${codingPlanSecret}`, "u"));
   });
 
   it("runs the sandbox startup gate before model selection without prompting when ready", async () => {
-    const terminal = new ScriptedStartupTerminal(
-      "qwen",
-      "qwen3.7-plus",
-      "unused",
-    );
+    const terminal = new ScriptedStartupTerminal("qwen", "qwen3.7-plus", "unused");
     const store = new MemoryCredentialStore();
     store.values.set("qwen", "configured-qwen-key");
     let inspectCalls = 0;
@@ -681,12 +599,7 @@ describe("three-stage model selector", () => {
       },
     };
 
-    await withStartupApp(
-      terminal,
-      store,
-      async (app) => app.runInteractive(),
-      service,
-    );
+    await withStartupApp(terminal, store, async (app) => app.runInteractive(), service);
 
     assert.equal(inspectCalls, 1);
     assert.deepEqual(terminal.genericChoices, []);
@@ -705,40 +618,18 @@ describe("three-stage model selector", () => {
       }),
     };
 
-    const continuing = new ScriptedStartupTerminal(
-      "qwen",
-      "qwen3.7-plus",
-      "unused",
-      "medium",
-      ["continue"],
-    );
+    const continuing = new ScriptedStartupTerminal("qwen", "qwen3.7-plus", "unused", "medium", ["continue"]);
     const continuingStore = new MemoryCredentialStore();
     continuingStore.values.set("qwen", "configured-qwen-key");
-    await withStartupApp(
-      continuing,
-      continuingStore,
-      async (app) => app.runInteractive(),
-      service,
-    );
+    await withStartupApp(continuing, continuingStore, async (app) => app.runInteractive(), service);
     assert.deepEqual(continuing.genericChoices[0]?.ids, ["recheck", "continue", "exit"]);
     assert.equal(continuing.providerChoices.length > 0, true);
     assert.match(continuing.transcript, /commands blocked|fail-closed/iu);
 
-    const exiting = new ScriptedStartupTerminal(
-      "qwen",
-      "qwen3.7-plus",
-      "unused",
-      "medium",
-      ["exit"],
-    );
+    const exiting = new ScriptedStartupTerminal("qwen", "qwen3.7-plus", "unused", "medium", ["exit"]);
     const exitingStore = new MemoryCredentialStore();
     exitingStore.values.set("qwen", "configured-qwen-key");
-    await withStartupApp(
-      exiting,
-      exitingStore,
-      async (app) => app.runInteractive(),
-      service,
-    );
+    await withStartupApp(exiting, exitingStore, async (app) => app.runInteractive(), service);
     assert.equal(exiting.genericChoices.length, 1);
     assert.deepEqual(exiting.providerChoices, []);
     assert.doesNotMatch(exiting.transcript, /Selected Alibaba Qwen/u);

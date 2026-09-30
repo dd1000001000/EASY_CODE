@@ -29,7 +29,7 @@ export async function runRegisteredTests(): Promise<number> {
       process.stdout.write(`✓ ${testCase.name}\n`);
     } catch (error) {
       failures += 1;
-      const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       process.stderr.write(`✗ ${testCase.name}\n${detail}\n`);
     }
   }

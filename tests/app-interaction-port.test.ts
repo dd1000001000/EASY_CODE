@@ -19,7 +19,9 @@ describe("host-neutral request entry", () => {
   it("makes manual compaction exclusive in both directions and releases the lock on cancellation", async () => {
     const app = appProbe();
     let finish!: () => void;
-    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
     let signal: AbortSignal | undefined;
     let saved = 0;
     Object.assign(app, {
@@ -28,12 +30,17 @@ describe("host-neutral request entry", () => {
       subagentCoordinator: { hasUnfinished: () => false, hasOutstanding: () => false },
       terminal: { setCurrentRequest() {}, clearCurrentRequest() {}, compactionProgress() {}, warning() {} },
       activeContextCharLimit: () => 100_000,
-      save: () => { saved++; }, syncTerminalView() {},
-      createRuntime: async () => ({ compactSession: async (_state: unknown, options: { signal: AbortSignal }) => {
-        signal = options.signal;
-        await pending;
-        return { phase: "cancelled" };
-      } }),
+      save: () => {
+        saved++;
+      },
+      syncTerminalView() {},
+      createRuntime: async () => ({
+        compactSession: async (_state: unknown, options: { signal: AbortSignal }) => {
+          signal = options.signal;
+          await pending;
+          return { phase: "cancelled" };
+        },
+      }),
     });
     const compact = app.handleSlashCommand("/compact");
     assert.equal(app.isCompacting(), true);
@@ -54,11 +61,22 @@ describe("host-neutral request entry", () => {
     await assert.rejects(app.submitAdjustment("/compact"), /idle/);
   });
 
+  it("rejects adjustments while automatic compaction runs inside a turn", async () => {
+    const app = appProbe();
+    Object.assign(app, { autoCompacting: true });
+    assert.equal(app.isCompacting(), true);
+    await assert.rejects(app.submitAdjustment("Continue"), /compaction/);
+    Object.assign(app, { autoCompacting: false });
+    assert.equal(app.isCompacting(), false);
+  });
+
   it("accepts one turn, exposes cancellation, and releases ownership after completion", async () => {
     const app = appProbe();
     const internal = app as unknown as TurnProbe;
     let finish!: (result: AgentRunResult) => void;
-    const pending = new Promise<AgentRunResult>((resolve) => { finish = resolve; });
+    const pending = new Promise<AgentRunResult>((resolve) => {
+      finish = resolve;
+    });
     let signal: AbortSignal | undefined;
     internal.executePromptOwned = async (...args: unknown[]) => {
       signal = (args[4] as AbortController).signal;
@@ -86,7 +104,9 @@ describe("host-neutral request entry", () => {
     internal.state = { planReview: {} } as SessionState;
     await assert.rejects(app.submitUserMessage("Continue"), /pending plan/u);
     internal.state = { planReview: undefined } as SessionState;
-    internal.executePromptOwned = async () => { throw new Error("preflight failed"); };
+    internal.executePromptOwned = async () => {
+      throw new Error("preflight failed");
+    };
     await assert.rejects(app.submitUserMessage("Continue"), /preflight failed/u);
     assert.equal(app.cancelActiveRequest(), false);
   });
@@ -95,13 +115,15 @@ describe("host-neutral request entry", () => {
     const app = appProbe();
     const internal = app as unknown as {
       state: SessionState;
-      activeTurnSteering: {
-        threadId: string;
-        controller: AbortController;
-        notifier: { notify(sequence: number): void };
-        requestImages: [];
-        draftImages: Map<string, ImageAttachment>;
-      } | undefined;
+      activeTurnSteering:
+        | {
+            threadId: string;
+            controller: AbortController;
+            notifier: { notify(sequence: number): void };
+            requestImages: [];
+            draftImages: Map<string, ImageAttachment>;
+          }
+        | undefined;
       threadStore: {
         pendingTurnSteering(threadId: string): [];
         enqueueTurnSteering(threadId: string, turnId: string, message: { content: string }): { sequence: number };
@@ -112,8 +134,15 @@ describe("host-neutral request entry", () => {
     const events: string[] = [];
     const controller = new AbortController();
     internal.activeTurnSteering = {
-      threadId: "thread_one", controller, requestImages: [], draftImages: new Map(),
-      notifier: { notify: sequence => { events.push(`notified:${sequence}`); } },
+      threadId: "thread_one",
+      controller,
+      requestImages: [],
+      draftImages: new Map(),
+      notifier: {
+        notify: (sequence) => {
+          events.push(`notified:${sequence}`);
+        },
+      },
     };
     internal.threadStore = {
       pendingTurnSteering: () => [],
@@ -123,7 +152,9 @@ describe("host-neutral request entry", () => {
       },
     };
     internal.terminal = {
-      addQueuedAdjustment: (sequence, text) => { events.push(`displayed:${sequence}:${text}`); },
+      addQueuedAdjustment: (sequence, text) => {
+        events.push(`displayed:${sequence}:${text}`);
+      },
     };
     assert.equal(await app.submitAdjustment("Use the existing parser"), 1);
     assert.deepEqual(events, [

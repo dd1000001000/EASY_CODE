@@ -29,8 +29,14 @@ describe("installation path diagnostics", () => {
       });
       assert.equal(result.multipleNpmLocations, true);
       assert.equal(result.conflictingEasyCodeLocations, true);
-      assert.deepEqual(result.npm.map(({ directory }) => directory), [first, second]);
-      assert.deepEqual(result.easyCode.map(({ directory }) => directory), [first, second]);
+      assert.deepEqual(
+        result.npm.map(({ directory }) => directory),
+        [first, second],
+      );
+      assert.deepEqual(
+        result.easyCode.map(({ directory }) => directory),
+        [first, second],
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

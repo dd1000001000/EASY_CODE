@@ -40,20 +40,14 @@ import {
 
 const HARBOR_VERSION = "0.16.1";
 const SWEBENCH_VERSION = "5.0.2";
-const HARBOR_DATASET_REF =
-  "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341";
-const HARBOR_AGENT =
-  "benchmarks.swebench_verified.easy_code_agent:EasyCodeAgent";
-const HARBOR_ENVIRONMENT =
-  "benchmarks.swebench_verified.easy_code_agent:EasyCodeBenchmarkDockerEnvironment";
+const HARBOR_DATASET_REF = "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341";
+const HARBOR_AGENT = "benchmarks.swebench_verified.easy_code_agent:EasyCodeAgent";
+const HARBOR_ENVIRONMENT = "benchmarks.swebench_verified.easy_code_agent:EasyCodeBenchmarkDockerEnvironment";
 const HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER = "4";
 const HARBOR_MAX_RESUME_RETRIES = "1";
-export const HARBOR_PROVIDER_API_KEY_FILE =
-  "/tmp/easy-code-secrets/provider-api-key";
-export const EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV =
-  "EASY_CODE_BENCHMARK_CHECKPOINT_ROOT";
-export const EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV =
-  "EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR";
+export const HARBOR_PROVIDER_API_KEY_FILE = "/tmp/easy-code-secrets/provider-api-key";
+export const EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV = "EASY_CODE_BENCHMARK_CHECKPOINT_ROOT";
+export const EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV = "EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR";
 const EMBEDDING_MODEL_DIRECTORY = "paraphrase-multilingual-MiniLM-L12-v2";
 
 const SWE_BENCH_MODEL_PROFILE = (() => {
@@ -81,9 +75,7 @@ const SWE_BENCH_MODEL_PROFILE = (() => {
 })();
 
 const PROVIDER_CONFIGURATION_ENVIRONMENT_NAMES = Object.freeze(
-  PROVIDER_CATALOG.flatMap((provider) =>
-    Object.values(provider.environment).flatMap((names) => [...names])
-  ),
+  PROVIDER_CATALOG.flatMap((provider) => Object.values(provider.environment).flatMap((names) => [...names])),
 );
 
 const INSTANCE_IDS = [
@@ -150,8 +142,7 @@ export const SWE_BENCH_VERIFIED_50 = Object.freeze({
   officialDatasetRevision: "78f471bf655a3137b2e8a75af1501690ec009ec3",
   subsetSource: "MariusHobbhahn/swe-bench-verified-mini",
   subsetRevision: "b316c349947c29963fce3f4a65967c9807a4b673",
-  subsetParquetSha256:
-    "f9ba19dea78884f1081355d2d8afb671899981f24180aa0c4c1aa14d2c23e855",
+  subsetParquetSha256: "f9ba19dea78884f1081355d2d8afb671899981f24180aa0c4c1aa14d2c23e855",
   harnessVersion: SWEBENCH_VERSION,
   taskRepoRevision: "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d",
   instanceIds: INSTANCE_IDS,
@@ -173,19 +164,13 @@ export function resolveHarborOuterSandbox(
   const requested = env.EASY_CODE_OUTER_SANDBOX?.trim();
   if (!requested) return undefined;
   if (requested !== "harbor") {
-    throw new Error(
-      "EASY_CODE_OUTER_SANDBOX only accepts the trusted Harbor integration.",
-    );
+    throw new Error("EASY_CODE_OUTER_SANDBOX only accepts the trusted Harbor integration.");
   }
   if (platform !== "linux") {
-    throw new Error(
-      "The Harbor outer-sandbox handoff is valid only inside a Linux container.",
-    );
+    throw new Error("The Harbor outer-sandbox handoff is valid only inside a Linux container.");
   }
   if (!dockerMarkerExists) {
-    throw new Error(
-      "The Harbor outer-sandbox handoff requires the Docker container marker.",
-    );
+    throw new Error("The Harbor outer-sandbox handoff requires the Docker container marker.");
   }
   return "harbor";
 }
@@ -207,33 +192,23 @@ export function consumeHarborProviderApiKeyFile(
   if (!requestedPath) return undefined;
   delete env.EASY_CODE_PROVIDER_API_KEY_FILE;
   if (trustedOuterSandbox !== "harbor") {
-    throw new Error(
-      "EASY_CODE_PROVIDER_API_KEY_FILE is accepted only from the trusted Harbor adapter.",
-    );
+    throw new Error("EASY_CODE_PROVIDER_API_KEY_FILE is accepted only from the trusted Harbor adapter.");
   }
   if (requestedPath !== expectedPath) {
-    throw new Error(
-      "The Harbor provider credential path does not match the pinned adapter path.",
-    );
+    throw new Error("The Harbor provider credential path does not match the pinned adapter path.");
   }
 
   let credentialRead = false;
   try {
     const metadata = lstatSync(requestedPath);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      throw new Error(
-        "The Harbor provider credential must be a regular file.",
-      );
+      throw new Error("The Harbor provider credential must be a regular file.");
     }
     if (metadata.size <= 0 || metadata.size > 16_384) {
-      throw new Error(
-        "The Harbor provider credential file has an invalid size.",
-      );
+      throw new Error("The Harbor provider credential file has an invalid size.");
     }
     if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
-      throw new Error(
-        "The Harbor provider credential file must be owner-only (mode 0600).",
-      );
+      throw new Error("The Harbor provider credential file must be owner-only (mode 0600).");
     }
     const apiKey = readFileSync(requestedPath, "utf8").trim();
     if (!apiKey) {
@@ -246,9 +221,7 @@ export function consumeHarborProviderApiKeyFile(
       unlinkSync(requestedPath);
     } catch {
       if (credentialRead) {
-        throw new Error(
-          "Unable to remove the one-shot Harbor provider credential; refusing to start the Agent.",
-        );
+        throw new Error("Unable to remove the one-shot Harbor provider credential; refusing to start the Agent.");
       }
     }
   }
@@ -267,13 +240,10 @@ export function buildHarborRunArgs(options: HarborRunOptions): string[] {
   const concurrency = requirePositiveInteger(options.concurrency, "concurrency");
   const offset = requireNonNegativeInteger(options.offset ?? 0, "offset");
   if (offset >= INSTANCE_IDS.length) {
-    throw new Error(
-      `offset must be between 0 and ${String(INSTANCE_IDS.length - 1)}.`,
-    );
+    throw new Error(`offset must be between 0 and ${String(INSTANCE_IDS.length - 1)}.`);
   }
-  const limit = options.limit === undefined
-    ? INSTANCE_IDS.length - offset
-    : requirePositiveInteger(options.limit, "limit");
+  const limit =
+    options.limit === undefined ? INSTANCE_IDS.length - offset : requirePositiveInteger(options.limit, "limit");
   if (limit > INSTANCE_IDS.length) {
     throw new Error(`limit must be between 1 and ${String(INSTANCE_IDS.length)}.`);
   }
@@ -285,14 +255,9 @@ export function buildHarborRunArgs(options: HarborRunOptions): string[] {
   }
   const runId = options.runId.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(runId)) {
-    throw new Error(
-      "runId must start with an alphanumeric character and contain only letters, numbers, ., _, or -.",
-    );
+    throw new Error("runId must start with an alphanumeric character and contain only letters, numbers, ., _, or -.");
   }
-  const root = validateSweBenchRoot(
-    options.root,
-    options.platform ?? process.platform,
-  );
+  const root = validateSweBenchRoot(options.root, options.platform ?? process.platform);
   const args = [
     "run",
     "--dataset",
@@ -345,10 +310,7 @@ export interface SweBenchContextSummary {
 }
 
 /** Aggregate only adapter-produced, per-trial metrics from one Harbor job. */
-export function summarizeSweBenchContextMetrics(
-  root: string,
-  runId: string,
-): SweBenchContextSummary {
+export function summarizeSweBenchContextMetrics(root: string, runId: string): SweBenchContextSummary {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(runId)) {
     throw new Error("runId is invalid for a benchmark context summary.");
   }
@@ -357,12 +319,7 @@ export function summarizeSweBenchContextMetrics(
   if (existsSync(jobDirectory)) {
     for (const entry of readdirSync(jobDirectory, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const filename = path.join(
-        jobDirectory,
-        entry.name,
-        "agent",
-        "easy-code-context-metrics.json",
-      );
+      const filename = path.join(jobDirectory, entry.name, "agent", "easy-code-context-metrics.json");
       if (!existsSync(filename)) continue;
       const metadata = lstatSync(filename);
       if (metadata.isSymbolicLink() || !metadata.isFile()) {
@@ -375,16 +332,12 @@ export function summarizeSweBenchContextMetrics(
       metrics.push(value as Record<string, unknown>);
     }
   }
-  const sum = (name: string): number => metrics.reduce(
-    (total, value) => total + nonNegativeMetric(value[name]),
-    0,
-  );
+  const sum = (name: string): number => metrics.reduce((total, value) => total + nonNegativeMetric(value[name]), 0);
   return Object.freeze({
     trialsWithMetrics: metrics.length,
     resumedTrials: metrics.filter((value) => value.resumedFromCheckpoint === true).length,
     checkpointedTrials: metrics.filter(
-      (value) => typeof value.checkpointGeneration === "string" &&
-        /^[0-9a-f]{32}$/u.test(value.checkpointGeneration),
+      (value) => typeof value.checkpointGeneration === "string" && /^[0-9a-f]{32}$/u.test(value.checkpointGeneration),
     ).length,
     fts5Trials: metrics.filter((value) => value.retrievalBackend === "fts5").length,
     hybridTrials: metrics.filter((value) => value.retrievalBackend === "hybrid").length,
@@ -397,33 +350,37 @@ export function summarizeSweBenchContextMetrics(
     outputTokens: sum("outputTokens"),
     cachedInputTokens: sum("cachedInputTokens"),
     maxContextCheckpointSequence: metrics.reduce(
-      (maximum, value) => Math.max(
-        maximum,
-        nonNegativeMetric(value.contextCheckpointSequence),
-      ),
+      (maximum, value) => Math.max(maximum, nonNegativeMetric(value.contextCheckpointSequence)),
       0,
     ),
   });
 }
 
 function nonNegativeMetric(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function inspectCredentialStaging(root: string): BenchmarkDoctorCheck {
   const temporaryRoot = path.join(root, "tmp");
   try {
-    if (!existsSync(temporaryRoot)) return { label: "Temporary Benchmark credentials", status: "ok", detail: "no staged credential directories" };
-    const count = readdirSync(temporaryRoot, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && /^provider-secret-[a-zA-Z0-9]+$/u.test(entry.name))
-      .length;
+    if (!existsSync(temporaryRoot))
+      return { label: "Temporary Benchmark credentials", status: "ok", detail: "no staged credential directories" };
+    const count = readdirSync(temporaryRoot, { withFileTypes: true }).filter(
+      (entry) => entry.isDirectory() && /^provider-secret-[a-zA-Z0-9]+$/u.test(entry.name),
+    ).length;
     return count === 0
       ? { label: "Temporary Benchmark credentials", status: "ok", detail: "no staged credential directories" }
-      : { label: "Temporary Benchmark credentials", status: "warn", detail: `${count} staging director${count === 1 ? "y" : "ies"} found; verify no Benchmark run is active before removing stale copies` };
+      : {
+          label: "Temporary Benchmark credentials",
+          status: "warn",
+          detail: `${count} staging director${count === 1 ? "y" : "ies"} found; verify no Benchmark run is active before removing stale copies`,
+        };
   } catch {
-    return { label: "Temporary Benchmark credentials", status: "warn", detail: "staging directory could not be inspected" };
+    return {
+      label: "Temporary Benchmark credentials",
+      status: "warn",
+      detail: "staging directory could not be inspected",
+    };
   }
 }
 
@@ -454,20 +411,10 @@ export function defaultSweBenchRoot(
     : path.join(homeDirectory, "easy-code-bench", "swe-bench-verified-50");
 }
 
-export function validateSweBenchRoot(
-  value: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  const resolved = platform === "win32"
-    ? path.win32.resolve(value)
-    : path.resolve(value);
-  if (
-    platform === "win32" &&
-    path.win32.parse(resolved).root.toUpperCase() !== "F:\\"
-  ) {
-    throw new Error(
-      `SWE-bench data must stay on the F: drive; received ${resolved}.`,
-    );
+export function validateSweBenchRoot(value: string, platform: NodeJS.Platform = process.platform): string {
+  const resolved = platform === "win32" ? path.win32.resolve(value) : path.resolve(value);
+  if (platform === "win32" && path.win32.parse(resolved).root.toUpperCase() !== "F:\\") {
+    throw new Error(`SWE-bench data must stay on the F: drive; received ${resolved}.`);
   }
   return resolved;
 }
@@ -499,9 +446,7 @@ export async function stageBenchmarkCredential(
 
   const temporaryRoot = path.join(root, "tmp");
   mkdirSync(temporaryRoot, { recursive: true });
-  const directory = mkdtempSync(
-    path.join(temporaryRoot, "provider-secret-"),
-  );
+  const directory = mkdtempSync(path.join(temporaryRoot, "provider-secret-"));
   let cleaned = false;
   const cleanup = (): void => {
     if (cleaned) return;
@@ -517,35 +462,18 @@ export async function stageBenchmarkCredential(
       if (!existsSync(whoami) || !existsSync(icacls)) {
         throw new Error("Windows ACL tools are unavailable; refusing to stage the credential.");
       }
-      const identity = await runCaptured(
-        whoami,
-        ["/user", "/fo", "csv", "/nh"],
-        { cwd: root, env },
-      );
-      const sid = identity.code === 0
-        ? identity.stdout.match(/"(S-[0-9]+(?:-[0-9]+)+)"\s*$/u)?.[1]
-        : undefined;
+      const identity = await runCaptured(whoami, ["/user", "/fo", "csv", "/nh"], { cwd: root, env });
+      const sid = identity.code === 0 ? identity.stdout.match(/"(S-[0-9]+(?:-[0-9]+)+)"\s*$/u)?.[1] : undefined;
       if (!sid) {
-        throw new Error(
-          `Unable to resolve the current Windows SID: ${compactProcessError(identity)}`,
-        );
+        throw new Error(`Unable to resolve the current Windows SID: ${compactProcessError(identity)}`);
       }
       const acl = await runCaptured(
         icacls,
-        [
-          directory,
-          "/inheritance:r",
-          "/grant:r",
-          `*${sid}:(OI)(CI)F`,
-          "/grant:r",
-          "*S-1-5-18:(OI)(CI)F",
-        ],
+        [directory, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`, "/grant:r", "*S-1-5-18:(OI)(CI)F"],
         { cwd: root, env },
       );
       if (acl.code !== 0) {
-        throw new Error(
-          `Unable to apply an owner-only Windows ACL: ${compactProcessError(acl)}`,
-        );
+        throw new Error(`Unable to apply an owner-only Windows ACL: ${compactProcessError(acl)}`);
       }
     } else {
       chmodSync(directory, 0o700);
@@ -553,11 +481,7 @@ export async function stageBenchmarkCredential(
 
     const filename = path.join(directory, "provider-api-key");
     const noFollow = platform === "win32" ? 0 : constants.O_NOFOLLOW;
-    const descriptor = openSync(
-      filename,
-      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow,
-      0o600,
-    );
+    const descriptor = openSync(filename, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600);
     try {
       writeSync(descriptor, apiKey, null, "utf8");
       fsyncSync(descriptor);
@@ -577,60 +501,64 @@ export async function stageBenchmarkCredential(
   }
 }
 
-export function registerSweBenchCommands(
-  program: Command,
-  runtime: SweBenchCommandRuntime = {},
-): Command {
+export function registerSweBenchCommands(program: Command, runtime: SweBenchCommandRuntime = {}): Command {
   const stdout = runtime.stdout ?? process.stdout;
   const stderr = runtime.stderr ?? process.stderr;
   const env = runtime.env ?? process.env;
   const platform = runtime.platform ?? process.platform;
   const packageRoot = runtime.packageRoot ?? findPackageRoot();
-  const credentialStore = runtime.credentialStore ??
-    new SystemKeyringCredentialStore(EASY_CODE_BENCHMARK_KEYRING_SERVICE);
-  const setExitCode = runtime.setExitCode ?? ((code: number) => {
-    process.exitCode = code;
-  });
+  const credentialStore =
+    runtime.credentialStore ?? new SystemKeyringCredentialStore(EASY_CODE_BENCHMARK_KEYRING_SERVICE);
+  const setExitCode =
+    runtime.setExitCode ??
+    ((code: number) => {
+      process.exitCode = code;
+    });
   const writeLine = (value: string): void => {
     stdout.write(`${value}\n`);
   };
 
-  const benchmark = program
-    .command("benchmark")
-    .description("run reproducible coding-agent benchmarks");
-  const credential = benchmark.command("credential")
+  const benchmark = program.command("benchmark").description("run reproducible coding-agent benchmarks");
+  const credential = benchmark
+    .command("credential")
     .description("manage EASY CODE Benchmark API keys in its separate system credential namespace");
   const requireProvider = (value: string) => {
     if (!isProviderName(value)) throw new Error(`Unknown benchmark provider: ${value}`);
     return value;
   };
-  credential.command("set")
+  credential
+    .command("set")
     .argument("<provider>", "provider ID from the model registry")
     .description("store a Benchmark-only API key")
     .action(async (rawProvider: string) => {
       const provider = requireProvider(rawProvider);
       const value = await readSecretInput(
-        runtime.input ?? process.stdin, stderr, `EASY CODE Benchmark API key for ${provider}: `,
+        runtime.input ?? process.stdin,
+        stderr,
+        `EASY CODE Benchmark API key for ${provider}: `,
       );
-      await storeVerifiedApiKey(
-        credentialStore, provider, value, providerCatalogEntry(provider).defaultBaseUrl,
-      );
+      await storeVerifiedApiKey(credentialStore, provider, value, providerCatalogEntry(provider).defaultBaseUrl);
       writeLine(`Stored EASY CODE Benchmark ${provider} API key in the system credential store.`);
     });
-  credential.command("get")
+  credential
+    .command("get")
     .argument("<provider>", "provider ID from the model registry")
     .description("show Benchmark API-key status without showing its value")
     .action(async (rawProvider: string) => {
       const provider = requireProvider(rawProvider);
       const value = await credentialStore.get(provider, providerCatalogEntry(provider).defaultBaseUrl);
-      writeLine(`EASY CODE Benchmark ${provider} API key: ${value ? "configured" : "not configured for this endpoint"}.`);
+      writeLine(
+        `EASY CODE Benchmark ${provider} API key: ${value ? "configured" : "not configured for this endpoint"}.`,
+      );
     });
-  credential.command("unset")
+  credential
+    .command("unset")
     .argument("<provider>", "provider ID from the model registry")
     .description("delete a Benchmark-only API key")
     .action(async (rawProvider: string) => {
       const provider = requireProvider(rawProvider);
-      if (!await credentialStore.delete(provider)) throw new Error(`EASY CODE Benchmark ${provider} API key was not removed.`);
+      if (!(await credentialStore.delete(provider)))
+        throw new Error(`EASY CODE Benchmark ${provider} API key was not removed.`);
       writeLine(`Deleted EASY CODE Benchmark ${provider} API key.`);
     });
   const sweBench = benchmark
@@ -684,30 +612,18 @@ export function registerSweBenchCommands(
       });
       await runInherited(
         python,
-        [
-          "-m",
-          "pip",
-          "install",
-          `harbor==${HARBOR_VERSION}`,
-          `swebench==${SWEBENCH_VERSION}`,
-        ],
+        ["-m", "pip", "install", `harbor==${HARBOR_VERSION}`, `swebench==${SWEBENCH_VERSION}`],
         { cwd: root, env: childEnv },
       );
       writeLine("Preparing the pinned multilingual embedding model on the benchmark drive...");
-      await runInherited(
-        process.execPath,
-        [path.join(packageRoot, "scripts", "embedding-model.cjs"), "prepare"],
-        {
-          cwd: packageRoot,
-          env: {
-            ...childEnv,
-            EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
-          },
+      await runInherited(process.execPath, [path.join(packageRoot, "scripts", "embedding-model.cjs"), "prepare"], {
+        cwd: packageRoot,
+        env: {
+          ...childEnv,
+          EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
         },
-      );
-      writeLine(
-        `Installed harbor==${HARBOR_VERSION} and swebench==${SWEBENCH_VERSION} under ${benchmarkVenv(root)}.`,
-      );
+      });
+      writeLine(`Installed harbor==${HARBOR_VERSION} and swebench==${SWEBENCH_VERSION} under ${benchmarkVenv(root)}.`);
     });
 
   sweBench
@@ -729,15 +645,16 @@ export function registerSweBenchCommands(
         status: docker.code === 0 ? "ok" : "fail",
         detail: docker.code === 0 ? docker.stdout.trim() || "ready" : compactProcessError(docker),
       });
-      const dockerPlatform = docker.code === 0
-        ? await runCaptured(
-            "docker",
-            ["info", "--format", "{{.OSType}}|{{.Architecture}}|{{.DockerRootDir}}"],
-            { cwd: packageRoot, env: childEnv },
-          )
-        : { code: 1, stdout: "", stderr: "Docker Engine is unavailable." };
+      const dockerPlatform =
+        docker.code === 0
+          ? await runCaptured("docker", ["info", "--format", "{{.OSType}}|{{.Architecture}}|{{.DockerRootDir}}"], {
+              cwd: packageRoot,
+              env: childEnv,
+            })
+          : { code: 1, stdout: "", stderr: "Docker Engine is unavailable." };
       const dockerParts = dockerPlatform.stdout.trim().split("|");
-      const dockerTargetOk = dockerPlatform.code === 0 &&
+      const dockerTargetOk =
+        dockerPlatform.code === 0 &&
         dockerParts[0]?.toLowerCase() === "linux" &&
         ["amd64", "x86_64"].includes(dockerParts[1]?.toLowerCase() ?? "");
       checks.push({
@@ -749,22 +666,16 @@ export function registerSweBenchCommands(
       });
       // Compose plugin discovery is independent of daemon readiness. Check it
       // even when the Engine is stopped so doctor reports the actionable cause.
-      const dockerCompose = await runCaptured(
-        "docker",
-        ["compose", "--project-name", "easy-code-doctor", "version"],
-        { cwd: packageRoot, env: childEnv },
-      );
-      const dockerComposeVersion = extractSemanticVersion(
-        `${dockerCompose.stdout}\n${dockerCompose.stderr}`,
-      );
-      const dockerComposeReady = dockerCompose.code === 0 &&
-        versionAtLeast(dockerComposeVersion, "2.0.0");
+      const dockerCompose = await runCaptured("docker", ["compose", "--project-name", "easy-code-doctor", "version"], {
+        cwd: packageRoot,
+        env: childEnv,
+      });
+      const dockerComposeVersion = extractSemanticVersion(`${dockerCompose.stdout}\n${dockerCompose.stderr}`);
+      const dockerComposeReady = dockerCompose.code === 0 && versionAtLeast(dockerComposeVersion, "2.0.0");
       checks.push({
         label: "Docker Compose >=2",
         status: dockerComposeReady ? "ok" : "fail",
-        detail: dockerComposeReady
-          ? dockerComposeVersion ?? "ready"
-          : compactProcessError(dockerCompose),
+        detail: dockerComposeReady ? (dockerComposeVersion ?? "ready") : compactProcessError(dockerCompose),
       });
       const harbor = await runCaptured(benchmarkHarbor(root, platform), ["--version"], {
         cwd: packageRoot,
@@ -774,9 +685,7 @@ export function registerSweBenchCommands(
       checks.push({
         label: `Harbor ${HARBOR_VERSION}`,
         status: harbor.code === 0 && harborVersion === HARBOR_VERSION ? "ok" : "fail",
-        detail: harbor.code === 0
-          ? harborVersion ?? "version was not reported"
-          : compactProcessError(harbor),
+        detail: harbor.code === 0 ? (harborVersion ?? "version was not reported") : compactProcessError(harbor),
       });
       const python = await runCaptured(benchmarkPython(root, platform), ["--version"], {
         cwd: packageRoot,
@@ -787,28 +696,20 @@ export function registerSweBenchCommands(
       checks.push({
         label: "Benchmark Python >=3.12",
         status: pythonReady ? "ok" : "fail",
-        detail: python.code === 0
-          ? pythonVersion ?? "version was not reported"
-          : compactProcessError(python),
+        detail: python.code === 0 ? (pythonVersion ?? "version was not reported") : compactProcessError(python),
       });
       const swebench = pythonReady
         ? await runCaptured(
             benchmarkPython(root, platform),
-            [
-              "-c",
-              "import importlib.metadata as m; print(m.version('swebench'))",
-            ],
+            ["-c", "import importlib.metadata as m; print(m.version('swebench'))"],
             { cwd: packageRoot, env: childEnv },
           )
         : { code: 1, stdout: "", stderr: "Benchmark Python is unavailable." };
       checks.push({
         label: `swebench ${SWEBENCH_VERSION}`,
-        status: swebench.code === 0 && swebench.stdout.trim() === SWEBENCH_VERSION
-          ? "ok"
-          : "fail",
-        detail: swebench.code === 0
-          ? swebench.stdout.trim() || "version was not reported"
-          : compactProcessError(swebench),
+        status: swebench.code === 0 && swebench.stdout.trim() === SWEBENCH_VERSION ? "ok" : "fail",
+        detail:
+          swebench.code === 0 ? swebench.stdout.trim() || "version was not reported" : compactProcessError(swebench),
       });
       const adapter = pythonReady
         ? await runCaptured(
@@ -823,9 +724,8 @@ export function registerSweBenchCommands(
       checks.push({
         label: "EASY CODE Harbor adapter",
         status: adapter.code === 0 && adapter.stdout.trim() === "easy-code" ? "ok" : "fail",
-        detail: adapter.code === 0
-          ? adapter.stdout.trim() || "adapter name was not reported"
-          : compactProcessError(adapter),
+        detail:
+          adapter.code === 0 ? adapter.stdout.trim() || "adapter name was not reported" : compactProcessError(adapter),
       });
       const embeddingModel = await runCaptured(
         process.execPath,
@@ -841,9 +741,10 @@ export function registerSweBenchCommands(
       checks.push({
         label: "Pinned hybrid-retrieval embedding model",
         status: embeddingModel.code === 0 ? "ok" : "fail",
-        detail: embeddingModel.code === 0
-          ? embeddingModel.stdout.trim() || benchmarkEmbeddingModelDirectory(root)
-          : `${compactProcessError(embeddingModel)} Run easy-code benchmark swe-bench setup to prepare it.`,
+        detail:
+          embeddingModel.code === 0
+            ? embeddingModel.stdout.trim() || benchmarkEmbeddingModelDirectory(root)
+            : `${compactProcessError(embeddingModel)} Run easy-code benchmark swe-bench setup to prepare it.`,
       });
       const manifest = readPinnedManifest(packageRoot);
       checks.push({
@@ -855,10 +756,12 @@ export function registerSweBenchCommands(
       checks.push(inspectCredentialStaging(root));
       let hasCredential = false;
       try {
-        hasCredential = Boolean(await credentialStore.get(
-          SWE_BENCH_MODEL_PROFILE.credentialSlot, SWE_BENCH_MODEL_PROFILE.baseUrl,
-        ));
-      } catch { /* Doctor reports the missing or unavailable store below. */ }
+        hasCredential = Boolean(
+          await credentialStore.get(SWE_BENCH_MODEL_PROFILE.credentialSlot, SWE_BENCH_MODEL_PROFILE.baseUrl),
+        );
+      } catch {
+        /* Doctor reports the missing or unavailable store below. */
+      }
       checks.push({
         label: `EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key`,
         status: hasCredential ? "ok" : "fail",
@@ -892,149 +795,140 @@ export function registerSweBenchCommands(
     .option("--confirm-full-run", "confirm the API cost of starting all 50 tasks")
     .option("--package <path>", "existing local EASY CODE npm .tgz")
     .option("--dry-run", "print the exact non-secret Harbor invocation without running it")
-    .action(async (options: {
-      root: string;
-      runId: string;
-      concurrency: number;
-      offset: number;
-      limit: number;
-      package?: string;
-      dryRun?: boolean;
-      confirmFullRun?: boolean;
-    }) => {
-      const root = validateSweBenchRoot(options.root, platform);
-      const args = buildHarborRunArgs({
-        root,
-        runId: options.runId,
-        concurrency: options.concurrency,
-        offset: options.offset,
-        limit: options.limit,
-        platform,
-      });
-      writeLine(`Benchmark root: ${root}`);
-      const firstPosition = options.offset + 1;
-      const lastPosition = options.offset + options.limit;
-      writeLine(
-        `Tasks: ${String(options.limit)} / 50; offset: ${String(options.offset)} ` +
-          `(positions ${String(firstPosition)}-${String(lastPosition)}); ` +
-          `concurrency: ${String(options.concurrency)}`,
-      );
-      writeLine(`Harbor argv: ${JSON.stringify(args)}`);
-      if (options.dryRun) {
-        writeLine("Dry run only; no package was built, no API key was read, and no task was started.");
-        return;
-      }
-      if (
-        options.offset === 0 &&
-        options.limit === INSTANCE_IDS.length &&
-        !options.confirmFullRun
-      ) {
-        throw new Error(
-          "A 50-task run can consume substantial API credits. Re-run with --confirm-full-run.",
-        );
-      }
-
-      prepareBenchmarkDirectories(root);
-      const composeEnvironment = benchmarkEnvironment(root, env);
-      const compose = await runCaptured(
-        "docker",
-        ["compose", "--project-name", "easy-code-preflight", "version"],
-        { cwd: packageRoot, env: composeEnvironment },
-      );
-      const composeVersion = extractSemanticVersion(`${compose.stdout}\n${compose.stderr}`);
-      if (compose.code !== 0 || !versionAtLeast(composeVersion, "2.0.0")) {
-        throw new Error(
-          `Docker Compose v2 preflight failed: ${compactProcessError(compose)}. ` +
-            "Run easy-code benchmark swe-bench doctor before retrying.",
-        );
-      }
-      const packagePath = options.package
-        ? validatePackagePath(options.package)
-        : await packEasyCode(packageRoot, root, env, platform);
-      const embeddingModel = await runCaptured(
-        process.execPath,
-        [path.join(packageRoot, "scripts", "embedding-model.cjs"), "verify"],
-        {
-          cwd: packageRoot,
-          env: {
-            ...composeEnvironment,
-            EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
-          },
-        },
-      );
-      if (embeddingModel.code !== 0) {
-        throw new Error(
-          `Pinned benchmark embedding model preflight failed: ${compactProcessError(embeddingModel)}. ` +
-            "Run easy-code benchmark swe-bench setup before retrying.",
-        );
-      }
-      const apiKey = await credentialStore.get(
-        SWE_BENCH_MODEL_PROFILE.credentialSlot, SWE_BENCH_MODEL_PROFILE.baseUrl,
-      );
-      if (!apiKey) {
-        throw new Error(
-          `No EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key is available for this endpoint. ` +
-            `Run easy-code benchmark credential set ${SWE_BENCH_MODEL_PROFILE.credentialSlot} first.`,
-        );
-      }
-      const stagedCredential = await stageBenchmarkCredential(root, apiKey, {
-        platform,
-        env,
-      });
-      const cleanupOnExit = () => stagedCredential.cleanup();
-      process.once("exit", cleanupOnExit);
-      try {
-        const childEnv = benchmarkEnvironment(root, env, {
-          EASY_CODE_PROVIDER_KEY_FILE: stagedCredential.filename,
-          EASY_CODE_MODEL_REGISTRY_PATH: USER_MODEL_REGISTRY_PATH,
-          [EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV]: path.join(root, "checkpoints"),
-          [EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV]: benchmarkEmbeddingModelDirectory(root),
-          EASY_CODE_PACKAGE_PATH: packagePath,
-          PYTHONPATH: prependPath(packageRoot, env.PYTHONPATH),
+    .action(
+      async (options: {
+        root: string;
+        runId: string;
+        concurrency: number;
+        offset: number;
+        limit: number;
+        package?: string;
+        dryRun?: boolean;
+        confirmFullRun?: boolean;
+      }) => {
+        const root = validateSweBenchRoot(options.root, platform);
+        const args = buildHarborRunArgs({
+          root,
+          runId: options.runId,
+          concurrency: options.concurrency,
+          offset: options.offset,
+          limit: options.limit,
+          platform,
         });
+        writeLine(`Benchmark root: ${root}`);
+        const firstPosition = options.offset + 1;
+        const lastPosition = options.offset + options.limit;
         writeLine(
-          "Starting Harbor. It receives only an ACL-protected credential-file path; the key is never printed.",
+          `Tasks: ${String(options.limit)} / 50; offset: ${String(options.offset)} ` +
+            `(positions ${String(firstPosition)}-${String(lastPosition)}); ` +
+            `concurrency: ${String(options.concurrency)}`,
         );
-        let harborCompleted = false;
-        try {
-          await runInherited(benchmarkHarbor(root, platform), args, {
-            cwd: root,
-            env: childEnv,
-          });
-          harborCompleted = true;
-        } finally {
-          try {
-            const contextSummary = summarizeSweBenchContextMetrics(root, options.runId);
-            const contextSummaryPath = path.join(
-              root,
-              "jobs",
-              options.runId,
-              "easy-code-context-summary.json",
-            );
-            mkdirSync(path.dirname(contextSummaryPath), { recursive: true });
-            writeFileSync(
-              contextSummaryPath,
-              `${JSON.stringify({ ...contextSummary, harborCompleted }, null, 2)}\n`,
-              { encoding: "utf8", mode: 0o600 },
-            );
-            writeLine(
-              `Context metrics: ${String(contextSummary.trialsWithMetrics)} trial(s), ` +
-                `${String(contextSummary.checkpointedTrials)} checkpointed, ` +
-                `${String(contextSummary.hybridTrials)} hybrid / ` +
-                `${String(contextSummary.fts5Trials)} FTS5 fallback.`,
-            );
-            writeLine(`Context summary: ${contextSummaryPath}`);
-          } catch (error) {
-            const detail = error instanceof Error ? error.message : String(error);
-            stderr.write(`Unable to write benchmark context summary: ${detail}\n`);
-            if (harborCompleted) throw error;
-          }
+        writeLine(`Harbor argv: ${JSON.stringify(args)}`);
+        if (options.dryRun) {
+          writeLine("Dry run only; no package was built, no API key was read, and no task was started.");
+          return;
         }
-      } finally {
-        process.off("exit", cleanupOnExit);
-        stagedCredential.cleanup();
-      }
-    });
+        if (options.offset === 0 && options.limit === INSTANCE_IDS.length && !options.confirmFullRun) {
+          throw new Error("A 50-task run can consume substantial API credits. Re-run with --confirm-full-run.");
+        }
+
+        prepareBenchmarkDirectories(root);
+        const composeEnvironment = benchmarkEnvironment(root, env);
+        const compose = await runCaptured("docker", ["compose", "--project-name", "easy-code-preflight", "version"], {
+          cwd: packageRoot,
+          env: composeEnvironment,
+        });
+        const composeVersion = extractSemanticVersion(`${compose.stdout}\n${compose.stderr}`);
+        if (compose.code !== 0 || !versionAtLeast(composeVersion, "2.0.0")) {
+          throw new Error(
+            `Docker Compose v2 preflight failed: ${compactProcessError(compose)}. ` +
+              "Run easy-code benchmark swe-bench doctor before retrying.",
+          );
+        }
+        const packagePath = options.package
+          ? validatePackagePath(options.package)
+          : await packEasyCode(packageRoot, root, env, platform);
+        const embeddingModel = await runCaptured(
+          process.execPath,
+          [path.join(packageRoot, "scripts", "embedding-model.cjs"), "verify"],
+          {
+            cwd: packageRoot,
+            env: {
+              ...composeEnvironment,
+              EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
+            },
+          },
+        );
+        if (embeddingModel.code !== 0) {
+          throw new Error(
+            `Pinned benchmark embedding model preflight failed: ${compactProcessError(embeddingModel)}. ` +
+              "Run easy-code benchmark swe-bench setup before retrying.",
+          );
+        }
+        const apiKey = await credentialStore.get(
+          SWE_BENCH_MODEL_PROFILE.credentialSlot,
+          SWE_BENCH_MODEL_PROFILE.baseUrl,
+        );
+        if (!apiKey) {
+          throw new Error(
+            `No EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key is available for this endpoint. ` +
+              `Run easy-code benchmark credential set ${SWE_BENCH_MODEL_PROFILE.credentialSlot} first.`,
+          );
+        }
+        const stagedCredential = await stageBenchmarkCredential(root, apiKey, {
+          platform,
+          env,
+        });
+        const cleanupOnExit = () => stagedCredential.cleanup();
+        process.once("exit", cleanupOnExit);
+        try {
+          const childEnv = benchmarkEnvironment(root, env, {
+            EASY_CODE_PROVIDER_KEY_FILE: stagedCredential.filename,
+            EASY_CODE_MODEL_REGISTRY_PATH: USER_MODEL_REGISTRY_PATH,
+            [EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV]: path.join(root, "checkpoints"),
+            [EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV]: benchmarkEmbeddingModelDirectory(root),
+            EASY_CODE_PACKAGE_PATH: packagePath,
+            PYTHONPATH: prependPath(packageRoot, env.PYTHONPATH),
+          });
+          writeLine(
+            "Starting Harbor. It receives only an ACL-protected credential-file path; the key is never printed.",
+          );
+          let harborCompleted = false;
+          try {
+            await runInherited(benchmarkHarbor(root, platform), args, {
+              cwd: root,
+              env: childEnv,
+            });
+            harborCompleted = true;
+          } finally {
+            try {
+              const contextSummary = summarizeSweBenchContextMetrics(root, options.runId);
+              const contextSummaryPath = path.join(root, "jobs", options.runId, "easy-code-context-summary.json");
+              mkdirSync(path.dirname(contextSummaryPath), { recursive: true });
+              writeFileSync(
+                contextSummaryPath,
+                `${JSON.stringify({ ...contextSummary, harborCompleted }, null, 2)}\n`,
+                { encoding: "utf8", mode: 0o600 },
+              );
+              writeLine(
+                `Context metrics: ${String(contextSummary.trialsWithMetrics)} trial(s), ` +
+                  `${String(contextSummary.checkpointedTrials)} checkpointed, ` +
+                  `${String(contextSummary.hybridTrials)} hybrid / ` +
+                  `${String(contextSummary.fts5Trials)} FTS5 fallback.`,
+              );
+              writeLine(`Context summary: ${contextSummaryPath}`);
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error);
+              stderr.write(`Unable to write benchmark context summary: ${detail}\n`);
+              if (harborCompleted) throw error;
+            }
+          }
+        } finally {
+          process.off("exit", cleanupOnExit);
+          stagedCredential.cleanup();
+        }
+      },
+    );
 
   sweBench.action(() => sweBench.outputHelp());
   benchmark.action(() => benchmark.outputHelp());
@@ -1086,11 +980,7 @@ function benchmarkEasyCodeCache(root: string): string {
 }
 
 export function benchmarkEmbeddingModelDirectory(root: string): string {
-  return path.join(
-    benchmarkEasyCodeCache(root),
-    "models",
-    EMBEDDING_MODEL_DIRECTORY,
-  );
+  return path.join(benchmarkEasyCodeCache(root), "models", EMBEDDING_MODEL_DIRECTORY);
 }
 
 function prepareBenchmarkDirectories(root: string): void {
@@ -1188,10 +1078,7 @@ function extractSemanticVersion(value: string): string | undefined {
   return value.match(/(?:^|[^0-9])([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9]|$)/u)?.[1];
 }
 
-function versionAtLeast(
-  actual: string | undefined,
-  minimum: string,
-): boolean {
+function versionAtLeast(actual: string | undefined, minimum: string): boolean {
   if (!actual) return false;
   const left = actual.split(".").map(Number);
   const right = minimum.split(".").map(Number);
@@ -1209,15 +1096,13 @@ function inspectBenchmarkStorage(
 ): BenchmarkDoctorCheck[] {
   const checks: BenchmarkDoctorCheck[] = [];
   try {
-    const volume = platform === "win32"
-      ? path.win32.parse(root).root
-      : path.parse(root).root;
+    const volume = platform === "win32" ? path.win32.parse(root).root : path.parse(root).root;
     const stats = statfsSync(volume);
     const availableBytes = BigInt(stats.bavail) * BigInt(stats.bsize);
-    const availableGiB = Number(availableBytes / (1024n ** 3n));
+    const availableGiB = Number(availableBytes / 1024n ** 3n);
     checks.push({
       label: "Benchmark volume free space",
-      status: availableBytes >= 120n * (1024n ** 3n) ? "ok" : "fail",
+      status: availableBytes >= 120n * 1024n ** 3n ? "ok" : "fail",
       detail: `${String(availableGiB)} GiB available on ${volume}`,
     });
   } catch (error) {
@@ -1231,10 +1116,7 @@ function inspectBenchmarkStorage(
   if (platform !== "win32") return checks;
   const appData = env.APPDATA?.trim();
   const settingsFiles = appData
-    ? [
-        path.win32.join(appData, "Docker", "settings-store.json"),
-        path.win32.join(appData, "Docker", "settings.json"),
-      ]
+    ? [path.win32.join(appData, "Docker", "settings-store.json"), path.win32.join(appData, "Docker", "settings.json")]
     : [];
   let dockerImageLocation: string | undefined;
   for (const filename of settingsFiles) {
@@ -1242,11 +1124,7 @@ function inspectBenchmarkStorage(
     try {
       dockerImageLocation = findStringSetting(
         JSON.parse(readFileSync(filename, "utf8")) as unknown,
-        new Set([
-          "diskimagelocation",
-          "wslenginedataroot",
-          "virtualmachinediskpath",
-        ]),
+        new Set(["diskimagelocation", "wslenginedataroot", "virtualmachinediskpath"]),
       );
       if (dockerImageLocation) break;
     } catch {
@@ -1271,10 +1149,7 @@ function inspectBenchmarkStorage(
   return checks;
 }
 
-function findStringSetting(
-  value: unknown,
-  keys: ReadonlySet<string>,
-): string | undefined {
+function findStringSetting(value: unknown, keys: ReadonlySet<string>): string | undefined {
   if (!value || typeof value !== "object") return undefined;
   for (const [key, nested] of Object.entries(value)) {
     if (keys.has(key.toLowerCase()) && typeof nested === "string" && nested.trim()) {
@@ -1287,8 +1162,9 @@ function findStringSetting(
 }
 
 function defaultRunId(now = new Date()): string {
-  return `${SWE_BENCH_MODEL_PROFILE.provider}-${SWE_BENCH_MODEL_PROFILE.model}-` +
-    now.toISOString().replace(/[:.]/gu, "-");
+  return (
+    `${SWE_BENCH_MODEL_PROFILE.provider}-${SWE_BENCH_MODEL_PROFILE.model}-` + now.toISOString().replace(/[:.]/gu, "-")
+  );
 }
 
 function findPackageRoot(start = path.dirname(fileURLToPath(import.meta.url))): string {
@@ -1304,12 +1180,7 @@ function findPackageRoot(start = path.dirname(fileURLToPath(import.meta.url))): 
 }
 
 function readPinnedManifest(packageRoot: string): { ok: boolean; detail: string } {
-  const filename = path.join(
-    packageRoot,
-    "benchmarks",
-    "swebench_verified",
-    "subset-50.json",
-  );
+  const filename = path.join(packageRoot, "benchmarks", "swebench_verified", "subset-50.json");
   try {
     const parsed = JSON.parse(readFileSync(filename, "utf8")) as {
       instance_ids?: unknown;
@@ -1346,29 +1217,19 @@ async function packEasyCode(
   prepareBenchmarkDirectories(root);
   const packagesDir = path.join(root, "packages");
   const npm = resolveNpmInvocation(platform, process.execPath, env);
-  const sourceCheckout = existsSync(path.join(packageRoot, "src", "index.ts")) &&
-    existsSync(path.join(packageRoot, "tsconfig.json"));
+  const sourceCheckout =
+    existsSync(path.join(packageRoot, "src", "index.ts")) && existsSync(path.join(packageRoot, "tsconfig.json"));
   if (sourceCheckout) {
-    await runInherited(
-      npm.executable,
-      [...npm.argsPrefix, "run", "build"],
-      { cwd: packageRoot, env: benchmarkEnvironment(root, env) },
-    );
+    await runInherited(npm.executable, [...npm.argsPrefix, "run", "build"], {
+      cwd: packageRoot,
+      env: benchmarkEnvironment(root, env),
+    });
   } else if (!existsSync(path.join(packageRoot, "dist", "index.js"))) {
-    throw new Error(
-      "The installed EASY CODE package has no compiled dist/index.js to benchmark.",
-    );
+    throw new Error("The installed EASY CODE package has no compiled dist/index.js to benchmark.");
   }
   const result = await runCaptured(
     npm.executable,
-    [
-      ...npm.argsPrefix,
-      "pack",
-      "--ignore-scripts",
-      "--json",
-      "--pack-destination",
-      packagesDir,
-    ],
+    [...npm.argsPrefix, "pack", "--ignore-scripts", "--json", "--pack-destination", packagesDir],
     { cwd: packageRoot, env: benchmarkEnvironment(root, env) },
   );
   if (result.code !== 0) {
@@ -1405,14 +1266,7 @@ export function resolveNpmInvocation(
   const candidates = [
     explicitCli,
     path.join(path.dirname(nodeExecutable), "node_modules", "npm", "bin", "npm-cli.js"),
-    path.resolve(
-      path.dirname(nodeExecutable),
-      "..",
-      "node_modules",
-      "npm",
-      "bin",
-      "npm-cli.js",
-    ),
+    path.resolve(path.dirname(nodeExecutable), "..", "node_modules", "npm", "bin", "npm-cli.js"),
   ].filter((candidate): candidate is string => Boolean(candidate));
   const npmCli = candidates.find((candidate) => existsSync(candidate));
   if (npmCli) {
@@ -1421,9 +1275,7 @@ export function resolveNpmInvocation(
   if (platform !== "win32") {
     return { executable: "npm", argsPrefix: [] };
   }
-  throw new Error(
-    "Unable to locate npm-cli.js beside the active Node.js runtime; refusing to invoke a shell shim.",
-  );
+  throw new Error("Unable to locate npm-cli.js beside the active Node.js runtime; refusing to invoke a shell shim.");
 }
 
 function validatePackagePath(value: string): string {
@@ -1480,11 +1332,7 @@ function runCaptured(
   });
 }
 
-function runInherited(
-  executable: string,
-  args: readonly string[],
-  options: ProcessOptions,
-): Promise<void> {
+function runInherited(executable: string, args: readonly string[], options: ProcessOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, [...args], {
       cwd: options.cwd,
@@ -1501,8 +1349,6 @@ function runInherited(
 }
 
 function compactProcessError(result: CapturedProcessResult): string {
-  const value = (result.stderr || result.stdout || `exit ${String(result.code)}`)
-    .replace(/\s+/gu, " ")
-    .trim();
+  const value = (result.stderr || result.stdout || `exit ${String(result.code)}`).replace(/\s+/gu, " ").trim();
   return value.slice(0, 240);
 }

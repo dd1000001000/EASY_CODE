@@ -16,10 +16,7 @@ async function git(root: string, args: readonly string[]): Promise<void> {
   assert.equal(result.exitCode, 0, result.stderr || `git ${args.join(" ")} failed`);
 }
 
-async function withWorkspace(
-  gitRepository: boolean,
-  run: (root: string) => Promise<void>,
-): Promise<void> {
+async function withWorkspace(gitRepository: boolean, run: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-git-tracking-"));
   try {
     if (gitRepository) {
@@ -61,12 +58,18 @@ describe("Git-aware workspace change tracking", () => {
       await writeFile(path.join(root, "__pycache__", "cache.pyc"), "cache", "utf8");
 
       const delta = await manager.completeCommandChangeTracking(baseline);
-      assert.deepEqual(delta.created.map((entry) => entry.path), ["src/created.ts"]);
-      assert.deepEqual(delta.updated.map((entry) => entry.after.path), [
-        "src/clean.ts",
-        "src/dirty.ts",
-      ]);
-      assert.deepEqual(delta.deleted.map((entry) => entry.path), ["src/deleted.ts"]);
+      assert.deepEqual(
+        delta.created.map((entry) => entry.path),
+        ["src/created.ts"],
+      );
+      assert.deepEqual(
+        delta.updated.map((entry) => entry.after.path),
+        ["src/clean.ts", "src/dirty.ts"],
+      );
+      assert.deepEqual(
+        delta.deleted.map((entry) => entry.path),
+        ["src/deleted.ts"],
+      );
       assert.equal(delta.truncated, false);
 
       const clean = delta.updated.find((entry) => entry.after.path === "src/clean.ts");
@@ -114,16 +117,21 @@ describe("Git-aware workspace change tracking", () => {
       ]);
       const delta = await manager.completeCommandChangeTracking(baseline);
 
-      assert.deepEqual(delta.created.map((entry) => entry.path), [".local/created.json"]);
-      assert.deepEqual(delta.updated.map((entry) => entry.after.path), [".env"]);
-      assert.deepEqual(delta.deleted.map((entry) => entry.path), [".local/delete.json"]);
+      assert.deepEqual(
+        delta.created.map((entry) => entry.path),
+        [".local/created.json"],
+      );
+      assert.deepEqual(
+        delta.updated.map((entry) => entry.after.path),
+        [".env"],
+      );
+      assert.deepEqual(
+        delta.deleted.map((entry) => entry.path),
+        [".local/delete.json"],
+      );
       assert.equal(delta.updated[0]?.before.hash, hash("TOKEN=before\n"));
       assert.equal(delta.updated[0]?.after.hash, hash("TOKEN=after\n"));
-      for (const transient of [
-        "node_modules/dependency.js",
-        "__pycache__/cache.pyc",
-        "dist/bundle.js",
-      ]) {
+      for (const transient of ["node_modules/dependency.js", "__pycache__/cache.pyc", "dist/bundle.js"]) {
         assert.equal(manager.getManifestSnapshot()?.files.has(transient), false);
       }
 
@@ -134,13 +142,18 @@ describe("Git-aware workspace change tracking", () => {
         writeFile(path.join(root, "dist", "late-bundle.js"), "late\n", "utf8"),
       ]);
       const consistency = await manager.fullConsistencyCheck();
-      assert.deepEqual(consistency.created.map((entry) => entry.path), [
-        ".local/checkpoint.json",
-      ]);
-      assert.deepEqual(consistency.updated.map((entry) => entry.after.path), [".env"]);
-      assert.deepEqual(consistency.deleted.map((entry) => entry.path), [
-        ".local/created.json",
-      ]);
+      assert.deepEqual(
+        consistency.created.map((entry) => entry.path),
+        [".local/checkpoint.json"],
+      );
+      assert.deepEqual(
+        consistency.updated.map((entry) => entry.after.path),
+        [".env"],
+      );
+      assert.deepEqual(
+        consistency.deleted.map((entry) => entry.path),
+        [".local/created.json"],
+      );
       assert.equal(manager.getManifestSnapshot()?.files.has("dist/late-bundle.js"), false);
     });
   });
@@ -159,10 +172,13 @@ describe("Git-aware workspace change tracking", () => {
       await git(root, ["commit", "--quiet", "-m", "command commit"]);
       const delta = await manager.completeCommandChangeTracking(baseline);
 
-      assert.deepEqual(delta.updated.map((entry) => entry.after.path), ["source.ts"]);
+      assert.deepEqual(
+        delta.updated.map((entry) => entry.after.path),
+        ["source.ts"],
+      );
       assert.equal(delta.updated[0]?.before.hash, hash("before\n"));
       assert.equal(delta.updated[0]?.after.hash, hash("after\n"));
-      assert.equal((await readFile(filename, "utf8")), "after\n");
+      assert.equal(await readFile(filename, "utf8"), "after\n");
     });
   });
 
@@ -191,7 +207,10 @@ describe("Git-aware workspace change tracking", () => {
       ]);
 
       const delta = await manager.fullConsistencyCheck();
-      assert.deepEqual(delta.created.map((entry) => entry.path), ["missed.ts"]);
+      assert.deepEqual(
+        delta.created.map((entry) => entry.path),
+        ["missed.ts"],
+      );
       assert.equal(manager.getManifestSnapshot()?.files.has("tool-created.ts"), true);
       assert.equal(manager.getManifestSnapshot()?.files.has("dist/explicit.txt"), true);
       assert.equal(manager.getManifestSnapshot()?.files.has("dist/late.txt"), false);
@@ -211,10 +230,10 @@ describe("Git-aware workspace change tracking", () => {
       ]);
       const delta = await manager.completeCommandChangeTracking(baseline);
 
-      assert.deepEqual(delta.created.map((entry) => entry.path), [
-        "__pycache__/cache.pyc",
-        "source.ts",
-      ]);
+      assert.deepEqual(
+        delta.created.map((entry) => entry.path),
+        ["__pycache__/cache.pyc", "source.ts"],
+      );
     });
   });
 });

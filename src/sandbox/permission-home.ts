@@ -17,8 +17,11 @@ export async function ensureNativeProjectPermissionHome(
   try {
     await writeFile(configPath, profile, { flag: "wx", mode: 0o600 });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST" || await readFile(configPath, "utf8") !== profile) {
-      throw new SandboxFailure("state_persistence", "Project sandbox permission profile could not be safely initialized");
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST" || (await readFile(configPath, "utf8")) !== profile) {
+      throw new SandboxFailure(
+        "state_persistence",
+        "Project sandbox permission profile could not be safely initialized",
+      );
     }
   }
   return home;

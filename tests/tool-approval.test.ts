@@ -23,8 +23,12 @@ class ApprovalTerminal extends Terminal {
   readonly decisions: string[] = [];
   readonly titles: string[] = [];
   readonly defaults: Array<{ initialId?: string; timeoutMs?: number; choiceId?: string }> = [];
-  override async selectChoice(title: string, _choices: readonly import("../src/ui/interaction-port.js").InteractionChoice[],
-    initialId?: string, timed?: Readonly<import("../src/ui/interaction-port.js").TimedChoiceOptions>): Promise<string | undefined> {
+  override async selectChoice(
+    title: string,
+    _choices: readonly import("../src/ui/interaction-port.js").InteractionChoice[],
+    initialId?: string,
+    timed?: Readonly<import("../src/ui/interaction-port.js").TimedChoiceOptions>,
+  ): Promise<string | undefined> {
     this.titles.push(title);
     this.defaults.push({ initialId, timeoutMs: timed?.idleTimeoutMs, choiceId: timed?.idleChoiceId });
     return this.decisions.shift();
@@ -34,56 +38,85 @@ class ApprovalTerminal extends Terminal {
 
 function mcpFixture() {
   const calls: string[] = [];
-  const client = { async callTool(input: { name: string }) {
-    calls.push(input.name);
-    return { content: [{ type: "text", text: input.name }] };
-  } } as unknown as Pick<Client, "callTool">;
-  const listed = ["get_accounts", "place_order"].map(name => ({ name,
-    inputSchema: { type: "object" } })) as McpTool[];
+  const client = {
+    async callTool(input: { name: string }) {
+      calls.push(input.name);
+      return { content: [{ type: "text", text: input.name }] };
+    },
+  } as unknown as Pick<Client, "callTool">;
+  const listed = ["get_accounts", "place_order"].map((name) => ({
+    name,
+    inputSchema: { type: "object" },
+  })) as McpTool[];
   const tools = createMcpCatalogTools("robinhood", listed, client, "config-v1");
   const catalog = snapshotToolSet(tools);
   const gateway = new ToolExecutionGateway(catalog);
   const wrapper = tools[2]!;
-  const prepare = (name: string, argumentsJson = "{}") => gateway.prepare(wrapper.name,
-    JSON.stringify({ name, argumentsJson }))!;
+  const prepare = (name: string, argumentsJson = "{}") =>
+    gateway.prepare(wrapper.name, JSON.stringify({ name, argumentsJson }))!;
   return { calls, tools, catalog, prepare };
 }
 
 function context(root: string, threadId: string): ToolContext {
-  return { workspaceRoot: root, mode: "code", threadId, turnId: "turn_1",
-    approvalPolicy: "safe", commandExecutionMode: "manual", requestApproval: async () => false,
-    commandTimeoutMs: 1_000, maxOutputChars: 10_000 };
+  return {
+    workspaceRoot: root,
+    mode: "code",
+    threadId,
+    turnId: "turn_1",
+    approvalPolicy: "safe",
+    commandExecutionMode: "manual",
+    requestApproval: async () => false,
+    commandTimeoutMs: 1_000,
+    maxOutputChars: 10_000,
+  };
 }
 
 describe("tool approval identity and durable grants", () => {
   it("covers local workspace and configuration tools without a second command approval", () => {
-    const requires = (name: "read_file" | "update_file" | "list_mcp_servers" | "run_command" | "compact_context") =>
-      toolRequiresApproval({ name, mutating: false, metadata: builtinToolMetadata(name),
-        definition: { type: "function", function: { name, description: name,
-          parameters: { type: "object", properties: {} } } },
-        execute: async () => ({ ok: true, summary: "done" }) });
+    const requires = (name: "read_file" | "update_file" | "list_mcp_servers" | "run_command") =>
+      toolRequiresApproval({
+        name,
+        mutating: false,
+        metadata: builtinToolMetadata(name),
+        definition: {
+          type: "function",
+          function: { name, description: name, parameters: { type: "object", properties: {} } },
+        },
+        execute: async () => ({ ok: true, summary: "done" }),
+      });
     assert.equal(requires("read_file"), true);
     assert.equal(requires("update_file"), true);
     assert.equal(requires("list_mcp_servers"), true);
     assert.equal(requires("run_command"), false);
-    assert.equal(requires("compact_context"), false);
   });
 
   it("keeps a local file read behind the same execution gateway", async () => {
     let executions = 0;
     const name = "read_file";
-    const tool = { name, mutating: false, metadata: builtinToolMetadata(name),
-      definition: { type: "function" as const, function: { name, description: name,
-        parameters: { type: "object", properties: {} } } },
-      execute: async () => { executions++; return { ok: true, summary: "read" }; } };
+    const tool = {
+      name,
+      mutating: false,
+      metadata: builtinToolMetadata(name),
+      definition: {
+        type: "function" as const,
+        function: { name, description: name, parameters: { type: "object", properties: {} } },
+      },
+      execute: async () => {
+        executions++;
+        return { ok: true, summary: "read" };
+      },
+    };
     const snapshot = snapshotToolSet([tool]);
     const prepared = new ToolExecutionGateway(snapshot).prepare(name, "{}")!;
-    await assert.rejects(() => new ToolExecutionGateway(snapshot).invoke(prepared,
-      context(process.cwd(), "thread")), /authorization bridge/u);
+    await assert.rejects(
+      () => new ToolExecutionGateway(snapshot).invoke(prepared, context(process.cwd(), "thread")),
+      /authorization bridge/u,
+    );
     assert.equal(executions, 0);
     const labels: string[] = [];
-    const gateway = new ToolExecutionGateway(snapshot, async request => {
-      labels.push(request.tool.name); return true;
+    const gateway = new ToolExecutionGateway(snapshot, async (request) => {
+      labels.push(request.tool.name);
+      return true;
     });
     assert.equal((await gateway.invoke(prepared, context(process.cwd(), "thread"))).ok, true);
     assert.deepEqual(labels, ["read_file"]);
@@ -99,15 +132,26 @@ describe("tool approval identity and durable grants", () => {
     assert.equal(readIdentity.label, "robinhood / get_accounts");
     assert.equal(tradeIdentity.label, "robinhood / place_order");
     assert.notEqual(readIdentity.key, tradeIdentity.key);
-    assert.notEqual(readIdentity.key, toolApprovalIdentity(read.tool, read.input,
-      read.binding, "C:/different-workspace").key);
-    const changed = snapshotToolSet(createMcpCatalogTools("robinhood", [
-      { name: "get_accounts", inputSchema: { type: "object" } },
-      { name: "place_order", inputSchema: { type: "object" } },
-    ] as McpTool[], { callTool: async () => ({ content: [] }) } as never, "config-v2"));
+    assert.notEqual(
+      readIdentity.key,
+      toolApprovalIdentity(read.tool, read.input, read.binding, "C:/different-workspace").key,
+    );
+    const changed = snapshotToolSet(
+      createMcpCatalogTools(
+        "robinhood",
+        [
+          { name: "get_accounts", inputSchema: { type: "object" } },
+          { name: "place_order", inputSchema: { type: "object" } },
+        ] as McpTool[],
+        { callTool: async () => ({ content: [] }) } as never,
+        "config-v2",
+      ),
+    );
     const newBinding = changed.bindings.get(read.tool.name);
-    assert.notEqual(readIdentity.key, toolApprovalIdentity(changed.tools[2]!, read.input,
-      newBinding, "C:/workspace").key);
+    assert.notEqual(
+      readIdentity.key,
+      toolApprovalIdentity(changed.tools[2]!, read.input, newBinding, "C:/workspace").key,
+    );
   });
 
   it("offers once, same-tool, and reject without executing a denied call", async () => {
@@ -115,27 +159,39 @@ describe("tool approval identity and durable grants", () => {
     const storage = createStorage(directory);
     const threads = new ThreadStore(storage);
     const workspaceRoot = path.join(directory, "workspace");
-    const first = threads.create({ threadId: "tool-thread", workspaceRoot,
-      mode: "code", provider: "deepseek", model: "test" });
+    const first = threads.create({
+      threadId: "tool-thread",
+      workspaceRoot,
+      mode: "code",
+      provider: "deepseek",
+      model: "test",
+    });
     const terminal = new ApprovalTerminal(new PassThrough(), new PassThrough());
     const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
     const fixture = mcpFixture();
     Object.defineProperties(app, {
-      state: { value: first, writable: true }, threadStore: { value: threads },
-      terminal: { value: terminal }, approvalQueue: { value: new ApprovalQueue() },
-      commandExecutionMode: { value: "manual", writable: true }, dirty: { value: false, writable: true },
+      state: { value: first, writable: true },
+      threadStore: { value: threads },
+      terminal: { value: terminal },
+      approvalQueue: { value: new ApprovalQueue() },
+      commandExecutionMode: { value: "manual", writable: true },
+      dirty: { value: false, writable: true },
     });
-    const authorize = (app as unknown as { authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> })
-      .authorizeCatalogToolCall.bind(app);
+    const authorize = (
+      app as unknown as {
+        authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean>;
+      }
+    ).authorizeCatalogToolCall.bind(app);
     const gateway = new ToolExecutionGateway(fixture.catalog, authorize);
-    const invoke = (name: string, argumentsJson = "{}") => gateway.invoke(fixture.prepare(name, argumentsJson),
-      context(workspaceRoot, first.threadId));
+    const invoke = (name: string, argumentsJson = "{}") =>
+      gateway.invoke(fixture.prepare(name, argumentsJson), context(workspaceRoot, first.threadId));
     try {
       terminal.decisions.push("allow_same_tool", "reject", "allow_once");
       const labels: string[] = [];
       const prepared = fixture.prepare("get_accounts");
       await gateway.invoke(prepared, context(workspaceRoot, first.threadId), async (label, execute) => {
-        labels.push(label); return execute();
+        labels.push(label);
+        return execute();
       });
       assert.deepEqual(labels, ["robinhood / get_accounts"]);
       assert.equal((await invoke("get_accounts", '{"account":"other"}')).ok, true);
@@ -144,32 +200,64 @@ describe("tool approval identity and durable grants", () => {
       assert.deepEqual(fixture.calls, ["get_accounts", "get_accounts"]);
       assert.equal((await invoke("place_order")).ok, true);
       assert.equal(terminal.titles.length, 3, "once approval is not reusable");
-      assert.ok(terminal.defaults.every(value => value.initialId === "allow_once" &&
-        value.choiceId === "allow_once" && value.timeoutMs === 15 * 60_000));
+      assert.ok(
+        terminal.defaults.every(
+          (value) =>
+            value.initialId === "allow_once" && value.choiceId === "allow_once" && value.timeoutMs === 15 * 60_000,
+        ),
+      );
       assert.equal(threads.recover(first.threadId).toolApprovalGrants?.length, 1);
-      const fresh = threads.create({ threadId: "another-thread", workspaceRoot,
-        mode: "code", provider: "deepseek", model: "test" });
+      const fresh = threads.create({
+        threadId: "another-thread",
+        workspaceRoot,
+        mode: "code",
+        provider: "deepseek",
+        model: "test",
+      });
       Object.defineProperty(app, "state", { value: fresh });
       terminal.decisions.push("reject");
       await assert.rejects(() => gateway.invoke(prepared, context(workspaceRoot, fresh.threadId)), /not authorized/u);
       assert.equal(terminal.titles.length, 4);
       Object.defineProperty(app, "commandExecutionMode", { value: "auto_approve" });
-      Object.defineProperty(app, "reviewCatalogToolApproval", { value: async () => ({
-        decision: "reject", reason: "Ask the user", }), writable: true });
+      Object.defineProperty(app, "reviewCatalogToolApproval", {
+        value: async () => ({
+          decision: "reject",
+          reason: "Ask the user",
+        }),
+        writable: true,
+      });
       terminal.decisions.push("allow_once");
-      assert.equal((await gateway.invoke(fixture.prepare("place_order"), {
-        ...context(workspaceRoot, fresh.threadId), commandExecutionMode: "auto_approve",
-      })).ok, true);
+      assert.equal(
+        (
+          await gateway.invoke(fixture.prepare("place_order"), {
+            ...context(workspaceRoot, fresh.threadId),
+            commandExecutionMode: "auto_approve",
+          })
+        ).ok,
+        true,
+      );
       assert.equal(terminal.titles.length, 5, "reviewer rejection must fall back to the user");
-      Object.defineProperty(app, "reviewCatalogToolApproval", { value: async () => ({
-        decision: "allow_same_tool", reason: "Authorized read", }) });
-      assert.equal((await gateway.invoke(prepared, {
-        ...context(workspaceRoot, fresh.threadId), commandExecutionMode: "auto_approve",
-      })).ok, true);
+      Object.defineProperty(app, "reviewCatalogToolApproval", {
+        value: async () => ({
+          decision: "allow_same_tool",
+          reason: "Authorized read",
+        }),
+      });
+      assert.equal(
+        (
+          await gateway.invoke(prepared, {
+            ...context(workspaceRoot, fresh.threadId),
+            commandExecutionMode: "auto_approve",
+          })
+        ).ok,
+        true,
+      );
       assert.equal(terminal.titles.length, 5, "reviewer approval should not ask the user again");
       assert.equal(threads.recover(fresh.threadId).toolApprovalGrants?.length, 1);
     } finally {
-      terminal.close(); storage.close(); rmSync(directory, { recursive: true, force: true });
+      terminal.close();
+      storage.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
@@ -178,14 +266,20 @@ describe("tool approval identity and durable grants", () => {
     const storage = createStorage(directory);
     try {
       const threads = new ThreadStore(storage);
-      const state = threads.create({ threadId: "child", workspaceRoot: path.join(directory, "workspace"),
-        mode: "code", provider: "deepseek", model: "test" });
+      const state = threads.create({
+        threadId: "child",
+        workspaceRoot: path.join(directory, "workspace"),
+        mode: "code",
+        provider: "deepseek",
+        model: "test",
+      });
       const key = `sha256:${"a".repeat(64)}`;
       threads.recordToolApprovalGrant(state.threadId, key);
       threads.save(state);
       assert.deepEqual(threads.recover(state.threadId).toolApprovalGrants, [key]);
     } finally {
-      storage.close(); rmSync(directory, { recursive: true, force: true });
+      storage.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
@@ -193,40 +287,70 @@ describe("tool approval identity and durable grants", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-tool-grant-failure-"));
     const storage = createStorage(directory);
     const threads = new ThreadStore(storage);
-    const state = threads.create({ threadId: "grant-failure", workspaceRoot: path.join(directory, "workspace"),
-      mode: "code", provider: "deepseek", model: "test" });
+    const state = threads.create({
+      threadId: "grant-failure",
+      workspaceRoot: path.join(directory, "workspace"),
+      mode: "code",
+      provider: "deepseek",
+      model: "test",
+    });
     const terminal = new ApprovalTerminal(new PassThrough(), new PassThrough());
     terminal.decisions.push("allow_same_tool");
     const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
-    Object.defineProperties(app, { state: { value: state }, threadStore: { value: threads },
-      terminal: { value: terminal }, approvalQueue: { value: new ApprovalQueue() },
-      commandExecutionMode: { value: "manual" } });
+    Object.defineProperties(app, {
+      state: { value: state },
+      threadStore: { value: threads },
+      terminal: { value: terminal },
+      approvalQueue: { value: new ApprovalQueue() },
+      commandExecutionMode: { value: "manual" },
+    });
     const original = threads.recordToolApprovalGrant.bind(threads);
-    threads.recordToolApprovalGrant = () => { throw new Error("journal unavailable"); };
+    threads.recordToolApprovalGrant = () => {
+      throw new Error("journal unavailable");
+    };
     const fixture = mcpFixture();
-    const authorize = (app as unknown as { authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> })
-      .authorizeCatalogToolCall.bind(app);
+    const authorize = (
+      app as unknown as {
+        authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean>;
+      }
+    ).authorizeCatalogToolCall.bind(app);
     try {
       const gateway = new ToolExecutionGateway(fixture.catalog, authorize);
-      await assert.rejects(() => gateway.invoke(fixture.prepare("get_accounts"),
-        context(state.workspaceRoot, state.threadId)), /journal unavailable/u);
+      await assert.rejects(
+        () => gateway.invoke(fixture.prepare("get_accounts"), context(state.workspaceRoot, state.threadId)),
+        /journal unavailable/u,
+      );
       assert.deepEqual(fixture.calls, []);
       assert.deepEqual(threads.recover(state.threadId).toolApprovalGrants, []);
     } finally {
       threads.recordToolApprovalGrant = original;
-      terminal.close(); storage.close(); rmSync(directory, { recursive: true, force: true });
+      terminal.close();
+      storage.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
   it("keeps tool approval Agent decisions bounded and escalates rejection", async () => {
-    const identity = { key: `sha256:${"b".repeat(64)}`, label: "robinhood / get_accounts",
-      input: {}, effects: ["external_write"], description: "Get accounts" };
+    const identity = {
+      key: `sha256:${"b".repeat(64)}`,
+      label: "robinhood / get_accounts",
+      input: {},
+      effects: ["external_write"],
+      description: "Get accounts",
+    };
     for (const decision of ["allow_once", "allow_same_tool", "reject"] as const) {
       const result = await reviewToolApproval(identity, "Inspect accounts", {
-        provider: { name: "deepseek", model: "test", complete: async () => ({ message: { role: "assistant",
-          content: JSON.stringify({ decision, reason: "Checked user request" }) } }) },
-        budget: new TaskBudget(1, 0), systemPrompt: "Review the operation",
-        maxInputChars: 10_000, maxOutputTokens: 256,
+        provider: {
+          name: "deepseek",
+          model: "test",
+          complete: async () => ({
+            message: { role: "assistant", content: JSON.stringify({ decision, reason: "Checked user request" }) },
+          }),
+        },
+        budget: new TaskBudget(1, 0),
+        systemPrompt: "Review the operation",
+        maxInputChars: 10_000,
+        maxOutputTokens: 256,
       });
       assert.equal(result.decision, decision);
     }
@@ -238,27 +362,61 @@ describe("tool approval identity and durable grants", () => {
     try {
       const threads = new ThreadStore(storage);
       const threadId = "tool-review-usage";
-      threads.create({ threadId, workspaceRoot: path.join(directory, "workspace"),
-        mode: "code", provider: "glm-coding-plan", model: "glm-5.3-flash" });
+      threads.create({
+        threadId,
+        workspaceRoot: path.join(directory, "workspace"),
+        mode: "code",
+        provider: "glm-coding-plan",
+        model: "glm-5.3-flash",
+      });
       const identities = [
-        { key: `sha256:${"a".repeat(64)}`, label: "read_file", input: { path: "README.md" },
-          effects: ["workspace_read"], description: "Read a workspace file" },
-        { key: `sha256:${"b".repeat(64)}`, label: "robinhood / get_accounts", input: {},
-          effects: ["external_read"], description: "Read account information" },
+        {
+          key: `sha256:${"a".repeat(64)}`,
+          label: "read_file",
+          input: { path: "README.md" },
+          effects: ["workspace_read"],
+          description: "Read a workspace file",
+        },
+        {
+          key: `sha256:${"b".repeat(64)}`,
+          label: "robinhood / get_accounts",
+          input: {},
+          effects: ["external_read"],
+          description: "Read account information",
+        },
       ];
       for (const identity of identities) {
         const review = await reviewToolApproval(identity, "Inspect the requested information", {
-          provider: { name: "glm-coding-plan", model: "glm-5.3-flash", complete: async () => ({
-            message: { role: "assistant", content: JSON.stringify({ decision: "allow_once", reason: "Matches the task" }) },
-            usage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
-          }) },
-          budget: new TaskBudget(4, 0), systemPrompt: "Review the operation",
-          maxInputChars: 10_000, maxOutputTokens: 256,
+          provider: {
+            name: "glm-coding-plan",
+            model: "glm-5.3-flash",
+            complete: async () => ({
+              message: {
+                role: "assistant",
+                content: JSON.stringify({ decision: "allow_once", reason: "Matches the task" }),
+              },
+              usage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+            }),
+          },
+          budget: new TaskBudget(4, 0),
+          systemPrompt: "Review the operation",
+          maxInputChars: 10_000,
+          maxOutputTokens: 256,
           onUsage: (usage, attempt) => {
-            threads.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
-              actor: "approval_agent", purpose: "tool_approval", provider: "glm-coding-plan", model: "glm-5.3-flash",
-              turnId: "turn_1", retry: attempt?.retry ?? false, attempt: attempt?.attempt, usage,
-            } });
+            threads.appendEvent(threadId, {
+              type: "model.usage",
+              phase: "completed",
+              payload: {
+                actor: "approval_agent",
+                purpose: "tool_approval",
+                provider: "glm-coding-plan",
+                model: "glm-5.3-flash",
+                turnId: "turn_1",
+                retry: attempt?.retry ?? false,
+                attempt: attempt?.attempt,
+                usage,
+              },
+            });
           },
         });
         assert.equal(review.decision, "allow_once", `${identity.label}: ${review.reason}`);
@@ -267,7 +425,8 @@ describe("tool approval identity and durable grants", () => {
       assert.equal(summary.byPurpose.tool_approval.requests, 2);
       assert.equal(summary.byActor.approvalAgents.totalTokens, 50);
     } finally {
-      storage.close(); rmSync(directory, { recursive: true, force: true });
+      storage.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

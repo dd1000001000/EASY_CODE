@@ -41,12 +41,7 @@ export interface WorkspaceSnapshotTestHooks {
   beforeHash?: (filename: string) => Promise<void>;
 }
 
-const DEFAULT_IGNORED_DIRECTORIES = new Set([
-  ".git",
-  ".easycode",
-  ".easy_code",
-  "node_modules",
-]);
+const DEFAULT_IGNORED_DIRECTORIES = new Set([".git", ".easycode", ".easy_code", "node_modules"]);
 const RUNTIME_SCRATCH_DIRECTORY = ".easy-code-runtime";
 // Workspace snapshots are taken before and after every command. Hashing each
 // file serially makes otherwise instant commands pay the full repository scan
@@ -67,11 +62,13 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
   // dev/ino are populated by Node on the supported platforms (including
   // Windows). The metadata comparison also rejects an in-place rewrite that
   // races this scan, so a later authoritative scan can capture stable bytes.
-  return left.dev === right.dev &&
+  return (
+    left.dev === right.dev &&
     left.ino === right.ino &&
     left.size === right.size &&
     left.mtimeMs === right.mtimeMs &&
-    left.ctimeMs === right.ctimeMs;
+    left.ctimeMs === right.ctimeMs
+  );
 }
 
 async function hashStableRegularFile(
@@ -84,10 +81,8 @@ async function hashStableRegularFile(
   // replaced with a FIFO/device from hanging the scan. Windows does not expose
   // equivalent open flags through Node, so the handle/path identity checks
   // below provide the corresponding fail-closed boundary there.
-  const safeFlags = constants.O_RDONLY |
-    (process.platform === "win32"
-      ? 0
-      : (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  const safeFlags =
+    constants.O_RDONLY | (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   const handle = await open(filename, safeFlags);
   try {
     const opened = await handle.stat();
@@ -216,17 +211,17 @@ export async function captureWorkspaceSnapshot(
     return false;
   };
 
-  const enqueue = async (
-    capture: () => Promise<WorkspaceSnapshotEntry | undefined>,
-  ): Promise<void> => {
+  const enqueue = async (capture: () => Promise<WorkspaceSnapshotEntry | undefined>): Promise<void> => {
     throwIfAborted(signal);
     // Attach a rejection handler immediately. A fast AbortSignal can reject a
     // hash before the bounded batch is flushed; leaving that promise naked
     // until Promise.all would trigger an unhandled rejection in Node.
-    pending.push(capture().catch((error: unknown) => {
-      pendingError ??= error;
-      return undefined;
-    }));
+    pending.push(
+      capture().catch((error: unknown) => {
+        pendingError ??= error;
+        return undefined;
+      }),
+    );
     if (pending.length >= ioConcurrency) await flushPending();
   };
 
@@ -259,10 +254,7 @@ export async function captureWorkspaceSnapshot(
         // Sandbox command payloads can briefly live here on Windows. This is a
         // Runtime control directory, never project state, and remains excluded
         // even when a caller supplies a custom ignoredDirectoryNames set.
-        if (
-          directory === guard.root &&
-          entry.name.toLowerCase() === RUNTIME_SCRATCH_DIRECTORY
-        ) continue;
+        if (directory === guard.root && entry.name.toLowerCase() === RUNTIME_SCRATCH_DIRECTORY) continue;
         if (entry.isDirectory() && ignored.has(entry.name)) continue;
 
         const absolute = path.join(directory, entry.name);
@@ -270,14 +262,16 @@ export async function captureWorkspaceSnapshot(
         batch.push({ entry, absolute, relative: guard.toRelative(absolute) });
       }
 
-      const inspected = await Promise.all(batch.map(async (candidate) => {
-        throwIfAborted(signal);
-        try {
-          return { ...candidate, info: await lstat(candidate.absolute) };
-        } catch {
-          return { ...candidate, info: undefined };
-        }
-      }));
+      const inspected = await Promise.all(
+        batch.map(async (candidate) => {
+          throwIfAborted(signal);
+          try {
+            return { ...candidate, info: await lstat(candidate.absolute) };
+          } catch {
+            return { ...candidate, info: undefined };
+          }
+        }),
+      );
 
       for (const candidate of inspected) {
         // Preserve the original depth-first limit semantics even though the
@@ -339,10 +333,7 @@ export async function captureWorkspaceSnapshot(
   return { capturedAt: new Date().toISOString(), files, truncated };
 }
 
-export function diffWorkspaceSnapshots(
-  before: WorkspaceSnapshot,
-  after: WorkspaceSnapshot,
-): WorkspaceDelta {
+export function diffWorkspaceSnapshots(before: WorkspaceSnapshot, after: WorkspaceSnapshot): WorkspaceDelta {
   const created: WorkspaceSnapshotEntry[] = [];
   const updated: Array<{ before: WorkspaceSnapshotEntry; after: WorkspaceSnapshotEntry }> = [];
   const deleted: WorkspaceSnapshotEntry[] = [];
@@ -360,8 +351,7 @@ export function diffWorkspaceSnapshots(
     if (!after.files.has(filename)) deleted.push(previous);
   }
 
-  const byPath = (left: { path: string }, right: { path: string }): number =>
-    left.path.localeCompare(right.path);
+  const byPath = (left: { path: string }, right: { path: string }): number => left.path.localeCompare(right.path);
   created.sort(byPath);
   deleted.sort(byPath);
   updated.sort((left, right) => left.after.path.localeCompare(right.after.path));

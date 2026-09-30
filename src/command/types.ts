@@ -1,20 +1,13 @@
-import type { AgentMode, ApprovalRequest } from "../core/types.js";
+import type { ApprovalRequest } from "../core/types.js";
 import type { SandboxExecutionMetadata } from "../sandbox/types.js";
 import type { WorkspaceDelta } from "../workspace/snapshot.js";
 import type { CommandTimeoutBudget } from "./timeout.js";
 import type { CommandRequestMetadata } from "./normalize-request.js";
 import type { CommandValidation } from "./verification.js";
 
-export const COMMAND_INTENTS = [
-  "inspect",
-  "build",
-  "test",
-  "verify",
-  "run",
-  "install",
-] as const;
+export const COMMAND_INTENTS = ["inspect", "build", "test", "verify", "run", "install"] as const;
 
-export type CommandIntent = typeof COMMAND_INTENTS[number];
+export type CommandIntent = (typeof COMMAND_INTENTS)[number];
 
 export const VERIFICATION_KINDS = [
   "unit_test",
@@ -28,7 +21,7 @@ export const VERIFICATION_KINDS = [
   "custom",
 ] as const;
 
-export type VerificationKind = typeof VERIFICATION_KINDS[number];
+export type VerificationKind = (typeof VERIFICATION_KINDS)[number];
 
 /**
  * Return the durable verification category for a validated command request.
@@ -138,14 +131,7 @@ export interface WorkspaceDeltaSummary {
 }
 
 /** Stable model-facing failure category independent of platform error wording. */
-export type CommandFailureKind =
-  | "parameter"
-  | "policy"
-  | "approval"
-  | "sandbox"
-  | "exit"
-  | "timeout"
-  | "runtime";
+export type CommandFailureKind = "parameter" | "policy" | "approval" | "sandbox" | "exit" | "timeout" | "runtime";
 
 export interface CommandFailure {
   executionState?: "not_started" | "unknown" | "started" | "exited";
@@ -171,13 +157,7 @@ export interface RunCommandOutput {
     pendingCleanupFiles?: string[];
   };
   commandId: string;
-  status:
-    | "exited"
-    | "timed_out"
-    | "canceled"
-    | "spawn_failed"
-    | "policy_denied"
-    | "sandbox_unavailable";
+  status: "exited" | "timed_out" | "canceled" | "spawn_failed" | "policy_denied" | "sandbox_unavailable";
   exitCode: number | null;
   signal: string | null;
   durationMs: number;
@@ -197,7 +177,14 @@ export interface RunCommandOutput {
   sandboxBoundary?: {
     attempt: number;
     modelCorrectionBudget: number;
-    action: "adjust_command" | "approved_once" | "approved_prefix" | "rejected" | "user_required" | "benchmark_allow_once" | "benchmark_rejected";
+    action:
+      | "adjust_command"
+      | "approved_once"
+      | "approved_prefix"
+      | "rejected"
+      | "user_required"
+      | "benchmark_allow_once"
+      | "benchmark_rejected";
     access: "read" | "write" | "delete" | "execute" | "unknown";
     destination?: string;
     destinationCategory: "outside_workspace" | "protected_path" | "unknown";
@@ -234,10 +221,6 @@ export interface RunningCommandOutput {
 }
 
 export type CommandExecutionOutput = RunCommandOutput | RunningCommandOutput;
-
-export interface CommandClassificationContext {
-  mode: AgentMode;
-}
 
 export function summarizeWorkspaceDelta(delta: WorkspaceDelta): WorkspaceDeltaSummary {
   return {

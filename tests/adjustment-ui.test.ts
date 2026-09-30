@@ -25,21 +25,10 @@ function attachment(index: number): ImageAttachment {
 describe("queued adjustment terminal presentation", () => {
   it("retains every adjustment and does not duplicate inline image labels", () => {
     const registry = new AdjustmentRegistry();
-    const first = registry.add(
-      1,
-      "Compare [Image #1] with the current implementation.",
-      [attachment(1)],
-    );
+    const first = registry.add(1, "Compare [Image #1] with the current implementation.", [attachment(1)]);
 
-    for (const rendered of [
-      renderAdjustmentMarker(first),
-      renderAdjustmentPanel(first),
-      renderAdjustmentBody(first),
-    ]) {
-      assert.equal(
-        (rendered.match(/\[Image #1\]/gu) ?? []).length,
-        1,
-      );
+    for (const rendered of [renderAdjustmentMarker(first), renderAdjustmentPanel(first), renderAdjustmentBody(first)]) {
+      assert.equal((rendered.match(/\[Image #1\]/gu) ?? []).length, 1);
     }
 
     for (let id = 2; id <= 300; id += 1) {

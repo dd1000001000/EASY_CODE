@@ -10,7 +10,9 @@ export interface SkillMetadata {
 
 export function assertSkillName(name: string): void {
   if (!SKILL_NAME_PATTERN.test(name) || name === "trash") {
-    throw new Error("Skill name must be 1–64 lowercase letters, digits, underscores or hyphens, starting with a letter");
+    throw new Error(
+      "Skill name must be 1–64 lowercase letters, digits, underscores or hyphens, starting with a letter",
+    );
   }
 }
 

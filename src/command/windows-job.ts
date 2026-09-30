@@ -77,11 +77,24 @@ export interface WindowsCommandJob {
 export async function containWindowsWorker(pid: number): Promise<WindowsCommandJob> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid worker PID");
   const script = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition @'\n${SOURCE}\n'@; [ECJob]::Run(${pid})`;
-  const executable = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const child: ChildProcessWithoutNullStreams = spawn(executable,
+  const executable = path.join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const child: ChildProcessWithoutNullStreams = spawn(
+    executable,
     ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-    { windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"], cwd: path.dirname(executable),
-      env: { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", PATH: path.dirname(executable) } });
+    {
+      windowsHide: true,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      cwd: path.dirname(executable),
+      env: { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", PATH: path.dirname(executable) },
+    },
+  );
   let output = "";
   let empty = false;
   let quiescing: Promise<void> | undefined;
@@ -90,49 +103,84 @@ export async function containWindowsWorker(pid: number): Promise<WindowsCommandJ
   let readyReject!: (error: Error) => void;
   let quietResolve: (() => void) | undefined;
   let quietReject: ((error: Error) => void) | undefined;
-  const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  const ready = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
   const closed = new Promise<boolean>((resolve) => {
-    child.once("error", (error) => { readyReject(error); quietReject?.(error); resolve(false); });
-    child.once("close", (code) => { const error=new Error("Windows job supervisor exited");readyReject(error);quietReject?.(error);resolve(code === 0 && empty); });
+    child.once("error", (error) => {
+      readyReject(error);
+      quietReject?.(error);
+      resolve(false);
+    });
+    child.once("close", (code) => {
+      const error = new Error("Windows job supervisor exited");
+      readyReject(error);
+      quietReject?.(error);
+      resolve(code === 0 && empty);
+    });
   });
   child.stdout.on("data", (chunk: Buffer) => {
     output = (output + chunk.toString()).slice(-1024);
     let newline: number;
     while ((newline = output.indexOf("\n")) >= 0) {
-      const line = output.slice(0, newline).trim(); output = output.slice(newline + 1);
+      const line = output.slice(0, newline).trim();
+      output = output.slice(newline + 1);
       if (line === "READY") readyResolve();
       if (line === "QUIET") quietResolve?.();
       if (line === "EMPTY") empty = true;
     }
   });
-  child.stdin.on("error", error => { quietReject?.(error); });
+  child.stdin.on("error", (error) => {
+    quietReject?.(error);
+  });
   child.stderr.resume();
-  const timer = setTimeout(() => { readyReject(new Error("Windows Job Object setup timed out")); child.kill(); }, 15000);
-  try { await ready; } finally { clearTimeout(timer); }
+  const timer = setTimeout(() => {
+    readyReject(new Error("Windows Job Object setup timed out"));
+    child.kill();
+  }, 15000);
+  try {
+    await ready;
+  } finally {
+    clearTimeout(timer);
+  }
   return {
     quiesce() {
       // Cancellation and worker cleanup may request quiescence concurrently.
       // Share only the in-flight operation, never reuse an old QUIET record.
-      return quiescing ??= (async () => {
-      let timer: NodeJS.Timeout | undefined;
-      try {
-        await new Promise<void>((resolve,reject)=>{
-          quietResolve=resolve;quietReject=reject;
-          timer=setTimeout(()=>reject(new Error("Descendant cleanup was not confirmed")),7000);
-          child.stdin.write("QUIESCE\n");
-        });
-      } finally { if(timer)clearTimeout(timer);quietResolve=undefined;quietReject=undefined; quiescing=undefined; }
-      })();
+      return (quiescing ??= (async () => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            quietResolve = resolve;
+            quietReject = reject;
+            timer = setTimeout(() => reject(new Error("Descendant cleanup was not confirmed")), 7000);
+            child.stdin.write("QUIESCE\n");
+          });
+        } finally {
+          if (timer) clearTimeout(timer);
+          quietResolve = undefined;
+          quietReject = undefined;
+          quiescing = undefined;
+        }
+      })());
     },
     stop() {
-    return stopping ??= (async () => {
-      child.stdin.end("STOP\n");
-      let timeout: NodeJS.Timeout | undefined;
-      const confirmed = await Promise.race([closed, new Promise<boolean>((resolve) => {
-        timeout = setTimeout(() => { child.kill(); resolve(false); }, 7000);
-      })]);
-      if (timeout) clearTimeout(timeout);
-      return { confirmed, method: "windows-job-object" };
-    })();
-  } };
+      return (stopping ??= (async () => {
+        child.stdin.end("STOP\n");
+        let timeout: NodeJS.Timeout | undefined;
+        const confirmed = await Promise.race([
+          closed,
+          new Promise<boolean>((resolve) => {
+            timeout = setTimeout(() => {
+              child.kill();
+              resolve(false);
+            }, 7000);
+          }),
+        ]);
+        if (timeout) clearTimeout(timeout);
+        return { confirmed, method: "windows-job-object" };
+      })());
+    },
+  };
 }

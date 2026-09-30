@@ -2,10 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, lstat } from "node:fs/promises";
 import path from "node:path";
 
-import {
-  PROMPT_BUNDLE_FORMAT_VERSION,
-  type PromptBundleManifest,
-} from "./types.js";
+import { PROMPT_BUNDLE_FORMAT_VERSION, type PromptBundleManifest } from "./types.js";
 
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
@@ -41,9 +38,7 @@ export function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
-export function computeManifestBundleHash(
-  manifest: Omit<PromptBundleManifest, "bundleHash">,
-): string {
+export function computeManifestBundleHash(manifest: Omit<PromptBundleManifest, "bundleHash">): string {
   return sha256(canonicalJson(manifest));
 }
 
@@ -97,10 +92,7 @@ export function parsePromptBundleManifest(value: unknown): PromptBundleManifest 
     throw new Error("runtimeCompatibility must be an object");
   }
   const minimum = parseSemver(value.runtimeCompatibility.min, "runtimeCompatibility.min");
-  const maximum = parseSemver(
-    value.runtimeCompatibility.maxExclusive,
-    "runtimeCompatibility.maxExclusive",
-  );
+  const maximum = parseSemver(value.runtimeCompatibility.maxExclusive, "runtimeCompatibility.maxExclusive");
   if (compareSemver(minimum, maximum) >= 0) {
     throw new Error("runtimeCompatibility.maxExclusive must be greater than min");
   }
@@ -123,12 +115,15 @@ export function parsePromptBundleManifest(value: unknown): PromptBundleManifest 
   }
 
   if (!isRecord(value.tools)) throw new Error("tools must be an object");
-  const tools: Record<string, {
-    path: string;
-    contractVersion: string;
-    contentHash: string;
-    schemaHash?: string;
-  }> = {};
+  const tools: Record<
+    string,
+    {
+      path: string;
+      contractVersion: string;
+      contentHash: string;
+      schemaHash?: string;
+    }
+  > = {};
   for (const [toolId, rawEntry] of Object.entries(value.tools)) {
     if (!TOOL_ID_PATTERN.test(toolId)) throw new Error(`Invalid tool id: ${toolId}`);
     if (!isRecord(rawEntry)) throw new Error(`Invalid tool record for ${toolId}`);
@@ -178,20 +173,12 @@ export function parsePromptBundleManifest(value: unknown): PromptBundleManifest 
   return deepFreeze({ ...manifestWithoutHash, bundleHash: value.bundleHash });
 }
 
-export function assertRuntimeCompatibility(
-  manifest: PromptBundleManifest,
-  runtimeVersion: string,
-): void {
+export function assertRuntimeCompatibility(manifest: PromptBundleManifest, runtimeVersion: string): void {
   const runtime = parseSemver(runtimeVersion, "runtimeVersion");
   const minimum = parseSemver(manifest.runtimeCompatibility.min, "runtimeCompatibility.min");
-  const maximum = parseSemver(
-    manifest.runtimeCompatibility.maxExclusive,
-    "runtimeCompatibility.maxExclusive",
-  );
+  const maximum = parseSemver(manifest.runtimeCompatibility.maxExclusive, "runtimeCompatibility.maxExclusive");
   if (compareSemver(runtime, minimum) < 0 || compareSemver(runtime, maximum) >= 0) {
-    throw new Error(
-      `Prompt Bundle ${manifest.bundleVersion} is incompatible with EASY CODE ${runtimeVersion}`,
-    );
+    throw new Error(`Prompt Bundle ${manifest.bundleVersion} is incompatible with EASY CODE ${runtimeVersion}`);
   }
 }
 
@@ -204,7 +191,7 @@ async function listFiles(directory: string, prefix = ""): Promise<string[]> {
     const absolute = path.join(directory, ...relative.split("/"));
     const stat = await lstat(absolute);
     if (stat.isSymbolicLink()) throw new Error(`Prompt Bundle contains a symbolic link: ${relative}`);
-    if (stat.isDirectory()) output.push(...await listFiles(directory, relative));
+    if (stat.isDirectory()) output.push(...(await listFiles(directory, relative)));
     else if (stat.isFile()) output.push(relative);
     else throw new Error(`Prompt Bundle contains an unsupported entry: ${relative}`);
   }
@@ -259,11 +246,7 @@ export async function verifyPromptBundleDirectory(
   return { manifest, manifestHash, manifestPath };
 }
 
-export function assertToolSchemaBinding(
-  manifest: PromptBundleManifest,
-  toolId: string,
-  parameters: unknown,
-): void {
+export function assertToolSchemaBinding(manifest: PromptBundleManifest, toolId: string, parameters: unknown): void {
   const entry = manifest.tools[toolId];
   if (!entry) throw new Error(`Prompt Bundle has no metadata for tool ${toolId}`);
   if (!entry.schemaHash) throw new Error(`Prompt Bundle tool ${toolId} has no bound schema hash`);

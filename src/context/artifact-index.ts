@@ -1,16 +1,6 @@
-import {
-  create,
-  insertMultiple,
-  search,
-  type Orama,
-  type WhereCondition,
-} from "@orama/orama";
+import { create, insertMultiple, search, type Orama, type WhereCondition } from "@orama/orama";
 
-import type {
-  ChatMessage,
-  PlanReviewState,
-  SessionState,
-} from "../core/types.js";
+import type { ChatMessage, PlanReviewState, SessionState } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import type { EmbeddingProvider } from "../memory/vector-index.js";
 import type { EasyCodeStorage } from "../storage/database.js";
@@ -150,12 +140,7 @@ const MAX_CACHED_VECTORS = 8_192;
 const MAX_THREAD_VECTOR_ROWS = 4_096;
 const VECTOR_RETRY_DELAY_MS = 60_000;
 
-function boundedInteger(
-  value: number | undefined,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-): number {
+function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
   const resolved = value !== undefined && Number.isFinite(value) ? value : fallback;
   return Math.max(minimum, Math.min(Math.trunc(resolved), maximum));
 }
@@ -239,9 +224,7 @@ function ftsExpression(query: string): string | undefined {
   const tokens = query.toLocaleLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
   const unique = [...new Set(tokens)].slice(0, 12);
   if (unique.length === 0) return undefined;
-  return unique
-    .map((token) => `"${token.replace(/"/g, "\"\"")}"*`)
-    .join(" OR ");
+  return unique.map((token) => `"${token.replace(/"/g, '""')}"*`).join(" OR ");
 }
 
 function cjkSubstringTerms(query: string): string[] {
@@ -271,16 +254,22 @@ function boundedText(value: string, maximum: number): string {
   return `${value.slice(0, head)}${marker}${value.slice(-(available - head))}`;
 }
 
-function artifactText(message: ChatMessage, messageIndex: number): {
-  source: ContextArtifactSource;
-  title: string;
-  content: string;
-  importance: number;
-} | undefined {
+function artifactText(
+  message: ChatMessage,
+  messageIndex: number,
+):
+  | {
+      source: ContextArtifactSource;
+      title: string;
+      content: string;
+      importance: number;
+    }
+  | undefined {
   if (message.role === "user") {
     const imageDetails = message.images?.length
-      ? `\nAttachments: ${message.images.map((image) =>
-          `${image.label} (${image.mediaType}, ${image.width}x${image.height})`).join(", ")}`
+      ? `\nAttachments: ${message.images
+          .map((image) => `${image.label} (${image.mediaType}, ${image.width}x${image.height})`)
+          .join(", ")}`
       : "";
     const content = `${message.content}${imageDetails}`.trim();
     return content
@@ -289,8 +278,7 @@ function artifactText(message: ChatMessage, messageIndex: number): {
   }
   if (message.role === "assistant") {
     const requestedTools = message.tool_calls?.length
-      ? `\nRequested tools: ${message.tool_calls.map((call) =>
-          call.function.name).join(", ")}`
+      ? `\nRequested tools: ${message.tool_calls.map((call) => call.function.name).join(", ")}`
       : "";
     const content = `${message.content ?? ""}${requestedTools}`.trim();
     return content
@@ -305,13 +293,14 @@ function artifactText(message: ChatMessage, messageIndex: number): {
 
   let title = `Tool ${message.name ?? "unknown"} result at message ${messageIndex}`;
   let content = message.content;
-  let importance = message.name === "read_file" ||
-      message.name === "run_command" ||
-      message.name === "start_command" ||
-      message.name === "poll_command" ||
-      message.name === "cancel_command"
-    ? 0.95
-    : 0.82;
+  let importance =
+    message.name === "read_file" ||
+    message.name === "run_command" ||
+    message.name === "start_command" ||
+    message.name === "poll_command" ||
+    message.name === "cancel_command"
+      ? 0.95
+      : 0.82;
   try {
     const parsed = JSON.parse(message.content) as {
       summary?: unknown;
@@ -324,11 +313,14 @@ function artifactText(message: ChatMessage, messageIndex: number): {
     if (message.name === "read_file" && parsed.data && typeof parsed.data === "object") {
       const data = parsed.data as Record<string, unknown>;
       if (typeof data.content === "string") {
-        const location = typeof data.path === "string"
-          ? `${data.path}${Number.isInteger(data.startLine) && Number.isInteger(data.endLine)
-              ? `:${String(data.startLine)}-${String(data.endLine)}`
-              : ""}`
-          : title;
+        const location =
+          typeof data.path === "string"
+            ? `${data.path}${
+                Number.isInteger(data.startLine) && Number.isInteger(data.endLine)
+                  ? `:${String(data.startLine)}-${String(data.endLine)}`
+                  : ""
+              }`
+            : title;
         title = `Read ${location}`;
         content = data.content;
       }
@@ -381,16 +373,20 @@ async function artifactsForMessage(
     if (end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1]!)) end--;
     const batch = text.slice(offset, end);
     let parts: readonly { text: string; start: number; end: number }[] = [];
-    try { parts = provider.splitText ? await provider.splitText(batch) : []; } catch { /* Deterministic character windows keep indexing available. */ }
+    try {
+      parts = provider.splitText ? await provider.splitText(batch) : [];
+    } catch {
+      /* Deterministic character windows keep indexing available. */
+    }
     if (!parts.length) {
       let cursor = 0;
-      parts = splitIntoChunks(batch, limits).map(content => {
+      parts = splitIntoChunks(batch, limits).map((content) => {
         const start = batch.indexOf(content, cursor);
         cursor = Math.max(start + 1, start + content.length - limits.artifactChunkOverlapChars);
         return { text: content, start, end: start + content.length };
       });
     }
-    windows.push(...parts.map(part => ({ ...part, start: offset + part.start, end: offset + part.end })));
+    windows.push(...parts.map((part) => ({ ...part, start: offset + part.start, end: offset + part.end })));
     if (end === text.length) break;
     offset = Math.max(offset + 1, end - limits.artifactChunkOverlapChars);
   }
@@ -400,19 +396,30 @@ async function artifactsForMessage(
     try {
       const payload = JSON.parse(message.content);
       const evidenceId = payload?.evidenceId;
-      sourceTruncated = payload?.data?.truncated === true || payload?.data?.stdout?.truncated === true || payload?.data?.stderr?.truncated === true;
+      sourceTruncated =
+        payload?.data?.truncated === true ||
+        payload?.data?.stdout?.truncated === true ||
+        payload?.data?.stderr?.truncated === true;
       if (typeof evidenceId === "string") file = { evidenceId };
-    } catch { /* A current external tool may deliberately return opaque text. */ }
+    } catch {
+      /* A current external tool may deliberately return opaque text. */
+    }
   }
   if (message.role === "tool" && message.name === "read_file") {
     try {
       const data = JSON.parse(message.content)?.data;
       if (typeof data?.path === "string" && typeof data?.contentHash === "string") {
-        file = { ...file, filePath: data.path, fileHash: data.contentHash,
+        file = {
+          ...file,
+          filePath: data.path,
+          fileHash: data.contentHash,
           ...(Number.isInteger(data.startLine) ? { startLine: data.startLine } : {}),
-          ...(Number.isInteger(data.endLine) ? { endLine: data.endLine } : {}) };
+          ...(Number.isInteger(data.endLine) ? { endLine: data.endLine } : {}),
+        };
       }
-    } catch { /* Opaque current tool output remains searchable. */ }
+    } catch {
+      /* Opaque current tool output remains searchable. */
+    }
   }
   return windows.map((window, chunkIndex) => {
     const content = window.text;
@@ -427,8 +434,7 @@ async function artifactsForMessage(
       messageIndex,
       chunkIndex,
       importance: document.importance,
-      metadata: { ...file, startOffset: window.start, endOffset: window.end,
-        sourceTruncated },
+      metadata: { ...file, startOffset: window.start, endOffset: window.end, sourceTruncated },
     };
   });
 }
@@ -451,9 +457,7 @@ function taskGraphCheckpoint(state: Readonly<SessionState>): object | undefined 
       completionChecks: task.completionChecks.map((check) => boundedText(check, 1_000)),
       failureHandling: boundedText(task.failureHandling, 1_000),
       ...(task.blockerDetails ? { blocker: boundedText(task.blockerDetails.reason, 2_000) } : {}),
-      ...(task.completionEvidence?.length
-        ? { completionEvidence: task.completionEvidence.slice(-4) }
-        : {}),
+      ...(task.completionEvidence?.length ? { completionEvidence: task.completionEvidence.slice(-4) } : {}),
     })),
   };
 }
@@ -479,17 +483,11 @@ function planCheckpoint(review: Readonly<PlanReviewState>): object {
   };
 }
 
-function latestFailureCheckpoint(
-  state: Readonly<SessionState>,
-): Readonly<Record<string, unknown>> | undefined {
+function latestFailureCheckpoint(state: Readonly<SessionState>): Readonly<Record<string, unknown>> | undefined {
   let toolFailure: Readonly<Record<string, unknown>> | undefined;
   const observedToolNames = new Set<string>();
   const earliestMessageIndex = Math.max(0, state.messages.length - 64);
-  for (
-    let index = state.messages.length - 1;
-    index >= earliestMessageIndex;
-    index -= 1
-  ) {
+  for (let index = state.messages.length - 1; index >= earliestMessageIndex; index -= 1) {
     const message = state.messages[index];
     if (!message || message.role !== "tool") continue;
     const toolName = message.name ?? "unknown";
@@ -505,21 +503,14 @@ function latestFailureCheckpoint(
         data?: unknown;
       };
       if (parsed.ok !== false && typeof parsed.error !== "string") continue;
-      const data = parsed.data && typeof parsed.data === "object"
-        ? parsed.data as Record<string, unknown>
-        : undefined;
+      const data =
+        parsed.data && typeof parsed.data === "object" ? (parsed.data as Record<string, unknown>) : undefined;
       toolFailure = {
         messageIndex: index,
         tool: toolName,
-        ...(typeof parsed.summary === "string"
-          ? { summary: boundedText(parsed.summary, 2_000) }
-          : {}),
-        ...(typeof parsed.error === "string"
-          ? { error: boundedText(parsed.error, 2_000) }
-          : {}),
-        ...(typeof data?.path === "string"
-          ? { path: boundedText(data.path, 1_000) }
-          : {}),
+        ...(typeof parsed.summary === "string" ? { summary: boundedText(parsed.summary, 2_000) } : {}),
+        ...(typeof parsed.error === "string" ? { error: boundedText(parsed.error, 2_000) } : {}),
+        ...(typeof data?.path === "string" ? { path: boundedText(data.path, 1_000) } : {}),
       };
       break;
     } catch {
@@ -528,11 +519,8 @@ function latestFailureCheckpoint(
   }
 
   const latestCommand = state.commands.at(-1);
-  const command = latestCommand && (
-    latestCommand.status !== "exited" || latestCommand.exitCode !== 0
-  )
-    ? latestCommand
-    : undefined;
+  const command =
+    latestCommand && (latestCommand.status !== "exited" || latestCommand.exitCode !== 0) ? latestCommand : undefined;
   const blockedTask = state.taskGraph?.tasks.find((task) => task.status === "blocked");
   if (!toolFailure && !command && !blockedTask) return undefined;
   return {
@@ -568,8 +556,7 @@ function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<strin
   return {
     version: 2,
     objective: state.goal ? boundedText(redactSensitiveInformation(state.goal), 12_000) : null,
-    constraints: state.constraints.map((constraint) =>
-      boundedText(redactSensitiveInformation(constraint), 2_000)),
+    constraints: state.constraints.map((constraint) => boundedText(redactSensitiveInformation(constraint), 2_000)),
     execution: {
       mode: state.mode,
       provider: state.provider,
@@ -581,18 +568,16 @@ function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<strin
       messageCount: state.messages.length,
       compactedMessageCount: state.compactedMessageCount,
       workingSummaryHash: state.workingSummary ? sha256(state.workingSummary) : null,
-      intentLedger: state.contextIntentLedger
-        ? redactCheckpointValue(state.contextIntentLedger)
-        : null,
-      compaction: state.contextCompactionMetadata
-        ? { ...state.contextCompactionMetadata }
-        : null,
+      intentLedger: state.contextIntentLedger ? redactCheckpointValue(state.contextIntentLedger) : null,
+      compaction: state.contextCompactionMetadata ? { ...state.contextCompactionMetadata } : null,
     },
     ...(latestFailure ? { latestFailure } : {}),
     currentDiff: {
       kind: "change_manifest",
       order: "newest_first",
-      changes: state.changes.slice(-MAX_CHECKPOINT_CHANGES).reverse()
+      changes: state.changes
+        .slice(-MAX_CHECKPOINT_CHANGES)
+        .reverse()
         .map((change) => ({ ...change })),
     },
     filesRead: [...state.filesRead.values()]
@@ -621,8 +606,7 @@ function redactCheckpointValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactCheckpointValue);
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .map(([key, entry]) => [key, redactCheckpointValue(entry)]),
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, redactCheckpointValue(entry)]),
     );
   }
   return value;
@@ -667,7 +651,10 @@ export class ContextArtifactIndex {
     }
   }
 
-  close(): void { this.stopped = true; this.caches.clear(); }
+  close(): void {
+    this.stopped = true;
+    this.caches.clear();
+  }
   private indexBudgetKey(): string {
     const limits = this.options.limits ?? DEFAULT_RUNTIME_LIMITS;
     return `${limits.artifactIndexBatchChars}:${limits.artifactChunkChars}:${limits.artifactChunkOverlapChars}`;
@@ -675,58 +662,81 @@ export class ContextArtifactIndex {
 
   private queueBackfill(threadId: string, boundary: number): void {
     if (this.stopped || this.backfills.has(threadId)) return;
-    const pending = Promise.resolve().then(async () => {
-      if (!this.stopped) await this.backfill(threadId, boundary, DEFAULT_BACKFILL_LIMIT);
-    }).catch((error: unknown) => {
-      if (this.stopped) return;
-      this.vectorDisabledUntil.set(threadId, Date.now() + VECTOR_RETRY_DELAY_MS);
-      try { this.onVectorError?.(error); } catch { /* Diagnostics cannot break retrieval. */ }
-    }).finally(() => { this.backfills.delete(threadId); });
+    const pending = Promise.resolve()
+      .then(async () => {
+        if (!this.stopped) await this.backfill(threadId, boundary, DEFAULT_BACKFILL_LIMIT);
+      })
+      .catch((error: unknown) => {
+        if (this.stopped) return;
+        this.vectorDisabledUntil.set(threadId, Date.now() + VECTOR_RETRY_DELAY_MS);
+        try {
+          this.onVectorError?.(error);
+        } catch {
+          /* Diagnostics cannot break retrieval. */
+        }
+      })
+      .finally(() => {
+        this.backfills.delete(threadId);
+      });
     this.backfills.set(threadId, pending);
   }
 
-  async checkpoint(
-    workspaceIdInput: string,
-    state: Readonly<SessionState>,
-  ): Promise<ContextCheckpointResult> {
+  async checkpoint(workspaceIdInput: string, state: Readonly<SessionState>): Promise<ContextCheckpointResult> {
     const workspaceId = cleanIdentifier(workspaceIdInput, "workspaceId");
     const threadId = cleanIdentifier(state.threadId, "threadId");
     const previous = this.checkpointRow(threadId);
     const reset = Boolean(
-      previous && (
-        previous.workspace_id !== workspaceId ||
+      previous &&
+      (previous.workspace_id !== workspaceId ||
         previous.indexed_message_count > state.messages.length ||
         JSON.parse(previous.payload_json).retrievalIndexVersion !== 3 ||
-        JSON.parse(previous.payload_json).indexBudgetKey !== this.indexBudgetKey()
-      ),
+        JSON.parse(previous.payload_json).indexBudgetKey !== this.indexBudgetKey()),
     );
     const start = reset ? 0 : Math.min(previous?.indexed_message_count ?? 0, state.messages.length);
     const pending: PendingArtifact[] = [];
     for (let index = start; index < state.messages.length; index += 1) {
       const message = state.messages[index];
-      if (message) pending.push(...await artifactsForMessage(threadId, message, index, this.provider, this.options.limits));
+      if (message)
+        pending.push(...(await artifactsForMessage(threadId, message, index, this.provider, this.options.limits)));
     }
 
     const summaryHash = state.workingSummary ? sha256(state.workingSummary) : undefined;
     const priorSummaryHash = previous ? JSON.parse(previous.payload_json)?.conversation?.workingSummaryHash : undefined;
-    const summaryChanged = Boolean(state.contextCompactionMetadata && summaryHash && (reset || summaryHash !== priorSummaryHash));
+    const summaryChanged = Boolean(
+      state.contextCompactionMetadata && summaryHash && (reset || summaryHash !== priorSummaryHash),
+    );
     if (summaryChanged) {
       const metadata = state.contextCompactionMetadata!;
-      const chunks = await artifactsForMessage(threadId, { role: "assistant", content: state.workingSummary },
-        Math.max(0, metadata.sourceEndMessageIndex - 1), this.provider, this.options.limits);
+      const chunks = await artifactsForMessage(
+        threadId,
+        { role: "assistant", content: state.workingSummary },
+        Math.max(0, metadata.sourceEndMessageIndex - 1),
+        this.provider,
+        this.options.limits,
+      );
       for (const chunk of chunks) {
         const key = `summary:${summaryHash}:${chunk.chunkIndex}`;
-        pending.push({ ...chunk, id: `context_${sha256(`${threadId}\n${key}`).slice(0, 48)}`,
-          sourceKey: key, title: "Previously accepted summary (historical claims, consult source evidence)",
-          metadata: { ...chunk.metadata, kind: "accepted_summary" } });
+        pending.push({
+          ...chunk,
+          id: `context_${sha256(`${threadId}\n${key}`).slice(0, 48)}`,
+          sourceKey: key,
+          title: "Previously accepted summary (historical claims, consult source evidence)",
+          metadata: { ...chunk.metadata, kind: "accepted_summary" },
+        });
       }
     }
 
-    const payload = { ...redactCheckpointValue(checkpointPayload(state)) as Record<string, unknown>,
-      retrievalIndexVersion: 3, indexBudgetKey: this.indexBudgetKey() };
+    const payload = {
+      ...(redactCheckpointValue(checkpointPayload(state)) as Record<string, unknown>),
+      retrievalIndexVersion: 3,
+      indexBudgetKey: this.indexBudgetKey(),
+    };
     const payloadJson = JSON.stringify(payload);
     const stateHash = sha256(payloadJson);
-    const checkpointChanged = !previous || reset || previous.state_hash !== stateHash ||
+    const checkpointChanged =
+      !previous ||
+      reset ||
+      previous.state_hash !== stateHash ||
       previous.indexed_message_count !== state.messages.length ||
       previous.compacted_message_count !== state.compactedMessageCount;
     const now = new Date().toISOString();
@@ -735,21 +745,41 @@ export class ContextArtifactIndex {
       this.storage.db.transaction(() => {
         if (summaryChanged) {
           const metadata = state.contextCompactionMetadata!;
-          this.storage.db.prepare(
-            `INSERT OR IGNORE INTO context_summary_snapshots(id, thread_id, source_hash, summary, metadata_json, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)`
-          ).run(`summary_${sha256(`${threadId}\n${metadata.sourceHistoryHash}\n${summaryHash}`)}`,
-            threadId, metadata.sourceHistoryHash, state.workingSummary, JSON.stringify(metadata), now);
+          this.storage.db
+            .prepare(
+              `INSERT OR IGNORE INTO context_summary_snapshots(id, thread_id, source_hash, summary, metadata_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              `summary_${sha256(`${threadId}\n${metadata.sourceHistoryHash}\n${summaryHash}`)}`,
+              threadId,
+              metadata.sourceHistoryHash,
+              state.workingSummary,
+              JSON.stringify(metadata),
+              now,
+            );
         }
         if (reset) {
-          this.storage.db.prepare<[string]>(
-            "DELETE FROM context_artifacts WHERE thread_id = ?",
-          ).run(threadId);
+          this.storage.db.prepare<[string]>("DELETE FROM context_artifacts WHERE thread_id = ?").run(threadId);
         }
-        const upsert = this.storage.db.prepare<[
-          string, string, string, string, string, string, string, string,
-          number, number, number, string, string, string,
-        ]>(
+        const upsert = this.storage.db.prepare<
+          [
+            string,
+            string,
+            string,
+            string,
+            string,
+            string,
+            string,
+            string,
+            number,
+            number,
+            number,
+            string,
+            string,
+            string,
+          ]
+        >(
           `INSERT INTO context_artifacts(
              id, workspace_id, thread_id, source_key, source_type, title,
              content, content_hash, message_index, chunk_index, importance,
@@ -787,30 +817,29 @@ export class ContextArtifactIndex {
         }
 
         if (!previous) {
-          this.storage.db.prepare<[
-            string, string, number, number, number, string, string, string, string,
-          ]>(
-            `INSERT INTO context_checkpoints(
+          this.storage.db
+            .prepare<[string, string, number, number, number, string, string, string, string]>(
+              `INSERT INTO context_checkpoints(
                thread_id, workspace_id, checkpoint_sequence,
                indexed_message_count, compacted_message_count, state_hash,
                payload_json, created_at, updated_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          ).run(
-            threadId,
-            workspaceId,
-            1,
-            state.messages.length,
-            state.compactedMessageCount,
-            stateHash,
-            payloadJson,
-            now,
-            now,
-          );
+            )
+            .run(
+              threadId,
+              workspaceId,
+              1,
+              state.messages.length,
+              state.compactedMessageCount,
+              stateHash,
+              payloadJson,
+              now,
+              now,
+            );
         } else if (checkpointChanged || reset) {
-          this.storage.db.prepare<[
-            string, number, number, string, string, string, string,
-          ]>(
-            `UPDATE context_checkpoints
+          this.storage.db
+            .prepare<[string, number, number, string, string, string, string]>(
+              `UPDATE context_checkpoints
                 SET workspace_id = ?,
                     checkpoint_sequence = checkpoint_sequence + 1,
                     indexed_message_count = ?,
@@ -819,15 +848,16 @@ export class ContextArtifactIndex {
                     payload_json = ?,
                     updated_at = ?
               WHERE thread_id = ?`,
-          ).run(
-            workspaceId,
-            state.messages.length,
-            state.compactedMessageCount,
-            stateHash,
-            payloadJson,
-            now,
-            threadId,
-          );
+            )
+            .run(
+              workspaceId,
+              state.messages.length,
+              state.compactedMessageCount,
+              stateHash,
+              payloadJson,
+              now,
+              threadId,
+            );
         }
       })();
       if (pending.length > 0 || reset) this.invalidate(threadId);
@@ -867,11 +897,16 @@ export class ContextArtifactIndex {
     );
     if (beforeMessageIndex <= 0) return Object.freeze([]);
     const candidateLimit = Math.max(24, limit * 8);
-    const queries = [...new Set((options.queries?.length ? options.queries : [query])
-      .map((value) => value.trim()).filter(Boolean))].slice(0, 4);
-    const lexical = [...new Map(queries.flatMap((value) => this.lexicalCandidates(
-      workspaceId, threadId, value, beforeMessageIndex, candidateLimit,
-    )).map((row) => [row.id, row])).values()];
+    const queries = [
+      ...new Set((options.queries?.length ? options.queries : [query]).map((value) => value.trim()).filter(Boolean)),
+    ].slice(0, 4);
+    const lexical = [
+      ...new Map(
+        queries
+          .flatMap((value) => this.lexicalCandidates(workspaceId, threadId, value, beforeMessageIndex, candidateLimit))
+          .map((row) => [row.id, row]),
+      ).values(),
+    ];
 
     let semantic: ReadonlyArray<{ id: string; score: number }> = [];
     if (Date.now() >= (this.vectorDisabledUntil.get(threadId) ?? 0)) {
@@ -899,8 +934,7 @@ export class ContextArtifactIndex {
             const hits = result.hits
               .filter((hit) => {
                 const document = hit.document as { messageIndex?: unknown };
-                return typeof document.messageIndex === "number" &&
-                  document.messageIndex < beforeMessageIndex;
+                return typeof document.messageIndex === "number" && document.messageIndex < beforeMessageIndex;
               })
               .slice(0, candidateLimit)
               .map((hit) => ({ id: hit.id, score: hit.score }));
@@ -921,17 +955,25 @@ export class ContextArtifactIndex {
       }
     }
 
-    const candidates = new Map<string, {
-      row: ContextArtifactRow;
-      lexicalRank?: number;
-      semanticRank?: number;
-      semanticScore?: number;
-    }>();
+    const candidates = new Map<
+      string,
+      {
+        row: ContextArtifactRow;
+        lexicalRank?: number;
+        semanticRank?: number;
+        semanticScore?: number;
+      }
+    >();
     lexical.forEach((row, rank) => candidates.set(row.id, { row, lexicalRank: rank }));
     semantic.forEach((hit, rank) => {
       const row = candidates.get(hit.id)?.row ?? this.artifactRow(hit.id);
-      if (!row || row.workspace_id !== workspaceId || row.thread_id !== threadId ||
-          row.message_index >= beforeMessageIndex) return;
+      if (
+        !row ||
+        row.workspace_id !== workspaceId ||
+        row.thread_id !== threadId ||
+        row.message_index >= beforeMessageIndex
+      )
+        return;
       const prior = candidates.get(hit.id);
       candidates.set(hit.id, {
         row,
@@ -946,15 +988,19 @@ export class ContextArtifactIndex {
         const lexicalRrf = candidate.lexicalRank === undefined ? 0 : 1 / (60 + candidate.lexicalRank + 1);
         const semanticRrf = candidate.semanticRank === undefined ? 0 : 1 / (60 + candidate.semanticRank + 1);
         const recency = candidate.row.message_index / Math.max(1, beforeMessageIndex);
-        const score = lexicalRrf + semanticRrf +
-          candidate.row.importance * 0.002 + recency * 0.001 +
+        const score =
+          lexicalRrf +
+          semanticRrf +
+          candidate.row.importance * 0.002 +
+          recency * 0.001 +
           (candidate.semanticScore ?? 0) * 0.0005;
         return { ...candidate, score };
       })
-      .sort((left, right) =>
-        right.score - left.score ||
-        right.row.importance - left.row.importance ||
-        right.row.message_index - left.row.message_index,
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          right.row.importance - left.row.importance ||
+          right.row.message_index - left.row.message_index,
       );
 
     const seenHashes = new Set<string>();
@@ -962,31 +1008,35 @@ export class ContextArtifactIndex {
     for (const candidate of ranked) {
       if (seenHashes.has(candidate.row.content_hash)) continue;
       seenHashes.add(candidate.row.content_hash);
-      hits.push(Object.freeze({
-        id: candidate.row.id,
-        source: candidate.row.source_type,
-        title: candidate.row.title,
-        content: candidate.row.content,
-        contentHash: candidate.row.content_hash,
-        messageIndex: candidate.row.message_index,
-        score: candidate.score,
-        ...(candidate.row.metadata_json ? { metadata: JSON.parse(candidate.row.metadata_json) as ContextEvidenceMetadata } : {}),
-      }));
+      hits.push(
+        Object.freeze({
+          id: candidate.row.id,
+          source: candidate.row.source_type,
+          title: candidate.row.title,
+          content: candidate.row.content,
+          contentHash: candidate.row.content_hash,
+          messageIndex: candidate.row.message_index,
+          score: candidate.score,
+          ...(candidate.row.metadata_json
+            ? { metadata: JSON.parse(candidate.row.metadata_json) as ContextEvidenceMetadata }
+            : {}),
+        }),
+      );
       if (hits.length >= limit) break;
     }
     return Object.freeze(hits);
   }
 
   private checkpointRow(threadId: string): ContextCheckpointRow | undefined {
-    return this.storage.db.prepare<[string], ContextCheckpointRow>(
-      "SELECT * FROM context_checkpoints WHERE thread_id = ?",
-    ).get(threadId);
+    return this.storage.db
+      .prepare<[string], ContextCheckpointRow>("SELECT * FROM context_checkpoints WHERE thread_id = ?")
+      .get(threadId);
   }
 
   private artifactRow(id: string): ContextArtifactRow | undefined {
-    return this.storage.db.prepare<[string], ContextArtifactRow>(
-      "SELECT * FROM context_artifacts WHERE id = ?",
-    ).get(id);
+    return this.storage.db
+      .prepare<[string], ContextArtifactRow>("SELECT * FROM context_artifacts WHERE id = ?")
+      .get(id);
   }
 
   private lexicalCandidates(
@@ -1000,10 +1050,9 @@ export class ContextArtifactIndex {
     let ftsRows: ContextArtifactRow[] = [];
     if (expression) {
       try {
-        ftsRows = this.storage.db.prepare<[
-          string, string, string, number, number,
-        ], ContextArtifactRow>(
-          `SELECT a.*
+        ftsRows = this.storage.db
+          .prepare<[string, string, string, number, number], ContextArtifactRow>(
+            `SELECT a.*
              FROM context_artifacts_fts
              JOIN context_artifacts AS a ON a.rowid = context_artifacts_fts.rowid
             WHERE context_artifacts_fts MATCH ?
@@ -1012,7 +1061,8 @@ export class ContextArtifactIndex {
               AND a.message_index < ?
             ORDER BY bm25(context_artifacts_fts), a.importance DESC, a.message_index DESC
             LIMIT ?`,
-        ).all(expression, workspaceId, threadId, beforeMessageIndex, limit);
+          )
+          .all(expression, workspaceId, threadId, beforeMessageIndex, limit);
       } catch {
         // A repairable FTS projection failure can still use the CJK substring path.
       }
@@ -1021,14 +1071,11 @@ export class ContextArtifactIndex {
     let cjkRows: ContextArtifactRow[] = [];
     if (cjkTerms.length > 0) {
       const document = "lower(a.title || char(10) || a.content)";
-      const score = cjkTerms
-        .map(() => `CASE WHEN instr(${document}, lower(?)) > 0 THEN 1 ELSE 0 END`)
-        .join(" + ");
-      const matches = cjkTerms
-        .map(() => `instr(${document}, lower(?)) > 0`)
-        .join(" OR ");
-      cjkRows = this.storage.db.prepare<Array<string | number>, ContextArtifactRow>(
-        `SELECT a.*, (${score}) AS substring_score
+      const score = cjkTerms.map(() => `CASE WHEN instr(${document}, lower(?)) > 0 THEN 1 ELSE 0 END`).join(" + ");
+      const matches = cjkTerms.map(() => `instr(${document}, lower(?)) > 0`).join(" OR ");
+      cjkRows = this.storage.db
+        .prepare<Array<string | number>, ContextArtifactRow>(
+          `SELECT a.*, (${score}) AS substring_score
            FROM context_artifacts AS a
           WHERE a.workspace_id = ?
             AND a.thread_id = ?
@@ -1036,14 +1083,8 @@ export class ContextArtifactIndex {
             AND (${matches})
           ORDER BY substring_score DESC, a.importance DESC, a.message_index DESC
           LIMIT ?`,
-      ).all(
-        ...cjkTerms,
-        workspaceId,
-        threadId,
-        beforeMessageIndex,
-        ...cjkTerms,
-        limit,
-      );
+        )
+        .all(...cjkTerms, workspaceId, threadId, beforeMessageIndex, ...cjkTerms, limit);
     }
     if (ftsRows.length > 0 || cjkRows.length > 0) {
       const merged = new Map<string, ContextArtifactRow>();
@@ -1054,14 +1095,14 @@ export class ContextArtifactIndex {
       return [...merged.values()];
     }
     if (expression || cjkTerms.length > 0) return [];
-    return this.storage.db.prepare<[
-      string, string, number, number,
-    ], ContextArtifactRow>(
-      `SELECT * FROM context_artifacts
+    return this.storage.db
+      .prepare<[string, string, number, number], ContextArtifactRow>(
+        `SELECT * FROM context_artifacts
         WHERE workspace_id = ? AND thread_id = ? AND message_index < ?
         ORDER BY importance DESC, message_index DESC, chunk_index
         LIMIT ?`,
-    ).all(workspaceId, threadId, beforeMessageIndex, limit);
+      )
+      .all(workspaceId, threadId, beforeMessageIndex, limit);
   }
 
   private async prepareEmbeddings(contents: readonly string[]): Promise<PreparedEmbedding[]> {
@@ -1076,15 +1117,10 @@ export class ContextArtifactIndex {
     }));
   }
 
-  private async backfill(
-    threadId: string,
-    beforeMessageIndex: number,
-    limit: number,
-  ): Promise<void> {
-    const rows = this.storage.db.prepare<[
-      string, number, number, string, string, number, string, number, number, number,
-    ], ContextEmbeddingRow>(
-      `SELECT a.*,
+  private async backfill(threadId: string, beforeMessageIndex: number, limit: number): Promise<void> {
+    const rows = this.storage.db
+      .prepare<[string, number, number, string, string, number, string, number, number, number], ContextEmbeddingRow>(
+        `SELECT a.*,
               e.model, e.revision, e.dimensions, e.pooling,
               e.embedding_version, e.content_hash AS embedding_content_hash,
               e.embedding
@@ -1109,28 +1145,28 @@ export class ContextArtifactIndex {
           )
         ORDER BY a.message_index DESC, a.chunk_index
         LIMIT ?`,
-    ).all(
-      threadId,
-      beforeMessageIndex,
-      MAX_THREAD_VECTOR_ROWS,
-      this.provider.model,
-      this.provider.revision,
-      this.provider.dimension,
-      this.provider.pooling,
-      this.provider.version,
-      this.provider.dimension * Float32Array.BYTES_PER_ELEMENT,
-      limit,
-    );
+      )
+      .all(
+        threadId,
+        beforeMessageIndex,
+        MAX_THREAD_VECTOR_ROWS,
+        this.provider.model,
+        this.provider.revision,
+        this.provider.dimension,
+        this.provider.pooling,
+        this.provider.version,
+        this.provider.dimension * Float32Array.BYTES_PER_ELEMENT,
+        limit,
+      );
     const stale = rows.filter((row) => !this.isCurrentEmbedding(row));
     if (stale.length === 0) return;
     const prepared = await this.prepareEmbeddings(stale.map((row) => row.content));
     if (this.stopped) return;
     const now = new Date().toISOString();
     this.storage.db.transaction(() => {
-      const upsert = this.storage.db.prepare<[
-        string, string, string, string, number, string, number, string,
-        Uint8Array, string, string,
-      ]>(
+      const upsert = this.storage.db.prepare<
+        [string, string, string, string, number, string, number, string, Uint8Array, string, string]
+      >(
         `INSERT INTO context_artifact_embeddings(
            artifact_id, thread_id, model, revision, dimensions, pooling,
            embedding_version, content_hash, embedding, created_at, updated_at
@@ -1177,7 +1213,8 @@ export class ContextArtifactIndex {
       row.pooling !== this.provider.pooling ||
       row.embedding_version !== this.provider.version ||
       row.embedding_content_hash !== row.content_hash
-    ) return false;
+    )
+      return false;
     try {
       decodeFloat32(row.embedding, this.provider.dimension);
       return true;
@@ -1187,9 +1224,11 @@ export class ContextArtifactIndex {
   }
 
   private generation(threadId: string): number {
-    return this.storage.db.prepare<[string], { generation: number }>(
-      "SELECT generation FROM context_vector_state WHERE thread_id = ?",
-    ).get(threadId)?.generation ?? 0;
+    return (
+      this.storage.db
+        .prepare<[string], { generation: number }>("SELECT generation FROM context_vector_state WHERE thread_id = ?")
+        .get(threadId)?.generation ?? 0
+    );
   }
 
   private invalidate(threadId: string): void {
@@ -1219,14 +1258,8 @@ export class ContextArtifactIndex {
     this.caches.delete(threadId);
     if (index.size > MAX_CACHED_VECTORS) return;
     this.caches.set(threadId, index);
-    let totalVectors = [...this.caches.values()].reduce(
-      (total, cached) => total + cached.size,
-      0,
-    );
-    while (
-      this.caches.size > MAX_CACHED_VECTOR_THREADS ||
-      totalVectors > MAX_CACHED_VECTORS
-    ) {
+    let totalVectors = [...this.caches.values()].reduce((total, cached) => total + cached.size, 0);
+    while (this.caches.size > MAX_CACHED_VECTOR_THREADS || totalVectors > MAX_CACHED_VECTORS) {
       const oldestThreadId = this.caches.keys().next().value as string | undefined;
       if (oldestThreadId === undefined) break;
       const removed = this.caches.get(oldestThreadId);
@@ -1249,10 +1282,9 @@ export class ContextArtifactIndex {
 
   private async buildIndex(threadId: string): Promise<CachedIndex> {
     const generation = this.generation(threadId);
-    const rows = this.storage.db.prepare<[
-      string, string, string, number, string, number, number,
-    ], ContextEmbeddingRow>(
-      `SELECT a.*,
+    const rows = this.storage.db
+      .prepare<[string, string, string, number, string, number, number], ContextEmbeddingRow>(
+        `SELECT a.*,
               e.model, e.revision, e.dimensions, e.pooling,
               e.embedding_version, e.content_hash AS embedding_content_hash,
               e.embedding
@@ -1266,15 +1298,16 @@ export class ContextArtifactIndex {
           AND e.embedding_version = ?
         ORDER BY a.message_index DESC, a.chunk_index DESC
         LIMIT ?`,
-    ).all(
-      threadId,
-      this.provider.model,
-      this.provider.revision,
-      this.provider.dimension,
-      this.provider.pooling,
-      this.provider.version,
-      MAX_THREAD_VECTOR_ROWS,
-    );
+      )
+      .all(
+        threadId,
+        this.provider.model,
+        this.provider.revision,
+        this.provider.dimension,
+        this.provider.pooling,
+        this.provider.version,
+        MAX_THREAD_VECTOR_ROWS,
+      );
     const vectorType = `vector[${this.provider.dimension}]` as `vector[${number}]`;
     const database = await create({
       schema: {
@@ -1313,16 +1346,18 @@ export class ContextArtifactIndex {
   }
 }
 
-export function renderContextCheckpoint(
-  checkpoint: Readonly<ContextCheckpointSnapshot> | undefined,
-): string {
+export function renderContextCheckpoint(checkpoint: Readonly<ContextCheckpointSnapshot> | undefined): string {
   if (!checkpoint) return "";
-  return JSON.stringify({
-    checkpointSequence: checkpoint.sequence,
-    indexedMessageCount: checkpoint.indexedMessageCount,
-    stateHash: checkpoint.stateHash,
-    ...checkpoint.payload,
-  }, null, 2);
+  return JSON.stringify(
+    {
+      checkpointSequence: checkpoint.sequence,
+      indexedMessageCount: checkpoint.indexedMessageCount,
+      stateHash: checkpoint.stateHash,
+      ...checkpoint.payload,
+    },
+    null,
+    2,
+  );
 }
 
 /**
@@ -1337,31 +1372,42 @@ export function renderPinnedCurrentState(
 ): string {
   const payload = checkpointPayload(state);
   if (continuityAlreadyPresent) {
-    const { objective: _goal, constraints: _constraints, taskGraph: _tasks,
-      planReview: _plan, commands: _commands, latestFailure: _failure,
-      conversation: _conversation, ...workspace } = payload;
-    return JSON.stringify(redactCheckpointValue({ pinnedCurrentState: true, ...workspace,
-      ...(approvedPlanReview && !state.planReview
-        ? { approvedPlan: planCheckpoint(approvedPlanReview) } : {}) }));
+    const {
+      objective: _goal,
+      constraints: _constraints,
+      taskGraph: _tasks,
+      planReview: _plan,
+      commands: _commands,
+      latestFailure: _failure,
+      conversation: _conversation,
+      ...workspace
+    } = payload;
+    return JSON.stringify(
+      redactCheckpointValue({
+        pinnedCurrentState: true,
+        ...workspace,
+        ...(approvedPlanReview && !state.planReview ? { approvedPlan: planCheckpoint(approvedPlanReview) } : {}),
+      }),
+    );
   }
   const pinned = {
     pinnedCurrentState: true,
     ...payload,
-    ...(approvedPlanReview
-      ? { approvedPlan: planCheckpoint(approvedPlanReview) }
-      : {}),
+    ...(approvedPlanReview ? { approvedPlan: planCheckpoint(approvedPlanReview) } : {}),
   };
   return JSON.stringify(redactCheckpointValue(pinned), null, 2);
 }
 
-export function renderRetrievedContext(
-  hits: readonly Readonly<ContextSearchHit>[],
-): string {
-  return hits.map((hit) => [
-    `[evidence_id=${hit.id}] [source=${hit.source}] ` +
-      `[message_index=${String(hit.messageIndex)}] [content_hash=${hit.contentHash}]`,
-    hit.title,
-    ...(hit.metadata ? [`[historical_metadata=${JSON.stringify(hit.metadata)}]`] : []),
-    hit.content,
-  ].join("\n")).join("\n\n");
+export function renderRetrievedContext(hits: readonly Readonly<ContextSearchHit>[]): string {
+  return hits
+    .map((hit) =>
+      [
+        `[evidence_id=${hit.id}] [source=${hit.source}] ` +
+          `[message_index=${String(hit.messageIndex)}] [content_hash=${hit.contentHash}]`,
+        hit.title,
+        ...(hit.metadata ? [`[historical_metadata=${JSON.stringify(hit.metadata)}]`] : []),
+        hit.content,
+      ].join("\n"),
+    )
+    .join("\n\n");
 }

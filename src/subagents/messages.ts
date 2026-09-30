@@ -10,8 +10,7 @@ function eventId(prefix: string, ...parts: string[]): string {
 function isMessage(value: unknown): value is SubagentParentMessage {
   if (!value || typeof value !== "object") return false;
   const item = value as Record<string, unknown>;
-  return ["id", "agentId", "taskId", "taskTitle", "text", "createdAt"]
-    .every((key) => typeof item[key] === "string");
+  return ["id", "agentId", "taskId", "taskTitle", "text", "createdAt"].every((key) => typeof item[key] === "string");
 }
 
 function parentMessage(message: SubagentParentMessage): ChatMessage {
@@ -25,13 +24,24 @@ function parentMessage(message: SubagentParentMessage): ChatMessage {
 export class SubagentMessageMailbox {
   constructor(private readonly threads: ThreadStore) {}
 
-  post(parentThreadId: string, input: Omit<SubagentParentMessage, "id" | "createdAt">,
-    childThreadId: string, toolCallId: string): SubagentParentMessage {
+  post(
+    parentThreadId: string,
+    input: Omit<SubagentParentMessage, "id" | "createdAt">,
+    childThreadId: string,
+    toolCallId: string,
+  ): SubagentParentMessage {
     const id = eventId("subagent_message", childThreadId, toolCallId);
-    const existing = this.threads.journal(parentThreadId).read().find((event) => event.eventId === id);
+    const existing = this.threads
+      .journal(parentThreadId)
+      .read()
+      .find((event) => event.eventId === id);
     if (existing) {
-      if (!isMessage(existing.payload) || existing.payload.agentId !== input.agentId ||
-          existing.payload.taskId !== input.taskId || existing.payload.text !== input.text) {
+      if (
+        !isMessage(existing.payload) ||
+        existing.payload.agentId !== input.agentId ||
+        existing.payload.taskId !== input.taskId ||
+        existing.payload.text !== input.text
+      ) {
         throw new Error("A subagent message call ID was reused with different content");
       }
       return existing.payload;
@@ -51,9 +61,18 @@ export class SubagentMessageMailbox {
       return message;
     } catch (error) {
       // Another process may have durably committed this same tool call first.
-      const raced = this.threads.journal(parentThreadId).read().find((event) => event.eventId === id);
-      if (raced && isMessage(raced.payload) && raced.payload.agentId === input.agentId &&
-          raced.payload.taskId === input.taskId && raced.payload.text === input.text) return raced.payload;
+      const raced = this.threads
+        .journal(parentThreadId)
+        .read()
+        .find((event) => event.eventId === id);
+      if (
+        raced &&
+        isMessage(raced.payload) &&
+        raced.payload.agentId === input.agentId &&
+        raced.payload.taskId === input.taskId &&
+        raced.payload.text === input.text
+      )
+        return raced.payload;
       throw error;
     }
   }
@@ -92,8 +111,10 @@ export class SubagentMessageMailbox {
         });
         delivered.push(message);
       } catch (error) {
-        const committed = this.threads.journal(parentThreadId).read().some((event) =>
-          event.eventId === eventId("subagent_delivery", parentThreadId, item.id));
+        const committed = this.threads
+          .journal(parentThreadId)
+          .read()
+          .some((event) => event.eventId === eventId("subagent_delivery", parentThreadId, item.id));
         if (committed) {
           delivered.push(message);
           continue;

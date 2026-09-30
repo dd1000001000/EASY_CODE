@@ -4,44 +4,82 @@ import { toolFailure, toolSuccess } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
-export const createRecallContextSchema = (limits = DEFAULT_RUNTIME_LIMITS) => z.object({ evidenceId: z.string().min(1).max(160),
-  offset: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(limits.evidenceRecallMaxChars).default(limits.evidenceRecallDefaultChars),
-}).strict();
-export const recallContextSchema = createRecallContextSchema();
+export const createRecallContextSchema = (limits = DEFAULT_RUNTIME_LIMITS) =>
+  z
+    .object({
+      evidenceId: z.string().min(1).max(160),
+      offset: z.number().int().nonnegative().default(0),
+      limit: z.number().int().min(1).max(limits.evidenceRecallMaxChars).default(limits.evidenceRecallDefaultChars),
+    })
+    .strict();
 
 export class RecallContextTool implements AgentTool {
   readonly name = "recall_context" as const;
   readonly mutating = false;
   constructor(private readonly limits = DEFAULT_RUNTIME_LIMITS) {}
-  get inputSchema() { return createRecallContextSchema(this.limits); }
-  get definition(): ToolDefinition { return { type: "function", function: { name: this.name,
-    ...documentToolSchema(this.name, { type: "object", additionalProperties: false,
-      properties: { evidenceId: { type: "string", minLength: 1, maxLength: 160 },
-        offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: this.limits.evidenceRecallMaxChars } }, required: ["evidenceId"] }) } }; }
+  get inputSchema() {
+    return createRecallContextSchema(this.limits);
+  }
+  get definition(): ToolDefinition {
+    return {
+      type: "function",
+      function: {
+        name: this.name,
+        ...documentToolSchema(this.name, {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            evidenceId: { type: "string", minLength: 1, maxLength: 160 },
+            offset: { type: "integer", minimum: 0 },
+            limit: { type: "integer", minimum: 1, maximum: this.limits.evidenceRecallMaxChars },
+          },
+          required: ["evidenceId"],
+        }),
+      },
+    };
+  }
   async execute(input: unknown, context: ToolContext) {
     try {
       const value = this.inputSchema.parse(input);
       if (!context.recallContext) throw new Error("Context recall unavailable in this Runtime profile");
       return await context.recallContext(value);
-    } catch (error) { return toolFailure(error, "Unable to recall historical evidence"); }
+    } catch (error) {
+      return toolFailure(error, "Unable to recall historical evidence");
+    }
   }
 }
 
 export class SearchContextTool implements AgentTool {
   readonly name = "search_context" as const;
   readonly mutating = false;
-  readonly inputSchema = z.object({ query: z.string().trim().min(1).max(500),
-    limit: z.number().int().min(1).max(20).default(6) }).strict();
-  readonly definition: ToolDefinition = { type: "function", function: { name: this.name,
-    ...documentToolSchema(this.name, { type: "object", additionalProperties: false,
-      properties: { query: { type: "string", minLength: 1, maxLength: 500 },
-        limit: { type: "integer", minimum: 1, maximum: 20 } }, required: ["query"] }) } };
+  readonly inputSchema = z
+    .object({ query: z.string().trim().min(1).max(500), limit: z.number().int().min(1).max(20).default(6) })
+    .strict();
+  readonly definition: ToolDefinition = {
+    type: "function",
+    function: {
+      name: this.name,
+      ...documentToolSchema(this.name, {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: { type: "string", minLength: 1, maxLength: 500 },
+          limit: { type: "integer", minimum: 1, maximum: 20 },
+        },
+        required: ["query"],
+      }),
+    },
+  };
   async execute(input: unknown, context: ToolContext) {
     try {
       const value = this.inputSchema.parse(input);
       if (!context.searchHistory) throw new Error("Thread history search unavailable");
-      return toolSuccess("Historical evidence previews. Recall an ID for detail; these are not current file observations.",
-        { evidence: await context.searchHistory(value.query, value.limit) });
-    } catch (error) { return toolFailure(error, "Unable to search context"); }
+      return toolSuccess(
+        "Historical evidence previews. Recall an ID for detail; these are not current file observations.",
+        { evidence: await context.searchHistory(value.query, value.limit) },
+      );
+    } catch (error) {
+      return toolFailure(error, "Unable to search context");
+    }
   }
 }

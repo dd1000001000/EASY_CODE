@@ -8,24 +8,44 @@ function tool(name: BuiltinToolName): AgentTool {
   return {
     name,
     mutating: false,
-    definition: { type: "function", function: {
-      name, description: `Fixture for ${name}`,
-      parameters: { type: "object", additionalProperties: false, properties: {}, required: [] },
-    } },
-    async execute() { return { ok: true, summary: "fixture" }; },
+    definition: {
+      type: "function",
+      function: {
+        name,
+        description: `Fixture for ${name}`,
+        parameters: { type: "object", additionalProperties: false, properties: {}, required: [] },
+      },
+    },
+    async execute() {
+      return { ok: true, summary: "fixture" };
+    },
   };
 }
 
 describe("Auto route capability summary", () => {
   it("describes capability categories and current conditions without exposing tool names", () => {
     const planTools = snapshotToolSet([
-      tool("read_file"), tool("read_image"), tool("web_search"), tool("fetch_webpage"),
-      tool("run_command"), tool("read_memory"), tool("manage_tasks"), tool("manage_subagents"), tool("propose_plan"),
+      tool("read_file"),
+      tool("read_image"),
+      tool("web_search"),
+      tool("fetch_webpage"),
+      tool("run_command"),
+      tool("read_memory"),
+      tool("manage_tasks"),
+      tool("manage_subagents"),
+      tool("propose_plan"),
     ]).tools;
     const codeTools = snapshotToolSet([
-      tool("read_file"), tool("read_image"), tool("web_search"), tool("fetch_webpage"),
-      tool("create_file"), tool("run_command"), tool("fetch_artifact"),
-      tool("save_remote_mcp_server"), tool("manage_subagents"), tool("read_memory"),
+      tool("read_file"),
+      tool("read_image"),
+      tool("web_search"),
+      tool("fetch_webpage"),
+      tool("create_file"),
+      tool("run_command"),
+      tool("fetch_artifact"),
+      tool("save_remote_mcp_server"),
+      tool("manage_subagents"),
+      tool("read_memory"),
     ]).tools;
     const summary = autoRouteCapabilitySummary({ planTools, codeTools, connectedMcpServers: 2 });
     const rendered = JSON.stringify(summary);

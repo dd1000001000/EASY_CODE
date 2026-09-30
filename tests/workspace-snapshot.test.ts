@@ -1,15 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import {
-  mkdtemp,
-  mkdir,
-  readFile,
-  readlink,
-  rename,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { captureWorkspaceSnapshot, WorkspacePathGuard } from "../src/workspace/index.js";
@@ -63,10 +54,7 @@ describe("workspace snapshot", () => {
       );
 
       assert.equal(peak, 3);
-      assert.deepEqual(
-        [...snapshot.files.keys()],
-        ["a.txt", "nested/a.txt", "nested/z.txt", "z.txt"],
-      );
+      assert.deepEqual([...snapshot.files.keys()], ["a.txt", "nested/a.txt", "nested/z.txt", "z.txt"]);
       assert.equal(snapshot.files.get("a.txt")?.hash, sha256("root-a"));
       assert.equal(snapshot.files.get("nested/z.txt")?.hash, sha256("nested-z"));
     });
@@ -80,10 +68,7 @@ describe("workspace snapshot", () => {
         writeFile(path.join(root, "b.txt"), "b", "utf8"),
       ]);
 
-      const snapshot = await captureWorkspaceSnapshot(
-        new WorkspacePathGuard(root),
-        { maxFiles: 2, ioConcurrency: 8 },
-      );
+      const snapshot = await captureWorkspaceSnapshot(new WorkspacePathGuard(root), { maxFiles: 2, ioConcurrency: 8 });
 
       assert.equal(snapshot.truncated, true);
       assert.deepEqual([...snapshot.files.keys()], ["a.txt", "b.txt"]);
@@ -137,17 +122,13 @@ describe("workspace snapshot", () => {
       const victim = path.join(root, "victim.txt");
       await writeFile(victim, "trusted", "utf8");
 
-      const snapshot = await captureWorkspaceSnapshot(
-        new WorkspacePathGuard(root),
-        undefined,
-        {
-          beforeHash: async (filename) => {
-            if (path.basename(filename) !== "victim.txt") return;
-            await rename(filename, path.join(path.dirname(filename), "original.txt"));
-            await writeFile(filename, "replacement with different identity", "utf8");
-          },
+      const snapshot = await captureWorkspaceSnapshot(new WorkspacePathGuard(root), undefined, {
+        beforeHash: async (filename) => {
+          if (path.basename(filename) !== "victim.txt") return;
+          await rename(filename, path.join(path.dirname(filename), "original.txt"));
+          await writeFile(filename, "replacement with different identity", "utf8");
         },
-      );
+      });
 
       assert.equal(snapshot.files.has("victim.txt"), false);
       assert.equal(snapshot.files.has("original.txt"), false);

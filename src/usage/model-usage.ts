@@ -53,9 +53,7 @@ function emptyTotals(): ModelUsageTotals {
 }
 
 function nonNegativeInteger(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function parseUsage(value: unknown): ProviderUsage | undefined {
@@ -89,7 +87,8 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
   if (
     (input.actor !== "main_agent" &&
       input.actor !== "subagent" &&
-      input.actor !== "reviewer" && input.actor !== "approval_agent") ||
+      input.actor !== "reviewer" &&
+      input.actor !== "approval_agent") ||
     !MODEL_USAGE_PURPOSES.includes(input.purpose as ModelUsagePurpose) ||
     !safeLabel(input.provider, 32) ||
     !isProviderIdentifier(input.provider) ||
@@ -100,9 +99,7 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
     return undefined;
   }
   const step = input.step === undefined ? undefined : nonNegativeInteger(input.step);
-  const attempt = input.attempt === undefined
-    ? undefined
-    : nonNegativeInteger(input.attempt);
+  const attempt = input.attempt === undefined ? undefined : nonNegativeInteger(input.attempt);
   if (
     (input.step !== undefined && (step === undefined || step < 1)) ||
     (input.attempt !== undefined && (attempt === undefined || attempt < 1))
@@ -111,16 +108,10 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
   }
   const usage = parseUsage(input.usage);
   if (input.usage !== undefined && usage === undefined) return undefined;
-  if (
-    input.sourceAgentId !== undefined &&
-    !safeLabel(input.sourceAgentId)
-  ) {
+  if (input.sourceAgentId !== undefined && !safeLabel(input.sourceAgentId)) {
     return undefined;
   }
-  if (
-    input.sourceTaskId !== undefined &&
-    !safeLabel(input.sourceTaskId)
-  ) {
+  if (input.sourceTaskId !== undefined && !safeLabel(input.sourceTaskId)) {
     return undefined;
   }
   return {
@@ -133,12 +124,8 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
     ...(step !== undefined ? { step } : {}),
     ...(attempt !== undefined ? { attempt } : {}),
     ...(usage ? { usage } : {}),
-    ...(typeof input.sourceAgentId === "string"
-      ? { sourceAgentId: input.sourceAgentId }
-      : {}),
-    ...(typeof input.sourceTaskId === "string"
-      ? { sourceTaskId: input.sourceTaskId }
-      : {}),
+    ...(typeof input.sourceAgentId === "string" ? { sourceAgentId: input.sourceAgentId } : {}),
+    ...(typeof input.sourceTaskId === "string" ? { sourceTaskId: input.sourceTaskId } : {}),
   };
 }
 
@@ -156,9 +143,7 @@ function addUsage(target: ModelUsageTotals, record: Readonly<ModelUsageRecord>):
   target.reasoningTokens += usage.reasoningTokens ?? 0;
 }
 
-export function aggregateModelUsage(
-  records: readonly Readonly<ModelUsageRecord>[],
-): ModelUsageSummary {
+export function aggregateModelUsage(records: readonly Readonly<ModelUsageRecord>[]): ModelUsageSummary {
   const totals = emptyTotals();
   const byPurpose: Record<ModelUsagePurpose, ModelUsageTotals> = {
     auto_route: emptyTotals(),
@@ -184,7 +169,9 @@ export function aggregateModelUsage(
         ? byActor.mainAgent
         : record.actor === "subagent"
           ? byActor.subagents
-          : record.actor === "approval_agent" ? byActor.approvalAgents : byActor.reviewers,
+          : record.actor === "approval_agent"
+            ? byActor.approvalAgents
+            : byActor.reviewers,
       record,
     );
     const modelKey = `${record.provider}/${record.model}`;

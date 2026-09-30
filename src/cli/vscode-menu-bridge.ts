@@ -7,8 +7,7 @@ import type {
   MenuSelectorNavigation,
 } from "./menu-selector.js";
 
-export const VSCODE_BRIDGE_ENDPOINT_ENV =
-  "EASY_CODE_VSCODE_BRIDGE_ENDPOINT";
+export const VSCODE_BRIDGE_ENDPOINT_ENV = "EASY_CODE_VSCODE_BRIDGE_ENDPOINT";
 export const VSCODE_BRIDGE_TOKEN_ENV = "EASY_CODE_VSCODE_BRIDGE_TOKEN";
 
 const MAX_FRAME_CHARS = 16 * 1024;
@@ -53,12 +52,8 @@ export type VsCodeDisclosureKind = "thinking" | "adjustment";
  * confirmation deliberately remains on the terminal input path.
  */
 export class VsCodeMenuBridge implements MenuSelectorNavigation {
-  private readonly listeners = new Set<
-    (direction: MenuNavigationDirection) => void
-  >();
-  private readonly disclosureListeners = new Set<
-    (kind: VsCodeDisclosureKind, id: number) => void
-  >();
+  private readonly listeners = new Set<(direction: MenuNavigationDirection) => void>();
+  private readonly disclosureListeners = new Set<(kind: VsCodeDisclosureKind, id: number) => void>();
   private socket?: BridgeSocket;
   private inputBuffer = "";
   private connected = false;
@@ -69,7 +64,7 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
   private activation?: PendingActivation;
 
   constructor(
-    private readonly endpointPort: number,
+    endpointPort: number,
     private readonly token: string,
     private readonly identity: Readonly<BridgeIdentity>,
     connect: (port: number) => BridgeSocket = defaultConnect,
@@ -90,9 +85,7 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
     }
   }
 
-  activate(
-    onNavigate: (direction: MenuNavigationDirection) => void,
-  ): MenuSelectorNavigationActivation {
+  activate(onNavigate: (direction: MenuNavigationDirection) => void): MenuSelectorNavigationActivation {
     if (this.closed) {
       return { ready: Promise.resolve(false), release: () => undefined };
     }
@@ -125,9 +118,7 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
    * Receive a terminal-link toggle without injecting bytes into the PTY.
    * Unlike menu navigation this channel stays active outside modal selectors.
    */
-  onDisclosureToggle(
-    listener: (kind: VsCodeDisclosureKind, id: number) => void,
-  ): () => void {
+  onDisclosureToggle(listener: (kind: VsCodeDisclosureKind, id: number) => void): () => void {
     if (this.closed) return () => undefined;
     this.disclosureListeners.add(listener);
     let released = false;
@@ -308,9 +299,7 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
   }
 }
 
-export function createVsCodeMenuBridge(
-  options: Readonly<VsCodeMenuBridgeOptions> = {},
-): VsCodeMenuBridge | undefined {
+export function createVsCodeMenuBridge(options: Readonly<VsCodeMenuBridgeOptions> = {}): VsCodeMenuBridge | undefined {
   const environment = options.environment ?? process.env;
   const endpoint = environment[VSCODE_BRIDGE_ENDPOINT_ENV]?.trim();
   const token = environment[VSCODE_BRIDGE_TOKEN_ENV]?.trim().toLowerCase();
@@ -353,60 +342,56 @@ function isNavigationMessage(
 ): value is { readonly type: "navigate"; readonly direction: MenuNavigationDirection } {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  return record.type === "navigate" &&
+  return (
+    record.type === "navigate" &&
     (record.direction === "up" || record.direction === "down") &&
-    Object.keys(record).every((key) => key === "type" || key === "direction");
+    Object.keys(record).every((key) => key === "type" || key === "direction")
+  );
 }
 
-function isBridgeReadyMessage(
-  value: unknown,
-): value is { readonly type: "bridge-ready"; readonly protocol: number } {
+function isBridgeReadyMessage(value: unknown): value is { readonly type: "bridge-ready"; readonly protocol: number } {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  return record.type === "bridge-ready" &&
+  return (
+    record.type === "bridge-ready" &&
     record.protocol === BRIDGE_PROTOCOL_VERSION &&
-    Object.keys(record).every((key) => key === "type" || key === "protocol");
+    Object.keys(record).every((key) => key === "type" || key === "protocol")
+  );
 }
 
-function isMenuReadyMessage(
-  value: unknown,
-): value is {
+function isMenuReadyMessage(value: unknown): value is {
   readonly type: "menu-ready";
   readonly requestId: number;
   readonly ready: boolean;
 } {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  return record.type === "menu-ready" &&
+  return (
+    record.type === "menu-ready" &&
     Number.isSafeInteger(record.requestId) &&
     Number(record.requestId) > 0 &&
     typeof record.ready === "boolean" &&
-    Object.keys(record).every((key) =>
-      key === "type" || key === "requestId" || key === "ready"
-    );
+    Object.keys(record).every((key) => key === "type" || key === "requestId" || key === "ready")
+  );
 }
 
-function isDisclosureToggleMessage(
-  value: unknown,
-): value is {
+function isDisclosureToggleMessage(value: unknown): value is {
   readonly type: "toggle-disclosure";
   readonly kind: VsCodeDisclosureKind;
   readonly id: number;
 } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return record.type === "toggle-disclosure" &&
+  return (
+    record.type === "toggle-disclosure" &&
     (record.kind === "thinking" || record.kind === "adjustment") &&
     Number.isSafeInteger(record.id) &&
     Number(record.id) > 0 &&
     Object.keys(record).length === 3 &&
-    Object.keys(record).every((key) =>
-      key === "type" || key === "kind" || key === "id"
-    );
+    Object.keys(record).every((key) => key === "type" || key === "kind" || key === "id")
+  );
 }
 
 function normalizeTimeout(value: number | undefined, fallback: number): number {
-  return Number.isSafeInteger(value) && Number(value) >= 1
-    ? Number(value)
-    : fallback;
+  return Number.isSafeInteger(value) && Number(value) >= 1 ? Number(value) : fallback;
 }

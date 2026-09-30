@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-  ToolName,
-} from "../src/core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult, ToolName } from "../src/core/types.js";
 import {
   WorkspaceMutationLock,
   WorkspaceMutationLockAbortError,
@@ -48,10 +42,7 @@ function result(summary: string): ToolExecutionResult {
   return { ok: true, summary };
 }
 
-function fakeTool(
-  name: ToolName,
-  execute: AgentTool["execute"],
-): AgentTool {
+function fakeTool(name: ToolName, execute: AgentTool["execute"]): AgentTool {
   const definition: ToolDefinition = {
     type: "function",
     function: {
@@ -94,10 +85,7 @@ describe("WorkspaceMutationLock", () => {
         return result("ran");
       }),
     ];
-    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
-      tools,
-      new WorkspaceMutationLock(),
-    );
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(tools, new WorkspaceMutationLock());
 
     const executions = [
       wrapped[0]!.execute({}, context()),
@@ -150,10 +138,7 @@ describe("WorkspaceMutationLock", () => {
       mutationStarted.resolve();
       return result("created");
     });
-    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
-      [start, poll, cancel, create],
-      new WorkspaceMutationLock(),
-    );
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock([start, poll, cancel, create], new WorkspaceMutationLock());
 
     await wrapped[0]!.execute({}, context());
     const mutation = wrapped[3]!.execute({}, context());
@@ -181,7 +166,8 @@ describe("WorkspaceMutationLock", () => {
     const calls: string[] = [];
     const start = {
       ...fakeTool("start_command", async () => ({
-        ok: true, summary: "running",
+        ok: true,
+        summary: "running",
         data: { commandId: "command_00000000-0000-4000-8000-000000000001", status: "running" },
       })),
       whenCommandSettled: () => settlement.promise,
@@ -199,15 +185,20 @@ describe("WorkspaceMutationLock", () => {
       otherStarted.resolve();
       return result("created");
     });
-    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
-      [start, run, edit, other], new WorkspaceMutationLock(),
-    );
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock([start, run, edit, other], new WorkspaceMutationLock());
     await wrapped[0]!.execute({ backgroundKind: "service" }, context());
-    const blocked = wrapped[3]!.execute({}, {
-      ...context(), agentRole: "subagent", agentId: "child_one",
-    });
+    const blocked = wrapped[3]!.execute(
+      {},
+      {
+        ...context(),
+        agentRole: "subagent",
+        agentId: "child_one",
+      },
+    );
     let otherRan = false;
-    void otherStarted.promise.then(() => { otherRan = true; });
+    void otherStarted.promise.then(() => {
+      otherRan = true;
+    });
     assert.equal((await wrapped[1]!.execute({}, context())).summary, "tested");
     assert.equal((await wrapped[2]!.execute({}, context())).summary, "edited");
     assert.equal(otherRan, false);
@@ -223,10 +214,12 @@ describe("WorkspaceMutationLock", () => {
     let next = 0;
     const start = {
       ...fakeTool("start_command", async () => ({
-        ok: true, summary: "running",
+        ok: true,
+        summary: "running",
         data: { commandId: `command_00000000-0000-4000-8000-00000000000${++next}`, status: "running" },
       })),
-      whenCommandSettled: (commandId: string) => commandId.endsWith("1") ? firstSettlement.promise : secondSettlement.promise,
+      whenCommandSettled: (commandId: string) =>
+        commandId.endsWith("1") ? firstSettlement.promise : secondSettlement.promise,
     };
     const other = fakeTool("run_command", async () => {
       otherStarted.resolve();
@@ -237,7 +230,9 @@ describe("WorkspaceMutationLock", () => {
     await wrapped[0]!.execute({ backgroundKind: "service" }, context());
     const blocked = wrapped[1]!.execute({}, context(undefined, "another_thread"));
     let otherRan = false;
-    void otherStarted.promise.then(() => { otherRan = true; });
+    void otherStarted.promise.then(() => {
+      otherRan = true;
+    });
     firstSettlement.resolve();
     await firstSettlement.promise;
     await Promise.resolve();
@@ -252,7 +247,8 @@ describe("WorkspaceMutationLock", () => {
     const testStarted = deferred<void>();
     const start = {
       ...fakeTool("start_command", async () => ({
-        ok: true, summary: "running",
+        ok: true,
+        summary: "running",
         data: { commandId: "command_00000000-0000-4000-8000-000000000002", status: "running" },
       })),
       whenCommandSettled: () => settlement.promise,
@@ -265,7 +261,9 @@ describe("WorkspaceMutationLock", () => {
     await wrapped[0]!.execute({ backgroundKind: "job" }, context());
     const blocked = wrapped[1]!.execute({}, context());
     let ran = false;
-    void testStarted.promise.then(() => { ran = true; });
+    void testStarted.promise.then(() => {
+      ran = true;
+    });
     await Promise.resolve();
     assert.equal(ran, false);
     settlement.resolve();
@@ -295,10 +293,7 @@ describe("WorkspaceMutationLock", () => {
       return expected;
     });
     const read = fakeTool("read_file", async () => result("read"));
-    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
-      [create, read],
-      new WorkspaceMutationLock(),
-    );
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock([create, read], new WorkspaceMutationLock());
 
     assert.notEqual(wrapped[0], create);
     assert.equal(wrapped[1], read);
@@ -334,10 +329,7 @@ describe("WorkspaceMutationLock", () => {
         return result("fourth");
       }),
     ];
-    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
-      tools,
-      new WorkspaceMutationLock(),
-    );
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(tools, new WorkspaceMutationLock());
     const canceled = new AbortController();
 
     const first = wrapped[0]!.execute({}, context());
@@ -347,21 +339,13 @@ describe("WorkspaceMutationLock", () => {
     canceled.abort();
     await assert.rejects(
       second,
-      (error: unknown) =>
-        error instanceof WorkspaceMutationLockAbortError && error.name === "AbortError",
+      (error: unknown) => error instanceof WorkspaceMutationLockAbortError && error.name === "AbortError",
     );
 
     releaseFirst.resolve();
     await Promise.all([first, third]);
     await wrapped[3]!.execute({}, context());
-    assert.deepEqual(order, [
-      "first:start",
-      "first:end",
-      "third:start",
-      "third:end",
-      "fourth:start",
-      "fourth:end",
-    ]);
+    assert.deepEqual(order, ["first:start", "first:end", "third:start", "third:end", "fourth:start", "fourth:end"]);
   });
 
   it("does not release the lock early when an executing caller is aborted", async () => {
@@ -380,10 +364,7 @@ describe("WorkspaceMutationLock", () => {
         return result("second");
       }),
     ];
-    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
-      tools,
-      new WorkspaceMutationLock(),
-    );
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(tools, new WorkspaceMutationLock());
 
     const first = wrapped[0]!.execute({}, context(activeController.signal));
     await firstStarted.promise;
@@ -412,10 +393,7 @@ describe("WorkspaceMutationLock", () => {
         return result("recovered");
       }),
     ];
-    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
-      tools,
-      new WorkspaceMutationLock(),
-    );
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(tools, new WorkspaceMutationLock());
 
     const first = wrapped[0]!.execute({}, context());
     const second = wrapped[1]!.execute({}, context());

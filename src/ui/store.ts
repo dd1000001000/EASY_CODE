@@ -49,15 +49,9 @@ function cloneSession(session: Readonly<UISessionInfo>): UISessionInfo {
   return { ...session };
 }
 
-function mergeHeader(
-  current: Readonly<UIHeaderState>,
-  patch: Readonly<UIHeaderPatch>,
-): UIHeaderState {
-  const session = patch.session === undefined
-    ? current.session
-    : patch.session === null
-      ? null
-      : cloneSession(patch.session);
+function mergeHeader(current: Readonly<UIHeaderState>, patch: Readonly<UIHeaderPatch>): UIHeaderState {
+  const session =
+    patch.session === undefined ? current.session : patch.session === null ? null : cloneSession(patch.session);
   return {
     title: patch.title ?? current.title,
     session,
@@ -80,18 +74,14 @@ function thinkingPanelId(value: number): number | undefined {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-function normalizeThinkingPanel(
-  input: Readonly<UIThinkingPanelInput>,
-  id: number,
-): UIThinkingPanelState {
-  const source = "body" in input && typeof input.body === "string"
-    ? input.body
-    : "text" in input && typeof input.text === "string"
-      ? input.text
-      : "";
-  const safe = redactSensitiveInformation(
-    sanitizeTerminalText(source, { allowSgr: false }),
-  )
+function normalizeThinkingPanel(input: Readonly<UIThinkingPanelInput>, id: number): UIThinkingPanelState {
+  const source =
+    "body" in input && typeof input.body === "string"
+      ? input.body
+      : "text" in input && typeof input.text === "string"
+        ? input.text
+        : "";
+  const safe = redactSensitiveInformation(sanitizeTerminalText(source, { allowSgr: false }))
     .replace(/[^\S\n]+/gu, " ")
     .replace(/ *\n */gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")
@@ -110,20 +100,16 @@ function normalizeThinkingPanel(
   };
 }
 
-function mergeComposer(
-  current: Readonly<UIComposerState>,
-  patch: Readonly<UIComposerPatch>,
-): UIComposerState {
+function mergeComposer(current: Readonly<UIComposerState>, patch: Readonly<UIComposerPatch>): UIComposerState {
   const text = patch.text ?? current.text;
   const cursor = boundedInteger(patch.cursor ?? current.cursor, 0, text.length);
-  const images = (patch.images ?? current.images)
-    .slice(0, MAX_COMPOSER_IMAGES)
-    .map((image) => ({ ...image }));
-  const completionSuffix = patch.completionSuffix !== undefined
-    ? patch.completionSuffix
-    : patch.text !== undefined
-      ? undefined
-      : current.completionSuffix;
+  const images = (patch.images ?? current.images).slice(0, MAX_COMPOSER_IMAGES).map((image) => ({ ...image }));
+  const completionSuffix =
+    patch.completionSuffix !== undefined
+      ? patch.completionSuffix
+      : patch.text !== undefined
+        ? undefined
+        : current.completionSuffix;
   return {
     text,
     cursor,
@@ -139,17 +125,11 @@ function mergeComposer(
   };
 }
 
-function cloneTranscriptEntry(
-  entry: Readonly<UITranscriptEntry>,
-): UITranscriptEntry {
+function cloneTranscriptEntry(entry: Readonly<UITranscriptEntry>): UITranscriptEntry {
   return {
     ...entry,
-    ...(entry.images
-      ? { images: entry.images.map((image) => ({ ...image })) }
-      : {}),
-    ...(entry.presentation
-      ? { presentation: { ...entry.presentation } }
-      : {}),
+    ...(entry.images ? { images: entry.images.map((image) => ({ ...image })) } : {}),
+    ...(entry.presentation ? { presentation: { ...entry.presentation } } : {}),
   };
 }
 
@@ -172,18 +152,14 @@ function replaceTranscript(
   const index = transcript.findIndex((candidate) => candidate.id === id);
   if (index < 0) return transcript;
   const replacement = cloneTranscriptEntry({ ...entry, id });
-  return transcript.map((candidate, candidateIndex) =>
-    candidateIndex === index ? replacement : candidate
-  );
+  return transcript.map((candidate, candidateIndex) => (candidateIndex === index ? replacement : candidate));
 }
 
 function cloneActivity(activity: Readonly<UIActivityState>): UIActivityState {
   return { ...activity };
 }
 
-function cloneProgress(
-  progress: readonly Readonly<UIProgressItem>[],
-): readonly UIProgressItem[] {
+function cloneProgress(progress: readonly Readonly<UIProgressItem>[]): readonly UIProgressItem[] {
   const start = Math.max(0, progress.length - MAX_LIVE_PROGRESS_ITEMS);
   return progress.slice(start).map((item) => ({ ...item }));
 }
@@ -210,9 +186,7 @@ function cloneTaskGraph(graph: Readonly<TaskGraphView>): TaskGraphView {
   };
 }
 
-function cloneSubagentResult(
-  result: Readonly<SubagentTaskReport>,
-): SubagentTaskReport {
+function cloneSubagentResult(result: Readonly<SubagentTaskReport>): SubagentTaskReport {
   if (result.outcome === "completed") {
     return {
       ...result,
@@ -238,9 +212,7 @@ function cloneSubagent(agent: Readonly<SubagentView>): SubagentView {
   };
 }
 
-function cloneSubagents(
-  subagents: readonly Readonly<SubagentView>[],
-): readonly SubagentView[] {
+function cloneSubagents(subagents: readonly Readonly<SubagentView>[]): readonly SubagentView[] {
   const start = Math.max(0, subagents.length - MAX_LIVE_SUBAGENTS);
   return subagents.slice(start).map(cloneSubagent);
 }
@@ -253,15 +225,11 @@ function clonePlan(proposal: Readonly<PlanProposal>): PlanProposal {
 }
 
 function normalizedSelectedIndex(selectedIndex: number, rowCount: number): number {
-  return rowCount === 0
-    ? 0
-    : boundedInteger(selectedIndex, 0, rowCount - 1);
+  return rowCount === 0 ? 0 : boundedInteger(selectedIndex, 0, rowCount - 1);
 }
 
 function cloneOverlay(overlay: Readonly<UIOverlayState>): UIOverlayState {
-  const rows = overlay.rows
-    .slice(0, MAX_OVERLAY_ROWS)
-    .map((row) => ({ ...row }));
+  const rows = overlay.rows.slice(0, MAX_OVERLAY_ROWS).map((row) => ({ ...row }));
   const selectedIndex = normalizedSelectedIndex(overlay.selectedIndex, rows.length);
   switch (overlay.kind) {
     case "picker":
@@ -302,10 +270,7 @@ export function createUIState(options: CreateUIStateOptions = {}): UIState {
 }
 
 /** Apply exactly one structured UI event without mutating the prior state. */
-export function applyEvent(
-  state: Readonly<UIState>,
-  event: Readonly<UIEvent>,
-): UIState {
+export function applyEvent(state: Readonly<UIState>, event: Readonly<UIEvent>): UIState {
   switch (event.type) {
     case "header.merge":
       return { ...state, header: mergeHeader(state.header, event.patch) };
@@ -333,10 +298,7 @@ export function applyEvent(
         live: { ...state.live, activity: cloneActivity(event.activity) },
       };
     case "activity.stop":
-      if (
-        event.id !== undefined &&
-        state.live.activity?.id !== event.id
-      ) {
+      if (event.id !== undefined && state.live.activity?.id !== event.id) {
         return state;
       }
       return {
@@ -397,9 +359,7 @@ export function applyEvent(
         // the fixed footer throughout later requests.
         live: {
           ...state.live,
-          tasks: event.tasks.status === "completed"
-            ? null
-            : cloneTaskGraph(event.tasks),
+          tasks: event.tasks.status === "completed" ? null : cloneTaskGraph(event.tasks),
         },
       };
     case "tasks.clear":
@@ -435,16 +395,10 @@ export function applyEvent(
 }
 
 /** Conventional reducer name for integrations using reducer-style dispatch. */
-export function uiReducer(
-  state: Readonly<UIState>,
-  event: Readonly<UIEvent>,
-): UIState {
+export function uiReducer(state: Readonly<UIState>, event: Readonly<UIEvent>): UIState {
   return applyEvent(state, event);
 }
 
-export function applyEvents(
-  state: Readonly<UIState>,
-  events: readonly Readonly<UIEvent>[],
-): UIState {
+export function applyEvents(state: Readonly<UIState>, events: readonly Readonly<UIEvent>[]): UIState {
   return events.reduce<UIState>((current, event) => applyEvent(current, event), state);
 }

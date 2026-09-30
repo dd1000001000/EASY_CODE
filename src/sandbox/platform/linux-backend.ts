@@ -9,8 +9,21 @@ export class LinuxNativeBackend implements NativeBackendPlatform {
   // cleanup window to report the terminal state instead of killing the local
   // bridge at the same millisecond and losing cleanup certainty.
   readonly sandboxManagedTimeout = true;
-  constructor(options: NativeBackendPlatformOptions) { this.startupTimeoutMs = options.limits.sandboxStartupPosixMs; }
-  createNetworkGate(options: CommandNetworkGateOptions) { return createCommandNetworkGate(options); }
-  async authorizedProxyPorts(existing?: readonly number[]) { return existing; }
-  async recoverCleanup(_root: string, _request: SandboxExecutionRequest, _ports: readonly number[] | undefined, error: unknown): Promise<void> { throw error; }
+  constructor(options: NativeBackendPlatformOptions) {
+    this.startupTimeoutMs = options.limits.sandboxStartupPosixMs;
+  }
+  createNetworkGate(options: CommandNetworkGateOptions) {
+    return createCommandNetworkGate(options);
+  }
+  async authorizedProxyPorts(existing?: readonly number[]) {
+    return existing;
+  }
+  async recoverCleanup(
+    _root: string,
+    _request: SandboxExecutionRequest,
+    _ports: readonly number[] | undefined,
+    error: unknown,
+  ): Promise<void> {
+    throw error;
+  }
 }

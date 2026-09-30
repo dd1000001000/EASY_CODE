@@ -57,23 +57,24 @@ describe("disclosure virtual full-screen view", () => {
     assert.equal(frame.visibleRows.length, 8);
     assert.equal(frame.viewport.atEnd, true);
     assert.equal(frame.viewport.targetTitleScreenRow, undefined);
-    assert.equal(frame.visibleRows.some((row) => row.targetTitle), false);
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "preview",
-    ));
-    assert.equal(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "body",
-    ), false);
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "after" && line.text === "answer after",
-    ));
+    assert.equal(
+      frame.visibleRows.some((row) => row.targetTitle),
+      false,
+    );
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "preview"));
+    assert.equal(
+      frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "body"),
+      false,
+    );
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "after" && line.text === "answer after"));
   });
 
   it("follows appended conversation output until the user scrolls away", () => {
-    const initialNodes: readonly VirtualDocumentNode[] = Array.from(
-      { length: 12 },
-      (_, index) => ({ id: `line-${index}`, kind: "text", text: `line-${index}` }),
-    );
+    const initialNodes: readonly VirtualDocumentNode[] = Array.from({ length: 12 }, (_, index) => ({
+      id: `line-${index}`,
+      kind: "text",
+      text: `line-${index}`,
+    }));
     let state = createDisclosureViewState({
       nodes: initialNodes,
       columns: 80,
@@ -102,7 +103,10 @@ describe("disclosure virtual full-screen view", () => {
     });
     frame = renderDisclosureView(state);
     assert.equal(frame.viewport.scrollOffset, heldOffset);
-    assert.equal(frame.viewport.lines.some((line) => line.text === "tail-two"), false);
+    assert.equal(
+      frame.viewport.lines.some((line) => line.text === "tail-two"),
+      false,
+    );
   });
 
   it("selects and toggles an explicit disclosure from the ordinary view", () => {
@@ -119,29 +123,23 @@ describe("disclosure virtual full-screen view", () => {
     // No explicit target means there is nothing to toggle yet.
     assert.equal(toggleDisclosureView(state), state);
 
-    state = toggleDisclosureView(
-      state,
-      { id: "target", kind: "adjustment" },
-      true,
-    );
+    state = toggleDisclosureView(state, { id: "target", kind: "adjustment" }, true);
     let frame = renderDisclosureView(state);
     assert.deepEqual(state.target, { id: "target", kind: "adjustment" });
     assert.equal(state.followTail, false);
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "body",
-    ));
-    assert.equal(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "preview",
-    ), false);
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "body"));
+    assert.equal(
+      frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "preview"),
+      false,
+    );
 
     state = toggleDisclosureView(state, undefined, false);
     frame = renderDisclosureView(state);
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "preview",
-    ));
-    assert.equal(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "body",
-    ), false);
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "preview"));
+    assert.equal(
+      frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "body"),
+      false,
+    );
   });
 
   it("clears an expanded target in place without jumping to the tail", () => {
@@ -172,27 +170,17 @@ describe("disclosure virtual full-screen view", () => {
     assert.equal(state.targetExpanded, false);
     assert.equal(state.followTail, false);
     assert.equal(frame.viewport.atEnd, false);
-    assert.equal(
-      frame.visibleRows.find(
-        (row) => row.nodeId === "target" && row.part === "title",
-      )?.screenRow,
-      titleRow,
-    );
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "preview",
-    ));
+    assert.equal(frame.visibleRows.find((row) => row.nodeId === "target" && row.part === "title")?.screenRow, titleRow);
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "preview"));
     assert.equal(clearDisclosureViewTarget(state), state);
   });
 
   it("preserves an ordinary scrolled logical anchor across resize and replacement", () => {
-    const nodes: readonly VirtualDocumentNode[] = Array.from(
-      { length: 10 },
-      (_, index) => ({
-        id: `entry-${index}`,
-        kind: "text",
-        text: `entry ${index} has a deliberately long line for wrapping`,
-      }),
-    );
+    const nodes: readonly VirtualDocumentNode[] = Array.from({ length: 10 }, (_, index) => ({
+      id: `entry-${index}`,
+      kind: "text",
+      text: `entry ${index} has a deliberately long line for wrapping`,
+    }));
     let state = createDisclosureViewState({
       nodes,
       columns: 80,
@@ -211,10 +199,7 @@ describe("disclosure virtual full-screen view", () => {
     assert.equal(frame.viewport.lines[0]?.nodeId, topNode);
 
     const heldOffset = frame.viewport.scrollOffset;
-    state = replaceDisclosureViewNodes(state, [
-      ...nodes,
-      { id: "new-tail", kind: "text", text: "new tail" },
-    ]);
+    state = replaceDisclosureViewNodes(state, [...nodes, { id: "new-tail", kind: "text", text: "new tail" }]);
     frame = renderDisclosureView(state);
     assert.equal(frame.viewport.scrollOffset, heldOffset);
     assert.equal(frame.viewport.lines[0]?.nodeId, topNode);
@@ -236,30 +221,22 @@ describe("disclosure virtual full-screen view", () => {
     assert.equal(frame.rows.length, 10);
     assert.equal(frame.visibleRows.length, 10);
     assert.equal(frame.viewport.targetTitleScreenRow, 4);
+    assert.equal(frame.visibleRows.find((row) => row.targetTitle)?.nodeId, "target");
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "body"));
     assert.equal(
-      frame.visibleRows.find((row) => row.targetTitle)?.nodeId,
-      "target",
+      frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "preview"),
+      false,
     );
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "body",
-    ));
-    assert.equal(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "preview",
-    ), false);
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "old-thinking" && line.part === "preview",
-    ));
-    assert.equal(frame.viewport.lines.some(
-      (line) => line.nodeId === "old-thinking" && line.part === "body",
-    ), false);
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "old-thinking" && line.part === "preview"));
+    assert.equal(
+      frame.viewport.lines.some((line) => line.nodeId === "old-thinking" && line.part === "body"),
+      false,
+    );
   });
 
   it("keeps all 1000 body rows reachable by continuous scrolling", () => {
     const finalLine = "body-999-END-界";
-    const body = Array.from(
-      { length: 1_000 },
-      (_, index) => index === 999 ? finalLine : `body-${index}`,
-    ).join("\n");
+    const body = Array.from({ length: 1_000 }, (_, index) => (index === 999 ? finalLine : `body-${index}`)).join("\n");
     let state = createDisclosureViewState({
       nodes: fixture(body),
       target: { id: "target", kind: "adjustment" },
@@ -281,24 +258,17 @@ describe("disclosure virtual full-screen view", () => {
     // Offsets move by arbitrary line counts; there are no page boundaries.
     const initialOffset = initial.viewport.scrollOffset;
     state = scrollDisclosureView(state, 17);
-    assert.equal(
-      renderDisclosureView(state).viewport.scrollOffset,
-      initialOffset + 17,
-    );
+    assert.equal(renderDisclosureView(state).viewport.scrollOffset, initialOffset + 17);
     state = scrollDisclosureView(state, 23);
-    assert.equal(
-      renderDisclosureView(state).viewport.scrollOffset,
-      initialOffset + 40,
-    );
+    assert.equal(renderDisclosureView(state).viewport.scrollOffset, initialOffset + 40);
     state = scrollDisclosureView(state, 10_000);
     const end = renderDisclosureView(state);
     assert.ok(end.viewport.lines.some((line) => line.text === finalLine));
     assert.equal(
       state.nodes.find((node) => node.id === "target")?.kind === "adjustment"
-        ? (state.nodes.find((node) => node.id === "target") as Extract<
-          VirtualDocumentNode,
-          { kind: "adjustment" }
-        >).body.endsWith("END-界")
+        ? (
+            state.nodes.find((node) => node.id === "target") as Extract<VirtualDocumentNode, { kind: "adjustment" }>
+          ).body.endsWith("END-界")
         : false,
       true,
     );
@@ -332,11 +302,11 @@ describe("disclosure virtual full-screen view", () => {
     const collapsedAgain = renderDisclosureView(state);
     assert.equal(collapsedAgain.viewport.targetTitleScreenRow, 4);
     assert.equal(collapsedAgain.rows.filter((line) => line === "Adjustment #2").length, 1);
+    assert.equal(collapsedAgain.rows.filter((line) => line === "requested change preview").length, 1);
     assert.equal(
-      collapsedAgain.rows.filter((line) => line === "requested change preview").length,
-      1,
+      collapsedAgain.rows.some((line) => /^full-/u.test(line)),
+      false,
     );
-    assert.equal(collapsedAgain.rows.some((line) => /^full-/u.test(line)), false);
   });
 
   it("preserves an anchored visible title across resize and appended output", () => {
@@ -365,9 +335,11 @@ describe("disclosure virtual full-screen view", () => {
     assert.equal(renderDisclosureView(state).viewport.targetTitleScreenRow, 5);
 
     state = scrollDisclosureViewToEnd(state);
-    assert.ok(renderDisclosureView(state).viewport.lines.some(
-      (line) => line.nodeId === "new-answer" && line.text === "new output two",
-    ));
+    assert.ok(
+      renderDisclosureView(state).viewport.lines.some(
+        (line) => line.nodeId === "new-answer" && line.text === "new output two",
+      ),
+    );
   });
 
   it("atomically shrinks with replacement chrome before validating the new frame", () => {
@@ -386,10 +358,7 @@ describe("disclosure virtual full-screen view", () => {
     // The old 12-row chrome cannot fit into the new 9-row terminal. Resize
     // must therefore apply the compact chrome in the same state transition,
     // instead of validating an impossible stale-chrome intermediate frame.
-    assert.throws(
-      () => resizeDisclosureView(state, 80, 9),
-      RangeError,
-    );
+    assert.throws(() => resizeDisclosureView(state, 80, 9), RangeError);
     state = resizeDisclosureView(state, 80, 9, {
       headerLines: ["compact header"],
       composerLines: ["Request >"],
@@ -427,11 +396,7 @@ describe("disclosure virtual full-screen view", () => {
     assert.equal(after.viewport.targetTitleScreenRow, 5);
     assert.deepEqual(state.headerLines, ["old header"]);
     assert.deepEqual(state.footerLines, ["old status"]);
-    assert.deepEqual(state.composerLines, [
-      "new request one",
-      "new request two",
-      "new request three",
-    ]);
+    assert.deepEqual(state.composerLines, ["new request one", "new request two", "new request three"]);
     assert.equal(after.visibleRows.filter((row) => row.region === "composer").length, 3);
     assert.equal(after.rows.length, 12);
   });
@@ -524,9 +489,10 @@ describe("disclosure virtual full-screen view", () => {
     assert.equal(renderDisclosureView(cleared).rows.length, 6);
 
     assert.throws(
-      () => updateDisclosureViewChrome(state, {
-        composerLines: ["one", "two", "three", "four"],
-      }),
+      () =>
+        updateDisclosureViewChrome(state, {
+          composerLines: ["one", "two", "three", "four"],
+        }),
       /requires at least one transcript row/u,
     );
   });
@@ -540,25 +506,15 @@ describe("disclosure virtual full-screen view", () => {
       composerLines: ["Request >"],
       anchorScreenRow: 3,
     });
-    state = toggleDisclosureView(
-      state,
-      { id: "old-thinking", kind: "thinking" },
-      true,
-    );
+    state = toggleDisclosureView(state, { id: "old-thinking", kind: "thinking" }, true);
     const frame = renderDisclosureView(state);
     assert.equal(frame.viewport.targetTitleScreenRow, 1);
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "old-thinking" && line.part === "body",
-    ));
-    assert.ok(frame.viewport.lines.some(
-      (line) => line.nodeId === "target" && line.part === "preview",
-    ));
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "old-thinking" && line.part === "body"));
+    assert.ok(frame.viewport.lines.some((line) => line.nodeId === "target" && line.part === "preview"));
     assert.equal(
       state.nodes.find((node) => node.id === "target")?.kind === "adjustment"
-        ? (state.nodes.find((node) => node.id === "target") as Extract<
-          VirtualDocumentNode,
-          { kind: "adjustment" }
-        >).body
+        ? (state.nodes.find((node) => node.id === "target") as Extract<VirtualDocumentNode, { kind: "adjustment" }>)
+            .body
         : "",
       "target complete",
     );

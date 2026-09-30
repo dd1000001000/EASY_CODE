@@ -13,9 +13,7 @@ function printLocations(label: string, locations: Array<{ directory: string; lau
 
 /** Register diagnostics that remain usable after a partially blocked npm install. */
 export function registerInstallCommands(program: Command): Command {
-  const install = program
-    .command("install")
-    .description("diagnose EASY CODE source and global installation paths");
+  const install = program.command("install").description("diagnose EASY CODE source and global installation paths");
 
   install
     .command("doctor")

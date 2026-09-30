@@ -1,9 +1,5 @@
 import { Chalk } from "chalk";
-import {
-  structuredPatch,
-  type Hunk,
-  type ParsedDiff,
-} from "diff";
+import { structuredPatch, type Hunk, type ParsedDiff } from "diff";
 
 import type { FileDiffPresentation } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
@@ -86,10 +82,7 @@ function rowFromPatchLine(
   newLine: number,
 ): { row: DiffRow; nextOldLine: number; nextNewLine: number } {
   const rawMarker = line[0];
-  const marker: DiffRow["marker"] =
-    rawMarker === "+" || rawMarker === "-" || rawMarker === "\\"
-      ? rawMarker
-      : " ";
+  const marker: DiffRow["marker"] = rawMarker === "+" || rawMarker === "-" || rawMarker === "\\" ? rawMarker : " ";
   const text = marker === " " && rawMarker !== " " ? line : line.slice(1);
 
   if (marker === "-") {
@@ -175,9 +168,7 @@ function renderRow(
   const containsPrivateKeyMaterial =
     (row.oldLine !== undefined && sensitiveLines.before.has(row.oldLine)) ||
     (row.newLine !== undefined && sensitiveLines.after.has(row.newLine));
-  const safeText = containsPrivateKeyMaterial
-    ? "[REDACTED PRIVATE KEY MATERIAL]"
-    : sanitizeDiffText(row.text);
+  const safeText = containsPrivateKeyMaterial ? "[REDACTED PRIVATE KEY MATERIAL]" : sanitizeDiffText(row.text);
   const line = `${oldNumber} ${newNumber} │ ${row.marker} ${safeText}\n`;
   if (row.marker === "+") return palette.green(line);
   if (row.marker === "-") return palette.red(line);
@@ -206,20 +197,10 @@ function renderFallback(
     "Diff exceeds the safe computation limit; showing a bounded summary of removed and added content.\n",
   );
   for (let index = 0; index < oldBudget; index += 1) {
-    output += renderRow(
-      { marker: "-", oldLine: index + 1, text: before[index] ?? "" },
-      width,
-      palette,
-      sensitiveLines,
-    );
+    output += renderRow({ marker: "-", oldLine: index + 1, text: before[index] ?? "" }, width, palette, sensitiveLines);
   }
   for (let index = 0; index < newBudget; index += 1) {
-    output += renderRow(
-      { marker: "+", newLine: index + 1, text: after[index] ?? "" },
-      width,
-      palette,
-      sensitiveLines,
-    );
+    output += renderRow({ marker: "+", newLine: index + 1, text: after[index] ?? "" }, width, palette, sensitiveLines);
   }
   const omitted = before.length + after.length - oldBudget - newBudget;
   if (omitted > 0) {
@@ -228,16 +209,10 @@ function renderFallback(
   return output;
 }
 
-export function renderFileDiff(
-  presentation: FileDiffPresentation,
-  options: FileDiffRenderOptions = {},
-): string {
+export function renderFileDiff(presentation: FileDiffPresentation, options: FileDiffRenderOptions = {}): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
   const context = Math.max(0, Math.min(options.contextLines ?? DEFAULT_CONTEXT_LINES, 20));
-  const maxLines = Math.max(
-    1,
-    Math.min(options.maxLines ?? MAX_RENDERED_DIFF_LINES, MAX_RENDERED_DIFF_LINES),
-  );
+  const maxLines = Math.max(1, Math.min(options.maxLines ?? MAX_RENDERED_DIFF_LINES, MAX_RENDERED_DIFF_LINES));
   const safePath = sanitizeDiffText(presentation.path);
   const sensitiveLines: SensitiveLineMap = {
     before: privateKeyLineNumbers(presentation.before),
@@ -246,11 +221,12 @@ export function renderFileDiff(
   let output = palette.bold(`\nFile changed: ${safePath}\n`);
 
   if (presentation.before === "" && presentation.after === "") {
-    const description = presentation.operation === "delete"
-      ? "[Empty file deleted]"
-      : presentation.operation === "update"
-        ? "[Empty file unchanged]"
-        : "[Empty file created]";
+    const description =
+      presentation.operation === "delete"
+        ? "[Empty file deleted]"
+        : presentation.operation === "update"
+          ? "[Empty file unchanged]"
+          : "[Empty file created]";
     return limitDiffBlock(output + palette.dim(`${description}\n\n`));
   }
 
@@ -274,14 +250,10 @@ export function renderFileDiff(
   output += palette.dim(`${"─".repeat(width)} ${"─".repeat(width)} ┼ ${"─".repeat(24)}\n`);
 
   if (!patch) {
-    return limitDiffBlock(
-      `${output}${renderFallback(presentation, palette, maxLines, sensitiveLines)}\n`,
-    );
+    return limitDiffBlock(`${output}${renderFallback(presentation, palette, maxLines, sensitiveLines)}\n`);
   }
   if (patch.hunks.length === 0) {
-    return limitDiffBlock(
-      `${output}${palette.dim("Only the final newline or line separators changed.\n")}\n`,
-    );
+    return limitDiffBlock(`${output}${palette.dim("Only the final newline or line separators changed.\n")}\n`);
   }
 
   const totalRows = patch.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);

@@ -5,10 +5,7 @@ import { Transform, type TransformCallback } from "node:stream";
 import { stripTerminalControls } from "../command/output-stream.js";
 import type { ImageAttachment } from "../core/types.js";
 import type { UserSubmission } from "../ui/interaction-port.js";
-import {
-  sanitizeTerminalText,
-  wrapToWidth,
-} from "../ui/render/layout.js";
+import { sanitizeTerminalText, wrapToWidth } from "../ui/render/layout.js";
 
 export interface PromptInput extends NodeJS.ReadableStream {
   readonly isTTY?: boolean;
@@ -98,19 +95,12 @@ export interface ReadPromptOptions {
   readonly renderPrompt?: () => string;
   readonly initialImageCount?: number;
   readonly signal?: AbortSignal;
-  readonly captureImage: (
-    index: number,
-    signal?: AbortSignal,
-  ) => Promise<ImageAttachment>;
+  readonly captureImage: (index: number, signal?: AbortSignal) => Promise<ImageAttachment>;
   readonly captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
   /** Treat paste hotkeys as text-only and report the real clipboard failure. */
   readonly textOnlyPaste?: boolean;
-  readonly onShowThinking?: (
-    id: number | "last",
-  ) => void | Promise<void>;
-  readonly onSessionReady?: (
-    session: PromptInputSession | undefined,
-  ) => void;
+  readonly onShowThinking?: (id: number | "last") => void | Promise<void>;
+  readonly onSessionReady?: (session: PromptInputSession | undefined) => void;
   /**
    * Offer the editor to `onSessionReady` before readline connects physical
    * stdin, changes terminal modes, or paints prompt pixels. A full-screen
@@ -121,9 +111,7 @@ export interface ReadPromptOptions {
   readonly startSuspended?: boolean;
   /** Keep the editor alive after Enter and deliver each non-empty submission. */
   readonly keepOpen?: boolean;
-  readonly onSubmit?: (
-    submission: Readonly<PromptSubmission>,
-  ) => void | Promise<void>;
+  readonly onSubmit?: (submission: Readonly<PromptSubmission>) => void | Promise<void>;
   /** Observe the logical draft after readline and atomic paste updates. */
   readonly onDraftChange?: (draft: Readonly<PromptDraft>) => void;
   /** Offer a completion for the current draft. Tab accepts it in the editor. */
@@ -133,9 +121,7 @@ export interface ReadPromptOptions {
   /** Busy composers route Ctrl+C to the active Runtime instead of closing. */
   readonly onInterrupt?: () => void;
   /** Dispose images whose markers were removed or whose editor was cancelled. */
-  readonly onDiscardImages?: (
-    images: readonly Readonly<ImageAttachment>[],
-  ) => void | Promise<void>;
+  readonly onDiscardImages?: (images: readonly Readonly<ImageAttachment>[]) => void | Promise<void>;
   /** Render live rows below the readline buffer; terminal controls are filtered. */
   readonly renderBelow?: () => string;
   /** Erase the readline chrome after submission so callers can commit a plain transcript row. */
@@ -153,7 +139,7 @@ const CTRL_V = 0x16;
 const OSC_BEL = 0x07;
 const MAX_PRIVATE_OSC_BYTES = 160;
 const MAX_CLIPBOARD_TEXT_CHARS = 256 * 1024;
-const MAX_BRACKETED_PASTE_BYTES = (MAX_CLIPBOARD_TEXT_CHARS * 4) + 64;
+const MAX_BRACKETED_PASTE_BYTES = MAX_CLIPBOARD_TEXT_CHARS * 4 + 64;
 const DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS = 1_500;
 const DEFAULT_CLIPBOARD_CAPTURE_TIMEOUT_MS = 8_000;
 const MODAL_CONTROL_BURST_MS = 120;
@@ -182,19 +168,13 @@ type PrivateOscParseResult =
   | {
       readonly status: "complete";
       readonly length: number;
-      readonly action:
-        | { readonly type: "paste-image" }
-        | { readonly type: "ignore" };
+      readonly action: { readonly type: "paste-image" } | { readonly type: "ignore" };
     };
 
 function parsePrivateOsc(input: Buffer, offset: number): PrivateOscParseResult {
   const tail = input.subarray(offset);
   const comparedLength = Math.min(tail.length, PRIVATE_OSC_PREFIX.length);
-  if (
-    !tail.subarray(0, comparedLength).equals(
-      PRIVATE_OSC_PREFIX.subarray(0, comparedLength),
-    )
-  ) {
+  if (!tail.subarray(0, comparedLength).equals(PRIVATE_OSC_PREFIX.subarray(0, comparedLength))) {
     return { status: "none" };
   }
   if (tail.length < PRIVATE_OSC_PREFIX.length) return { status: "partial" };
@@ -213,9 +193,7 @@ function parsePrivateOsc(input: Buffer, offset: number): PrivateOscParseResult {
   if (length > MAX_PRIVATE_OSC_BYTES) {
     return { status: "complete", length, action: { type: "ignore" } };
   }
-  const payload = tail
-    .subarray(PRIVATE_OSC_PREFIX.length, terminator)
-    .toString("utf8");
+  const payload = tail.subarray(PRIVATE_OSC_PREFIX.length, terminator).toString("utf8");
   if (payload === "paste-image") {
     return { status: "complete", length, action: { type: "paste-image" } };
   }
@@ -262,15 +240,9 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
     }
   }
 
-  override _transform(
-    chunk: Buffer | string,
-    encoding: BufferEncoding,
-    callback: TransformCallback,
-  ): void {
+  override _transform(chunk: Buffer | string, encoding: BufferEncoding, callback: TransformCallback): void {
     const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
-    const input = this.pendingSequence.length
-      ? Buffer.concat([this.pendingSequence, data])
-      : data;
+    const input = this.pendingSequence.length ? Buffer.concat([this.pendingSequence, data]) : data;
     if (this.pendingSequence.length) {
       this.clearEscapeTimer();
       this.pendingSequence = Buffer.alloc(0);
@@ -291,8 +263,7 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
         if (privateOsc.status === "partial") {
           const tail = input.subarray(offset);
           this.pendingSequence = Buffer.from(tail);
-          this.pendingPrivateOsc =
-            tail.length >= 2 && tail[0] === ESCAPE && tail[1] === 0x5d;
+          this.pendingPrivateOsc = tail.length >= 2 && tail[0] === ESCAPE && tail[1] === 0x5d;
           this.startEscapeTimer(this.pendingPrivateOsc ? 250 : 60);
           break;
         }
@@ -317,10 +288,7 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
     callback(undefined, discard ? undefined : pending);
   }
 
-  override _destroy(
-    error: Error | null,
-    callback: (error?: Error | null) => void,
-  ): void {
+  override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.clearEscapeTimer();
     callback(error);
   }
@@ -378,28 +346,16 @@ class ImagePasteInputProxy extends Transform {
   constructor(
     private readonly source: PromptInput,
     private readonly initialImageCount: number,
-    private readonly captureImage: (
-      index: number,
-      signal?: AbortSignal,
-    ) => Promise<ImageAttachment>,
-    private readonly captureText?: (
-      signal?: AbortSignal,
-    ) => Promise<string | undefined>,
+    private readonly captureImage: (index: number, signal?: AbortSignal) => Promise<ImageAttachment>,
+    private readonly captureText?: (signal?: AbortSignal) => Promise<string | undefined>,
     private readonly textOnlyPaste = false,
-    private readonly onShowThinking?: (
-      id: number | "last",
-    ) => void | Promise<void>,
+    private readonly onShowThinking?: (id: number | "last") => void | Promise<void>,
     private readonly onAtomicBackspace?: () => boolean,
-    private readonly onReplaceMarker?: (
-      marker: string,
-      replacement: string,
-    ) => boolean,
+    private readonly onReplaceMarker?: (marker: string, replacement: string) => boolean,
     private readonly swallowInterrupt = false,
     private readonly signal?: AbortSignal,
-    private readonly bracketedPasteIdleTimeoutMs =
-      DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS,
-    private readonly clipboardCaptureTimeoutMs =
-      DEFAULT_CLIPBOARD_CAPTURE_TIMEOUT_MS,
+    private readonly bracketedPasteIdleTimeoutMs = DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS,
+    private readonly clipboardCaptureTimeoutMs = DEFAULT_CLIPBOARD_CAPTURE_TIMEOUT_MS,
   ) {
     super();
   }
@@ -424,21 +380,19 @@ class ImagePasteInputProxy extends Transform {
     this.terminalStateForwarding = enabled;
   }
 
-  override _transform(
-    chunk: Buffer | string,
-    encoding: BufferEncoding,
-    callback: TransformCallback,
-  ): void {
+  override _transform(chunk: Buffer | string, encoding: BufferEncoding, callback: TransformCallback): void {
     const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
     let releaseProcess!: () => void;
     const activeProcess = new Promise<void>((resolve) => {
       releaseProcess = resolve;
     });
     this.processTail = this.processTail.catch(() => undefined).then(() => activeProcess);
-    void this.process(data).then(
-      (output) => callback(undefined, output.length ? output : undefined),
-      (error: unknown) => callback(error instanceof Error ? error : new Error(String(error))),
-    ).finally(releaseProcess);
+    void this.process(data)
+      .then(
+        (output) => callback(undefined, output.length ? output : undefined),
+        (error: unknown) => callback(error instanceof Error ? error : new Error(String(error))),
+      )
+      .finally(releaseProcess);
   }
 
   override _flush(callback: TransformCallback): void {
@@ -548,28 +502,17 @@ class ImagePasteInputProxy extends Transform {
       // Capture completion can inject the delayed Enter that readline turns
       // into a line event. Give that event and its onSubmit queue one turn.
       await new Promise<void>((resolve) => setImmediate(resolve));
-      if (
-        processTail === this.processTail &&
-        captureTail === this.captureQueue &&
-        this.pendingCaptureCount === 0
-      ) {
+      if (processTail === this.processTail && captureTail === this.captureQueue && this.pendingCaptureCount === 0) {
         return;
       }
     }
   }
 
-  collapseMarkerBefore(
-    value: string,
-    cursor: number,
-  ): { line: string; cursor: number } | undefined {
+  collapseMarkerBefore(value: string, cursor: number): { line: string; cursor: number } | undefined {
     if (!Number.isInteger(cursor) || cursor <= 0 || cursor > value.length) {
       return undefined;
     }
-    const markers = [
-      ...this.pastedTextBlocks.keys(),
-      ...this.imageMarkers.values(),
-      ...this.pendingMarkers,
-    ];
+    const markers = [...this.pastedTextBlocks.keys(), ...this.imageMarkers.values(), ...this.pendingMarkers];
     const prefix = value.slice(0, cursor);
     let matched = "";
     for (const marker of markers) {
@@ -587,9 +530,7 @@ class ImagePasteInputProxy extends Transform {
   }
 
   private async process(data: Buffer): Promise<Buffer> {
-    const input = this.pendingSequence.length
-      ? Buffer.concat([this.pendingSequence, data])
-      : data;
+    const input = this.pendingSequence.length ? Buffer.concat([this.pendingSequence, data]) : data;
     if (this.pendingSequence.length) {
       this.clearEscapeTimer();
       this.pendingSequence = Buffer.alloc(0);
@@ -620,9 +561,10 @@ class ImagePasteInputProxy extends Transform {
       }
       if (this.bracketedPasteActive) {
         const existingLength = this.bracketedPasteBuffer.length;
-        const combined = existingLength > 0
-          ? Buffer.concat([this.bracketedPasteBuffer, input.subarray(offset)])
-          : input.subarray(offset);
+        const combined =
+          existingLength > 0
+            ? Buffer.concat([this.bracketedPasteBuffer, input.subarray(offset)])
+            : input.subarray(offset);
         const terminator = combined.indexOf(BRACKETED_PASTE_END);
         if (terminator === -1) {
           if (!this.bracketedPasteRejected && combined.length > MAX_BRACKETED_PASTE_BYTES) {
@@ -643,10 +585,7 @@ class ImagePasteInputProxy extends Transform {
           break;
         }
 
-        const consumedFromInput = Math.max(
-          0,
-          terminator + BRACKETED_PASTE_END.length - existingLength,
-        );
+        const consumedFromInput = Math.max(0, terminator + BRACKETED_PASTE_END.length - existingLength);
         offset += consumedFromInput;
         this.clearBracketedPasteTimer();
         this.bracketedPasteActive = false;
@@ -661,9 +600,7 @@ class ImagePasteInputProxy extends Transform {
             const body = combined.subarray(0, terminator).toString("utf8");
             output.push(...Buffer.from(this.pastedTextForPrompt(body), "utf8"));
           } catch (error) {
-            this.pasteErrors.push(
-              error instanceof Error ? error.message : String(error),
-            );
+            this.pasteErrors.push(error instanceof Error ? error.message : String(error));
             output.push(...Buffer.from(" [Text paste failed] ", "utf8"));
           }
         }
@@ -720,8 +657,7 @@ class ImagePasteInputProxy extends Transform {
           continue;
         }
         const partialBracketedPaste =
-          tail.length < BRACKETED_PASTE_START.length &&
-          BRACKETED_PASTE_START.subarray(0, tail.length).equals(tail);
+          tail.length < BRACKETED_PASTE_START.length && BRACKETED_PASTE_START.subarray(0, tail.length).equals(tail);
         const mayBePasteSequence =
           privateOsc.status === "partial" ||
           partialBracketedPaste ||
@@ -732,8 +668,7 @@ class ImagePasteInputProxy extends Transform {
         if (mayBePasteSequence) {
           this.pendingSequence = Buffer.from(tail);
           this.pendingPrivateOsc =
-            (tail.length >= 2 && tail[0] === ESCAPE && tail[1] === 0x5d) ||
-            partialBracketedPaste;
+            (tail.length >= 2 && tail[0] === ESCAPE && tail[1] === 0x5d) || partialBracketedPaste;
           this.startEscapeTimer(this.pendingPrivateOsc ? 250 : 60);
           break;
         }
@@ -777,12 +712,7 @@ class ImagePasteInputProxy extends Transform {
       .finally(() => {
         this.pendingMarkers.delete(marker);
         this.pendingCaptureCount = Math.max(0, this.pendingCaptureCount - 1);
-        if (
-          this.pendingCaptureCount === 0 &&
-          this.submitRequested &&
-          !this.destroyed &&
-          !this.signal?.aborted
-        ) {
+        if (this.pendingCaptureCount === 0 && this.submitRequested && !this.destroyed && !this.signal?.aborted) {
           this.submitRequested = false;
           this.push(Buffer.from("\r"));
         }
@@ -806,9 +736,7 @@ class ImagePasteInputProxy extends Transform {
         if (!text) throw new Error("Clipboard does not contain text.");
         return this.pastedTextForPrompt(text);
       } catch (error) {
-        this.pasteErrors.push(
-          error instanceof Error ? error.message : String(error),
-        );
+        this.pasteErrors.push(error instanceof Error ? error.message : String(error));
         return " [Text paste failed] ";
       }
     }
@@ -849,17 +777,13 @@ class ImagePasteInputProxy extends Transform {
           // Preserve the original image error when text fallback is unavailable.
         }
       }
-      this.pasteErrors.push(
-        pasteError instanceof Error ? pasteError.message : String(pasteError),
-      );
+      this.pasteErrors.push(pasteError instanceof Error ? pasteError.message : String(pasteError));
       return " [Image paste failed] ";
     }
   }
 
   private pastedTextForPrompt(value: string): string {
-    const normalized = stripTerminalControls(
-      value.replace(/\r\n?|\u2028|\u2029/gu, "\n"),
-    );
+    const normalized = stripTerminalControls(value.replace(/\r\n?|\u2028|\u2029/gu, "\n"));
     if (normalized.length > MAX_CLIPBOARD_TEXT_CHARS) {
       throw new Error("Pasted text exceeds the 256 KiB input limit.");
     }
@@ -872,10 +796,7 @@ class ImagePasteInputProxy extends Transform {
     return marker;
   }
 
-  private async captureWithTimeout<T>(
-    start: (signal: AbortSignal) => Promise<T>,
-    label: string,
-  ): Promise<T> {
+  private async captureWithTimeout<T>(start: (signal: AbortSignal) => Promise<T>, label: string): Promise<T> {
     if (this.signal?.aborted) throw new Error(`${label} was canceled.`);
     const controller = new AbortController();
     const onAbort = (): void => controller.abort();
@@ -924,9 +845,7 @@ class ImagePasteInputProxy extends Transform {
     this.bracketedPasteTimer = setTimeout(() => {
       if (!this.bracketedPasteActive || this.destroyed) return;
       this.resetBracketedPaste();
-      this.pasteErrors.push(
-        "Pasted text was incomplete because the terminal did not send its closing marker.",
-      );
+      this.pasteErrors.push("Pasted text was incomplete because the terminal did not send its closing marker.");
       // Fail closed for the incomplete payload, but release the Transform so
       // subsequent ordinary keystrokes reach readline instead of being
       // swallowed forever as paste bytes.
@@ -947,14 +866,8 @@ class ImagePasteInputProxy extends Transform {
   }
 }
 
-export function readPrompt(
-  options: ReadPromptOptions,
-): Promise<PromptSubmission | null> {
-  if (
-    !options.input.isTTY ||
-    !options.output.isTTY ||
-    typeof options.input.setRawMode !== "function"
-  ) {
+export function readPrompt(options: ReadPromptOptions): Promise<PromptSubmission | null> {
+  if (!options.input.isTTY || !options.output.isTTY || typeof options.input.setRawMode !== "function") {
     throw new Error("Image-aware prompting requires an interactive TTY.");
   }
 
@@ -1014,9 +927,7 @@ export function readPrompt(
       }
       return true;
     }
-    return (options.output.write as unknown as (
-      ...values: unknown[]
-    ) => boolean).apply(options.output, args);
+    return (options.output.write as unknown as (...values: unknown[]) => boolean).apply(options.output, args);
   };
   const readlineOutput = new Proxy(options.output, {
     get(target, property): unknown {
@@ -1104,12 +1015,7 @@ export function readPrompt(
       clearImmediate(scheduledBelowDraw);
       scheduledBelowDraw = undefined;
     }
-    if (
-      !promptActive ||
-      promptSuspensionDepth > 0 ||
-      resizeInProgress ||
-      !options.renderBelow
-    ) {
+    if (!promptActive || promptSuspensionDepth > 0 || resizeInProgress || !options.renderBelow) {
       return;
     }
     if (belowRendered) eraseBelow();
@@ -1124,17 +1030,12 @@ export function readPrompt(
     if (!source) return;
 
     const columnsValue = Number(options.output.columns);
-    const columns = Number.isFinite(columnsValue) && columnsValue > 0
-      ? Math.max(1, Math.floor(columnsValue))
-      : 80;
+    const columns = Number.isFinite(columnsValue) && columnsValue > 0 ? Math.max(1, Math.floor(columnsValue)) : 80;
     const lines = wrapToWidth(source, columns, { preserveAnsi: true });
     if (lines.length === 0) return;
 
     const geometry = promptGeometry();
-    const rowsDown = moveToPromptEnd(
-      geometry.cursorPosition,
-      geometry.endPosition,
-    );
+    const rowsDown = moveToPromptEnd(geometry.cursorPosition, geometry.endPosition);
     options.output.write(`\r\n${lines.join("\r\n")}`);
     readline.moveCursor(options.output, 0, -(rowsDown + lines.length));
     readline.cursorTo(options.output, geometry.cursorPosition.cols);
@@ -1271,12 +1172,7 @@ export function readPrompt(
       return true;
     },
     feedInput(chunk: Buffer | string): boolean {
-      if (
-        !promptActive ||
-        !inputSuspended ||
-        proxy.destroyed ||
-        proxy.writableEnded
-      ) {
+      if (!promptActive || !inputSuspended || proxy.destroyed || proxy.writableEnded) {
         return false;
       }
       try {
@@ -1323,9 +1219,9 @@ export function readPrompt(
       }
       const canReusePreservedDisplay = Boolean(
         resumeOptions?.preserveDisplay &&
-          inputSuspendedWithPreservedDisplay &&
-          rl.line === suspendedLine &&
-          rl.cursor === suspendedCursor,
+        inputSuspendedWithPreservedDisplay &&
+        rl.line === suspendedLine &&
+        rl.cursor === suspendedCursor,
       );
       if (canReusePreservedDisplay) {
         // Nothing was erased and nothing changed. Dropping the logical
@@ -1393,10 +1289,7 @@ export function readPrompt(
     notifyDraft();
     return true;
   };
-  const replaceAtomicMarker = (
-    marker: string,
-    replacement: string,
-  ): boolean => {
+  const replaceAtomicMarker = (marker: string, replacement: string): boolean => {
     const markerStart = rl.line.indexOf(marker);
     if (markerStart < 0 || !suspendPrompt()) return false;
     try {
@@ -1406,9 +1299,10 @@ export function readPrompt(
       const nextLine = `${previousLine.slice(0, markerStart)}${replacement}${previousLine.slice(markerEnd)}`;
       let nextCursor = previousCursor;
       if (previousCursor > markerStart) {
-        nextCursor = previousCursor < markerEnd
-          ? markerStart + replacement.length
-          : previousCursor + replacement.length - marker.length;
+        nextCursor =
+          previousCursor < markerEnd
+            ? markerStart + replacement.length
+            : previousCursor + replacement.length - marker.length;
       }
       const mutableReadline = rl as unknown as {
         line: string;
@@ -1438,9 +1332,7 @@ export function readPrompt(
     options.bracketedPasteIdleTimeoutMs,
     options.clipboardCaptureTimeoutMs,
   );
-  const startSuspended = Boolean(
-    options.startSuspended && options.onSessionReady,
-  );
+  const startSuspended = Boolean(options.startSuspended && options.onSessionReady);
   if (startSuspended) {
     // readline configures Raw Mode during createInterface(). Suppress that
     // physical transition until the lifecycle hook has either transferred
@@ -1464,7 +1356,8 @@ export function readPrompt(
         completion.suffix.length === 0 ||
         completion.replacement !== `${text}${completion.suffix}` ||
         /[\r\n\0]/u.test(completion.replacement)
-      ) return undefined;
+      )
+        return undefined;
       return {
         replacement: completion.replacement,
         suffix: completion.suffix,
@@ -1498,9 +1391,7 @@ export function readPrompt(
   return new Promise((resolve, reject) => {
     let settled = false;
 
-    const discardImages = (
-      images: readonly Readonly<ImageAttachment>[],
-    ): void => {
+    const discardImages = (images: readonly Readonly<ImageAttachment>[]): void => {
       if (images.length === 0 || !options.onDiscardImages) return;
       void Promise.resolve(options.onDiscardImages(images)).catch(() => undefined);
     };
@@ -1570,16 +1461,10 @@ export function readPrompt(
         // Cleanup must not depend on a presentation callback.
       }
     };
-    const finish = (
-      answer?: string,
-      error?: Error,
-      closeInterface = true,
-    ): void => {
+    const finish = (answer?: string, error?: Error, closeInterface = true): void => {
       if (settled) return;
       settled = true;
-      const consumed = answer === undefined
-        ? undefined
-        : proxy.consumeSubmission(answer);
+      const consumed = answer === undefined ? undefined : proxy.consumeSubmission(answer);
       if (consumed) discardImages(consumed.discardedImages);
       rl.removeListener("close", onClose);
       if (closeInterface) {
@@ -1624,8 +1509,8 @@ export function readPrompt(
       const consumed = proxy.consumeSubmission(answer);
       discardImages(consumed.discardedImages);
       const submission = consumed.submission;
-      const hasContent = submission.text.trim().length > 0 ||
-        submission.images.length > 0 || submission.pasteErrors.length > 0;
+      const hasContent =
+        submission.text.trim().length > 0 || submission.images.length > 0 || submission.pasteErrors.length > 0;
       if (hasContent) {
         submissionQueue = submissionQueue
           .then(() => options.onSubmit?.(submission))
@@ -1664,35 +1549,21 @@ export function readPrompt(
         latestPromptEndPosition = promptGeometry().endPosition;
       }
     };
-    const onAfterKeypress = (
-      _text?: string,
-      key?: Readonly<{ name?: string }>,
-    ): void => {
+    const onAfterKeypress = (_text?: string, key?: Readonly<{ name?: string }>): void => {
       if (key?.name === "tab" && options.completionProvider) {
         const mutableReadline = rl as unknown as {
           line: string;
           cursor: number;
           _refreshLine?: () => void;
         };
-        const insertedTab = mutableReadline.line.lastIndexOf(
-          "\t",
-          Math.max(0, mutableReadline.cursor - 1),
-        );
+        const insertedTab = mutableReadline.line.lastIndexOf("\t", Math.max(0, mutableReadline.cursor - 1));
         if (insertedTab >= 0) {
           const lineWithoutTab = `${mutableReadline.line.slice(0, insertedTab)}${mutableReadline.line.slice(insertedTab + 1)}`;
           const visibleText = stripInternalPasteNonce(lineWithoutTab);
-          const visibleCursor = stripInternalPasteNonce(
-            lineWithoutTab.slice(0, insertedTab),
-          ).length;
-          const completion = completionFor(
-            visibleText,
-            visibleCursor,
-            proxy.referencedImages(lineWithoutTab),
-          );
+          const visibleCursor = stripInternalPasteNonce(lineWithoutTab.slice(0, insertedTab)).length;
+          const completion = completionFor(visibleText, visibleCursor, proxy.referencedImages(lineWithoutTab));
           mutableReadline.line = completion?.replacement ?? lineWithoutTab;
-          mutableReadline.cursor = completion
-            ? completion.replacement.length
-            : insertedTab;
+          mutableReadline.cursor = completion ? completion.replacement.length : insertedTab;
           mutableReadline._refreshLine?.();
         }
       }
@@ -1772,10 +1643,7 @@ export function readPrompt(
         options.onSessionReady?.(promptSession);
       } catch (error) {
         startupSuspensionPending = false;
-        finish(
-          undefined,
-          error instanceof Error ? error : new Error(String(error)),
-        );
+        finish(undefined, error instanceof Error ? error : new Error(String(error)));
         return;
       }
       startupSuspensionPending = false;
@@ -1796,10 +1664,7 @@ export function readPrompt(
     try {
       options.output.write(ENABLE_BRACKETED_PASTE);
     } catch (error) {
-      finish(
-        undefined,
-        error instanceof Error ? error : new Error(String(error)),
-      );
+      finish(undefined, error instanceof Error ? error : new Error(String(error)));
       return;
     }
     // Keep the prompt and submitted line owned by the interface itself so an
@@ -1813,10 +1678,7 @@ export function readPrompt(
       try {
         options.onSessionReady(promptSession);
       } catch (error) {
-        finish(
-          undefined,
-          error instanceof Error ? error : new Error(String(error)),
-        );
+        finish(undefined, error instanceof Error ? error : new Error(String(error)));
       }
     }
   });
@@ -1828,8 +1690,8 @@ function invisiblePasteNonce(): string {
   // marker we inserted, so identical visible text typed by the user is inert.
   let nonce = "";
   for (const byte of randomBytes(8)) {
-    nonce += String.fromCodePoint(0xE0100 + (byte >> 4));
-    nonce += String.fromCodePoint(0xE0100 + (byte & 0x0f));
+    nonce += String.fromCodePoint(0xe0100 + (byte >> 4));
+    nonce += String.fromCodePoint(0xe0100 + (byte & 0x0f));
   }
   return nonce;
 }
@@ -1850,14 +1712,10 @@ function leadingModalControlLength(input: Buffer, offset: number): number {
     return Buffer.byteLength(sequence);
   }
   if (sequence.endsWith("~")) {
-    return /^\u001B\[27;[1-9][0-9]*;13~$/u.test(sequence)
-      ? Buffer.byteLength(sequence)
-      : 0;
+    return /^\u001B\[27;[1-9][0-9]*;13~$/u.test(sequence) ? Buffer.byteLength(sequence) : 0;
   }
   const csiU = /^\u001B\[([0-9]+)(?::[0-9]+)?(?:;[^u]*)?u$/u.exec(sequence);
   if (!csiU) return 0;
   const keyCode = Number(csiU[1]);
-  return [13, 57352, 57353, 57414, 57419, 57420].includes(keyCode)
-    ? Buffer.byteLength(sequence)
-    : 0;
+  return [13, 57352, 57353, 57414, 57419, 57420].includes(keyCode) ? Buffer.byteLength(sequence) : 0;
 }

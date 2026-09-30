@@ -19,16 +19,13 @@ describe("parseSlashCommand", () => {
     assert.deepEqual(parseSlashCommand(" /mode code "), {
       name: "mode",
       args: ["code"],
-      rawArgs: "code"
+      rawArgs: "code",
     });
   });
 
   it("returns null for normal prompts", () => {
     assert.equal(parseSlashCommand("fix the bug"), null);
-    assert.equal(
-      parseSlashCommand("/folder 帮我看一下这个文件夹里有什么"),
-      null,
-    );
+    assert.equal(parseSlashCommand("/folder 帮我看一下这个文件夹里有什么"), null);
     assert.equal(parseSlashCommand("/approv"), null);
   });
 
@@ -51,7 +48,9 @@ describe("parseSlashCommand", () => {
 
   it("recognizes the language command and documents both locales", () => {
     assert.deepEqual(parseSlashCommand("/language zh_cn"), {
-      name: "language", args: ["zh_cn"], rawArgs: "zh_cn",
+      name: "language",
+      args: ["zh_cn"],
+      rawArgs: "zh_cn",
     });
     assert.match(helpText(), /\/language \[en_us\|zh_cn\]/u);
     assert.match(helpText("zh_cn"), /\/language \[en_us\|zh_cn\].*界面语言/u);
@@ -77,10 +76,7 @@ describe("parseSlashCommand", () => {
       action: "switch",
       model: "qwen3.7-plus",
     });
-    assert.throws(
-      () => parseModelCommand(["DEEPSEEK"]),
-      /Usage: \/model/u,
-    );
+    assert.throws(() => parseModelCommand(["DEEPSEEK"]), /Usage: \/model/u);
     assert.deepEqual(parseModelCommand(["qwen", "qwen-custom"]), {
       action: "switch",
       provider: "qwen",
@@ -92,33 +88,24 @@ describe("parseSlashCommand", () => {
       model: "GLM-5.3-Flash",
     });
     assert.deepEqual(parseModelCommand(["glm", "GLM-5.3-Flash", "high"]), {
-      action: "switch", provider: "glm", model: "GLM-5.3-Flash", thinkingEffort: "high",
+      action: "switch",
+      provider: "glm",
+      model: "GLM-5.3-Flash",
+      thinkingEffort: "high",
     });
-    assert.deepEqual(
-      parseModelCommand(["kimi", "k3"]),
-      {
-        action: "switch",
-        provider: "kimi",
-        model: "k3",
-      },
-    );
-    assert.deepEqual(
-      parseModelCommand(["glm-coding-plan", "GLM-5.3-Flash"]),
-      {
-        action: "switch",
-        provider: "glm-coding-plan",
-        model: "GLM-5.3-Flash",
-      },
-    );
+    assert.deepEqual(parseModelCommand(["kimi", "k3"]), {
+      action: "switch",
+      provider: "kimi",
+      model: "k3",
+    });
+    assert.deepEqual(parseModelCommand(["glm-coding-plan", "GLM-5.3-Flash"]), {
+      action: "switch",
+      provider: "glm-coding-plan",
+      model: "GLM-5.3-Flash",
+    });
     assert.throws(() => parseModelCommand(["glm"]), /Usage: \/model/u);
-    assert.throws(
-      () => parseModelCommand(["unknown-provider", "model"]),
-      /Usage: \/model/u,
-    );
-    assert.throws(
-      () => parseModelCommand(["qwen", "model", "extra"]),
-      /Usage: \/model/u,
-    );
+    assert.throws(() => parseModelCommand(["unknown-provider", "model"]), /Usage: \/model/u);
+    assert.throws(() => parseModelCommand(["qwen", "model", "extra"]), /Usage: \/model/u);
   });
 
   it("documents the model command", () => {

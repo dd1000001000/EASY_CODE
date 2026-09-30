@@ -12,16 +12,9 @@ import type {
   TaskGraph,
   ToolName,
 } from "../core/types.js";
-import {
-  loadPromptBundleCatalog,
-  type PromptBundleCatalog,
-  type PromptToolMetadata,
-} from "../prompt-bundle/index.js";
+import { loadPromptBundleCatalog, type PromptBundleCatalog, type PromptToolMetadata } from "../prompt-bundle/index.js";
 import { taskGraphPromptView } from "../tasks/task-graph.js";
-import {
-  loadEasyCodeInstructions,
-  type EasyCodeInstruction,
-} from "./instructions.js";
+import { loadEasyCodeInstructions, type EasyCodeInstruction } from "./instructions.js";
 
 export interface BuildSystemPromptOptions {
   config: EasyCodeConfig;
@@ -80,7 +73,6 @@ const TOOL_RULE_ORDER: readonly ToolName[] = [
   "remove_mcp_server",
   "manage_subagents",
   "submit_task_result",
-  "compact_context",
   "read_memory",
   "write_memory",
   "search_context",
@@ -94,9 +86,7 @@ const COMMAND_MODE_RESOURCE: Readonly<Record<CommandExecutionMode, string>> = {
 };
 
 /** Build the complete system prompt without including secrets from Provider config. */
-export async function buildSystemPrompt(
-  options: BuildSystemPromptOptions,
-): Promise<string> {
+export async function buildSystemPrompt(options: BuildSystemPromptOptions): Promise<string> {
   const catalog = loadPromptBundleCatalog();
   const now = options.now ?? new Date();
   if (Number.isNaN(now.getTime())) throw new Error("Prompt time is invalid");
@@ -105,15 +95,9 @@ export async function buildSystemPrompt(
   const arch = options.arch ?? os.arch();
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const workspaceRoot = path.resolve(options.config.workspaceRoot);
-  const locale = validLocale(
-    options.locale ?? Intl.DateTimeFormat().resolvedOptions().locale ?? "en-US",
-  );
+  const locale = validLocale(options.locale ?? Intl.DateTimeFormat().resolvedOptions().locale ?? "en-US");
   const language = locale.split(/[-_]/)[0] || locale;
-  const timeZone = validTimeZone(
-    options.timeZone ??
-      Intl.DateTimeFormat().resolvedOptions().timeZone ??
-      "UTC",
-  );
+  const timeZone = validTimeZone(options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC");
   const shell = options.shell ?? resolveShell(env, platform);
   const localTime = new Intl.DateTimeFormat(locale, {
     timeZone,
@@ -161,61 +145,52 @@ export async function buildSystemPrompt(
     promptText(catalog, "system/runtime-control.md"),
     formatModeRules(catalog, options.mode, options.availableTools),
     formatToolRules(catalog, options.availableTools),
-    promptText(
-      catalog,
-      COMMAND_MODE_RESOURCE[options.commandExecutionMode ?? "manual"],
-    ),
+    promptText(catalog, COMMAND_MODE_RESOURCE[options.commandExecutionMode ?? "manual"]),
   ];
   if (instructions.length) {
     sections.push(formatInstructions(catalog, instructions));
   }
   if (options.workspaceFolders && options.workspaceFolders.length > 1) {
-    const entries = options.workspaceFolders.map(folder => `${folder.key}: ${folder.path}`).join("\n");
+    const entries = options.workspaceFolders.map((folder) => `${folder.key}: ${folder.path}`).join("\n");
     sections.push(
       "PROJECT WORKSPACE: This logical project has multiple independent folder roots. " +
-      "For every file tool, begin the path with the folder key shown below (for example `api/src/main.ts`). " +
-      "For command tools, use the folder key or `folder-key/subdirectory` as cwd; `.` means the primary folder. " +
-      "Never use `..` to cross roots. Prefer one folder-key cwd per command; if one command genuinely must reference " +
-      "multiple attached roots, it may use only the exact attached absolute paths listed below.\n" +
-      untrustedBlock(catalog, "PROJECT_FOLDERS", entries),
+        "For every file tool, begin the path with the folder key shown below (for example `api/src/main.ts`). " +
+        "For command tools, use the folder key or `folder-key/subdirectory` as cwd; `.` means the primary folder. " +
+        "Never use `..` to cross roots. Prefer one folder-key cwd per command; if one command genuinely must reference " +
+        "multiple attached roots, it may use only the exact attached absolute paths listed below.\n" +
+        untrustedBlock(catalog, "PROJECT_FOLDERS", entries),
     );
   }
   const skillListing = await (options.skillStore ?? new SkillStore(workspaceRoot)).list();
   const skillLines = [
-    ...skillListing.project.map(skill => `project/${skill.name} (${skill.directory}): ${skill.description}`),
-    ...skillListing.global.map(skill => `global/${skill.name} (${skill.directory}): ${skill.description}`),
+    ...skillListing.project.map((skill) => `project/${skill.name} (${skill.directory}): ${skill.description}`),
+    ...skillListing.global.map((skill) => `global/${skill.name} (${skill.directory}): ${skill.description}`),
   ];
   if (skillLines.length) {
-    sections.push(renderPrompt(catalog, "runtime/skill-catalog.md", {
-      entries: untrustedBlock(catalog, "SKILL_CATALOG", bounded(catalog, skillLines.join("\n"), 8_000)),
-    }));
+    sections.push(
+      renderPrompt(catalog, "runtime/skill-catalog.md", {
+        entries: untrustedBlock(catalog, "SKILL_CATALOG", bounded(catalog, skillLines.join("\n"), 8_000)),
+      }),
+    );
   }
   // Stable policy/tool/project guidance precedes per-turn environment facts.
   sections.push(environment);
-  sections.push("COMMAND ENVIRONMENT: Host OS/shell/workspace paths above describe the CLI and its native command toolchain. " +
-    "Normal CLI workspace commands run under the platform-native OS sandbox: Windows elevated low-privilege identity, macOS Seatbelt, or Linux bubblewrap/seccomp. " +
-    "Use the displayed host paths and platform tools; file tools and commands see the same checkout. Workspace-local dependencies persist normally. " +
-    "Commands are supervised and their process trees are stopped on timeout or cancellation. " +
-    "HTTP(S) downloads require the existing network approval gate; direct network is disabled. " +
-    "Exception: Benchmark uses its own offline worker and workspace path. Full access bypasses the sandbox and uses the native host account.");
+  sections.push(
+    "COMMAND ENVIRONMENT: Host OS/shell/workspace paths above describe the CLI and its native command toolchain. " +
+      "Normal CLI workspace commands run under the platform-native OS sandbox: Windows elevated low-privilege identity, macOS Seatbelt, or Linux bubblewrap/seccomp. " +
+      "Use the displayed host paths and platform tools; file tools and commands see the same checkout. Workspace-local dependencies persist normally. " +
+      "Commands are supervised and their process trees are stopped on timeout or cancellation. " +
+      "HTTP(S) downloads require the existing network approval gate; direct network is disabled. " +
+      "Exception: Benchmark uses its own offline worker and workspace path. Full access bypasses the sandbox and uses the native host account.",
+  );
   if (options.workspaceSummary?.trim()) {
     sections.push(
-      untrustedBlock(
-        catalog,
-        "WORKSPACE_SUMMARY",
-        bounded(catalog, options.workspaceSummary.trim(), 24_000),
-      ),
+      untrustedBlock(catalog, "WORKSPACE_SUMMARY", bounded(catalog, options.workspaceSummary.trim(), 24_000)),
     );
   }
   const memories = normalizeMemories(options.memories);
   if (memories) {
-    sections.push(
-      untrustedBlock(
-        catalog,
-        "RETRIEVED_MEMORY",
-        bounded(catalog, memories, 16_000),
-      ),
-    );
+    sections.push(untrustedBlock(catalog, "RETRIEVED_MEMORY", bounded(catalog, memories, 16_000)));
   }
   const workingCheckpoint = options.workingCheckpoint?.trim();
   const retrievedThreadEvidence = options.retrievedThreadEvidence?.trim();
@@ -223,11 +198,7 @@ export async function buildSystemPrompt(
     sections.push(promptText(catalog, "context/layered-evidence.md"));
     if (retrievedThreadEvidence) {
       sections.push(
-        untrustedBlock(
-          catalog,
-          "RETRIEVED_THREAD_EVIDENCE",
-          bounded(catalog, retrievedThreadEvidence, 20_000),
-        ),
+        untrustedBlock(catalog, "RETRIEVED_THREAD_EVIDENCE", bounded(catalog, retrievedThreadEvidence, 20_000)),
       );
     }
   }
@@ -244,22 +215,12 @@ export async function buildSystemPrompt(
   // current goal, constraints, approved plan, task state, diff manifest, and
   // latest failure remain preferable to older retrieved evidence.
   if (workingCheckpoint) {
-    sections.push(
-      untrustedBlock(
-        catalog,
-        "WORKING_CHECKPOINT",
-        boundedHeadTail(catalog, workingCheckpoint, 18_000),
-      ),
-    );
+    sections.push(untrustedBlock(catalog, "WORKING_CHECKPOINT", boundedHeadTail(catalog, workingCheckpoint, 18_000)));
   }
   return sections.join("\n\n");
 }
 
-function formatModeRules(
-  catalog: PromptBundleCatalog,
-  mode: AgentMode,
-  availableTools?: readonly ToolName[],
-): string {
+function formatModeRules(catalog: PromptBundleCatalog, mode: AgentMode, availableTools?: readonly ToolName[]): string {
   if (availableTools === undefined) {
     return promptText(catalog, `modes/${mode}.md`);
   }
@@ -267,9 +228,7 @@ function formatModeRules(
   if (mode === "plan") {
     return promptText(
       catalog,
-      exposed.has("propose_plan")
-        ? "modes/plan-readonly-with-proposal.md"
-        : "modes/plan-readonly.md",
+      exposed.has("propose_plan") ? "modes/plan-readonly-with-proposal.md" : "modes/plan-readonly.md",
     );
   }
   if (mode === "auto" && !exposed.has("select_mode")) {
@@ -278,13 +237,9 @@ function formatModeRules(
   return promptText(catalog, `modes/${mode}.md`);
 }
 
-function formatToolRules(
-  catalog: PromptBundleCatalog,
-  availableTools?: readonly ToolName[],
-): string {
-  const selected = availableTools === undefined
-    ? TOOL_RULE_ORDER
-    : TOOL_RULE_ORDER.filter((name) => availableTools.includes(name));
+function formatToolRules(catalog: PromptBundleCatalog, availableTools?: readonly ToolName[]): string {
+  const selected =
+    availableTools === undefined ? TOOL_RULE_ORDER : TOOL_RULE_ORDER.filter((name) => availableTools.includes(name));
   return [
     promptText(catalog, "system/common-tools.md"),
     ...selected.map((name) => formatToolGuidance(catalog.getTool(name))),
@@ -292,51 +247,33 @@ function formatToolRules(
 }
 
 function formatToolGuidance(metadata: PromptToolMetadata): string {
-  const rawEntries: readonly string[] = typeof metadata.guidance === "string"
-    ? metadata.guidance.split(/\r\n|[\n\r\u2028\u2029]/u)
-    : metadata.guidance;
-  const entries = rawEntries
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+  const rawEntries: readonly string[] =
+    typeof metadata.guidance === "string" ? metadata.guidance.split(/\r\n|[\n\r\u2028\u2029]/u) : metadata.guidance;
+  const entries = rawEntries.map((entry) => entry.trim()).filter(Boolean);
   return entries.map((entry) => `- ${entry}`).join("\n");
 }
 
-function formatPlanReview(
-  catalog: PromptBundleCatalog,
-  review: Readonly<PlanReviewState>,
-): string {
+function formatPlanReview(catalog: PromptBundleCatalog, review: Readonly<PlanReviewState>): string {
   const state = bounded(catalog, JSON.stringify(review, null, 2), 24_000);
   return renderPrompt(catalog, "runtime/plan-review.md", {
     state: untrustedBlock(catalog, "PLAN_REVIEW", state),
   });
 }
 
-function formatTaskGraph(
-  catalog: PromptBundleCatalog,
-  graph: Readonly<TaskGraph>,
-): string {
-  const state = bounded(
-    catalog,
-    JSON.stringify(taskGraphPromptView(graph), null, 2),
-    48_000,
-  );
+function formatTaskGraph(catalog: PromptBundleCatalog, graph: Readonly<TaskGraph>): string {
+  const state = bounded(catalog, JSON.stringify(taskGraphPromptView(graph), null, 2), 48_000);
   return renderPrompt(catalog, "runtime/task-dag.md", {
     state: untrustedBlock(catalog, "TASK_DAG", state),
   });
 }
 
-function formatInstructions(
-  catalog: PromptBundleCatalog,
-  instructions: readonly EasyCodeInstruction[],
-): string {
+function formatInstructions(catalog: PromptBundleCatalog, instructions: readonly EasyCodeInstruction[]): string {
   const blocks = instructions.map((instruction, index) =>
     renderPrompt(catalog, "runtime/project-guidance-layer.md", {
       index: index + 1,
       source: instruction.source,
       path: instruction.path,
-      truncation: instruction.truncated
-        ? promptText(catalog, "runtime/project-guidance-truncated-label.md")
-        : "",
+      truncation: instruction.truncated ? promptText(catalog, "runtime/project-guidance-truncated-label.md") : "",
       content: prefixLines(instruction.content.trimEnd()),
     }),
   );
@@ -352,22 +289,12 @@ function prefixLines(value: string): string {
     .join("\n");
 }
 
-function normalizeMemories(
-  value:
-    | string
-    | readonly string[]
-    | readonly LongTermMemory[]
-    | undefined,
-): string {
+function normalizeMemories(value: string | readonly string[] | readonly LongTermMemory[] | undefined): string {
   if (Array.isArray(value)) {
     return value
       .map((item) => {
         if (typeof item === "string") return item.trim();
-        return (
-          `[memory_id=${item.id}] [category=${item.category}] ` +
-          `[status=${item.status}] ` +
-          item.content.trim()
-        );
+        return `[memory_id=${item.id}] [category=${item.category}] ` + `[status=${item.status}] ` + item.content.trim();
       })
       .filter(Boolean)
       .map((item) => `- ${item}`)
@@ -376,32 +303,20 @@ function normalizeMemories(
   return typeof value === "string" ? value.trim() : "";
 }
 
-function untrustedBlock(
-  catalog: PromptBundleCatalog,
-  name: string,
-  value: string,
-): string {
+function untrustedBlock(catalog: PromptBundleCatalog, name: string, value: string): string {
   return renderPrompt(catalog, "runtime/untrusted-block.md", {
     name,
     content: prefixLines(value),
   });
 }
 
-function bounded(
-  catalog: PromptBundleCatalog,
-  value: string,
-  limit: number,
-): string {
+function bounded(catalog: PromptBundleCatalog, value: string, limit: number): string {
   return value.length > limit
     ? `${value.slice(0, limit)}\n${promptText(catalog, "runtime/truncation-marker.md")}`
     : value;
 }
 
-function boundedHeadTail(
-  catalog: PromptBundleCatalog,
-  value: string,
-  limit: number,
-): string {
+function boundedHeadTail(catalog: PromptBundleCatalog, value: string, limit: number): string {
   const marker = `\n${promptText(catalog, "runtime/truncation-marker.md")}\n`;
   return projectHeadTailText(value, limit, undefined, marker, 0.6).text;
 }
@@ -418,10 +333,7 @@ function renderPrompt(
   return catalog.render(relativePath, values).trimEnd();
 }
 
-function resolveShell(
-  env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
-): string {
+function resolveShell(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
   const configured = env.EASY_CODE_SHELL?.trim();
   if (configured) return configured;
   if (platform === "win32") {

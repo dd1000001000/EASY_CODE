@@ -5,10 +5,7 @@ import path from "node:path";
 import { loadEasyCodeConfig } from "../config/loader.js";
 import { resolveEasyCodePaths, type EasyCodePaths } from "../config/defaults.js";
 import { getEasyCodeHome } from "../prompt-bundle/paths.js";
-import {
-  EASY_CODE_DATA_ROOT_MARKER,
-  isEasyCodeDataRootMarker,
-} from "../storage/data-root.js";
+import { EASY_CODE_DATA_ROOT_MARKER, isEasyCodeDataRootMarker } from "../storage/data-root.js";
 
 const MEMORY_DIRECTORY_NAMES = new Set([
   "artifacts",
@@ -18,10 +15,8 @@ const MEMORY_DIRECTORY_NAMES = new Set([
   "threads",
 ]);
 
-const DATABASE_ENTRY_PATTERN =
-  /^easy-code\.db(?:-journal|-shm|-wal|\.lock|\.easy-code-advisory-lock(?:\..+)?)?$/u;
-const ACTIVE_DATABASE_LOCK_PATTERN =
-  /^easy-code\.db\.easy-code-advisory-lock(?:$|\.(?:staging|release)-)/u;
+const DATABASE_ENTRY_PATTERN = /^easy-code\.db(?:-journal|-shm|-wal|\.lock|\.easy-code-advisory-lock(?:\..+)?)?$/u;
+const ACTIVE_DATABASE_LOCK_PATTERN = /^easy-code\.db\.easy-code-advisory-lock(?:$|\.(?:staging|release)-)/u;
 
 export interface EasyCodeCleanupOptions {
   readonly cwd?: string;
@@ -50,10 +45,7 @@ function addUniquePath(target: Map<string, string>, value: string): void {
 }
 
 function exactChild(parent: string, child: string, expectedName: string): boolean {
-  return (
-    pathIdentity(path.dirname(child)) === pathIdentity(parent) &&
-    path.basename(child) === expectedName
-  );
+  return pathIdentity(path.dirname(child)) === pathIdentity(parent) && path.basename(child) === expectedName;
 }
 
 async function removeExactEntry(
@@ -111,10 +103,7 @@ async function configuredDataDirectories(
       workspaceRoot: cwd,
       // User configuration is relevant, but a project-local configuration
       // must never influence a machine-level uninstall operation.
-      workspaceConfigPath: path.join(
-        os.tmpdir(),
-        `easy-code-uninstall-no-workspace-${process.pid}.toml`,
-      ),
+      workspaceConfigPath: path.join(os.tmpdir(), `easy-code-uninstall-no-workspace-${process.pid}.toml`),
     });
     addUniquePath(directories, config.dataDir);
   } catch (error) {
@@ -158,18 +147,14 @@ async function cleanupDataDirectory(
     throw new Error(`EASY CODE data-root ownership changed during uninstall: ${root}`);
   }
   if (!ownershipValid) {
-    result.warnings.push(
-      `Skipped custom data directory without a valid EASY CODE ownership marker: ${root}`,
-    );
+    result.warnings.push(`Skipped custom data directory without a valid EASY CODE ownership marker: ${root}`);
     result.preserved.push(root);
     return;
   }
 
   const activeLock = entries.find((entry) => ACTIVE_DATABASE_LOCK_PATTERN.test(entry.name));
   if (activeLock) {
-    throw new Error(
-      `EASY CODE memory is in use at ${root}; close every running EASY CODE process and retry uninstall`,
-    );
+    throw new Error(`EASY CODE memory is in use at ${root}; close every running EASY CODE process and retry uninstall`);
   }
 
   for (const entry of entries) {
@@ -185,12 +170,7 @@ async function cleanupDataDirectory(
 
   const remaining = await readdir(root);
   if (remaining.length === 1 && remaining[0] === EASY_CODE_DATA_ROOT_MARKER) {
-    await removeExactEntry(
-      path.join(root, EASY_CODE_DATA_ROOT_MARKER),
-      root,
-      EASY_CODE_DATA_ROOT_MARKER,
-      result,
-    );
+    await removeExactEntry(path.join(root, EASY_CODE_DATA_ROOT_MARKER), root, EASY_CODE_DATA_ROOT_MARKER, result);
   } else if (remaining.includes(EASY_CODE_DATA_ROOT_MARKER)) {
     result.preserved.push(path.join(root, EASY_CODE_DATA_ROOT_MARKER));
   }
@@ -220,10 +200,15 @@ async function dataRootIsOwned(
   const markerEntry = entries.find((entry) => entry.name === EASY_CODE_DATA_ROOT_MARKER);
   if (markerEntry?.isFile() && !markerEntry.isSymbolicLink()) {
     try {
-      if (isEasyCodeDataRootMarker(
-        JSON.parse(await readFile(path.join(root, EASY_CODE_DATA_ROOT_MARKER), "utf8")) as unknown,
-      )) return true;
-    } catch { /* A malformed current marker grants no deletion authority. */ }
+      if (
+        isEasyCodeDataRootMarker(
+          JSON.parse(await readFile(path.join(root, EASY_CODE_DATA_ROOT_MARKER), "utf8")) as unknown,
+        )
+      )
+        return true;
+    } catch {
+      /* A malformed current marker grants no deletion authority. */
+    }
   }
   return false;
 }
@@ -246,18 +231,14 @@ async function preflightDataDirectory(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
     throw error;
   }
-  if (!await dataRootIsOwned(root, defaultDataDirectory, entries)) {
-    warnings.push(
-      `Skipped custom data directory without a valid EASY CODE ownership marker: ${root}`,
-    );
+  if (!(await dataRootIsOwned(root, defaultDataDirectory, entries))) {
+    warnings.push(`Skipped custom data directory without a valid EASY CODE ownership marker: ${root}`);
     preserved.push(root);
     return false;
   }
   const activeLock = entries.find((entry) => ACTIVE_DATABASE_LOCK_PATTERN.test(entry.name));
   if (activeLock) {
-    throw new Error(
-      `EASY CODE memory is in use at ${root}; close every running EASY CODE process and retry uninstall`,
-    );
+    throw new Error(`EASY CODE memory is in use at ${root}; close every running EASY CODE process and retry uninstall`);
   }
   return true;
 }
@@ -269,28 +250,19 @@ async function preflightDataDirectory(
  * API keys, user configuration, workspace files, model caches, VS Code
  * extensions, managed Worktrees and handoff branches are deliberately kept.
  */
-export async function cleanupEasyCodeUserData(
-  options: EasyCodeCleanupOptions = {},
-): Promise<EasyCodeCleanupResult> {
+export async function cleanupEasyCodeUserData(options: EasyCodeCleanupOptions = {}): Promise<EasyCodeCleanupResult> {
   const removed: string[] = [];
   const absent: string[] = [];
   const preserved: string[] = [];
   const warnings: string[] = [];
   const home = path.resolve(options.homeDirectory ?? os.homedir());
-  const promptHome = options.homeDirectory
-    ? path.join(home, ".easy_code")
-    : getEasyCodeHome();
+  const promptHome = options.homeDirectory ? path.join(home, ".easy_code") : getEasyCodeHome();
 
   const defaultPaths = options.defaultPaths ?? resolveEasyCodePaths();
   const dataDirectories = await configuredDataDirectories(options, defaultPaths, warnings);
   const readyDataDirectories: string[] = [];
   for (const dataDirectory of dataDirectories) {
-    if (await preflightDataDirectory(
-      dataDirectory,
-      defaultPaths.dataDir,
-      warnings,
-      preserved,
-    )) {
+    if (await preflightDataDirectory(dataDirectory, defaultPaths.dataDir, warnings, preserved)) {
       readyDataDirectories.push(dataDirectory);
     }
   }
@@ -298,12 +270,17 @@ export async function cleanupEasyCodeUserData(
   const mutable = { removed, absent };
   await removeExactEntry(promptHome, home, ".easy_code", mutable);
   for (const dataDirectory of readyDataDirectories) {
-    await cleanupDataDirectory(dataDirectory, defaultPaths.dataDir, {
-      removed,
-      absent,
-      preserved,
-      warnings,
-    }, true);
+    await cleanupDataDirectory(
+      dataDirectory,
+      defaultPaths.dataDir,
+      {
+        removed,
+        absent,
+        preserved,
+        warnings,
+      },
+      true,
+    );
   }
 
   return Object.freeze({

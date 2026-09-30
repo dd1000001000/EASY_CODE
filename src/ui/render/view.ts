@@ -7,24 +7,12 @@ import { redactSensitiveInformation } from "../../memory/sensitive.js";
 import { providerLabel as catalogProviderLabel } from "../../models/catalog.js";
 import type { SubagentStatus, SubagentView } from "../../subagents/types.js";
 import type { TaskGraphView } from "../../tasks/task-graph.js";
-import type {
-  UIOverlayState,
-  UIProgressStatus,
-  UISessionInfo,
-  UIState,
-  UIThinkingPanelInput,
-} from "../contracts.js";
-import {
-  displayWidth,
-  sanitizeTerminalText,
-  truncateToWidth,
-  wrapToWidth,
-} from "./layout.js";
+import type { UIOverlayState, UIProgressStatus, UISessionInfo, UIState, UIThinkingPanelInput } from "../contracts.js";
+import { displayWidth, sanitizeTerminalText, truncateToWidth, wrapToWidth } from "./layout.js";
 
 export const DEFAULT_VIEW_COLUMNS = 80;
 export const MAX_COMPACT_TASK_ROWS = 5;
 export const MAX_COMPACT_AGENT_ROWS = 5;
-export const MAX_THINKING_PANEL_ROWS = 12;
 
 function localizedMode(language: Language, mode: string | undefined): string {
   if (language !== "zh_cn") return safeInline(mode ?? "") || "auto";
@@ -33,28 +21,31 @@ function localizedMode(language: Language, mode: string | undefined): string {
 
 function localizedEffort(language: Language, effort: string | undefined): string {
   if (language !== "zh_cn") return safeInline(effort ?? "") || "none";
-  return translate(language, effort === "low" ? "ui.effortLow" : effort === "medium" ? "ui.effortMedium" :
-    effort === "high" ? "ui.effortHigh" : "ui.effortNone");
+  return translate(
+    language,
+    effort === "low"
+      ? "ui.effortLow"
+      : effort === "medium"
+        ? "ui.effortMedium"
+        : effort === "high"
+          ? "ui.effortHigh"
+          : "ui.effortNone",
+  );
 }
 
 function localizedEnvironment(language: Language, environment: string): string {
   if (language !== "zh_cn") return environment;
-  return translate(language, environment === "host" ? "ui.environmentHost" :
-    environment === "container" ? "ui.environmentContainer" : "ui.environmentSandbox");
+  return translate(
+    language,
+    environment === "host"
+      ? "ui.environmentHost"
+      : environment === "container"
+        ? "ui.environmentContainer"
+        : "ui.environmentSandbox",
+  );
 }
 
-export const ACTIVITY_SPINNER_FRAMES = [
-  "⠋",
-  "⠙",
-  "⠹",
-  "⠸",
-  "⠼",
-  "⠴",
-  "⠦",
-  "⠧",
-  "⠇",
-  "⠏",
-] as const;
+export const ACTIVITY_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 /** Shared, process-independent settings for all pure terminal views. */
 export interface RenderViewOptions {
@@ -101,10 +92,7 @@ export interface FixedBottomRegions {
 }
 
 /** Render the stable EASY CODE session card shown above terminal scrollback. */
-export function renderSessionHeader(
-  state: Readonly<UIState>,
-  options: RenderViewOptions = {},
-): string {
+export function renderSessionHeader(state: Readonly<UIState>, options: RenderViewOptions = {}): string {
   const columns = viewColumns(options);
   const palette = viewPalette(options);
   const session = state.header.session;
@@ -114,36 +102,34 @@ export function renderSessionHeader(
     body.push(palette.gray(translate(options.language ?? DEFAULT_LANGUAGE, "cli.starting")));
   } else {
     const context = formatContext(session);
-    body.push([
-      palette.cyan(localizedMode(options.language ?? DEFAULT_LANGUAGE, session.mode)),
-      palette.bold(formatProviderModel(session, true)),
-      palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.thinkingEffort")}:${localizedEffort(options.language ?? DEFAULT_LANGUAGE, session.thinkingEffort)}`),
-      palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.context")}:${context}`),
-    ].join(palette.gray(" · ")));
-    body.push([
-      safeInline(session.workspaceRoot) || ".",
-      palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.thread")}: ${safeInline(session.threadId) || "unknown"}`),
-    ].join(palette.gray(" · ")));
+    body.push(
+      [
+        palette.cyan(localizedMode(options.language ?? DEFAULT_LANGUAGE, session.mode)),
+        palette.bold(formatProviderModel(session, true)),
+        palette.gray(
+          `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.thinkingEffort")}:${localizedEffort(options.language ?? DEFAULT_LANGUAGE, session.thinkingEffort)}`,
+        ),
+        palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.context")}:${context}`),
+      ].join(palette.gray(" · ")),
+    );
+    body.push(
+      [
+        safeInline(session.workspaceRoot) || ".",
+        palette.gray(
+          `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.thread")}: ${safeInline(session.threadId) || "unknown"}`,
+        ),
+      ].join(palette.gray(" · ")),
+    );
   }
 
-  return renderBox(
-    safeInline(state.header.title) || "EASY CODE",
-    body,
-    columns,
-    palette,
-    "cyan",
-  );
+  return renderBox(safeInline(state.header.title) || "EASY CODE", body, columns, palette, "cyan");
 }
 
 /**
  * Render the redrawable bottom region. An overlay is modal and therefore hides
  * progress, activity, Thinking, composer, and status until it is dismissed.
  */
-export function renderLiveRegion(
-  state: Readonly<UIState>,
-  nowMs: number,
-  options: RenderViewOptions = {},
-): string {
+export function renderLiveRegion(state: Readonly<UIState>, nowMs: number, options: RenderViewOptions = {}): string {
   if (state.overlay) {
     const danger = renderDangerIndicator(state, options);
     const overlay = renderOverlay(state.overlay, options);
@@ -220,73 +206,43 @@ export function renderFixedBottomRegions(
   if (totalRows === 0) return emptyFixedBottomRegions();
 
   const statusText = renderComposerFooter(state, options, nowMs);
-  const reviewText = totalRows >= 2
-    ? renderReviewStage(state, options, nowMs)
-    : "";
+  const reviewText = totalRows >= 2 ? renderReviewStage(state, options, nowMs) : "";
   const status = [reviewText, statusText].filter(Boolean);
   const totalDetailCapacity = Math.max(0, totalRows - status.length);
-  const detailCapacity = Math.min(
-    totalDetailCapacity,
-    physicalRowBudget(budget.detailRows),
-  );
+  const detailCapacity = Math.min(totalDetailCapacity, physicalRowBudget(budget.detailRows));
 
   const desiredTaskRows = Math.min(
     renderTaskStatusLines(state.live.tasks, options, undefined, state.live.subagents, nowMs).length,
     physicalRowBudget(budget.taskRows),
   );
-  const desiredAgentRows = Math.min(
-    renderAgentStatusLines(state, options).length,
-    physicalRowBudget(budget.agentRows),
-  );
-  const allocation = allocateDetailRows(
-    detailCapacity,
-    desiredTaskRows,
-    desiredAgentRows,
-  );
-  const tasks = renderTaskStatusLines(
-    state.live.tasks,
-    options,
-    allocation.taskRows,
-    state.live.subagents,
-    nowMs,
-  );
-  const agents = renderAgentStatusLines(
-    state,
-    options,
-    allocation.agentRows,
-    nowMs,
-  );
+  const desiredAgentRows = Math.min(renderAgentStatusLines(state, options).length, physicalRowBudget(budget.agentRows));
+  const allocation = allocateDetailRows(detailCapacity, desiredTaskRows, desiredAgentRows);
+  const tasks = renderTaskStatusLines(state.live.tasks, options, allocation.taskRows, state.live.subagents, nowMs);
+  const agents = renderAgentStatusLines(state, options, allocation.agentRows, nowMs);
   const lines = [...status, ...tasks, ...agents];
   return { status, tasks, agents, lines };
 }
 
 /** Render the persistent, multiline input card (without a trailing newline). */
-export function renderComposerPrompt(
-  state: Readonly<UIState>,
-  options: RenderViewOptions = {},
-): string {
+export function renderComposerPrompt(state: Readonly<UIState>, options: RenderViewOptions = {}): string {
   const columns = viewColumns(options);
   const palette = viewPalette(options);
   const innerWidth = boxContentWidth(columns);
   const composer = state.composer;
   const hasText = composer.text.length > 0;
   const customPlaceholder = safeInline(composer.placeholder);
-  const defaultBusyPlaceholder = customPlaceholder &&
-      customPlaceholder !== "Type your request…"
-    ? customPlaceholder
-    : "Working…";
+  const defaultBusyPlaceholder =
+    customPlaceholder && customPlaceholder !== "Type your request…" ? customPlaceholder : "Working…";
   const mainText = hasText
     ? safeMultiline(composer.text)
     : composer.busy
       ? safeInline(options.busyPlaceholder ?? defaultBusyPlaceholder)
       : customPlaceholder || "Type your request…";
-  const completionSuffix = hasText && composer.cursor === composer.text.length
-    ? safeInline(composer.completionSuffix ?? "")
-    : "";
-  const imageBadges = composer.images
-    .map((image) => `[${safeInline(image.label) || "Image"}]`)
-    .join(" ");
-  const payload = `${mainText}${completionSuffix ? palette.gray(completionSuffix) : ""}` +
+  const completionSuffix =
+    hasText && composer.cursor === composer.text.length ? safeInline(composer.completionSuffix ?? "") : "";
+  const imageBadges = composer.images.map((image) => `[${safeInline(image.label) || "Image"}]`).join(" ");
+  const payload =
+    `${mainText}${completionSuffix ? palette.gray(completionSuffix) : ""}` +
     `${mainText && imageBadges ? " " : ""}${imageBadges}`;
   const contentColumns = Math.max(1, innerWidth - 2);
   const wrapped = wrapToWidth(payload, contentColumns, { preserveAnsi: true });
@@ -308,31 +264,49 @@ export function renderComposerFooter(
   const session = state.header.session;
   const graph = state.live.tasks;
   const task = graph ? taskPosition(graph) : undefined;
-  const activeAgents = state.live.subagents.filter((agent) =>
-    isActiveAgent(agent.status)
-  ).length;
+  const activeAgents = state.live.subagents.filter((agent) => isActiveAgent(agent.status)).length;
   const metadata: string[] = [];
   const danger = renderDangerStatusLabel(state, options);
 
   if (session) {
     metadata.push(palette.cyan(localizedMode(options.language ?? DEFAULT_LANGUAGE, session.mode)));
     if (session.commandExecutionMode) {
-      metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.approval")}:${session.commandExecutionMode === "auto_approve" ? translate(options.language ?? DEFAULT_LANGUAGE, "cli.agent") : session.commandExecutionMode === "unrestricted" ? translate(options.language ?? DEFAULT_LANGUAGE, "cli.none") : translate(options.language ?? DEFAULT_LANGUAGE, "cli.manual")}`));
-      metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.env")}:${localizedEnvironment(options.language ?? DEFAULT_LANGUAGE, session.commandEnvironment ?? (session.commandExecutionMode === "unrestricted" ? "host" : "sandbox"))}`));
+      metadata.push(
+        palette.gray(
+          `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.approval")}:${session.commandExecutionMode === "auto_approve" ? translate(options.language ?? DEFAULT_LANGUAGE, "cli.agent") : session.commandExecutionMode === "unrestricted" ? translate(options.language ?? DEFAULT_LANGUAGE, "cli.none") : translate(options.language ?? DEFAULT_LANGUAGE, "cli.manual")}`,
+        ),
+      );
+      metadata.push(
+        palette.gray(
+          `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.env")}:${localizedEnvironment(options.language ?? DEFAULT_LANGUAGE, session.commandEnvironment ?? (session.commandExecutionMode === "unrestricted" ? "host" : "sandbox"))}`,
+        ),
+      );
     }
     metadata.push(palette.bold(formatProviderModel(session, false)));
     metadata.push(localizedEffort(options.language ?? DEFAULT_LANGUAGE, session.thinkingEffort));
-    metadata.push(palette.gray(`DAG/${translate(options.language ?? DEFAULT_LANGUAGE, "cli.agentsLower")} ${translate(options.language ?? DEFAULT_LANGUAGE, session.orchestrationEnabled ? "cli.on" : "cli.off")}`));
+    metadata.push(
+      palette.gray(
+        `DAG/${translate(options.language ?? DEFAULT_LANGUAGE, "cli.agentsLower")} ${translate(options.language ?? DEFAULT_LANGUAGE, session.orchestrationEnabled ? "cli.on" : "cli.off")}`,
+      ),
+    );
     metadata.push(palette.gray(`ctx ${formatContext(session)}`));
   } else {
     metadata.push(palette.gray(translate(options.language ?? DEFAULT_LANGUAGE, "cli.startingShort")));
   }
-  metadata.push(palette.gray(
-    task ? `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.task")} ${task.current}/${task.total}` : `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.task")} –`,
-  ));
+  metadata.push(
+    palette.gray(
+      task
+        ? `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.task")} ${task.current}/${task.total}`
+        : `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.task")} –`,
+    ),
+  );
   metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "ui.agents")} ${activeAgents}`));
   if (state.composer.pendingSubmissions > 0) {
-    metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.steering")} ${state.composer.pendingSubmissions}`));
+    metadata.push(
+      palette.gray(
+        `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.steering")} ${state.composer.pendingSubmissions}`,
+      ),
+    );
   }
 
   const columns = viewColumns(options);
@@ -355,66 +329,59 @@ export function renderComposerFooter(
 }
 
 /** Shared compact warning used anywhere the normal footer is replaced. */
-export function renderDangerStatusLabel(
-  state: Readonly<UIState>,
-  options: RenderViewOptions = {},
-): string {
+export function renderDangerStatusLabel(state: Readonly<UIState>, options: RenderViewOptions = {}): string {
   if (state.header.session?.commandExecutionMode !== "unrestricted") return "";
-  return viewPalette(options).red.bold(state.header.session?.commandEnvironment === "container" ? "! CONTAINER FULL ACCESS / OFFLINE" : "! EASY CODE HOST FULL ACCESS");
+  return viewPalette(options).red.bold(
+    state.header.session?.commandEnvironment === "container"
+      ? "! CONTAINER FULL ACCESS / OFFLINE"
+      : "! EASY CODE HOST FULL ACCESS",
+  );
 }
 
-function renderDangerIndicator(
-  state: Readonly<UIState>,
-  options: RenderViewOptions,
-): string {
+function renderDangerIndicator(state: Readonly<UIState>, options: RenderViewOptions): string {
   if (state.header.session?.commandExecutionMode !== "unrestricted") return "";
   const palette = viewPalette(options);
   return truncateToWidth(
-    palette.red.bold(state.header.session?.commandEnvironment === "container" ? "! CONTAINER FULL ACCESS — EXTERNAL NETWORK OFF" : "! HOST FULL ACCESS — NO SANDBOX / NO APPROVAL"),
+    palette.red.bold(
+      state.header.session?.commandEnvironment === "container"
+        ? "! CONTAINER FULL ACCESS — EXTERNAL NETWORK OFF"
+        : "! HOST FULL ACCESS — NO SANDBOX / NO APPROVAL",
+    ),
     viewColumns(options),
     { preserveAnsi: viewColor(options) },
   );
 }
 
 /** Render one expanded Thinking item in the same slot as its collapsed marker. */
-export function renderThinkingPanel(
-  panel: Readonly<UIThinkingPanelInput>,
-  options: RenderViewOptions = {},
-): string {
+export function renderThinkingPanel(panel: Readonly<UIThinkingPanelInput>, options: RenderViewOptions = {}): string {
   const columns = viewColumns(options);
   const palette = viewPalette(options);
   const innerWidth = Math.max(1, columns - 2);
-  const content = ("body" in panel ? panel.body : panel.text) ||
-    "(No visible Thinking text.)";
-  const body = wrapToWidth(content, innerWidth, { preserveAnsi: false })
-    .map((line) => palette.gray(`  ${line}`));
+  const content = ("body" in panel ? panel.body : panel.text) || "(No visible Thinking text.)";
+  const body = wrapToWidth(content, innerWidth, { preserveAnsi: false }).map((line) => palette.gray(`  ${line}`));
   if (panel.truncated) {
-    const source = panel.sourceLines !== undefined && panel.sourceChars !== undefined
-      ? ` from ${panel.sourceLines} lines / ${panel.sourceChars} chars`
-      : panel.sourceLines !== undefined
-        ? ` from ${panel.sourceLines} lines`
-        : panel.sourceChars !== undefined
-          ? ` from ${panel.sourceChars} chars`
-          : "";
+    const source =
+      panel.sourceLines !== undefined && panel.sourceChars !== undefined
+        ? ` from ${panel.sourceLines} lines / ${panel.sourceChars} chars`
+        : panel.sourceLines !== undefined
+          ? ` from ${panel.sourceLines} lines`
+          : panel.sourceChars !== undefined
+            ? ` from ${panel.sourceChars} chars`
+            : "";
     body.push(palette.gray(`  … [Thinking truncated${source}.]`));
   }
-  const header = palette.gray(
-    `↕ Thinking #${panel.id} · ` +
-      "VS Code Ctrl/Cmd+click to toggle",
-  );
+  const header = palette.gray(`↕ Thinking #${panel.id} · ` + "VS Code Ctrl/Cmd+click to toggle");
   return [header, ...body].join("\n");
 }
 
 /** Render a modal picker card. All request/model/plan strings remain data. */
-export function renderOverlay(
-  overlay: Readonly<UIOverlayState>,
-  options: RenderViewOptions = {},
-): string {
+export function renderOverlay(overlay: Readonly<UIOverlayState>, options: RenderViewOptions = {}): string {
   const columns = viewColumns(options);
   const palette = viewPalette(options);
   const innerWidth = Math.max(1, boxContentWidth(columns));
   const body: string[] = [];
-  const detail = overlay.detail ??
+  const detail =
+    overlay.detail ??
     (overlay.kind === "approval"
       ? overlay.request.description
       : overlay.kind === "plan-review"
@@ -422,30 +389,17 @@ export function renderOverlay(
         : undefined);
 
   if (detail) {
-    body.push(...limitedWrappedLines(detail, innerWidth, 3).map((line) =>
-      palette.gray(line)
-    ));
+    body.push(...limitedWrappedLines(detail, innerWidth, 3).map((line) => palette.gray(line)));
     body.push("");
   }
   if (overlay.kind === "approval" && overlay.request.commandPreview) {
     const command = safeInline(overlay.request.commandPreview);
-    body.push(palette.gray(truncateToWidth(
-      `Command: ${command}`,
-      innerWidth,
-      { preserveAnsi: false },
-    )));
+    body.push(palette.gray(truncateToWidth(`Command: ${command}`, innerWidth, { preserveAnsi: false })));
     body.push("");
   }
 
-  const selectedIndex = overlay.rows.length === 0
-    ? 0
-    : clampInteger(overlay.selectedIndex, 0, overlay.rows.length - 1);
-  const maximumRows = boundedOption(
-    options.maxOverlayRows,
-    8,
-    1,
-    20,
-  );
+  const selectedIndex = overlay.rows.length === 0 ? 0 : clampInteger(overlay.selectedIndex, 0, overlay.rows.length - 1);
+  const maximumRows = boundedOption(options.maxOverlayRows, 8, 1, 20);
   const window = compactWindow(overlay.rows.length, selectedIndex, maximumRows);
   if (window.start > 0) {
     body.push(palette.gray(`  ↑ ${window.start} more`));
@@ -460,11 +414,9 @@ export function renderOverlay(
       const label = safeInline(row.label) || "(unnamed)";
       const detailText = row.detail ? ` · ${safeInline(row.detail)}` : "";
       const disabled = row.disabled ? " (disabled)" : "";
-      const line = truncateToWidth(
-        `${selected ? "›" : " "} ${label}${detailText}${disabled}`,
-        innerWidth,
-        { preserveAnsi: false },
-      );
+      const line = truncateToWidth(`${selected ? "›" : " "} ${label}${detailText}${disabled}`, innerWidth, {
+        preserveAnsi: false,
+      });
       body.push(selected ? palette.white.bold(line) : palette.gray(line));
     }
   }
@@ -474,17 +426,10 @@ export function renderOverlay(
   const hint = safeInline(overlay.hint);
   if (hint) {
     body.push("");
-    body.push(...limitedWrappedLines(hint, innerWidth, 2).map((line) =>
-      palette.gray(line)
-    ));
+    body.push(...limitedWrappedLines(hint, innerWidth, 2).map((line) => palette.gray(line)));
   }
 
-  const rendered = renderBox(
-    safeInline(overlay.title) || "Select",
-    body,
-    columns,
-    palette,
-  );
+  const rendered = renderBox(safeInline(overlay.title) || "Select", body, columns, palette);
   if (rendered.split("\n").length <= viewRows(options)) return rendered;
   return renderCompactOverlay(overlay, options, palette);
 }
@@ -500,42 +445,43 @@ function renderCompactOverlay(
   const bodyBudget = Math.max(1, rowBudget - (columns >= 6 ? 2 : 0));
   const title = safeInline(overlay.title) || "Select";
   if (overlay.kind === "approval" && rowBudget < 4) {
-    const warning = palette.yellow(truncateToWidth(
-      "Approval disabled: enlarge the terminal to review the command.",
-      columns >= 6 ? innerWidth : columns,
-      { preserveAnsi: false },
-    ));
+    const warning = palette.yellow(
+      truncateToWidth(
+        "Approval disabled: enlarge the terminal to review the command.",
+        columns >= 6 ? innerWidth : columns,
+        { preserveAnsi: false },
+      ),
+    );
     if (rowBudget === 1) return warning;
     if (rowBudget === 2) {
-      return [palette.bold(truncateToWidth(title, columns, {
-        preserveAnsi: false,
-      })), warning].join("\n");
+      return [
+        palette.bold(
+          truncateToWidth(title, columns, {
+            preserveAnsi: false,
+          }),
+        ),
+        warning,
+      ].join("\n");
     }
     return renderBox(title, [warning], columns, palette);
   }
-  const selectedIndex = overlay.rows.length === 0
-    ? 0
-    : clampInteger(overlay.selectedIndex, 0, overlay.rows.length - 1);
+  const selectedIndex = overlay.rows.length === 0 ? 0 : clampInteger(overlay.selectedIndex, 0, overlay.rows.length - 1);
   const hint = safeInline(overlay.hint);
   const body: string[] = [];
   let remaining = bodyBudget;
 
-  const command = overlay.kind === "approval" && overlay.request.commandPreview
-    ? truncateToWidth(
-      `Command: ${safeInline(overlay.request.commandPreview)}`,
-      innerWidth,
-      { preserveAnsi: false },
-    )
-    : "";
-  const detail = overlay.detail ??
+  const command =
+    overlay.kind === "approval" && overlay.request.commandPreview
+      ? truncateToWidth(`Command: ${safeInline(overlay.request.commandPreview)}`, innerWidth, { preserveAnsi: false })
+      : "";
+  const detail =
+    overlay.detail ??
     (overlay.kind === "approval"
       ? overlay.request.description
       : overlay.kind === "plan-review"
         ? overlay.proposal.overview
         : undefined);
-  const context = command || (detail
-    ? truncateToWidth(safeInline(detail), innerWidth, { preserveAnsi: false })
-    : "");
+  const context = command || (detail ? truncateToWidth(safeInline(detail), innerWidth, { preserveAnsi: false }) : "");
 
   // Keep one choice and, when possible, the key hint visible. Context is
   // useful but must never push the currently selected action off a short UI.
@@ -549,11 +495,7 @@ function renderCompactOverlay(
   if (overlay.rows.length === 0) {
     body.push(palette.gray("No choices available."));
   } else {
-    const window = compactWindow(
-      overlay.rows.length,
-      selectedIndex,
-      Math.min(choiceCapacity, overlay.rows.length),
-    );
+    const window = compactWindow(overlay.rows.length, selectedIndex, Math.min(choiceCapacity, overlay.rows.length));
     for (let index = window.start; index < window.end; index += 1) {
       const row = overlay.rows[index];
       if (!row) continue;
@@ -561,8 +503,7 @@ function renderCompactOverlay(
       const detailText = row.detail ? ` · ${safeInline(row.detail)}` : "";
       const disabled = row.disabled ? " (disabled)" : "";
       const line = truncateToWidth(
-        `${selected ? "›" : " "} ${safeInline(row.label) || "(unnamed)"}` +
-          `${detailText}${disabled}`,
+        `${selected ? "›" : " "} ${safeInline(row.label) || "(unnamed)"}` + `${detailText}${disabled}`,
         innerWidth,
         { preserveAnsi: false },
       );
@@ -570,33 +511,24 @@ function renderCompactOverlay(
     }
   }
   if (reserveHint > 0 && body.length < bodyBudget) {
-    body.push(palette.gray(truncateToWidth(hint, innerWidth, {
-      preserveAnsi: false,
-    })));
+    body.push(
+      palette.gray(
+        truncateToWidth(hint, innerWidth, {
+          preserveAnsi: false,
+        }),
+      ),
+    );
   }
 
-  return renderBox(
-    title,
-    body.slice(0, bodyBudget),
-    columns,
-    palette,
-  );
+  return renderBox(title, body.slice(0, bodyBudget), columns, palette);
 }
 
-function renderProgress(
-  state: Readonly<UIState>,
-  options: RenderViewOptions,
-): string {
+function renderProgress(state: Readonly<UIState>, options: RenderViewOptions): string {
   const progress = state.live.progress;
   if (progress.length === 0) return "";
   const palette = viewPalette(options);
   const columns = viewColumns(options);
-  const maximum = boundedOption(
-    options.maxProgressRows,
-    8,
-    1,
-    20,
-  );
+  const maximum = boundedOption(options.maxProgressRows, 8, 1, 20);
   const start = Math.max(0, progress.length - maximum);
   const lines = [palette.bold("Progress")];
   if (start > 0) lines.push(palette.gray(`  … ${start} earlier`));
@@ -606,13 +538,9 @@ function renderProgress(
     if (!item) continue;
     const depth = progressDepth(item.parentId, known);
     const detail = item.detail ? ` · ${safeInline(item.detail)}` : "";
-    const text = `${"  ".repeat(depth + 1)}${progressIcon(item.status)} ` +
-      `${safeInline(item.label) || "Working"}${detail}`;
-    lines.push(styleProgressStatus(
-      item.status,
-      truncateToWidth(text, columns, { preserveAnsi: false }),
-      palette,
-    ));
+    const text =
+      `${"  ".repeat(depth + 1)}${progressIcon(item.status)} ` + `${safeInline(item.label) || "Working"}${detail}`;
+    lines.push(styleProgressStatus(item.status, truncateToWidth(text, columns, { preserveAnsi: false }), palette));
   }
   return lines.join("\n");
 }
@@ -637,41 +565,32 @@ export function renderTaskStatusLines(
   const palette = viewPalette(options);
   const columns = viewColumns(options);
   const position = taskPosition(graph);
-  const maximum = boundedOption(
-    options.maxTaskRows,
-    MAX_COMPACT_TASK_ROWS,
-    1,
-    MAX_COMPACT_TASK_ROWS,
-  );
+  const maximum = boundedOption(options.maxTaskRows, MAX_COMPACT_TASK_ROWS, 1, MAX_COMPACT_TASK_ROWS);
   const focusIndex = Math.max(0, position.current - 1);
-  const heading = palette.bold(truncateToWidth(
-    `${translate(options.language ?? DEFAULT_LANGUAGE, "ui.tasks")} ${position.current}/${position.total}`,
-    columns,
-    { preserveAnsi: false },
-  ));
+  const heading = palette.bold(
+    truncateToWidth(
+      `${translate(options.language ?? DEFAULT_LANGUAGE, "ui.tasks")} ${position.current}/${position.total}`,
+      columns,
+      { preserveAnsi: false },
+    ),
+  );
   if (physicalRows === 1) return [heading];
 
   if (rowBudget !== undefined && Number.isFinite(rowBudget)) {
     const remaining = physicalRows - 1;
     const configuredItems = Math.min(maximum, graph.tasks.length);
     const needsOmission = graph.tasks.length > Math.min(configuredItems, remaining);
-    const itemCapacity = Math.max(
-      1,
-      Math.min(
-        configuredItems,
-        remaining - (needsOmission && remaining >= 2 ? 1 : 0),
-      ),
-    );
+    const itemCapacity = Math.max(1, Math.min(configuredItems, remaining - (needsOmission && remaining >= 2 ? 1 : 0)));
     const window = compactWindow(graph.tasks.length, focusIndex, itemCapacity);
     const lines = [heading];
     appendTaskRows(lines, graph, window.start, window.end, columns, palette, agents, nowMs);
     const hidden = graph.tasks.length - (window.end - window.start);
     if (hidden > 0 && lines.length < physicalRows) {
-      lines.push(palette.gray(truncateToWidth(
-        `  … ${hidden} other task${hidden === 1 ? "" : "s"}`,
-        columns,
-        { preserveAnsi: false },
-      )));
+      lines.push(
+        palette.gray(
+          truncateToWidth(`  … ${hidden} other task${hidden === 1 ? "" : "s"}`, columns, { preserveAnsi: false }),
+        ),
+      );
     }
     return lines.slice(0, physicalRows);
   }
@@ -679,19 +598,13 @@ export function renderTaskStatusLines(
   const window = compactWindow(graph.tasks.length, focusIndex, maximum);
   const lines = [heading];
   if (window.start > 0) {
-    lines.push(palette.gray(truncateToWidth(
-      `  … ${window.start} earlier`,
-      columns,
-      { preserveAnsi: false },
-    )));
+    lines.push(palette.gray(truncateToWidth(`  … ${window.start} earlier`, columns, { preserveAnsi: false })));
   }
   appendTaskRows(lines, graph, window.start, window.end, columns, palette, agents, nowMs);
   if (window.end < graph.tasks.length) {
-    lines.push(palette.gray(truncateToWidth(
-      `  … ${graph.tasks.length - window.end} more`,
-      columns,
-      { preserveAnsi: false },
-    )));
+    lines.push(
+      palette.gray(truncateToWidth(`  … ${graph.tasks.length - window.end} more`, columns, { preserveAnsi: false })),
+    );
   }
   return lines;
 }
@@ -706,19 +619,17 @@ export function renderAgentStatusLines(
   rowBudget?: number,
   nowMs = Date.now(),
 ): readonly string[] {
-  const agents = state.live.subagents.filter(agent => isActiveAgent(agent.status) &&
-    !(agent.assignmentKind === "dag" && state.live.tasks?.tasks.some(task => task.id === agent.taskId)));
+  const agents = state.live.subagents.filter(
+    (agent) =>
+      isActiveAgent(agent.status) &&
+      !(agent.assignmentKind === "dag" && state.live.tasks?.tasks.some((task) => task.id === agent.taskId)),
+  );
   if (agents.length === 0) return [];
   const physicalRows = physicalRowBudget(rowBudget);
   if (physicalRows === 0) return [];
   const palette = viewPalette(options);
   const columns = viewColumns(options);
-  const maximum = boundedOption(
-    options.maxAgentRows,
-    MAX_COMPACT_AGENT_ROWS,
-    1,
-    MAX_COMPACT_AGENT_ROWS,
-  );
+  const maximum = boundedOption(options.maxAgentRows, MAX_COMPACT_AGENT_ROWS, 1, MAX_COMPACT_AGENT_ROWS);
   const active = agents.filter((agent) => isActiveAgent(agent.status)).length;
   const capacity = boundedOption(
     options.agentConcurrencyLimit,
@@ -726,11 +637,11 @@ export function renderAgentStatusLines(
     1,
     99,
   );
-  const heading = palette.bold(truncateToWidth(
-    `${translate(options.language ?? DEFAULT_LANGUAGE, "ui.agents")} ${active}/${capacity}`,
-    columns,
-    { preserveAnsi: false },
-  ));
+  const heading = palette.bold(
+    truncateToWidth(`${translate(options.language ?? DEFAULT_LANGUAGE, "ui.agents")} ${active}/${capacity}`, columns, {
+      preserveAnsi: false,
+    }),
+  );
   if (physicalRows === 1) return [heading];
 
   const explicitBudget = rowBudget !== undefined && Number.isFinite(rowBudget);
@@ -738,13 +649,7 @@ export function renderAgentStatusLines(
   const desiredItems = Math.min(maximum, agents.length);
   const needsOmission = agents.length > Math.min(desiredItems, remaining);
   const itemCapacity = explicitBudget
-    ? Math.max(
-        1,
-        Math.min(
-          desiredItems,
-          remaining - (needsOmission && remaining >= 2 ? 1 : 0),
-        ),
-      )
+    ? Math.max(1, Math.min(desiredItems, remaining - (needsOmission && remaining >= 2 ? 1 : 0)))
     : desiredItems;
   const visible = agents.slice(0, itemCapacity);
   const lines = [heading];
@@ -754,20 +659,13 @@ export function renderAgentStatusLines(
     // identity while reserving the row for the task title/status detail.
     const label = shortAgentLabel(agent.id);
     const detail = agentDetail(agent, nowMs);
-    const text = `  ${agentIcon(agent.status)} ${label}` +
-      `${detail ? `  ${detail}` : ""}`;
-    lines.push(styleAgentStatus(
-      agent.status,
-      truncateToWidth(text, columns, { preserveAnsi: false }),
-      palette,
-    ));
+    const text = `  ${agentIcon(agent.status)} ${label}` + `${detail ? `  ${detail}` : ""}`;
+    lines.push(styleAgentStatus(agent.status, truncateToWidth(text, columns, { preserveAnsi: false }), palette));
   }
   if (visible.length < agents.length) {
-    const more = palette.gray(truncateToWidth(
-      `  … ${agents.length - visible.length} more`,
-      columns,
-      { preserveAnsi: false },
-    ));
+    const more = palette.gray(
+      truncateToWidth(`  … ${agents.length - visible.length} more`, columns, { preserveAnsi: false }),
+    );
     if (!explicitBudget || lines.length < physicalRows) lines.push(more);
   }
   return lines.slice(0, physicalRows);
@@ -786,21 +684,22 @@ function appendTaskRows(
   for (let index = start; index < end; index += 1) {
     const task = graph.tasks[index];
     if (!task) continue;
-    const blocker = task.status === "blocked" && task.blocker
-      ? ` · ${safeInline(task.blocker)}`
-      : "";
-    const text = `  ${taskIcon(task.status)} ${index + 1}. ` +
+    const blocker = task.status === "blocked" && task.blocker ? ` · ${safeInline(task.blocker)}` : "";
+    const text =
+      `  ${taskIcon(task.status)} ${index + 1}. ` +
       `${safeInline(task.title) || safeInline(task.id) || "Task"}${blocker}`;
-    lines.push(styleTaskStatus(
-      task.status,
-      truncateToWidth(text, columns, { preserveAnsi: false }),
-      palette,
-    ));
-    const child = agents.find(agent => agent.assignmentKind === "dag" && agent.taskId === task.id && isActiveAgent(agent.status));
-    if (child) lines.push(palette.gray(truncateToWidth(
-      `      ↳ ${shortAgentLabel(child.id)} · ${agentDetail(child, nowMs)}`,
-      columns, { preserveAnsi: false },
-    )));
+    lines.push(styleTaskStatus(task.status, truncateToWidth(text, columns, { preserveAnsi: false }), palette));
+    const child = agents.find(
+      (agent) => agent.assignmentKind === "dag" && agent.taskId === task.id && isActiveAgent(agent.status),
+    );
+    if (child)
+      lines.push(
+        palette.gray(
+          truncateToWidth(`      ↳ ${shortAgentLabel(child.id)} · ${agentDetail(child, nowMs)}`, columns, {
+            preserveAnsi: false,
+          }),
+        ),
+      );
   }
 }
 
@@ -849,11 +748,7 @@ function physicalRowBudget(value: number | undefined): number {
   return Math.max(0, Math.floor(value));
 }
 
-function renderActivity(
-  state: Readonly<UIState>,
-  nowMs: number,
-  options: RenderViewOptions,
-): string {
+function renderActivity(state: Readonly<UIState>, nowMs: number, options: RenderViewOptions): string {
   const activity = state.live.activity;
   if (!activity) return "";
   const palette = viewPalette(options);
@@ -864,15 +759,10 @@ function renderActivity(
   const columns = viewColumns(options);
   const prefix = `${frame} `;
   const suffix = ` · ${formatElapsed(elapsedMs)}`;
-  const payloadWidth = Math.max(
-    0,
-    columns - displayWidth(prefix) - displayWidth(suffix),
-  );
-  const payload = truncateToWidth(
-    `${safeInline(activity.label) || "Working"}${detail}`,
-    payloadWidth,
-    { preserveAnsi: false },
-  );
+  const payloadWidth = Math.max(0, columns - displayWidth(prefix) - displayWidth(suffix));
+  const payload = truncateToWidth(`${safeInline(activity.label) || "Working"}${detail}`, payloadWidth, {
+    preserveAnsi: false,
+  });
   const line = payload
     ? `${prefix}${payload}${suffix}`
     : truncateToWidth(`${frame} ${formatElapsed(elapsedMs)}`, columns, {
@@ -881,21 +771,18 @@ function renderActivity(
   return palette.gray(line);
 }
 
-function renderReviewStage(
-  state: Readonly<UIState>,
-  options: RenderViewOptions,
-  nowMs: number,
-): string {
+function renderReviewStage(state: Readonly<UIState>, options: RenderViewOptions, nowMs: number): string {
   const review = state.live.review;
   if (!review) return "";
-  const stage = review.phase === "main_brief"
-    ? "Main agent preparing review handoff"
-    : "Reviewer independently investigating";
+  const stage =
+    review.phase === "main_brief" ? "Main agent preparing review handoff" : "Reviewer independently investigating";
   const elapsed = formatElapsed(Math.max(0, finiteNumber(nowMs, review.startedAt) - review.startedAt));
   const label = `Review · ${stage} · ${elapsed}`;
-  return viewPalette(options).cyan(truncateToWidth(label, viewColumns(options), {
-    preserveAnsi: false,
-  }));
+  return viewPalette(options).cyan(
+    truncateToWidth(label, viewColumns(options), {
+      preserveAnsi: false,
+    }),
+  );
 }
 
 function renderBox(
@@ -905,21 +792,23 @@ function renderBox(
   palette: ChalkInstance,
   tone: "cyan" | "gray" | "red" = "cyan",
 ): string {
-  const border = tone === "gray"
-    ? (value: string): string => palette.gray(value)
-    : tone === "red"
-      ? (value: string): string => palette.red(value)
-      : (value: string): string => palette.cyan(value);
-  if (columns < 6) {
-    const styledTitle = tone === "gray"
-      ? palette.gray.bold(title)
+  const border =
+    tone === "gray"
+      ? (value: string): string => palette.gray(value)
       : tone === "red"
-        ? palette.red.bold(title)
-        : palette.bold(title);
+        ? (value: string): string => palette.red(value)
+        : (value: string): string => palette.cyan(value);
+  if (columns < 6) {
+    const styledTitle =
+      tone === "gray" ? palette.gray.bold(title) : tone === "red" ? palette.red.bold(title) : palette.bold(title);
     const flat = [...(title ? [styledTitle] : []), ...body];
-    return flat.map((line) => truncateToWidth(line, columns, {
-      preserveAnsi: true,
-    })).join("\n");
+    return flat
+      .map((line) =>
+        truncateToWidth(line, columns, {
+          preserveAnsi: true,
+        }),
+      )
+      .join("\n");
   }
 
   const availableTitleWidth = columns - 3;
@@ -928,10 +817,7 @@ function renderBox(
         preserveAnsi: false,
       })
     : "";
-  const titleFill = "─".repeat(Math.max(
-    0,
-    availableTitleWidth - displayWidth(titlePart),
-  ));
+  const titleFill = "─".repeat(Math.max(0, availableTitleWidth - displayWidth(titlePart)));
   const top = border(`╭─${titlePart}${titleFill}╮`);
   const bottom = border(`╰${"─".repeat(columns - 2)}╯`);
   const innerWidth = boxContentWidth(columns);
@@ -944,10 +830,7 @@ function renderBox(
   return [top, ...content, bottom].join("\n");
 }
 
-function formatProviderModel(
-  session: Readonly<UISessionInfo>,
-  titledProvider: boolean,
-): string {
+function formatProviderModel(session: Readonly<UISessionInfo>, titledProvider: boolean): string {
   const provider = safeInline(session.provider).toLowerCase() || "provider";
   const model = safeInline(session.model) || "model";
   const prefix = `${provider}-`;
@@ -956,9 +839,7 @@ function formatProviderModel(
     : model.toLowerCase().startsWith(`${provider}/`)
       ? model.slice(provider.length + 1)
       : model;
-  const label = titledProvider
-    ? catalogProviderLabel(session.provider)
-    : provider;
+  const label = titledProvider ? catalogProviderLabel(session.provider) : provider;
   return `${label}/${compactModel || "model"}`;
 }
 
@@ -971,9 +852,7 @@ function formatContext(session: Readonly<UISessionInfo>): string {
   return `${formatTokenCount(current)}/${formatTokenCount(limit)}`;
 }
 
-function taskPosition(
-  graph: Readonly<TaskGraphView>,
-): { current: number; total: number } {
+function taskPosition(graph: Readonly<TaskGraphView>): { current: number; total: number } {
   const total = Math.max(0, graph.total || graph.tasks.length);
   const currentIndex = graph.currentTask
     ? graph.tasks.findIndex((task) => task.id === graph.currentTask)
@@ -986,10 +865,14 @@ function taskPosition(
 
 function taskIcon(status: TaskGraphView["tasks"][number]["status"]): string {
   switch (status) {
-    case "completed": return "✓";
-    case "in_progress": return "▶";
-    case "blocked": return "⊠";
-    case "pending": return "□";
+    case "completed":
+      return "✓";
+    case "in_progress":
+      return "▶";
+    case "blocked":
+      return "⊠";
+    case "pending":
+      return "□";
   }
 }
 
@@ -999,36 +882,47 @@ function styleTaskStatus(
   palette: ChalkInstance,
 ): string {
   switch (status) {
-    case "completed": return palette.green(text);
-    case "in_progress": return palette.cyan(text);
-    case "blocked": return palette.yellow(text);
-    case "pending": return palette.gray(text);
+    case "completed":
+      return palette.green(text);
+    case "in_progress":
+      return palette.cyan(text);
+    case "blocked":
+      return palette.yellow(text);
+    case "pending":
+      return palette.gray(text);
   }
 }
 
 function progressIcon(status: UIProgressStatus): string {
   switch (status) {
-    case "completed": return "✓";
-    case "running": return "▶";
-    case "failed": return "✗";
-    case "blocked": return "⊠";
-    case "stopped": return "■";
-    case "pending": return "□";
+    case "completed":
+      return "✓";
+    case "running":
+      return "▶";
+    case "failed":
+      return "✗";
+    case "blocked":
+      return "⊠";
+    case "stopped":
+      return "■";
+    case "pending":
+      return "□";
   }
 }
 
-function styleProgressStatus(
-  status: UIProgressStatus,
-  text: string,
-  palette: ChalkInstance,
-): string {
+function styleProgressStatus(status: UIProgressStatus, text: string, palette: ChalkInstance): string {
   switch (status) {
-    case "completed": return palette.green(text);
-    case "running": return palette.cyan(text);
-    case "failed": return palette.red(text);
-    case "blocked": return palette.yellow(text);
+    case "completed":
+      return palette.green(text);
+    case "running":
+      return palette.cyan(text);
+    case "failed":
+      return palette.red(text);
+    case "blocked":
+      return palette.yellow(text);
     case "stopped":
-    case "pending": return palette.gray(text);
+    case "pending":
+      return palette.gray(text);
   }
 }
 
@@ -1059,31 +953,41 @@ function shortAgentLabel(value: string): string {
 
 function agentIcon(status: SubagentStatus): string {
   switch (status) {
-    case "running": return "●";
-    case "stopping": return "◌";
-    case "completed": return "✓";
-    case "blocked": return "⊠";
-    case "needs_parent_decision": return "?";
-    case "failed": return "✗";
-    case "stopped": return "■";
-    case "interrupted": return "!";
+    case "running":
+      return "●";
+    case "stopping":
+      return "◌";
+    case "completed":
+      return "✓";
+    case "blocked":
+      return "⊠";
+    case "needs_parent_decision":
+      return "?";
+    case "failed":
+      return "✗";
+    case "stopped":
+      return "■";
+    case "interrupted":
+      return "!";
   }
 }
 
-function styleAgentStatus(
-  status: SubagentStatus,
-  text: string,
-  palette: ChalkInstance,
-): string {
+function styleAgentStatus(status: SubagentStatus, text: string, palette: ChalkInstance): string {
   switch (status) {
-    case "running": return palette.cyan(text);
+    case "running":
+      return palette.cyan(text);
     case "stopping":
-    case "blocked": return palette.yellow(text);
-    case "needs_parent_decision": return palette.yellow(text);
-    case "completed": return palette.green(text);
+    case "blocked":
+      return palette.yellow(text);
+    case "needs_parent_decision":
+      return palette.yellow(text);
+    case "completed":
+      return palette.green(text);
     case "failed":
-    case "interrupted": return palette.red(text);
-    case "stopped": return palette.gray(text);
+    case "interrupted":
+      return palette.red(text);
+    case "stopped":
+      return palette.gray(text);
   }
 }
 
@@ -1094,42 +998,40 @@ function isActiveAgent(status: SubagentStatus): boolean {
 function agentDetail(agent: Readonly<SubagentView>, nowMs: number): string {
   const taskTitle = safeInline(agent.taskTitle);
   if (agent.activity && isActiveAgent(agent.status)) {
-    const detail = agent.activity.kind === "tool"
-      ? `Tool ${safeInline(agent.activity.label ?? "running")}`
-      : agent.activity.kind === "thinking" ? "Thinking" : "Working";
+    const detail =
+      agent.activity.kind === "tool"
+        ? `Tool ${safeInline(agent.activity.label ?? "running")}`
+        : agent.activity.kind === "thinking"
+          ? "Thinking"
+          : "Working";
     return `${taskTitle ? `${taskTitle} · ` : ""}${detail} · ${formatElapsed(Math.max(0, nowMs - Date.parse(agent.activity.startedAt)))}`;
   }
   switch (agent.status) {
-    case "running": return `${taskTitle ? `${taskTitle} · ` : ""}Working · ${formatElapsed(Math.max(0, nowMs - Date.parse(agent.startedAt)))}`;
-    case "stopping": return `Stopping${taskTitle ? ` · ${taskTitle}` : ""} · ${formatElapsed(Math.max(0, nowMs - Date.parse(agent.startedAt)))}`;
+    case "running":
+      return `${taskTitle ? `${taskTitle} · ` : ""}Working · ${formatElapsed(Math.max(0, nowMs - Date.parse(agent.startedAt)))}`;
+    case "stopping":
+      return `Stopping${taskTitle ? ` · ${taskTitle}` : ""} · ${formatElapsed(Math.max(0, nowMs - Date.parse(agent.startedAt)))}`;
     case "completed":
       return safeInline(agent.result?.summary ?? "Completed");
     case "blocked":
     case "needs_parent_decision":
-      return safeInline(
-        agent.result?.outcome === "blocked"
-          ? agent.result.blocker
-          : agent.error ?? "Blocked",
-      );
-    case "failed": return safeInline(agent.error ?? "Failed");
-    case "stopped": return taskTitle ? `Stopped · ${taskTitle}` : "Stopped";
-    case "interrupted": return safeInline(agent.error ?? "Interrupted");
+      return safeInline(agent.result?.outcome === "blocked" ? agent.result.blocker : (agent.error ?? "Blocked"));
+    case "failed":
+      return safeInline(agent.error ?? "Failed");
+    case "stopped":
+      return taskTitle ? `Stopped · ${taskTitle}` : "Stopped";
+    case "interrupted":
+      return safeInline(agent.error ?? "Interrupted");
   }
 }
 
-function effortAgentCapacity(
-  effort: UISessionInfo["thinkingEffort"] | undefined,
-): number {
+function effortAgentCapacity(effort: UISessionInfo["thinkingEffort"] | undefined): number {
   if (effort === "high") return 8;
   if (effort === "medium") return 4;
   return 2;
 }
 
-function limitedWrappedLines(
-  value: string,
-  columns: number,
-  maximumLines: number,
-): string[] {
+function limitedWrappedLines(value: string, columns: number, maximumLines: number): string[] {
   return limitedWrappedLineResult(value, columns, maximumLines).lines;
 }
 
@@ -1158,11 +1060,7 @@ function limitedWrappedLineResult(
   return { lines: visible, truncated: true, totalLines: lines.length };
 }
 
-function compactWindow(
-  length: number,
-  focus: number,
-  maximum: number,
-): { start: number; end: number } {
+function compactWindow(length: number, focus: number, maximum: number): { start: number; end: number } {
   if (length <= maximum) return { start: 0, end: length };
   const normalizedFocus = clampInteger(focus, 0, Math.max(0, length - 1));
   const proposed = normalizedFocus - Math.floor(maximum / 2);
@@ -1170,19 +1068,13 @@ function compactWindow(
   return { start, end: start + maximum };
 }
 
-function spinnerFrame(
-  requested: number | string | undefined,
-  elapsedMs: number,
-): string {
+function spinnerFrame(requested: number | string | undefined, elapsedMs: number): string {
   if (typeof requested === "string") {
-    return truncateToWidth(safeInline(requested), 2, { preserveAnsi: false }) ||
-      ACTIVITY_SPINNER_FRAMES[0];
+    return truncateToWidth(safeInline(requested), 2, { preserveAnsi: false }) || ACTIVITY_SPINNER_FRAMES[0];
   }
-  const index = requested === undefined
-    ? Math.floor(elapsedMs / 80)
-    : Math.floor(finiteNumber(requested, 0));
-  const normalized = ((index % ACTIVITY_SPINNER_FRAMES.length) +
-    ACTIVITY_SPINNER_FRAMES.length) % ACTIVITY_SPINNER_FRAMES.length;
+  const index = requested === undefined ? Math.floor(elapsedMs / 80) : Math.floor(finiteNumber(requested, 0));
+  const normalized =
+    ((index % ACTIVITY_SPINNER_FRAMES.length) + ACTIVITY_SPINNER_FRAMES.length) % ACTIVITY_SPINNER_FRAMES.length;
   return ACTIVITY_SPINNER_FRAMES[normalized] ?? "⠋";
 }
 
@@ -1213,9 +1105,7 @@ function safeMultiline(value: string): string {
 function sanitizeExternal(value: string): string {
   // Remove controls before redaction so escape bytes cannot split a credential
   // pattern and evade the second pass.
-  return redactSensitiveInformation(
-    sanitizeTerminalText(value, { allowSgr: false }),
-  );
+  return redactSensitiveInformation(sanitizeTerminalText(value, { allowSgr: false }));
 }
 
 function viewPalette(options: RenderViewOptions): ChalkInstance {
@@ -1241,12 +1131,7 @@ function boxContentWidth(columns: number): number {
   return columns >= 6 ? columns - 4 : columns;
 }
 
-function boundedOption(
-  value: number | undefined,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-): number {
+function boundedOption(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.min(maximum, Math.max(minimum, Math.floor(value)));
 }

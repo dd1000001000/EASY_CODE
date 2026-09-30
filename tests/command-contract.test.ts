@@ -5,16 +5,8 @@ import path from "node:path";
 import { CommandPolicy, CommandRuntime } from "../src/command/index.js";
 import { defaultRuntimeLimits, type RuntimeLimits } from "../src/config/runtime-limits.js";
 import type { ToolContext } from "../src/core/types.js";
-import type {
-  CommandExecutionBackend,
-  PreparedCommand,
-} from "../src/sandbox/index.js";
-import {
-  CancelCommandTool,
-  PollCommandTool,
-  RunCommandTool,
-  StartCommandTool,
-} from "../src/tools/index.js";
+import type { CommandExecutionBackend, PreparedCommand } from "../src/sandbox/index.js";
+import { CancelCommandTool, PollCommandTool, RunCommandTool, StartCommandTool } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 
@@ -31,9 +23,7 @@ class TrackingHostBackend implements CommandExecutionBackend {
     };
   }
 
-  async prepare(
-    request: Parameters<CommandExecutionBackend["prepare"]>[0],
-  ): Promise<PreparedCommand> {
+  async prepare(request: Parameters<CommandExecutionBackend["prepare"]>[0]): Promise<PreparedCommand> {
     this.prepareCalls += 1;
     this.requestedTimeouts.push(request.timeoutMs ?? 0);
     return {
@@ -77,7 +67,9 @@ async function withTool(
   try {
     const manager = await WorkspaceManager.create(root);
     const backend = new TrackingHostBackend();
-    const runtime = new CommandRuntime(manager, new CommandPolicy(), backend, backend, { ...(limits ? { limits } : {}) });
+    const runtime = new CommandRuntime(manager, new CommandPolicy(), backend, backend, {
+      ...(limits ? { limits } : {}),
+    });
     await run(root, new RunCommandTool(manager, runtime), backend, {
       start: new StartCommandTool(manager, runtime),
       poll: new PollCommandTool(manager, runtime),
@@ -102,12 +94,12 @@ describe("run_command model contract", () => {
       );
       assert.equal(valid.ok, true);
 
-      const missingKind = await tool.execute(
-        { program: "node", args: ["--version"], intent: "verify" },
-        context(root),
-      );
+      const missingKind = await tool.execute({ program: "node", args: ["--version"], intent: "verify" }, context(root));
       assert.equal(missingKind.ok, true);
-      assert.equal((missingKind.data as { requestMetadata: { verificationKind: string } }).requestMetadata.verificationKind, "custom");
+      assert.equal(
+        (missingKind.data as { requestMetadata: { verificationKind: string } }).requestMetadata.verificationKind,
+        "custom",
+      );
 
       const misplacedKind = await tool.execute(
         {
@@ -119,9 +111,15 @@ describe("run_command model contract", () => {
         context(root),
       );
       assert.equal(misplacedKind.ok, true);
-      assert.equal((misplacedKind.data as { requestMetadata: { verificationKind?: string } }).requestMetadata.verificationKind, undefined);
+      assert.equal(
+        (misplacedKind.data as { requestMetadata: { verificationKind?: string } }).requestMetadata.verificationKind,
+        undefined,
+      );
       assert.equal(backend.prepareCalls, 3);
-      const invalidKind = await tool.execute({ program: "node", args: ["--version"], intent: "verify", verificationKind: { wrong: true } }, context(root));
+      const invalidKind = await tool.execute(
+        { program: "node", args: ["--version"], intent: "verify", verificationKind: { wrong: true } },
+        context(root),
+      );
       assert.equal(invalidKind.ok, true);
       const missingProgram = await tool.execute({ args: ["--version"], intent: "inspect" }, context(root));
       assert.equal(missingProgram.ok, false);
@@ -149,9 +147,14 @@ describe("run_command model contract", () => {
 
   it("uses approval, not shell syntax, as the command authorization boundary", async () => {
     await withTool(async (root, tool, backend) => {
-      const command = process.platform === "win32"
-        ? { program: "powershell", args: ["-NoProfile", "-Command", "Write-Output 'shell-approved'"], intent: "run" as const }
-        : { program: "sh", args: ["-c", "printf shell-approved"], intent: "run" as const };
+      const command =
+        process.platform === "win32"
+          ? {
+              program: "powershell",
+              args: ["-NoProfile", "-Command", "Write-Output 'shell-approved'"],
+              intent: "run" as const,
+            }
+          : { program: "sh", args: ["-c", "printf shell-approved"], intent: "run" as const };
       const result = await tool.execute(command, { ...context(root), commandExecutionMode: "manual" });
       assert.equal(result.ok, true, JSON.stringify(result));
       assert.equal(backend.prepareCalls, 1);
@@ -227,26 +230,14 @@ describe("run_command model contract", () => {
         configuredLimitMs: 60 * 60_000,
       });
 
-      const polled = await lifecycle.poll.execute(
-        { commandId: running.commandId, waitMs: 0 },
-        toolContext,
-      );
+      const polled = await lifecycle.poll.execute({ commandId: running.commandId, waitMs: 0 }, toolContext);
       assert.equal((polled.data as { status: string }).status, "running");
-      assert.deepEqual(
-        (polled.data as { timeout: Record<string, number> }).timeout,
-        running.timeout,
-      );
+      assert.deepEqual((polled.data as { timeout: Record<string, number> }).timeout, running.timeout);
 
-      const canceled = await lifecycle.cancel.execute(
-        { commandId: running.commandId },
-        toolContext,
-      );
+      const canceled = await lifecycle.cancel.execute({ commandId: running.commandId }, toolContext);
       assert.equal(canceled.ok, true);
       assert.equal((canceled.data as { status: string }).status, "canceled");
-      assert.deepEqual(
-        (canceled.data as { timeout: Record<string, number> }).timeout,
-        running.timeout,
-      );
+      assert.deepEqual((canceled.data as { timeout: Record<string, number> }).timeout, running.timeout);
     });
   });
 
@@ -255,9 +246,14 @@ describe("run_command model contract", () => {
     await withTool(async (root, _tool, backend, lifecycle) => {
       await writeFile(path.join(root, "server.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
       const owner = context(root, 150);
-      const started = await lifecycle.start.execute({
-        program: "node", args: ["server.cjs"], intent: "run",
-      }, owner);
+      const started = await lifecycle.start.execute(
+        {
+          program: "node",
+          args: ["server.cjs"],
+          intent: "run",
+        },
+        owner,
+      );
       assert.equal(started.ok, true, JSON.stringify(started));
       const running = started.data as { commandId: string; status: string; timeout: { effectiveMs: number } };
       assert.equal(running.status, "running");
@@ -276,9 +272,15 @@ describe("run_command model contract", () => {
     await withTool(async (root, _tool, _backend, lifecycle) => {
       await writeFile(path.join(root, "lifetime.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
       const owner = context(root, 1_000);
-      const started = await lifecycle.start.execute({
-        program: "node", args: ["lifetime.cjs"], intent: "run", timeoutMs: 300,
-      }, owner);
+      const started = await lifecycle.start.execute(
+        {
+          program: "node",
+          args: ["lifetime.cjs"],
+          intent: "run",
+          timeoutMs: 300,
+        },
+        owner,
+      );
       assert.equal(started.ok, true, JSON.stringify(started));
       const running = started.data as { commandId: string; timeout: { effectiveMs: number } };
       assert.equal(running.timeout.effectiveMs, 300);
@@ -294,9 +296,14 @@ describe("run_command model contract", () => {
     await withTool(async (root, _tool, _backend, lifecycle) => {
       await writeFile(path.join(root, "shutdown.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
       const owner = context(root, 150);
-      const started = await lifecycle.start.execute({
-        program: "node", args: ["shutdown.cjs"], intent: "run",
-      }, owner);
+      const started = await lifecycle.start.execute(
+        {
+          program: "node",
+          args: ["shutdown.cjs"],
+          intent: "run",
+        },
+        owner,
+      );
       assert.equal(started.ok, true, JSON.stringify(started));
       const commandId = (started.data as { commandId: string }).commandId;
       await lifecycle.start.runtime.cancelAll();

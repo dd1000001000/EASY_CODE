@@ -15,10 +15,7 @@ import type {
   ToolExecutionResult,
   ToolName,
 } from "../src/core/types.js";
-import {
-  AgentRuntime,
-  type AgentRuntimeDependencies,
-} from "../src/runtime/agent.js";
+import { AgentRuntime, type AgentRuntimeDependencies } from "../src/runtime/agent.js";
 import { SubmitTaskResultTool } from "../src/tools/submit-task-result.js";
 import { describe, it } from "./harness.js";
 import { baseSessionState } from "./session-state.js";
@@ -42,7 +39,6 @@ const ALL_TOOL_NAMES: ToolName[] = [
   "manage_subagents",
   "send_parent_message",
   "submit_task_result",
-  "compact_context",
   "read_memory",
   "write_memory",
 ];
@@ -61,10 +57,7 @@ const CHILD_TOOL_NAMES: ToolName[] = [
   "update_file",
 ];
 
-function state(
-  thinkingEffort: ThinkingEffort,
-  suffix: string,
-): SessionState {
+function state(thinkingEffort: ThinkingEffort, suffix: string): SessionState {
   const now = new Date().toISOString();
   return {
     ...baseSessionState(),
@@ -104,10 +97,7 @@ function boundTask(taskId: string): TaskNode {
   };
 }
 
-function fakeTool(
-  name: ToolName,
-  execute?: AgentTool["execute"],
-): AgentTool {
+function fakeTool(name: ToolName, execute?: AgentTool["execute"]): AgentTool {
   return {
     name,
     mutating:
@@ -130,16 +120,16 @@ function fakeTool(
         parameters: { type: "object" },
       },
     },
-    execute: execute ?? (async (): Promise<ToolExecutionResult> => ({
-      ok: true,
-      summary: `${name} completed`,
-    })),
+    execute:
+      execute ??
+      (async (): Promise<ToolExecutionResult> => ({
+        ok: true,
+        summary: `${name} completed`,
+      })),
   };
 }
 
-function provider(
-  complete: (request: ModelRequest) => ProviderResponse | Promise<ProviderResponse>,
-): ModelProvider {
+function provider(complete: (request: ModelRequest) => ProviderResponse | Promise<ProviderResponse>): ModelProvider {
   return {
     name: "qwen",
     model: "mock",
@@ -171,24 +161,14 @@ function runtime(input: {
     appendEvent: input.appendEvent ?? (async () => undefined),
     requestApproval: async () => false,
     ...(input.onToolCompleted ? { onToolCompleted: input.onToolCompleted } : {}),
-    ...(input.onSubagentLifecycleRollback
-      ? { onSubagentLifecycleRollback: input.onSubagentLifecycleRollback }
-      : {}),
-    ...(input.getOutstandingSubagents
-      ? { getOutstandingSubagents: input.getOutstandingSubagents }
-      : {}),
-    ...(input.hasOpenCommandHandles
-      ? { hasOpenCommandHandles: input.hasOpenCommandHandles }
-      : {}),
-    ...(input.takeSubagentMessages
-      ? { takeSubagentMessages: input.takeSubagentMessages }
-      : {}),
+    ...(input.onSubagentLifecycleRollback ? { onSubagentLifecycleRollback: input.onSubagentLifecycleRollback } : {}),
+    ...(input.getOutstandingSubagents ? { getOutstandingSubagents: input.getOutstandingSubagents } : {}),
+    ...(input.hasOpenCommandHandles ? { hasOpenCommandHandles: input.hasOpenCommandHandles } : {}),
+    ...(input.takeSubagentMessages ? { takeSubagentMessages: input.takeSubagentMessages } : {}),
   });
 }
 
-function standaloneAssignment(
-  thinkingEffort: ThinkingEffort = "medium",
-): SubagentAssignmentSnapshot {
+function standaloneAssignment(thinkingEffort: ThinkingEffort = "medium"): SubagentAssignmentSnapshot {
   return {
     kind: "standalone",
     mode: "code",
@@ -217,42 +197,40 @@ function options(maxSteps = 4) {
   };
 }
 
-function submitCall(
-  callId: string,
-  summary = "Completed the assigned task.",
-): ProviderResponse {
+function submitCall(callId: string, summary = "Completed the assigned task."): ProviderResponse {
   return {
     message: {
       role: "assistant",
       content: null,
-      tool_calls: [{
-        id: callId,
-        type: "function",
-        function: {
-          name: "submit_task_result",
-          arguments: JSON.stringify({
-            outcome: "completed",
-            summary,
-            evidence: ["The focused verification passed."],
-          }),
+      tool_calls: [
+        {
+          id: callId,
+          type: "function",
+          function: {
+            name: "submit_task_result",
+            arguments: JSON.stringify({
+              outcome: "completed",
+              summary,
+              evidence: ["The focused verification passed."],
+            }),
+          },
         },
-      }],
+      ],
     },
   };
 }
 
-function completionReport(
-  taskId: string,
-  summary = "Completed the assigned task.",
-): SubagentTaskReport {
+function completionReport(taskId: string, summary = "Completed the assigned task."): SubagentTaskReport {
   return {
     taskId,
     outcome: "completed",
     summary,
-    completionEvidence: [{
-      check: "Focused verification passes",
-      evidence: "The focused verification passed.",
-    }],
+    completionEvidence: [
+      {
+        check: "Focused verification passes",
+        evidence: "The focused verification passed.",
+      },
+    ],
   };
 }
 
@@ -262,8 +240,9 @@ describe("AgentRuntime subagent boundaries", () => {
     let seen = false;
     let taken = 0;
     const model = provider(async (request) => {
-      seen = request.messages.some((message) => message.role === "user" &&
-        message.content.includes("Child found a failing edge case"));
+      seen = request.messages.some(
+        (message) => message.role === "user" && message.content.includes("Child found a failing edge case"),
+      );
       return { message: { role: "assistant", content: "I will investigate the reported edge case.", tool_calls: [] } };
     });
     const result = await runtime({
@@ -329,17 +308,19 @@ describe("AgentRuntime subagent boundaries", () => {
           message: {
             role: "assistant",
             content: null,
-            tool_calls: [{
-              id: "route_outstanding_child_to_plan",
-              type: "function",
-              function: {
-                name: "select_mode",
-                arguments: JSON.stringify({
-                  mode: "plan",
-                  reason: "This response must be ignored while child work is outstanding.",
-                }),
+            tool_calls: [
+              {
+                id: "route_outstanding_child_to_plan",
+                type: "function",
+                function: {
+                  name: "select_mode",
+                  arguments: JSON.stringify({
+                    mode: "plan",
+                    reason: "This response must be ignored while child work is outstanding.",
+                  }),
+                },
               },
-            }],
+            ],
           },
         };
       }
@@ -350,11 +331,13 @@ describe("AgentRuntime subagent boundaries", () => {
           message: {
             role: "assistant",
             content: null,
-            tool_calls: [{
-              id: "collect_outstanding_standalone_in_auto",
-              type: "function",
-              function: { name: "manage_subagents", arguments: "{}" },
-            }],
+            tool_calls: [
+              {
+                id: "collect_outstanding_standalone_in_auto",
+                type: "function",
+                function: { name: "manage_subagents", arguments: "{}" },
+              },
+            ],
           },
         };
       }
@@ -369,22 +352,27 @@ describe("AgentRuntime subagent boundaries", () => {
 
     const result = await runtime({
       provider: model,
-      tools: [fakeTool("manage_subagents", async () => ({
-        ok: true,
-        summary: "Collected the outstanding standalone child.",
-        subagentAssignment: assignment,
-        subagentLifecycle: { action: "observe", agentId: CHILD_AGENT_ID },
-      }))],
+      tools: [
+        fakeTool("manage_subagents", async () => ({
+          ok: true,
+          summary: "Collected the outstanding standalone child.",
+          subagentAssignment: assignment,
+          subagentLifecycle: { action: "observe", agentId: CHILD_AGENT_ID },
+        })),
+      ],
       agentIdentity: { role: "main_agent" },
-      getOutstandingSubagents: () => outstanding
-        ? [{
-            id: CHILD_AGENT_ID,
-            assignmentKind: "standalone",
-            taskId: assignment.taskId,
-            taskTitle: assignment.taskTitle,
-            status: "completed",
-          }]
-        : [],
+      getOutstandingSubagents: () =>
+        outstanding
+          ? [
+              {
+                id: CHILD_AGENT_ID,
+                assignmentKind: "standalone",
+                taskId: assignment.taskId,
+                taskTitle: assignment.taskTitle,
+                status: "completed",
+              },
+            ]
+          : [],
       onToolCompleted: async () => {
         outstanding = false;
       },
@@ -414,11 +402,13 @@ describe("AgentRuntime subagent boundaries", () => {
         message: {
           role: "assistant",
           content: null,
-          tool_calls: [{
-            id: "propose_plan_with_outstanding_child",
-            type: "function",
-            function: { name: "propose_plan", arguments: "{}" },
-          }],
+          tool_calls: [
+            {
+              id: "propose_plan_with_outstanding_child",
+              type: "function",
+              function: { name: "propose_plan", arguments: "{}" },
+            },
+          ],
         },
       };
     });
@@ -427,22 +417,21 @@ describe("AgentRuntime subagent boundaries", () => {
       provider: model,
       tools: [fakeTool("propose_plan")],
       agentIdentity: { role: "main_agent" },
-      getOutstandingSubagents: () => [{
-        id: CHILD_AGENT_ID,
-        assignmentKind: "standalone",
-        taskId: assignment.taskId,
-        taskTitle: assignment.taskTitle,
-        status: "completed",
-      }],
+      getOutstandingSubagents: () => [
+        {
+          id: CHILD_AGENT_ID,
+          assignmentKind: "standalone",
+          taskId: assignment.taskId,
+          taskTitle: assignment.taskTitle,
+          status: "completed",
+        },
+      ],
     }).run(currentState, "Adjust the pending plan", {
       ...options(2),
       modeOverride: "plan",
     });
     assert.equal(result.reason, "failed");
-    assert.match(
-      result.text,
-      /collect.*standalone|standalone.*before.*Plan|outstanding.*child/iu,
-    );
+    assert.match(result.text, /collect.*standalone|standalone.*before.*Plan|outstanding.*child/iu);
     assert.equal(providerRequests, 0);
     assert.equal(currentState.planReview, undefined);
   });
@@ -458,11 +447,13 @@ describe("AgentRuntime subagent boundaries", () => {
           message: {
             role: "assistant",
             content: null,
-            tool_calls: [{
-              id: "spawn_standalone",
-              type: "function",
-              function: { name: "manage_subagents", arguments: "{}" },
-            }],
+            tool_calls: [
+              {
+                id: "spawn_standalone",
+                type: "function",
+                function: { name: "manage_subagents", arguments: "{}" },
+              },
+            ],
           },
         };
       }
@@ -470,12 +461,14 @@ describe("AgentRuntime subagent boundaries", () => {
     });
     const result = await runtime({
       provider: model,
-      tools: [fakeTool("manage_subagents", async () => ({
-        ok: true,
-        summary: "Standalone child reserved.",
-        subagentAssignment: assignment,
-        subagentLifecycle: { action: "activate", agentId: CHILD_AGENT_ID },
-      }))],
+      tools: [
+        fakeTool("manage_subagents", async () => ({
+          ok: true,
+          summary: "Standalone child reserved.",
+          subagentAssignment: assignment,
+          subagentLifecycle: { action: "activate", agentId: CHILD_AGENT_ID },
+        })),
+      ],
       agentIdentity: { role: "main_agent" },
       appendEvent: async (event) => {
         events.push({ type: event.type, payload: event.payload });
@@ -484,20 +477,19 @@ describe("AgentRuntime subagent boundaries", () => {
 
     assert.equal(result.reason, "success");
     const toolResult = events.find((event) => event.type === "tool.result");
-    assert.deepEqual(
-      (toolResult?.payload as { subagentAssignment?: unknown }).subagentAssignment,
-      assignment,
-    );
+    assert.deepEqual((toolResult?.payload as { subagentAssignment?: unknown }).subagentAssignment, assignment);
 
     requests = 0;
     const invalidState = state("medium", "standalone_missing_binding");
     const invalid = await runtime({
       provider: model,
-      tools: [fakeTool("manage_subagents", async () => ({
-        ok: true,
-        summary: "Missing binding.",
-        subagentLifecycle: { action: "activate", agentId: CHILD_AGENT_ID },
-      }))],
+      tools: [
+        fakeTool("manage_subagents", async () => ({
+          ok: true,
+          summary: "Missing binding.",
+          subagentLifecycle: { action: "activate", agentId: CHILD_AGENT_ID },
+        })),
+      ],
       agentIdentity: { role: "main_agent" },
     }).run(invalidState, "Start invalid child", options(2));
     assert.equal(invalid.reason, "success");
@@ -523,11 +515,13 @@ describe("AgentRuntime subagent boundaries", () => {
           message: {
             role: "assistant",
             content: null,
-            tool_calls: [{
-              id: "collect_standalone",
-              type: "function",
-              function: { name: "manage_subagents", arguments: "{}" },
-            }],
+            tool_calls: [
+              {
+                id: "collect_standalone",
+                type: "function",
+                function: { name: "manage_subagents", arguments: "{}" },
+              },
+            ],
           },
         };
       }
@@ -536,22 +530,27 @@ describe("AgentRuntime subagent boundaries", () => {
     const collectionState = state("low", "standalone_collection");
     const result = await runtime({
       provider: model,
-      tools: [fakeTool("manage_subagents", async () => ({
-        ok: true,
-        summary: "Collected child result.",
-        subagentAssignment: assignment,
-        subagentLifecycle: { action: "observe", agentId: CHILD_AGENT_ID },
-      }))],
+      tools: [
+        fakeTool("manage_subagents", async () => ({
+          ok: true,
+          summary: "Collected child result.",
+          subagentAssignment: assignment,
+          subagentLifecycle: { action: "observe", agentId: CHILD_AGENT_ID },
+        })),
+      ],
       agentIdentity: { role: "main_agent" },
-      getOutstandingSubagents: () => outstanding
-        ? [{
-            id: CHILD_AGENT_ID,
-            assignmentKind: "standalone",
-            taskId: assignment.taskId,
-            taskTitle: assignment.taskTitle,
-            status: "completed",
-          }]
-        : [],
+      getOutstandingSubagents: () =>
+        outstanding
+          ? [
+              {
+                id: CHILD_AGENT_ID,
+                assignmentKind: "standalone",
+                taskId: assignment.taskId,
+                taskTitle: assignment.taskTitle,
+                status: "completed",
+              },
+            ]
+          : [],
       onToolCompleted: async () => {
         outstanding = false;
       },
@@ -566,9 +565,7 @@ describe("AgentRuntime subagent boundaries", () => {
     const taskId = "child_tool_visibility";
     let visibleTools: ToolName[] = [];
     const tools = ALL_TOOL_NAMES.map((name) =>
-      name === "submit_task_result"
-        ? new SubmitTaskResultTool(boundTask(taskId))
-        : fakeTool(name)
+      name === "submit_task_result" ? new SubmitTaskResultTool(boundTask(taskId)) : fakeTool(name),
     );
     const model = provider(async (request) => {
       visibleTools = (request.tools ?? []).map((tool) => tool.function.name);
@@ -599,20 +596,24 @@ describe("AgentRuntime subagent boundaries", () => {
     const currentState = state("high", "plan_child_tools");
     currentState.mode = "plan";
     let visibleTools: ToolName[] = [];
-    const tools = ALL_TOOL_NAMES.map(name => name === "submit_task_result"
-      ? new SubmitTaskResultTool(boundTask(taskId)) : fakeTool(name));
-    const model = provider(async request => {
-      visibleTools = (request.tools ?? []).map(tool => tool.function.name);
+    const tools = ALL_TOOL_NAMES.map((name) =>
+      name === "submit_task_result" ? new SubmitTaskResultTool(boundTask(taskId)) : fakeTool(name),
+    );
+    const model = provider(async (request) => {
+      visibleTools = (request.tools ?? []).map((tool) => tool.function.name);
       return submitCall("submit_plan_research", "Repository findings are documented.");
     });
-    const result = await runtime({ provider: model, tools,
+    const result = await runtime({
+      provider: model,
+      tools,
       agentIdentity: { role: "subagent", agentId: CHILD_AGENT_ID, assignedTaskId: taskId },
     }).run(currentState, "Research the assigned plan task", options(1));
     assert.equal(result.reason, "success");
     assert.equal(result.subagentTaskReport?.outcome, "completed");
-    assert.deepEqual([...visibleTools].sort(), [
-      "read_file", "read_memory", "send_parent_message", "submit_task_result",
-    ].sort());
+    assert.deepEqual(
+      [...visibleTools].sort(),
+      ["read_file", "read_memory", "send_parent_message", "submit_task_result"].sort(),
+    );
     for (const name of ["create_file", "update_file", "delete_file", "run_command", "manage_tasks", "manage_subagents"])
       assert.equal(visibleTools.includes(name as ToolName), false);
   });
@@ -634,8 +635,7 @@ describe("AgentRuntime subagent boundaries", () => {
         };
       }
       correctionWasVisible = request.messages.some(
-        (message) => message.role === "user" &&
-          message.content.includes("RUNTIME_COMPLETION_REQUIRED"),
+        (message) => message.role === "user" && message.content.includes("RUNTIME_COMPLETION_REQUIRED"),
       );
       return submitCall("submit_after_runtime_correction", "Verified child result.");
     });
@@ -664,47 +664,42 @@ describe("AgentRuntime subagent boundaries", () => {
     let submitExecutions = 0;
     let running = true;
     let sawRuntimeRejection = false;
-    const submitTool = fakeTool(
-      "submit_task_result",
-      async (): Promise<ToolExecutionResult> => {
-        submitExecutions += 1;
-        return {
-          ok: true,
-          summary: "Submitted the bound result.",
-          subagentTaskReport: completionReport(taskId, "Verified after command completion."),
-        };
-      },
-    );
-    const commandTool = fakeTool(
-      "poll_command",
-      async (): Promise<ToolExecutionResult> => {
-        running = false;
-        return { ok: true, summary: "Command exited.", data: { status: "exited" } };
-      },
-    );
+    const submitTool = fakeTool("submit_task_result", async (): Promise<ToolExecutionResult> => {
+      submitExecutions += 1;
+      return {
+        ok: true,
+        summary: "Submitted the bound result.",
+        subagentTaskReport: completionReport(taskId, "Verified after command completion."),
+      };
+    });
+    const commandTool = fakeTool("poll_command", async (): Promise<ToolExecutionResult> => {
+      running = false;
+      return { ok: true, summary: "Command exited.", data: { status: "exited" } };
+    });
     const model = provider(async (request) => {
       requests += 1;
       if (requests === 2) {
         sawRuntimeRejection = request.messages.some(
-          (message) => message.role === "tool" && message.content.includes(
-            "RUNTIME_BACKGROUND_COMMAND_FINALIZATION_REQUIRED",
-          ),
+          (message) =>
+            message.role === "tool" && message.content.includes("RUNTIME_BACKGROUND_COMMAND_FINALIZATION_REQUIRED"),
         );
         return {
           message: {
             role: "assistant",
             content: null,
-            tool_calls: [{
-              id: "status_child_command",
-              type: "function",
-              function: {
-                name: "poll_command",
-                arguments: JSON.stringify({
-                  commandId: "command_00000000-0000-4000-8000-000000000000",
-                  waitMs: 1_000,
-                }),
+            tool_calls: [
+              {
+                id: "status_child_command",
+                type: "function",
+                function: {
+                  name: "poll_command",
+                  arguments: JSON.stringify({
+                    commandId: "command_00000000-0000-4000-8000-000000000000",
+                    waitMs: 1_000,
+                  }),
+                },
               },
-            }],
+            ],
           },
         };
       }
@@ -736,25 +731,22 @@ describe("AgentRuntime subagent boundaries", () => {
     let requests = 0;
     let toolExecutions = 0;
     let rejectionWasVisible = false;
-    const submitTool = fakeTool(
-      "submit_task_result",
-      async (): Promise<ToolExecutionResult> => {
-        toolExecutions += 1;
-        return {
-          ok: true,
-          summary: "Submitted a child result.",
-          subagentTaskReport: toolExecutions === 1
+    const submitTool = fakeTool("submit_task_result", async (): Promise<ToolExecutionResult> => {
+      toolExecutions += 1;
+      return {
+        ok: true,
+        summary: "Submitted a child result.",
+        subagentTaskReport:
+          toolExecutions === 1
             ? completionReport("a_different_task", "Forged result.")
             : completionReport(taskId, "Bound result accepted."),
-        };
-      },
-    );
+      };
+    });
     const model = provider(async (request) => {
       requests += 1;
       if (requests === 2) {
         rejectionWasVisible = request.messages.some(
-          (message) => message.role === "tool" &&
-            message.content.includes("invalid_subagent_task_result"),
+          (message) => message.role === "tool" && message.content.includes("invalid_subagent_task_result"),
         );
       }
       return submitCall(`submit_forged_${requests}`);
@@ -774,10 +766,7 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(toolExecutions, 2);
     assert.equal(rejectionWasVisible, true);
     assert.equal(result.reason, "success");
-    assert.deepEqual(
-      result.subagentTaskReport,
-      completionReport(taskId, "Bound result accepted."),
-    );
+    assert.deepEqual(result.subagentTaskReport, completionReport(taskId, "Bound result accepted."));
   });
 
   it("rejects every tool in a batched submit response without executing the batch", async () => {
@@ -786,24 +775,18 @@ describe("AgentRuntime subagent boundaries", () => {
     let requests = 0;
     let submitExecutions = 0;
     let readExecutions = 0;
-    const submitTool = fakeTool(
-      "submit_task_result",
-      async (): Promise<ToolExecutionResult> => {
-        submitExecutions += 1;
-        return {
-          ok: true,
-          summary: "Submitted the bound result.",
-          subagentTaskReport: completionReport(taskId),
-        };
-      },
-    );
-    const readTool = fakeTool(
-      "read_file",
-      async (): Promise<ToolExecutionResult> => {
-        readExecutions += 1;
-        return { ok: true, summary: "Read a file." };
-      },
-    );
+    const submitTool = fakeTool("submit_task_result", async (): Promise<ToolExecutionResult> => {
+      submitExecutions += 1;
+      return {
+        ok: true,
+        summary: "Submitted the bound result.",
+        subagentTaskReport: completionReport(taskId),
+      };
+    });
+    const readTool = fakeTool("read_file", async (): Promise<ToolExecutionResult> => {
+      readExecutions += 1;
+      return { ok: true, summary: "Read a file." };
+    });
     const model = provider(async () => {
       requests += 1;
       if (requests === 1) {
@@ -854,8 +837,7 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(readExecutions, 0);
     assert.equal(
       currentState.messages.filter(
-        (message) => message.role === "tool" &&
-          message.content.includes("submit_task_result_must_be_exclusive"),
+        (message) => message.role === "tool" && message.content.includes("submit_task_result_must_be_exclusive"),
       ).length,
       2,
     );
@@ -871,14 +853,16 @@ describe("AgentRuntime subagent boundaries", () => {
       message: {
         role: "assistant",
         content: null,
-        tool_calls: [{
-          id: "follow_up_with_failed_event",
-          type: "function",
-          function: {
-            name: "manage_subagents",
-            arguments: "{}",
+        tool_calls: [
+          {
+            id: "follow_up_with_failed_event",
+            type: "function",
+            function: {
+              name: "manage_subagents",
+              arguments: "{}",
+            },
           },
-        }],
+        ],
       },
     }));
     const control = fakeTool("manage_subagents", async () => ({
@@ -892,24 +876,27 @@ describe("AgentRuntime subagent boundaries", () => {
     }));
 
     const result = await runtime({
-        provider: model,
-        tools: [control],
-        agentIdentity: { role: "main_agent" },
-        appendEvent: async (event) => {
-          if (event.type === "tool.result") throw new Error("journal unavailable");
-        },
-        onToolCompleted: async () => {
-          completedHooks += 1;
-        },
-        onSubagentLifecycleRollback: (update) => {
-          rolledBack.push(update.action);
-        },
-      }).run(currentState, "Send follow-up", options(1));
+      provider: model,
+      tools: [control],
+      agentIdentity: { role: "main_agent" },
+      appendEvent: async (event) => {
+        if (event.type === "tool.result") throw new Error("journal unavailable");
+      },
+      onToolCompleted: async () => {
+        completedHooks += 1;
+      },
+      onSubagentLifecycleRollback: (update) => {
+        rolledBack.push(update.action);
+      },
+    }).run(currentState, "Send follow-up", options(1));
     assert.equal(result.reason, "failed");
     assert.match(result.text, /journal unavailable/u);
     assert.equal(completedHooks, 0);
     assert.deepEqual(rolledBack, ["deliver_follow_up"]);
-    assert.equal(currentState.messages.some((message) => message.role === "tool"), false);
+    assert.equal(
+      currentState.messages.some((message) => message.role === "tool"),
+      false,
+    );
   });
 
   it("keeps a truncated tool result valid JSON", async () => {
@@ -923,11 +910,13 @@ describe("AgentRuntime subagent boundaries", () => {
           message: {
             role: "assistant",
             content: null,
-            tool_calls: [{
-              id: "large_read_result",
-              type: "function",
-              function: { name: "read_file", arguments: "{}" },
-            }],
+            tool_calls: [
+              {
+                id: "large_read_result",
+                type: "function",
+                function: { name: "read_file", arguments: "{}" },
+              },
+            ],
           },
         };
       }
@@ -942,11 +931,13 @@ describe("AgentRuntime subagent boundaries", () => {
 
     const result = await runtime({
       provider: model,
-      tools: [fakeTool("read_file", async () => ({
-        ok: true,
-        summary: "x".repeat(2_000),
-        data: { content: "y".repeat(20_000) },
-      }))],
+      tools: [
+        fakeTool("read_file", async () => ({
+          ok: true,
+          summary: "x".repeat(2_000),
+          data: { content: "y".repeat(20_000) },
+        })),
+      ],
       agentIdentity: { role: "main_agent" },
     }).run(currentState, "Read a large file", {
       ...options(2),
@@ -955,9 +946,6 @@ describe("AgentRuntime subagent boundaries", () => {
 
     assert.equal(result.reason, "success");
     assert.equal(requests, 2);
-    assert.deepEqual(
-      (parsedToolResult as { data?: { truncated?: boolean } }).data?.truncated,
-      true,
-    );
+    assert.deepEqual((parsedToolResult as { data?: { truncated?: boolean } }).data?.truncated, true);
   });
 });

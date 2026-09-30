@@ -3,11 +3,7 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import {
-  currentProcessIdentity,
-  processOwnerState,
-  type ProcessIdentity,
-} from "../core/process-owner.js";
+import { currentProcessIdentity, processOwnerState, type ProcessIdentity } from "../core/process-owner.js";
 
 interface ProxyPortLeaseRecord {
   port: number;
@@ -41,7 +37,7 @@ export interface AcquireWindowsProxyPortOptions {
 
 const processLeases = new Map<string, Promise<WindowsProxyPortLease>>();
 
-const wait = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 function emptyRegistry(): ProxyPortRegistry {
   return { version: 1, provisionedPorts: [], leases: [] };
@@ -54,12 +50,21 @@ function normalizeRegistry(value: unknown, portStart: number, portSlots: number)
     return emptyRegistry();
   }
   const maximum = portStart + portSlots - 1;
-  const provisionedPorts = [...new Set(candidate.provisionedPorts.filter(port =>
-    Number.isInteger(port) && port >= portStart && port <= maximum))].sort((a, b) => a - b);
+  const provisionedPorts = [
+    ...new Set(
+      candidate.provisionedPorts.filter((port) => Number.isInteger(port) && port >= portStart && port <= maximum),
+    ),
+  ].sort((a, b) => a - b);
   const leases = candidate.leases.filter((lease): lease is ProxyPortLeaseRecord => {
     if (!lease || typeof lease !== "object") return false;
-    return Number.isInteger(lease.port) && lease.port >= portStart && lease.port <= maximum &&
-      Number.isInteger(lease.pid) && lease.pid > 0 && typeof lease.hostname === "string";
+    return (
+      Number.isInteger(lease.port) &&
+      lease.port >= portStart &&
+      lease.port <= maximum &&
+      Number.isInteger(lease.pid) &&
+      lease.pid > 0 &&
+      typeof lease.hostname === "string"
+    );
   });
   return { version: 1, provisionedPorts, leases };
 }
@@ -90,8 +95,11 @@ async function acquireRegistryLock(file: string, timeoutMs = 5_000): Promise<() 
   while (Date.now() < deadline) {
     try {
       const handle = await open(file, "wx", 0o600);
-      try { await handle.writeFile(JSON.stringify(owner)); }
-      finally { await handle.close(); }
+      try {
+        await handle.writeFile(JSON.stringify(owner));
+      } finally {
+        await handle.close();
+      }
       return async () => {
         try {
           const current = JSON.parse(await readFile(file, "utf8")) as { token?: unknown };
@@ -104,7 +112,11 @@ async function acquireRegistryLock(file: string, timeoutMs = 5_000): Promise<() 
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        const existing = JSON.parse(await readFile(file, "utf8")) as { pid: unknown; hostname: unknown; processIdentity?: unknown };
+        const existing = JSON.parse(await readFile(file, "utf8")) as {
+          pid: unknown;
+          hostname: unknown;
+          processIdentity?: unknown;
+        };
         if (processOwnerState(existing) === "inactive") {
           await rm(file, { force: true });
           continue;
@@ -120,7 +132,7 @@ async function acquireRegistryLock(file: string, timeoutMs = 5_000): Promise<() 
 
 async function portAppearsAvailable(port: number): Promise<boolean> {
   const server = createServer();
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     server.once("error", () => resolve(false));
     server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
       server.close(() => resolve(true));
@@ -137,22 +149,24 @@ async function acquire(options: AcquireWindowsProxyPortOptions): Promise<Windows
   let port: number;
   try {
     const registry = await readRegistry(registryFile, options.portStart, options.portSlots);
-    registry.leases = registry.leases.filter(lease => processOwnerState(lease) !== "inactive");
-    const own = registry.leases.find(lease => lease.pid === process.pid &&
-      lease.hostname === os.hostname() && processOwnerState(lease) === "active");
+    registry.leases = registry.leases.filter((lease) => processOwnerState(lease) !== "inactive");
+    const own = registry.leases.find(
+      (lease) => lease.pid === process.pid && lease.hostname === os.hostname() && processOwnerState(lease) === "active",
+    );
     if (own) {
       port = own.port;
       await options.bind(port);
     } else {
-      const occupied = new Set(registry.leases.map(lease => lease.port));
+      const occupied = new Set(registry.leases.map((lease) => lease.port));
       const candidates = [
-        ...registry.provisionedPorts.filter(candidate => !occupied.has(candidate)),
-        ...Array.from({ length: options.portSlots }, (_, index) => options.portStart + index)
-          .filter(candidate => !registry.provisionedPorts.includes(candidate) && !occupied.has(candidate)),
+        ...registry.provisionedPorts.filter((candidate) => !occupied.has(candidate)),
+        ...Array.from({ length: options.portSlots }, (_, index) => options.portStart + index).filter(
+          (candidate) => !registry.provisionedPorts.includes(candidate) && !occupied.has(candidate),
+        ),
       ];
       let selected: number | undefined;
       for (const candidate of candidates) {
-        if (!await portAppearsAvailable(candidate)) continue;
+        if (!(await portAppearsAvailable(candidate))) continue;
         try {
           await options.bind(candidate);
           selected = candidate;
@@ -162,14 +176,23 @@ async function acquire(options: AcquireWindowsProxyPortOptions): Promise<Windows
         }
       }
       if (selected === undefined) {
-        throw new Error(`No free Windows sandbox proxy port remains in ${options.portStart}-${options.portStart + options.portSlots - 1}`);
+        throw new Error(
+          `No free Windows sandbox proxy port remains in ${options.portStart}-${options.portStart + options.portSlots - 1}`,
+        );
       }
       port = selected;
       // A newly selected port is only allocated here. It becomes durable
       // policy state after the startup service completes a real enforcement
       // probe and calls markAuthorized().
-      registry.leases.push({ port, pid: process.pid, hostname: os.hostname(),
-        ...(() => { const identity = currentProcessIdentity(); return identity ? { processIdentity: identity } : {}; })() });
+      registry.leases.push({
+        port,
+        pid: process.pid,
+        hostname: os.hostname(),
+        ...(() => {
+          const identity = currentProcessIdentity();
+          return identity ? { processIdentity: identity } : {};
+        })(),
+      });
     }
     await writeRegistry(registryFile, registry);
   } finally {
@@ -182,24 +205,22 @@ async function acquire(options: AcquireWindowsProxyPortOptions): Promise<Windows
       const registry = await readRegistry(registryFile, options.portStart, options.portSlots);
       return registry.provisionedPorts;
     },
-    setupPorts: async () => Array.from(
-      { length: options.portSlots },
-      (_, index) => options.portStart + index,
-    ),
+    setupPorts: async () => Array.from({ length: options.portSlots }, (_, index) => options.portStart + index),
     markAuthorized: async () => {
       const unlock = await acquireRegistryLock(lockFile);
       try {
         const registry = await readRegistry(registryFile, options.portStart, options.portSlots);
-        const completePool = Array.from(
-          { length: options.portSlots },
-          (_, index) => options.portStart + index,
-        );
-        if (registry.provisionedPorts.length !== completePool.length ||
-          completePool.some((candidate, index) => registry.provisionedPorts[index] !== candidate)) {
+        const completePool = Array.from({ length: options.portSlots }, (_, index) => options.portStart + index);
+        if (
+          registry.provisionedPorts.length !== completePool.length ||
+          completePool.some((candidate, index) => registry.provisionedPorts[index] !== candidate)
+        ) {
           registry.provisionedPorts = completePool;
           await writeRegistry(registryFile, registry);
         }
-      } finally { await unlock(); }
+      } finally {
+        await unlock();
+      }
     },
   };
 }
@@ -209,7 +230,7 @@ export function acquireWindowsProxyPortLease(options: AcquireWindowsProxyPortOpt
   const key = path.resolve(options.dataDir).toLowerCase();
   const existing = processLeases.get(key);
   if (existing) return existing;
-  const created = acquire(options).catch(error => {
+  const created = acquire(options).catch((error) => {
     if (processLeases.get(key) === created) processLeases.delete(key);
     throw error;
   });
@@ -227,6 +248,9 @@ export async function withWindowsProxyProvisioningLock<T>(
   const directory = path.join(dataDir, "native-sandbox");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const release = await acquireRegistryLock(path.join(directory, "proxy-provisioning.lock"), timeoutMs);
-  try { return await action(); }
-  finally { await release(); }
+  try {
+    return await action();
+  } finally {
+    await release();
+  }
 }

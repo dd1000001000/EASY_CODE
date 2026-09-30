@@ -9,9 +9,7 @@ import { sha256 } from "../src/utils/hash.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { describe, it } from "./harness.js";
 
-async function withWorkspace(
-  run: (root: string, manager: WorkspaceManager) => Promise<void>,
-): Promise<void> {
+async function withWorkspace(run: (root: string, manager: WorkspaceManager) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-delete-file-"));
   try {
     const manager = await WorkspaceManager.create(root);
@@ -51,10 +49,7 @@ describe("delete_file tool", () => {
       const original = "export const obsolete = true;\n";
       await writeFile(filename, original, "utf8");
 
-      const readResult = await new ReadFileTool(manager).execute(
-        { path: "src/obsolete.ts" },
-        context(root),
-      );
+      const readResult = await new ReadFileTool(manager).execute({ path: "src/obsolete.ts" }, context(root));
       const expectedHash = (readResult.data as { contentHash: string }).contentHash;
       const result = await new DeleteFileTool(manager).execute(
         { path: "src/obsolete.ts", expectedHash },
@@ -94,18 +89,12 @@ describe("delete_file tool", () => {
       await writeFile(filename, "keep\n", "utf8");
       const tool = new DeleteFileTool(manager);
 
-      const unread = await tool.execute(
-        { path: "keep.txt", expectedHash: sha256("keep\n") },
-        context(root),
-      );
+      const unread = await tool.execute({ path: "keep.txt", expectedHash: sha256("keep\n") }, context(root));
       assert.equal(unread.ok, false);
       assert.match(unread.error ?? "", /must be successfully read/iu);
 
       await new ReadFileTool(manager).execute({ path: "keep.txt" }, context(root));
-      const mismatched = await tool.execute(
-        { path: "keep.txt", expectedHash: "0".repeat(64) },
-        context(root),
-      );
+      const mismatched = await tool.execute({ path: "keep.txt", expectedHash: "0".repeat(64) }, context(root));
       assert.equal(mismatched.ok, false);
       assert.match(mismatched.error ?? "", /does not match/iu);
       assert.equal(await readFile(filename, "utf8"), "keep\n");
@@ -116,17 +105,11 @@ describe("delete_file tool", () => {
     await withWorkspace(async (root, manager) => {
       const filename = path.join(root, "changed.txt");
       await writeFile(filename, "before\n", "utf8");
-      const readResult = await new ReadFileTool(manager).execute(
-        { path: "changed.txt" },
-        context(root),
-      );
+      const readResult = await new ReadFileTool(manager).execute({ path: "changed.txt" }, context(root));
       const expectedHash = (readResult.data as { contentHash: string }).contentHash;
       await writeFile(filename, "user changed this\n", "utf8");
 
-      const result = await new DeleteFileTool(manager).execute(
-        { path: "changed.txt", expectedHash },
-        context(root),
-      );
+      const result = await new DeleteFileTool(manager).execute({ path: "changed.txt", expectedHash }, context(root));
 
       assert.equal(result.ok, false);
       assert.match(result.error ?? "", /changed after it was read/iu);
@@ -142,10 +125,7 @@ describe("delete_file tool", () => {
     await withWorkspace(async (root, manager) => {
       const filename = path.join(root, "planned.txt");
       await writeFile(filename, "plan only\n", "utf8");
-      const readResult = await new ReadFileTool(manager).execute(
-        { path: "planned.txt" },
-        context(root, "plan"),
-      );
+      const readResult = await new ReadFileTool(manager).execute({ path: "planned.txt" }, context(root, "plan"));
       const expectedHash = (readResult.data as { contentHash: string }).contentHash;
 
       const result = await new DeleteFileTool(manager).execute(
@@ -182,20 +162,12 @@ describe("delete_file tool", () => {
         manager.recordRead("escape/outside.txt", outsideHash);
         const tool = new DeleteFileTool(manager);
 
-        const traversal = await tool.execute(
-          { path: "../outside.txt", expectedHash: outsideHash },
-          context(root),
-        );
-        const directory = await tool.execute(
-          { path: "directory", expectedHash: insideHash },
-          context(root),
-        );
-        const finalSymlink = process.platform === "win32"
-          ? undefined
-          : await tool.execute(
-              { path: "inside-link.txt", expectedHash: insideHash },
-              context(root),
-            );
+        const traversal = await tool.execute({ path: "../outside.txt", expectedHash: outsideHash }, context(root));
+        const directory = await tool.execute({ path: "directory", expectedHash: insideHash }, context(root));
+        const finalSymlink =
+          process.platform === "win32"
+            ? undefined
+            : await tool.execute({ path: "inside-link.txt", expectedHash: insideHash }, context(root));
         const escapedJunction = await tool.execute(
           { path: "escape/outside.txt", expectedHash: outsideHash },
           context(root),

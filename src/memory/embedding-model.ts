@@ -8,17 +8,14 @@ import { resolveEasyCodePaths } from "../config/defaults.js";
 import type { EmbeddingProvider } from "./vector-index.js";
 import { tokenWindows, type TextWindow } from "./text-windows.js";
 
-export const EMBEDDING_MODEL_ID =
-  "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
-export const EMBEDDING_MODEL_REVISION =
-  "2c4055b12046f11709e9df2c122e59ffbdc2f900";
+export const EMBEDDING_MODEL_ID = "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
+export const EMBEDDING_MODEL_REVISION = "2c4055b12046f11709e9df2c122e59ffbdc2f900";
 export const EMBEDDING_DIMENSION = 384;
 export const EMBEDDING_MAX_SEQUENCE_LENGTH = 128;
 export const EMBEDDING_POOLING = "masked-mean";
 // V2 represents every source window, rather than only the first 128 tokens.
 export const EMBEDDING_VERSION = 2;
-export const EMBEDDING_MODEL_DIRECTORY_NAME =
-  "paraphrase-multilingual-MiniLM-L12-v2";
+export const EMBEDDING_MODEL_DIRECTORY_NAME = "paraphrase-multilingual-MiniLM-L12-v2";
 
 export interface EmbeddingModelFileManifest {
   readonly path: string;
@@ -79,10 +76,7 @@ interface TokenizerEncoding {
 }
 
 export interface EmbeddingTokenizer {
-  encode(
-    text: string,
-    options: { readonly return_token_type_ids: true },
-  ): TokenizerEncoding;
+  encode(text: string, options: { readonly return_token_type_ids: true }): TokenizerEncoding;
   token_to_id?(token: string): number | undefined;
 }
 
@@ -95,17 +89,12 @@ export interface EmbeddingTensor {
 export interface EmbeddingSession {
   readonly inputNames: readonly string[];
   readonly outputNames: readonly string[];
-  run(
-    feeds: Readonly<Record<string, unknown>>,
-  ): Promise<Readonly<Record<string, EmbeddingTensor>>>;
+  run(feeds: Readonly<Record<string, unknown>>): Promise<Readonly<Record<string, EmbeddingTensor>>>;
 }
 
 export interface EmbeddingModelDependencies {
   readTextFile(filename: string): Promise<string>;
-  verifyFile(
-    filename: string,
-    expected: EmbeddingModelFileManifest,
-  ): Promise<void>;
+  verifyFile(filename: string, expected: EmbeddingModelFileManifest): Promise<void>;
   createTokenizer(
     tokenizerJson: Readonly<Record<string, unknown>>,
     tokenizerConfig: Readonly<Record<string, unknown>>,
@@ -136,16 +125,9 @@ interface PreparedEncoding {
 
 interface OrtModule {
   readonly InferenceSession: {
-    create(
-      modelPath: string,
-      options?: Readonly<Record<string, unknown>>,
-    ): Promise<EmbeddingSession>;
+    create(modelPath: string, options?: Readonly<Record<string, unknown>>): Promise<EmbeddingSession>;
   };
-  readonly Tensor: new (
-    type: "int64",
-    data: BigInt64Array,
-    dims: readonly number[],
-  ) => unknown;
+  readonly Tensor: new (type: "int64", data: BigInt64Array, dims: readonly number[]) => unknown;
 }
 
 const MANIFEST_FILENAME = "manifest.json";
@@ -158,14 +140,8 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const REQUIRED_INPUTS = ["input_ids", "attention_mask", "token_type_ids"] as const;
 const REQUIRED_OUTPUT = "last_hidden_state";
 
-export function resolveDefaultEmbeddingModelDirectory(
-  cacheDirectory = resolveEasyCodePaths().cacheDir,
-): string {
-  return path.join(
-    path.resolve(cacheDirectory),
-    "models",
-    EMBEDDING_MODEL_DIRECTORY_NAME,
-  );
+export function resolveDefaultEmbeddingModelDirectory(cacheDirectory = resolveEasyCodePaths().cacheDir): string {
+  return path.join(path.resolve(cacheDirectory), "models", EMBEDDING_MODEL_DIRECTORY_NAME);
 }
 
 function record(value: unknown, label: string): Readonly<Record<string, unknown>> {
@@ -185,11 +161,7 @@ function parseJsonObject(text: string, label: string): Readonly<Record<string, u
   return record(parsed, label);
 }
 
-function assertExactKeys(
-  value: Readonly<Record<string, unknown>>,
-  expected: readonly string[],
-  label: string,
-): void {
+function assertExactKeys(value: Readonly<Record<string, unknown>>, expected: readonly string[], label: string): void {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
@@ -204,15 +176,7 @@ function parseManifest(text: string): EmbeddingModelManifest {
   const value = parseJsonObject(text, "Embedding model manifest");
   assertExactKeys(
     value,
-    [
-      "model",
-      "revision",
-      "dimension",
-      "maxSequenceLength",
-      "pooling",
-      "normalized",
-      "files",
-    ],
+    ["model", "revision", "dimension", "maxSequenceLength", "pooling", "normalized", "files"],
     "Embedding model manifest",
   );
   if (!Array.isArray(value.files)) {
@@ -231,11 +195,7 @@ function parseManifest(text: string): EmbeddingModelManifest {
 
   const files = value.files.map((item, index): EmbeddingModelFileManifest => {
     const file = record(item, `Embedding model manifest file ${index}`);
-    assertExactKeys(
-      file,
-      ["path", "size", "sha256"],
-      `Embedding model manifest file ${index}`,
-    );
+    assertExactKeys(file, ["path", "size", "sha256"], `Embedding model manifest file ${index}`);
     if (
       typeof file.path !== "string" ||
       file.path.length === 0 ||
@@ -293,11 +253,7 @@ function validatePinnedManifest(manifest: EmbeddingModelManifest): void {
   }
   for (const wanted of expected.files) {
     const actual = files.get(wanted.path);
-    if (
-      !actual ||
-      actual.size !== wanted.size ||
-      actual.sha256 !== wanted.sha256
-    ) {
+    if (!actual || actual.size !== wanted.size || actual.sha256 !== wanted.sha256) {
       throw new Error(`Embedding model manifest does not match ${wanted.path}`);
     }
   }
@@ -312,10 +268,7 @@ function resolveContainedFile(modelDirectory: string, relativePath: string): str
   return candidate;
 }
 
-async function verifyFileIntegrity(
-  filename: string,
-  expected: EmbeddingModelFileManifest,
-): Promise<void> {
+async function verifyFileIntegrity(filename: string, expected: EmbeddingModelFileManifest): Promise<void> {
   const info = await lstat(filename).catch(() => null);
   if (!info || !info.isFile() || info.isSymbolicLink()) {
     throw new Error(`Embedding model file is missing or unsafe: ${expected.path}`);
@@ -352,16 +305,11 @@ function createDefaultDependencies(): EmbeddingModelDependencies {
         executionProviders: ["cpu"],
         graphOptimizationLevel: "all",
       }),
-    createInt64Tensor: (data, dims) =>
-      new (loadOrt().Tensor)("int64", data, dims),
+    createInt64Tensor: (data, dims) => new (loadOrt().Tensor)("int64", data, dims),
   };
 }
 
-function safeIntegerArray(
-  value: unknown,
-  label: string,
-  expectedLength?: number,
-): number[] {
+function safeIntegerArray(value: unknown, label: string, expectedLength?: number): number[] {
   if (!Array.isArray(value) || (expectedLength !== undefined && value.length !== expectedLength)) {
     throw new Error(`${label} has an invalid length`);
   }
@@ -375,14 +323,11 @@ function safeIntegerArray(
 function prepareEncoding(tokenizer: EmbeddingTokenizer, text: string): PreparedEncoding {
   const encoded = tokenizer.encode(text, { return_token_type_ids: true });
   let ids = safeIntegerArray(encoded.ids, "Tokenizer input_ids");
-  let attentionMask = safeIntegerArray(
-    encoded.attention_mask,
-    "Tokenizer attention_mask",
-    ids.length,
-  );
-  let tokenTypeIds = encoded.token_type_ids === undefined
-    ? new Array(ids.length).fill(0)
-    : safeIntegerArray(encoded.token_type_ids, "Tokenizer token_type_ids", ids.length);
+  let attentionMask = safeIntegerArray(encoded.attention_mask, "Tokenizer attention_mask", ids.length);
+  let tokenTypeIds =
+    encoded.token_type_ids === undefined
+      ? new Array(ids.length).fill(0)
+      : safeIntegerArray(encoded.token_type_ids, "Tokenizer token_type_ids", ids.length);
   if (ids.length < 2) {
     throw new Error("Tokenizer did not add the required boundary tokens");
   }
@@ -493,8 +438,7 @@ export class LocalEmbeddingModel implements EmbeddingProvider {
       throw new Error("Specify either cacheDirectory or modelDirectory, not both");
     }
     this.modelDirectory = path.resolve(
-      options.modelDirectory ??
-        resolveDefaultEmbeddingModelDirectory(options.cacheDirectory),
+      options.modelDirectory ?? resolveDefaultEmbeddingModelDirectory(options.cacheDirectory),
     );
     this.dependencies = {
       ...createDefaultDependencies(),
@@ -513,7 +457,12 @@ export class LocalEmbeddingModel implements EmbeddingProvider {
     const flat = groups.flat();
     const allVectors: Float32Array[] = [];
     for (let start = 0; start < flat.length; start += 16) {
-      allVectors.push(...await this.embedBatch(loaded, flat.slice(start, start + 16).map((window) => window.text)));
+      allVectors.push(
+        ...(await this.embedBatch(
+          loaded,
+          flat.slice(start, start + 16).map((window) => window.text),
+        )),
+      );
     }
     let offset = 0;
     for (const windows of groups) {
@@ -521,8 +470,10 @@ export class LocalEmbeddingModel implements EmbeddingProvider {
       offset += windows.length;
       const merged = new Float64Array(this.dimension);
       for (let index = 0; index < vectors.length; index += 1) {
-        const weight = Math.max(1, loaded.tokenizer.encode(windows[index]!.text,
-          { return_token_type_ids: true }).ids.length - 2);
+        const weight = Math.max(
+          1,
+          loaded.tokenizer.encode(windows[index]!.text, { return_token_type_ids: true }).ids.length - 2,
+        );
         for (let dimension = 0; dimension < this.dimension; dimension += 1) {
           merged[dimension] = merged[dimension]! + vectors[index]![dimension]! * weight;
         }
@@ -540,8 +491,12 @@ export class LocalEmbeddingModel implements EmbeddingProvider {
   }
 
   private windows(tokenizer: EmbeddingTokenizer, text: string): TextWindow[] {
-    return text ? tokenWindows(text, (value) => tokenizer.encode(value,
-      { return_token_type_ids: true }).ids.length, EMBEDDING_MAX_SEQUENCE_LENGTH)
+    return text
+      ? tokenWindows(
+          text,
+          (value) => tokenizer.encode(value, { return_token_type_ids: true }).ids.length,
+          EMBEDDING_MAX_SEQUENCE_LENGTH,
+        )
       : [{ text: "", start: 0, end: 0 }];
   }
 
@@ -588,50 +543,28 @@ export class LocalEmbeddingModel implements EmbeddingProvider {
   }
 
   private async load(): Promise<LoadedEmbeddingModel> {
-    const manifestText = await this.dependencies.readTextFile(
-      path.join(this.modelDirectory, MANIFEST_FILENAME),
-    );
+    const manifestText = await this.dependencies.readTextFile(path.join(this.modelDirectory, MANIFEST_FILENAME));
     const manifest = parseManifest(manifestText);
     for (const file of manifest.files) {
-      await this.dependencies.verifyFile(
-        resolveContainedFile(this.modelDirectory, file.path),
-        file,
-      );
+      await this.dependencies.verifyFile(resolveContainedFile(this.modelDirectory, file.path), file);
     }
 
     const [tokenizerText, tokenizerConfigText, configText] = await Promise.all([
-      this.dependencies.readTextFile(
-        resolveContainedFile(this.modelDirectory, TOKENIZER_FILENAME),
-      ),
-      this.dependencies.readTextFile(
-        resolveContainedFile(this.modelDirectory, TOKENIZER_CONFIG_FILENAME),
-      ),
-      this.dependencies.readTextFile(
-        resolveContainedFile(this.modelDirectory, CONFIG_FILENAME),
-      ),
+      this.dependencies.readTextFile(resolveContainedFile(this.modelDirectory, TOKENIZER_FILENAME)),
+      this.dependencies.readTextFile(resolveContainedFile(this.modelDirectory, TOKENIZER_CONFIG_FILENAME)),
+      this.dependencies.readTextFile(resolveContainedFile(this.modelDirectory, CONFIG_FILENAME)),
     ]);
     const tokenizerJson = parseJsonObject(tokenizerText, TOKENIZER_FILENAME);
-    const tokenizerConfig = parseJsonObject(
-      tokenizerConfigText,
-      TOKENIZER_CONFIG_FILENAME,
-    );
+    const tokenizerConfig = parseJsonObject(tokenizerConfigText, TOKENIZER_CONFIG_FILENAME);
     const config = parseJsonObject(configText, CONFIG_FILENAME);
     const configuredPadTokenId = requireModelConfiguration(config);
-    const tokenizer = await this.dependencies.createTokenizer(
-      tokenizerJson,
-      tokenizerConfig,
-    );
+    const tokenizer = await this.dependencies.createTokenizer(tokenizerJson, tokenizerConfig);
     let padTokenId = configuredPadTokenId;
     if (typeof tokenizer.token_to_id === "function") {
-      const padToken = typeof tokenizerConfig.pad_token === "string"
-        ? tokenizerConfig.pad_token
-        : null;
+      const padToken = typeof tokenizerConfig.pad_token === "string" ? tokenizerConfig.pad_token : null;
       if (padToken) {
         const tokenizerPadTokenId = tokenizer.token_to_id(padToken);
-        if (
-          !Number.isSafeInteger(tokenizerPadTokenId) ||
-          (tokenizerPadTokenId as number) < 0
-        ) {
+        if (!Number.isSafeInteger(tokenizerPadTokenId) || (tokenizerPadTokenId as number) < 0) {
           throw new Error("Embedding tokenizer does not contain its configured pad token");
         }
         // The pinned converted model's config.json reports 0 while its
@@ -641,9 +574,7 @@ export class LocalEmbeddingModel implements EmbeddingProvider {
         padTokenId = tokenizerPadTokenId as number;
       }
     }
-    const session = await this.dependencies.createSession(
-      resolveContainedFile(this.modelDirectory, MODEL_FILENAME),
-    );
+    const session = await this.dependencies.createSession(resolveContainedFile(this.modelDirectory, MODEL_FILENAME));
     validateSession(session);
     return { tokenizer, session, padTokenId };
   }

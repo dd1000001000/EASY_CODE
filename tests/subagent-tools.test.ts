@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 
-import type {
-  TaskNode,
-  ToolContext,
-  ToolExecutionResult,
-} from "../src/core/types.js";
+import type { TaskNode, ToolContext, ToolExecutionResult } from "../src/core/types.js";
 import type {
   FollowUpSubagentRequest,
   HandoffSubagentRequest,
@@ -108,14 +104,30 @@ describe("subagent control tools", () => {
     const tool = new ManageSubagentsTool(control);
     const parameters = tool.definition.function.parameters as { properties: Record<string, unknown> };
     assert.equal("mode" in parameters.properties, false);
-    const result = await tool.execute({
-      action: "spawn", taskId: "research", instructions: "Inspect without modifying files",
-    }, { ...context("plan"), selectedMode: "plan" });
+    const result = await tool.execute(
+      {
+        action: "spawn",
+        taskId: "research",
+        instructions: "Inspect without modifying files",
+      },
+      { ...context("plan"), selectedMode: "plan" },
+    );
     assert.equal(result.ok, true);
     assert.equal(control.calls[0]?.action, "spawn");
-    assert.equal((await tool.execute({
-      action: "spawn", taskId: "research", instructions: "Inspect", mode: "code",
-    }, { ...context("plan"), selectedMode: "plan" })).ok, false);
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            taskId: "research",
+            instructions: "Inspect",
+            mode: "code",
+          },
+          { ...context("plan"), selectedMode: "plan" },
+        )
+      ).ok,
+      false,
+    );
     assert.equal(control.calls.length, 1);
   });
   it("truncates oversized spawn instructions and follow-ups after sanitizing", async () => {
@@ -125,16 +137,45 @@ describe("subagent control tools", () => {
       subagentInstructionsMaxChars: 64,
       subagentFollowUpMaxChars: 64,
     });
-    assert.equal((await tool.execute({
-      action: "spawn", taskId: "implementation", instructions: `START😀${"x".repeat(200)}END`,
-    }, context())).ok, true);
-    assert.equal((await tool.execute({
-      action: "spawn", task: { title: "Standalone", description: "Work", completionChecks: ["Done"] },
-      instructions: `SECOND${"x".repeat(200)}END`,
-    }, context())).ok, true);
-    assert.equal((await tool.execute({
-      action: "follow_up", agentId: AGENT_ONE, message: `FOLLOW${"x".repeat(200)}END`,
-    }, context())).ok, true);
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            taskId: "implementation",
+            instructions: `START😀${"x".repeat(200)}END`,
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            task: { title: "Standalone", description: "Work", completionChecks: ["Done"] },
+            instructions: `SECOND${"x".repeat(200)}END`,
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "follow_up",
+            agentId: AGENT_ONE,
+            message: `FOLLOW${"x".repeat(200)}END`,
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
     assert.equal(control.calls[0]?.action, "spawn");
     if (control.calls[0]?.action === "spawn") {
       assert.match(control.calls[0].instructions, /^START😀.*\[truncated\].*END$/su);
@@ -150,9 +191,19 @@ describe("subagent control tools", () => {
       assert.match(control.calls[2].message, /^FOLLOW.*\[truncated\].*END$/su);
       assert.ok(control.calls[2].message.length <= 64);
     }
-    assert.equal((await tool.execute({
-      action: "follow_up", agentId: AGENT_ONE, message: "  \u001b[31m  ",
-    }, context())).ok, false);
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "follow_up",
+            agentId: AGENT_ONE,
+            message: "  \u001b[31m  ",
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
     assert.equal(control.calls.length, 3);
   });
 
@@ -160,45 +211,89 @@ describe("subagent control tools", () => {
     const control = new RecordingControl();
     const tool = new ManageSubagentsTool(control);
 
-    assert.equal((await tool.execute({
-      action: "spawn",
-      taskId: "implementation",
-      instructions: "Inspect the target and implement the focused change.",
-      thinkingEffort: "low",
-    }, context())).ok, true);
-    assert.equal((await tool.execute({
-      action: "status",
-      agentIds: [AGENT_ONE],
-    }, context())).ok, true);
-    assert.equal((await tool.execute({
-      action: "wait",
-      agentIds: [AGENT_ONE, AGENT_TWO],
-    }, context())).ok, true);
-    assert.equal((await tool.execute({
-      action: "follow_up",
-      agentId: AGENT_ONE,
-      message: "Also run the focused test.",
-    }, context())).ok, true);
-    assert.equal((await tool.execute({
-      action: "stop",
-      agentId: AGENT_TWO,
-      reason: "The parent no longer needs this task.",
-    }, context())).ok, true);
-    assert.equal((await tool.execute({
-      action: "handoff",
-      agentId: AGENT_ONE,
-      destination: "branch",
-      branchName: "easy-code/implementation",
-    }, context())).ok, true);
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            taskId: "implementation",
+            instructions: "Inspect the target and implement the focused change.",
+            thinkingEffort: "low",
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "status",
+            agentIds: [AGENT_ONE],
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "wait",
+            agentIds: [AGENT_ONE, AGENT_TWO],
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "follow_up",
+            agentId: AGENT_ONE,
+            message: "Also run the focused test.",
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "stop",
+            agentId: AGENT_TWO,
+            reason: "The parent no longer needs this task.",
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "handoff",
+            agentId: AGENT_ONE,
+            destination: "branch",
+            branchName: "easy-code/implementation",
+          },
+          context(),
+        )
+      ).ok,
+      true,
+    );
 
-    assert.deepEqual(control.calls.map((call) => call.action), [
-      "spawn",
-      "status",
-      "wait",
-      "follow_up",
-      "stop",
-      "handoff",
-    ]);
+    assert.deepEqual(
+      control.calls.map((call) => call.action),
+      ["spawn", "status", "wait", "follow_up", "stop", "handoff"],
+    );
     const wait = control.calls[2];
     assert.equal(wait?.action, "wait");
     if (wait?.action === "wait") assert.equal(wait.timeoutMs, 30_000);
@@ -212,12 +307,14 @@ describe("subagent control tools", () => {
   it("sanitizes controls and secrets before passing text to the controller", async () => {
     const control = new RecordingControl();
     const tool = new ManageSubagentsTool(control);
-    const result = await tool.execute({
-      action: "spawn",
-      taskId: "implementation",
-      instructions:
-        "Inspect\u001b[31m the task\u202e\napi_key=super-secret-value before editing.",
-    }, context());
+    const result = await tool.execute(
+      {
+        action: "spawn",
+        taskId: "implementation",
+        instructions: "Inspect\u001b[31m the task\u202e\napi_key=super-secret-value before editing.",
+      },
+      context(),
+    );
 
     assert.equal(result.ok, true);
     const call = control.calls[0];
@@ -231,16 +328,19 @@ describe("subagent control tools", () => {
   it("accepts a standalone task contract and enforces exclusive spawn forms", async () => {
     const control = new RecordingControl();
     const tool = new ManageSubagentsTool(control);
-    const standalone = await tool.execute({
-      action: "spawn",
-      task: {
-        title: "Audit authentication\u001b[31m",
-        description: "Inspect the login flow without a DAG.",
-        completionChecks: ["The findings are verified"],
+    const standalone = await tool.execute(
+      {
+        action: "spawn",
+        task: {
+          title: "Audit authentication\u001b[31m",
+          description: "Inspect the login flow without a DAG.",
+          completionChecks: ["The findings are verified"],
+        },
+        instructions: "Return concise evidence.",
+        thinkingEffort: "none",
       },
-      instructions: "Return concise evidence.",
-      thinkingEffort: "none",
-    }, context());
+      context(),
+    );
     assert.equal(standalone.ok, true);
     const call = control.calls[0];
     assert.equal(call?.action, "spawn");
@@ -251,20 +351,36 @@ describe("subagent control tools", () => {
     assert.deepEqual(call.task.completionChecks, ["The findings are verified"]);
     assert.equal(call.thinkingEffort, "none");
 
-    assert.equal((await tool.execute({
-      action: "spawn",
-      instructions: "Missing both assignment forms.",
-    }, context())).ok, false);
-    assert.equal((await tool.execute({
-      action: "spawn",
-      taskId: "implementation",
-      task: {
-        title: "Conflicting task",
-        description: "Both forms must be rejected.",
-        completionChecks: ["Never runs"],
-      },
-      instructions: "Conflicting forms.",
-    }, context())).ok, false);
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            instructions: "Missing both assignment forms.",
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            taskId: "implementation",
+            task: {
+              title: "Conflicting task",
+              description: "Both forms must be rejected.",
+              completionChecks: ["Never runs"],
+            },
+            instructions: "Conflicting forms.",
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
     assert.equal(control.calls.length, 1);
   });
 
@@ -272,37 +388,85 @@ describe("subagent control tools", () => {
     const control = new RecordingControl();
     const tool = new ManageSubagentsTool(control);
 
-    assert.equal((await tool.execute({
-      action: "spawn",
-      taskId: "implementation",
-      instructions: "Do the task",
-      agentId: AGENT_ONE,
-    }, context())).ok, false);
-    assert.equal((await tool.execute({
-      action: "spawn",
-      taskId: "implementation",
-      instructions: "Do the task",
-      thinkingEffort: "ultra",
-    }, context())).ok, false);
-    assert.equal((await tool.execute({
-      action: "status",
-      thinkingEffort: "low",
-    }, context())).ok, false);
-    assert.equal((await tool.execute({
-      action: "wait",
-      agentIds: [AGENT_ONE, AGENT_ONE],
-      timeoutMs: 1,
-    }, context())).ok, false);
-    assert.equal((await tool.execute({
-      action: "follow_up",
-      agentId: "agent-not-runtime-issued",
-      message: "Continue",
-    }, context())).ok, false);
-    assert.equal((await tool.execute({
-      action: "spawn",
-      taskId: "implementation",
-      instructions: "Do the task",
-    }, { ...context("code"), selectedMode: "auto" })).ok, false);
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            taskId: "implementation",
+            instructions: "Do the task",
+            agentId: AGENT_ONE,
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            taskId: "implementation",
+            instructions: "Do the task",
+            thinkingEffort: "ultra",
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "status",
+            thinkingEffort: "low",
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "wait",
+            agentIds: [AGENT_ONE, AGENT_ONE],
+            timeoutMs: 1,
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "follow_up",
+            agentId: "agent-not-runtime-issued",
+            message: "Continue",
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await tool.execute(
+          {
+            action: "spawn",
+            taskId: "implementation",
+            instructions: "Do the task",
+          },
+          { ...context("code"), selectedMode: "auto" },
+        )
+      ).ok,
+      false,
+    );
     assert.equal(control.calls.length, 0);
     assert.equal(control.authorizationChecks, 0);
 
@@ -316,14 +480,14 @@ describe("subagent control tools", () => {
 
   it("submits a completed result bound to one in-progress task", async () => {
     const tool = new SubmitTaskResultTool(boundTask());
-    const result = await tool.execute({
-      outcome: "completed",
-      summary: "Implemented the change\u202e and api_key=super-secret-value was not retained.",
-      evidence: [
-        "Focused tests passed.",
-        "Reviewed src/feature.ts\u001b[31m successfully.",
-      ],
-    }, context());
+    const result = await tool.execute(
+      {
+        outcome: "completed",
+        summary: "Implemented the change\u202e and api_key=super-secret-value was not retained.",
+        evidence: ["Focused tests passed.", "Reviewed src/feature.ts\u001b[31m successfully."],
+      },
+      context(),
+    );
 
     assert.equal(result.ok, true);
     const report = result.subagentTaskReport;
@@ -342,11 +506,14 @@ describe("subagent control tools", () => {
 
   it("submits a blocked result without accepting model-selected task identity", async () => {
     const tool = new SubmitTaskResultTool(boundTask());
-    const result = await tool.execute({
-      outcome: "blocked",
-      summary: "The implementation cannot proceed yet.",
-      blocker: "The required external service is unavailable.",
-    }, context());
+    const result = await tool.execute(
+      {
+        outcome: "blocked",
+        summary: "The implementation cannot proceed yet.",
+        blocker: "The required external service is unavailable.",
+      },
+      context(),
+    );
 
     assert.equal(result.ok, true);
     assert.deepEqual(result.subagentTaskReport, {
@@ -355,48 +522,80 @@ describe("subagent control tools", () => {
       summary: "The implementation cannot proceed yet.",
       blocker: "The required external service is unavailable.",
     });
-    const spoofed = await tool.execute({
-      outcome: "blocked",
-      taskId: "different-task",
-      summary: "Blocked",
-      blocker: "External input is missing",
-    }, context());
+    const spoofed = await tool.execute(
+      {
+        outcome: "blocked",
+        taskId: "different-task",
+        summary: "Blocked",
+        blocker: "External input is missing",
+      },
+      context(),
+    );
     assert.equal(spoofed.ok, false);
   });
 
   it("accepts concise evidence in Code and Plan but rejects inactive bindings and cross-outcome fields", async () => {
     const active = new SubmitTaskResultTool(boundTask());
-    const concise = await active.execute({
-      outcome: "completed",
-      summary: "Done",
-      evidence: ["Only one check was verified"],
-    }, context());
+    const concise = await active.execute(
+      {
+        outcome: "completed",
+        summary: "Done",
+        evidence: ["Only one check was verified"],
+      },
+      context(),
+    );
     assert.equal(concise.ok, true);
     assert.equal(concise.subagentTaskReport?.outcome, "completed");
     if (concise.subagentTaskReport?.outcome !== "completed") {
       throw new Error("Expected completion report");
     }
-    assert.deepEqual(concise.subagentTaskReport.completionEvidence, [{
-      check: "Focused tests pass",
-      evidence: "Only one check was verified",
-    }]);
+    assert.deepEqual(concise.subagentTaskReport.completionEvidence, [
+      {
+        check: "Focused tests pass",
+        evidence: "Only one check was verified",
+      },
+    ]);
 
     const pending = new SubmitTaskResultTool(boundTask("pending"));
-    assert.equal((await pending.execute({
-      outcome: "blocked",
-      summary: "Blocked",
-      blocker: "External input is missing",
-    }, context())).ok, false);
-    assert.equal((await active.execute({
-      outcome: "blocked",
-      summary: "Blocked",
-      blocker: "External input is missing",
-    }, context("plan"))).ok, true);
-    assert.equal((await active.execute({
-      outcome: "completed",
-      summary: "Done",
-      evidence: ["Tests pass", "Review pass"],
-      blocker: "This field belongs to another outcome",
-    }, context())).ok, false);
+    assert.equal(
+      (
+        await pending.execute(
+          {
+            outcome: "blocked",
+            summary: "Blocked",
+            blocker: "External input is missing",
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await active.execute(
+          {
+            outcome: "blocked",
+            summary: "Blocked",
+            blocker: "External input is missing",
+          },
+          context("plan"),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await active.execute(
+          {
+            outcome: "completed",
+            summary: "Done",
+            evidence: ["Tests pass", "Review pass"],
+            blocker: "This field belongs to another outcome",
+          },
+          context(),
+        )
+      ).ok,
+      false,
+    );
   });
 });

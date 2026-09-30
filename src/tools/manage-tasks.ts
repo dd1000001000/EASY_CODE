@@ -1,11 +1,6 @@
 import { z } from "zod";
 
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import {
   MAX_TASK_EVIDENCE_CHARS,
   MAX_TASK_GRAPH_NODES,
@@ -160,12 +155,22 @@ export class ManageTasksTool implements AgentTool {
       if (context.selectedMode === "auto") {
         throw new Error("Task DAG operations require an explicitly selected Plan or Code mode");
       }
-      if (context.taskGraph && context.taskGraph.status !== "completed" &&
-          context.selectedMode && context.selectedMode !== context.mode) {
+      if (
+        context.taskGraph &&
+        context.taskGraph.status !== "completed" &&
+        context.selectedMode &&
+        context.selectedMode !== context.mode
+      ) {
         throw new Error("Finish the current task DAG before switching modes");
       }
       if (parsed.action === "create") {
-        if (context.commandExecutionMode === "manual" || (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false) throw new Error("DAG creation requires orchestration and at least independent approval. Enable with /orchestration.");
+        if (
+          context.commandExecutionMode === "manual" ||
+          (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false
+        )
+          throw new Error(
+            "DAG creation requires orchestration and at least independent approval. Enable with /orchestration.",
+          );
         if (context.limits && parsed.tasks.length > context.limits.maxDagNodes) {
           throw new Error(`DAG exceeds the configured ${context.limits.maxDagNodes}-node limit`);
         }

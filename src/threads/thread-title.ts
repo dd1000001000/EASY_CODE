@@ -15,17 +15,19 @@ export class ThreadTitleStore {
   constructor(private readonly storage: EasyCodeStorage) {}
 
   isUnclaimed(threadId: string): boolean {
-    const row = this.storage.db.prepare<[string], { title: string | null }>(
-      "SELECT title FROM threads WHERE id = ?",
-    ).get(threadId);
+    const row = this.storage.db
+      .prepare<[string], { title: string | null }>("SELECT title FROM threads WHERE id = ?")
+      .get(threadId);
     return row?.title === null;
   }
 
   /** Atomic across Web, CLI and concurrent agents sharing the database. */
   claim(threadId: string, value: string): boolean {
     const title = normalizeThreadTitle(value);
-    return this.storage.db.prepare<[string, string]>(
-      "UPDATE threads SET title = ? WHERE id = ? AND title IS NULL",
-    ).run(title, threadId).changes === 1;
+    return (
+      this.storage.db
+        .prepare<[string, string]>("UPDATE threads SET title = ? WHERE id = ? AND title IS NULL")
+        .run(title, threadId).changes === 1
+    );
   }
 }

@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import {
-  createServer,
-  type IncomingMessage,
-  type ServerResponse,
-} from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -22,10 +18,7 @@ import {
   createDefaultEasyCodeConfig,
   loadEasyCodeConfig,
 } from "../src/config/index.js";
-import {
-  DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
-  DEFAULT_BASE_STEP_LIMIT,
-} from "../src/models/thinking.js";
+import { DEFAULT_BASE_CONTEXT_CHAR_LIMIT, DEFAULT_BASE_STEP_LIMIT } from "../src/models/thinking.js";
 import type { ToolDefinition } from "../src/core/types.js";
 import {
   HttpTransportError,
@@ -108,7 +101,12 @@ timeout_ms = 41000
         env: {
           EASY_CODE_PROVIDER: "qwen",
           EASY_CODE_THINKING_EFFORT: "high",
-          EASY_CODE_LIMITS_JSON: JSON.stringify({ steps: { none: 24 }, maxContextChars: 430000, maxContextTokens: 64000, maxManagedWorktrees: 23 }),
+          EASY_CODE_LIMITS_JSON: JSON.stringify({
+            steps: { none: 24 },
+            maxContextChars: 430000,
+            maxContextTokens: 64000,
+            maxManagedWorktrees: 23,
+          }),
           EASY_CODE_SUBAGENT_ISOLATION: "worktree",
           EASY_CODE_WORKTREE_BASE_MODE: "fresh",
           EASY_CODE_WORKTREE_ROOT: path.join(temporary, "environment-worktrees"),
@@ -147,14 +145,8 @@ timeout_ms = 41000
       assert.equal(config.providers.glm!.baseUrl, "https://user-glm.example/v4");
       assert.equal(config.providers.glm!.apiKey, undefined);
       assert.equal(config.providers["glm-coding-plan"]!.model, "user-glm-coding-plan");
-      assert.equal(
-        config.providers["glm-coding-plan"]!.baseUrl,
-        "https://user-glm-coding-plan.example/v4",
-      );
-      assert.equal(
-        config.providers["glm-coding-plan"]!.apiKey,
-        undefined,
-      );
+      assert.equal(config.providers["glm-coding-plan"]!.baseUrl, "https://user-glm-coding-plan.example/v4");
+      assert.equal(config.providers["glm-coding-plan"]!.apiKey, undefined);
       assert.equal(config.workspaceRoot, path.resolve(workspace));
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -196,15 +188,9 @@ timeout_ms = 41000
       assert.equal(config.providers.glm!.baseUrl, DEFAULT_GLM_BASE_URL);
       assert.equal(config.providers.glm!.model, DEFAULT_GLM_MODEL);
       assert.equal(config.providers.glm!.apiKey, undefined);
-      assert.equal(
-        config.providers["glm-coding-plan"]!.baseUrl,
-        DEFAULT_GLM_CODING_PLAN_BASE_URL,
-      );
+      assert.equal(config.providers["glm-coding-plan"]!.baseUrl, DEFAULT_GLM_CODING_PLAN_BASE_URL);
       assert.equal(config.providers["glm-coding-plan"]!.model, DEFAULT_GLM_CODING_PLAN_MODEL);
-      assert.equal(
-        config.providers["glm-coding-plan"]!.apiKey,
-        undefined,
-      );
+      assert.equal(config.providers["glm-coding-plan"]!.apiKey, undefined);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
@@ -233,10 +219,7 @@ timeout_ms = 41000
         credentialStore: false,
       });
       assert.equal(codingPlanOnly.providers.glm!.apiKey, undefined);
-      assert.equal(
-        codingPlanOnly.providers["glm-coding-plan"]!.apiKey,
-        undefined,
-      );
+      assert.equal(codingPlanOnly.providers["glm-coding-plan"]!.apiKey, undefined);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
@@ -356,10 +339,7 @@ timeout_ms = 41000
         (error: unknown) => {
           assert.ok(error instanceof Error);
           assert.match(error.message, /trust-root fields/u);
-          assert.doesNotMatch(
-            error.message,
-            /workspace-plan-secret|attacker\.invalid/u,
-          );
+          assert.doesNotMatch(error.message, /workspace-plan-secret|attacker\.invalid/u);
           return true;
         },
       );
@@ -381,10 +361,12 @@ describe("OpenAI-compatible providers", () => {
           statusCode: 200,
           headers: {},
           body: JSON.stringify({
-            choices: [{
-              finish_reason: "stop",
-              message: { role: "assistant", content: "done" },
-            }],
+            choices: [
+              {
+                finish_reason: "stop",
+                message: { role: "assistant", content: "done" },
+              },
+            ],
           }),
         };
       },
@@ -400,10 +382,7 @@ describe("OpenAI-compatible providers", () => {
       messages: [{ role: "user", content: "hello" }],
     });
 
-    assert.deepEqual(
-      capturedTimeouts,
-      [300_000, 300_000, 450_000, 600_000, 300_000],
-    );
+    assert.deepEqual(capturedTimeouts, [300_000, 300_000, 450_000, 600_000, 300_000]);
   });
 
   it("uses the configured renewable idle deadline for streamed requests at every effort", async () => {
@@ -413,21 +392,42 @@ describe("OpenAI-compatible providers", () => {
     const captured: Array<{ timeoutMs: number; timeoutMode: string; bufferedTimeoutMs?: number; stream: boolean }> = [];
     const provider = createProvider(config, "deepseek", undefined, {
       transport: async (request) => {
-        captured.push({ timeoutMs: request.timeoutMs, timeoutMode: request.timeoutMode,
+        captured.push({
+          timeoutMs: request.timeoutMs,
+          timeoutMode: request.timeoutMode,
           bufferedTimeoutMs: request.bufferedTimeoutMs,
-          stream: Boolean((JSON.parse(request.body) as { stream?: boolean }).stream) });
-        return { statusCode: 200, headers: {}, body: JSON.stringify({ choices: [{
-          finish_reason: "stop", message: { role: "assistant", content: "done" },
-        }] }) };
+          stream: Boolean((JSON.parse(request.body) as { stream?: boolean }).stream),
+        });
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [
+              {
+                finish_reason: "stop",
+                message: { role: "assistant", content: "done" },
+              },
+            ],
+          }),
+        };
       },
     });
     for (const thinkingEffort of ["none", "low", "medium", "high"] as const) {
-      await provider.complete({ messages: [{ role: "user", content: "hello" }],
-        thinkingEffort, responseMode: "stream" });
+      await provider.complete({
+        messages: [{ role: "user", content: "hello" }],
+        thinkingEffort,
+        responseMode: "stream",
+      });
     }
-    assert.deepEqual(captured, ["none", "low", "medium", "high"].map(() => ({
-      timeoutMs: 60_000, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 42_000, stream: true,
-    })));
+    assert.deepEqual(
+      captured,
+      ["none", "low", "medium", "high"].map(() => ({
+        timeoutMs: 60_000,
+        timeoutMode: "stream_semantic_idle",
+        bufferedTimeoutMs: 42_000,
+        stream: true,
+      })),
+    );
   });
 
   it("preserves an explicit timeout as an exact override", async () => {
@@ -442,10 +442,12 @@ describe("OpenAI-compatible providers", () => {
           statusCode: 200,
           headers: {},
           body: JSON.stringify({
-            choices: [{
-              finish_reason: "stop",
-              message: { role: "assistant", content: "done" },
-            }],
+            choices: [
+              {
+                finish_reason: "stop",
+                message: { role: "assistant", content: "done" },
+              },
+            ],
           }),
         };
       },
@@ -567,10 +569,7 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(requestBody.tools?.length, 1);
     assert.equal(requestBody.tool_stream, true);
     assert.deepEqual(requestBody.tools?.[0]?.function?.parameters, tool.function.parameters);
-    assert.equal(
-      "oneOf" in (requestBody.tools?.[0]?.function?.parameters ?? {}),
-      false,
-    );
+    assert.equal("oneOf" in (requestBody.tools?.[0]?.function?.parameters ?? {}), false);
     assert.equal(requestBody.max_tokens, undefined);
     assert.equal("max_completion_tokens" in requestBody, false);
     assert.equal("max_output_tokens" in requestBody, false);
@@ -579,10 +578,11 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(requestBody.thinking_budget, undefined);
     assert.equal(response.message.tool_calls?.[0]?.id, "call_1");
     assert.equal(response.message.tool_calls?.[0]?.function.name, "start_command");
-    assert.deepEqual(
-      JSON.parse(response.message.tool_calls?.[0]?.function.arguments ?? "{}"),
-      { program: "node", args: ["build.cjs"], intent: "build" },
-    );
+    assert.deepEqual(JSON.parse(response.message.tool_calls?.[0]?.function.arguments ?? "{}"), {
+      program: "node",
+      args: ["build.cjs"],
+      intent: "build",
+    });
     assert.equal(response.message.reasoning_content, "inspect first");
     assert.equal(response.finishReason, "tool_calls");
     assert.equal(response.usage?.totalTokens, 18);
@@ -601,10 +601,12 @@ describe("OpenAI-compatible providers", () => {
           statusCode: 200,
           headers: {},
           body: JSON.stringify({
-            choices: [{
-              finish_reason: "stop",
-              message: { role: "assistant", content: "done" },
-            }],
+            choices: [
+              {
+                finish_reason: "stop",
+                message: { role: "assistant", content: "done" },
+              },
+            ],
           }),
         };
       },
@@ -621,11 +623,13 @@ describe("OpenAI-compatible providers", () => {
         role: "assistant" as const,
         content: null,
         reasoning_content: "active tool reasoning",
-        tool_calls: [{
-          id: "call_test",
-          type: "function" as const,
-          function: { name: "run_command", arguments: "{}" },
-        }],
+        tool_calls: [
+          {
+            id: "call_test",
+            type: "function" as const,
+            function: { name: "run_command", arguments: "{}" },
+          },
+        ],
       },
       {
         role: "tool" as const,
@@ -655,10 +659,12 @@ describe("OpenAI-compatible providers", () => {
         statusCode: 200,
         headers: {},
         body: JSON.stringify({
-          choices: [{
-            finish_reason: "stop",
-            message: { role: "assistant", content: "done" },
-          }],
+          choices: [
+            {
+              finish_reason: "stop",
+              message: { role: "assistant", content: "done" },
+            },
+          ],
           usage: {
             prompt_tokens: -1,
             completion_tokens: 1,
@@ -678,28 +684,23 @@ describe("OpenAI-compatible providers", () => {
     const providerConfig = createDefaultEasyCodeConfig(process.cwd());
     providerConfig.providers.deepseek!.apiKey = "test-deepseek-key";
     providerConfig.providers.deepseek!.model = "deepseek-flash";
-    const provider = createProvider(
-      providerConfig,
-      "deepseek",
-      undefined,
-      {
-        transport: async () => ({
-          statusCode: 200,
-          headers: {},
-          body: JSON.stringify({
-            choices: [{ message: { role: "assistant", content: "ok" } }],
-            usage: {
-              prompt_tokens: 20,
-              completion_tokens: 4,
-              total_tokens: 24,
-              prompt_cache_hit_tokens: 12,
-              prompt_tokens_details: { cached_tokens: null },
-              completion_tokens_details: { reasoning_tokens: null },
-            },
-          }),
+    const provider = createProvider(providerConfig, "deepseek", undefined, {
+      transport: async () => ({
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: {
+            prompt_tokens: 20,
+            completion_tokens: 4,
+            total_tokens: 24,
+            prompt_cache_hit_tokens: 12,
+            prompt_tokens_details: { cached_tokens: null },
+            completion_tokens_details: { reasoning_tokens: null },
+          },
         }),
-      },
-    );
+      }),
+    });
 
     const response = await provider.complete({
       messages: [{ role: "user", content: "hello" }],
@@ -732,26 +733,23 @@ describe("OpenAI-compatible providers", () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.providers.deepseek!.apiKey = "deepseek-key";
     let captured: JsonPostRequest | undefined;
-    const provider = createProvider(
-      config,
-      "deepseek",
-      "deepseek-flash",
-      {
-        transport: async (request) => {
-          captured = request;
-          return {
-            statusCode: 200,
-            headers: {},
-            body: JSON.stringify({
-              choices: [{
+    const provider = createProvider(config, "deepseek", "deepseek-flash", {
+      transport: async (request) => {
+        captured = request;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [
+              {
                 finish_reason: "stop",
                 message: { role: "assistant", content: "done" },
-              }],
-            }),
-          };
-        },
+              },
+            ],
+          }),
+        };
       },
-    );
+    });
     await provider.complete({
       messages: [{ role: "user", content: "hello" }],
       thinkingEffort: "high",
@@ -851,14 +849,16 @@ describe("OpenAI-compatible providers", () => {
           statusCode: 200,
           headers: {},
           body: JSON.stringify({
-            choices: [{
-              finish_reason: "stop",
-              message: {
-                role: "assistant",
-                content: "done",
-                reasoning_content: "checked the implementation",
+            choices: [
+              {
+                finish_reason: "stop",
+                message: {
+                  role: "assistant",
+                  content: "done",
+                  reasoning_content: "checked the implementation",
+                },
               },
-            }],
+            ],
           }),
         };
       },
@@ -895,19 +895,23 @@ describe("OpenAI-compatible providers", () => {
           statusCode: 200,
           headers: {},
           body: JSON.stringify({
-            choices: [{
-              finish_reason: "tool_calls",
-              message: {
-                role: "assistant",
-                content: null,
-                reasoning_content: "I will inspect the file.",
-                tool_calls: [{
-                  id: "call_glm_1",
-                  type: "function",
-                  function: { name: "read_file", arguments: '{"path":"README.md"}' },
-                }],
+            choices: [
+              {
+                finish_reason: "tool_calls",
+                message: {
+                  role: "assistant",
+                  content: null,
+                  reasoning_content: "I will inspect the file.",
+                  tool_calls: [
+                    {
+                      id: "call_glm_1",
+                      type: "function",
+                      function: { name: "read_file", arguments: '{"path":"README.md"}' },
+                    },
+                  ],
+                },
               },
-            }],
+            ],
           }),
         };
       },
@@ -929,10 +933,7 @@ describe("OpenAI-compatible providers", () => {
     });
 
     assert.equal(provider.name, "glm");
-    assert.equal(
-      captured?.url.href,
-      `${DEFAULT_GLM_BASE_URL}/chat/completions`,
-    );
+    assert.equal(captured?.url.href, `${DEFAULT_GLM_BASE_URL}/chat/completions`);
     assert.equal(captured?.headers.authorization, "Bearer glm-test-key");
     const body = JSON.parse(captured?.body ?? "{}") as {
       model?: string;
@@ -956,36 +957,30 @@ describe("OpenAI-compatible providers", () => {
     config.providers.glm!.apiKey = "standard-glm-key";
     config.providers["glm-coding-plan"]!.apiKey = "coding-plan-key";
     let captured: JsonPostRequest | undefined;
-    const provider = createProvider(
-      config,
-      "glm-coding-plan",
-      "glm-5.3-flash",
-      {
-        transport: async (request) => {
-          captured = request;
-          return {
-            statusCode: 200,
-            headers: {},
-            body: JSON.stringify({
-              choices: [{
+    const provider = createProvider(config, "glm-coding-plan", "glm-5.3-flash", {
+      transport: async (request) => {
+        captured = request;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [
+              {
                 finish_reason: "stop",
                 message: { role: "assistant", content: "ok" },
-              }],
-            }),
-          };
-        },
+              },
+            ],
+          }),
+        };
       },
-    );
+    });
 
     await provider.complete({
       messages: [{ role: "user", content: "hello" }],
     });
 
     assert.equal(provider.name, "glm-coding-plan");
-    assert.equal(
-      captured?.url.href,
-      `${DEFAULT_GLM_CODING_PLAN_BASE_URL}/chat/completions`,
-    );
+    assert.equal(captured?.url.href, `${DEFAULT_GLM_CODING_PLAN_BASE_URL}/chat/completions`);
     assert.equal(captured?.headers.authorization, "Bearer coding-plan-key");
     assert.notEqual(captured?.headers.authorization, "Bearer standard-glm-key");
   });
@@ -1005,16 +1000,13 @@ describe("OpenAI-compatible providers", () => {
       }),
     });
 
-    await assert.rejects(
-      provider.complete({ messages: [{ role: "user", content: "hello" }] }),
-      (error: unknown) => {
-        assert.ok(error instanceof ProviderError);
-        assert.doesNotMatch(error.message, new RegExp(secret));
-        assert.match(error.message, /\[REDACTED\]/);
-        assert.equal(error.statusCode, 401);
-        return true;
-      },
-    );
+    await assert.rejects(provider.complete({ messages: [{ role: "user", content: "hello" }] }), (error: unknown) => {
+      assert.ok(error instanceof ProviderError);
+      assert.doesNotMatch(error.message, new RegExp(secret));
+      assert.match(error.message, /\[REDACTED\]/);
+      assert.equal(error.statusCode, 401);
+      return true;
+    });
   });
 });
 
@@ -1037,8 +1029,14 @@ describe("Node HTTP JSON transport", () => {
           timeoutMode: "stream_semantic_idle",
           bufferedTimeoutMs: 2_000,
           maxResponseBytes: 1_024,
-          onResponseStart: (response) => { starts.push(response.statusCode); return "stream"; },
-          onResponseChunk: (chunk) => { chunks.push(Buffer.from(chunk)); return true; },
+          onResponseStart: (response) => {
+            starts.push(response.statusCode);
+            return "stream";
+          },
+          onResponseChunk: (chunk) => {
+            chunks.push(Buffer.from(chunk));
+            return true;
+          },
         });
         assert.deepEqual(starts, [200]);
         assert.equal(Buffer.concat(chunks).toString("utf8"), result.body);
@@ -1131,12 +1129,17 @@ describe("Node HTTP JSON transport", () => {
         setTimeout(() => response.end("data: done\n\n"), 120);
       },
       async (url) => {
-        const result = await postJsonWithNode({ url,
-          headers: { "content-type": "application/json" }, body: "{}",
-          timeoutMs: 70, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 500,
+        const result = await postJsonWithNode({
+          url,
+          headers: { "content-type": "application/json" },
+          body: "{}",
+          timeoutMs: 70,
+          timeoutMode: "stream_semantic_idle",
+          bufferedTimeoutMs: 500,
           maxResponseBytes: 1_024,
           onResponseStart: () => "stream",
-          onResponseChunk: (chunk) => chunk.toString("utf8").includes("data:") });
+          onResponseChunk: (chunk) => chunk.toString("utf8").includes("data:"),
+        });
         assert.match(result.body, /done/u);
       },
     );
@@ -1151,16 +1154,25 @@ describe("Node HTTP JSON transport", () => {
           if (!response.destroyed) response.write(": keepalive\n\n");
         }, 10);
         response.once("close", () => clearInterval(heartbeat));
-        setTimeout(() => { if (!response.destroyed) response.end("data: late\n\n"); }, 120);
+        setTimeout(() => {
+          if (!response.destroyed) response.end("data: late\n\n");
+        }, 120);
       },
       async (url) => {
-        await assert.rejects(postJsonWithNode({ url,
-          headers: { "content-type": "application/json" }, body: "{}",
-          timeoutMs: 40, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 500,
-          maxResponseBytes: 1_024,
-          onResponseStart: () => "stream",
-          onResponseChunk: () => false }),
-        (error: unknown) => error instanceof HttpTransportError && error.kind === "stream_semantic_idle_timeout");
+        await assert.rejects(
+          postJsonWithNode({
+            url,
+            headers: { "content-type": "application/json" },
+            body: "{}",
+            timeoutMs: 40,
+            timeoutMode: "stream_semantic_idle",
+            bufferedTimeoutMs: 500,
+            maxResponseBytes: 1_024,
+            onResponseStart: () => "stream",
+            onResponseChunk: () => false,
+          }),
+          (error: unknown) => error instanceof HttpTransportError && error.kind === "stream_semantic_idle_timeout",
+        );
       },
     );
   });
@@ -1175,12 +1187,17 @@ describe("Node HTTP JSON transport", () => {
         }, 80);
       },
       async (url) => {
-        const result = await postJsonWithNode({ url,
-          headers: { "content-type": "application/json" }, body: "{}",
-          timeoutMs: 40, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 150,
+        const result = await postJsonWithNode({
+          url,
+          headers: { "content-type": "application/json" },
+          body: "{}",
+          timeoutMs: 40,
+          timeoutMode: "stream_semantic_idle",
+          bufferedTimeoutMs: 150,
           maxResponseBytes: 1_024,
           onResponseStart: () => "buffered",
-          onResponseChunk: () => false });
+          onResponseChunk: () => false,
+        });
         assert.equal(result.body, '{"ok":true}');
       },
     );
@@ -1189,16 +1206,25 @@ describe("Node HTTP JSON transport", () => {
   it("reports a distinct timeout while waiting for stream response headers", async () => {
     await withServer(
       (_request, response) => {
-        setTimeout(() => { if (!response.destroyed) response.end("late"); }, 120);
+        setTimeout(() => {
+          if (!response.destroyed) response.end("late");
+        }, 120);
       },
       async (url) => {
-        await assert.rejects(postJsonWithNode({ url,
-          headers: { "content-type": "application/json" }, body: "{}",
-          timeoutMs: 40, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 500,
-          maxResponseBytes: 1_024,
-          onResponseStart: () => "stream",
-          onResponseChunk: () => false }),
-        (error: unknown) => error instanceof HttpTransportError && error.kind === "stream_header_timeout");
+        await assert.rejects(
+          postJsonWithNode({
+            url,
+            headers: { "content-type": "application/json" },
+            body: "{}",
+            timeoutMs: 40,
+            timeoutMode: "stream_semantic_idle",
+            bufferedTimeoutMs: 500,
+            maxResponseBytes: 1_024,
+            onResponseStart: () => "stream",
+            onResponseChunk: () => false,
+          }),
+          (error: unknown) => error instanceof HttpTransportError && error.kind === "stream_header_timeout",
+        );
       },
     );
   });

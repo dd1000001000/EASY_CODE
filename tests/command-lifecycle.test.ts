@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import type { ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import {
-  terminateProcessTree,
-  type KillableSubprocess,
-} from "../src/command/lifecycle.js";
+import { terminateProcessTree, type KillableSubprocess } from "../src/command/lifecycle.js";
 import { describe, it } from "./harness.js";
 
 interface FakeTaskkill extends EventEmitter {

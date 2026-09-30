@@ -23,21 +23,29 @@ export interface SharedLayaEndpoint {
 export function sharedLayaEndpoint(options: SharedLayaOptions): SharedLayaEndpoint {
   const workerDigest = createHash("sha256").update(readFileSync(options.workerPath)).digest("hex");
   const directory = path.dirname(options.workerPath);
-  const dependencies = [path.join(directory, "runtime.py"), path.join(directory, "questions.json"),
-    path.resolve(directory, "../../model-weights/laya-multilingual/joint-v2/model/onnx_manifest.json")];
-  const dependencyDigests = dependencies.filter(existsSync).map(file =>
-    createHash("sha256").update(readFileSync(file)).digest("hex"));
-  const identity = createHash("sha256").update(JSON.stringify({
-    protocol: LOCAL_DECISION_PROTOCOL,
-    user: os.userInfo().username,
-    home: os.homedir(),
-    dataDir: path.resolve(options.dataDir),
-    python: path.resolve(options.python),
-    workerDigest,
-    dependencyDigests,
-  })).digest("hex").slice(0, 24);
-  if (process.platform === "win32")
-    return { identity, address: `\\\\.\\pipe\\easy-code-laya-${identity}` };
+  const dependencies = [
+    path.join(directory, "runtime.py"),
+    path.join(directory, "questions.json"),
+    path.resolve(directory, "../../model-weights/laya-multilingual/joint-v2/model/onnx_manifest.json"),
+  ];
+  const dependencyDigests = dependencies
+    .filter(existsSync)
+    .map((file) => createHash("sha256").update(readFileSync(file)).digest("hex"));
+  const identity = createHash("sha256")
+    .update(
+      JSON.stringify({
+        protocol: LOCAL_DECISION_PROTOCOL,
+        user: os.userInfo().username,
+        home: os.homedir(),
+        dataDir: path.resolve(options.dataDir),
+        python: path.resolve(options.python),
+        workerDigest,
+        dependencyDigests,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 24);
+  if (process.platform === "win32") return { identity, address: `\\\\.\\pipe\\easy-code-laya-${identity}` };
   const socketDirectory = path.join(os.tmpdir(), `easy-code-laya-${process.getuid?.() ?? "user"}-${identity}`);
   return { identity, address: path.join(socketDirectory, "service.sock"), directory: socketDirectory };
 }
@@ -46,16 +54,35 @@ export function sharedLayaEndpoint(options: SharedLayaOptions): SharedLayaEndpoi
 export async function ensurePrivateSocketDirectory(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const info = await lstat(directory);
-  if (!info.isDirectory() || info.isSymbolicLink() ||
-      (process.getuid && info.uid !== process.getuid()) || (info.mode & 0o077) !== 0)
+  if (
+    !info.isDirectory() ||
+    info.isSymbolicLink() ||
+    (process.getuid && info.uid !== process.getuid()) ||
+    (info.mode & 0o077) !== 0
+  )
     throw new Error("Local Laya IPC directory is not private to this user");
 }
 
 /** Do not retain provider credentials in a model service that outlives a CLI. */
 export function localModelEnvironment(): NodeJS.ProcessEnv {
-  const allowed = ["PATH", "Path", "SystemRoot", "WINDIR", "HOME", "USERPROFILE",
-    "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "TMP", "TEMP", "TMPDIR",
-    "XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "LD_LIBRARY_PATH", "CUDA_VISIBLE_DEVICES"];
+  const allowed = [
+    "PATH",
+    "Path",
+    "SystemRoot",
+    "WINDIR",
+    "HOME",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PROGRAMDATA",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+    "XDG_CACHE_HOME",
+    "LD_LIBRARY_PATH",
+    "CUDA_VISIBLE_DEVICES",
+  ];
   const env: NodeJS.ProcessEnv = {};
   for (const name of allowed) if (process.env[name] !== undefined) env[name] = process.env[name];
   env.PYTHONIOENCODING = "utf-8";

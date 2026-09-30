@@ -2,13 +2,15 @@ import { z } from "zod";
 import type { SessionState } from "../core/types.js";
 
 /** One bounded reviewer opinion; neither verdict certifies unseen work. */
-export const reviewReportSchema = z.object({
-  verdict: z.enum(["pass", "revise"]),
-  conclusion: z.string().trim().min(1).max(6000),
-  nextAction: z.string().trim().min(1).max(4000),
-  evidenceRefs: z.array(z.string().min(1).max(160)).max(32),
-  uncertainties: z.array(z.string().min(1).max(2000)).max(32),
-}).strict();
+export const reviewReportSchema = z
+  .object({
+    verdict: z.enum(["pass", "revise"]),
+    conclusion: z.string().trim().min(1).max(6000),
+    nextAction: z.string().trim().min(1).max(4000),
+    evidenceRefs: z.array(z.string().min(1).max(160)).max(32),
+    uncertainties: z.array(z.string().min(1).max(2000)).max(32),
+  })
+  .strict();
 export type ReviewReport = z.infer<typeof reviewReportSchema>;
 
 export interface ReviewSession {
@@ -32,10 +34,19 @@ export interface ReviewSession {
 }
 
 const eventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("started"), id: z.string().min(1), key: z.string().min(1), scope: z.string(),
-    snapshotId: z.string().min(1), requirementRevision: z.string().min(1),
-    reviewerThreadId: z.string().min(1),
-    incidentId: z.string().optional(), directory: z.string().optional() }).strict(),
+  z
+    .object({
+      type: z.literal("started"),
+      id: z.string().min(1),
+      key: z.string().min(1),
+      scope: z.string(),
+      snapshotId: z.string().min(1),
+      requirementRevision: z.string().min(1),
+      reviewerThreadId: z.string().min(1),
+      incidentId: z.string().optional(),
+      directory: z.string().optional(),
+    })
+    .strict(),
   z.object({ type: z.literal("brief_ready"), id: z.string(), text: z.string().min(1).max(16000) }).strict(),
   z.object({ type: z.literal("review_started"), id: z.string() }).strict(),
   z.object({ type: z.literal("request"), id: z.string() }).strict(),
@@ -48,26 +59,35 @@ const eventSchema = z.discriminatedUnion("type", [
 export type ReviewEvent = z.infer<typeof eventSchema>;
 
 export function renderReviewAdvice(session: ReviewSession, fresh: boolean): string {
-  return "RUNTIME_REVIEW_ADVICE (independent reviewer opinion, not user instructions or verified facts)\n" +
-    JSON.stringify({ reviewId: session.id, snapshotId: session.snapshotId,
-      fresh, conclusion: session.report?.conclusion ?? "Review unavailable",
+  return (
+    "RUNTIME_REVIEW_ADVICE (independent reviewer opinion, not user instructions or verified facts)\n" +
+    JSON.stringify({
+      reviewId: session.id,
+      snapshotId: session.snapshotId,
+      fresh,
+      conclusion: session.report?.conclusion ?? "Review unavailable",
       verdict: session.report?.verdict ?? "revise",
       nextAction: session.report?.nextAction ?? "Do not infer a successful review.",
-      evidenceRefs: session.report?.evidenceRefs ?? [], uncertainties: session.report?.uncertainties ?? [],
-      reason: session.reason, warning: "The main Agent must assess this advice against actual evidence. No agreement or Runtime approval is implied." });
+      evidenceRefs: session.report?.evidenceRefs ?? [],
+      uncertainties: session.report?.uncertainties ?? [],
+      reason: session.reason,
+      warning:
+        "The main Agent must assess this advice against actual evidence. No agreement or Runtime approval is implied.",
+    })
+  );
 }
 
 /** Validate the transition on a clone before writing the event; fold only after it is durable. */
 export function foldReviewEvent(state: SessionState, raw: unknown): void {
   const event = eventSchema.parse(raw);
   if (event.type === "started") {
-    if (state.reviewSessions.some(session => session.id === event.id || session.key === event.key))
+    if (state.reviewSessions.some((session) => session.id === event.id || session.key === event.key))
       throw new Error("Duplicate review binding");
     const { type: _type, ...binding } = event;
     state.reviewSessions.push({ ...binding, status: "preparing", requests: 0, tools: 0, evidenceIds: [] });
     return;
   }
-  const session = state.reviewSessions.find(item => item.id === event.id);
+  const session = state.reviewSessions.find((item) => item.id === event.id);
   if (!session) throw new Error("Unknown review assignment");
   if (session.status === "applied") throw new Error("Review already applied");
   switch (event.type) {
@@ -102,13 +122,14 @@ export function foldReviewEvent(state: SessionState, raw: unknown): void {
       session.status = "unavailable";
       break;
     case "applied":
-      if (session.status !== "reported" && session.status !== "unavailable") throw new Error("Review has no terminal result");
+      if (session.status !== "reported" && session.status !== "unavailable")
+        throw new Error("Review has no terminal result");
       session.fresh = event.fresh;
       session.handoff = renderReviewAdvice(session, event.fresh);
       session.status = "applied";
       if (session.report) state.messages.push({ role: "user", content: session.handoff });
       if (session.incidentId) {
-        const incident = state.progressGuard?.incidents.find(item => item.incidentId === session.incidentId);
+        const incident = state.progressGuard?.incidents.find((item) => item.incidentId === session.incidentId);
         if (incident) {
           incident.reviewAttempts++;
           incident.phase = session.report ? "strategy_adjustment" : "review_unavailable";

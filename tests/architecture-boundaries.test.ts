@@ -20,19 +20,12 @@ const RETIRED_RUNTIME_SYMBOLS = [
   ".easy-code-srt-runtime",
 ] as const;
 
-const RETIRED_PTY_DISCLOSURE_ACTIONS = [
-  "toggle-thinking",
-  "toggle-adjustment",
-] as const;
+const RETIRED_PTY_DISCLOSURE_ACTIONS = ["toggle-thinking", "toggle-adjustment"] as const;
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const target = path.join(directory, entry.name);
-    return entry.isDirectory()
-      ? sourceFiles(target)
-      : entry.isFile() && entry.name.endsWith(".ts")
-        ? [target]
-        : [];
+    return entry.isDirectory() ? sourceFiles(target) : entry.isFile() && entry.name.endsWith(".ts") ? [target] : [];
   });
 }
 

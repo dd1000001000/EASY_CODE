@@ -12,15 +12,8 @@ import {
 import path from "node:path";
 import type { EventRecord } from "../core/types.js";
 import { createId } from "../utils/ids.js";
-import {
-  CURRENT_PROTOCOL,
-  isUnsupportedDevelopmentState,
-  requireCurrentProtocol,
-} from "../protocol/versions.js";
-import {
-  assertJournalEventType,
-  type JournalEventType,
-} from "./events.js";
+import { CURRENT_PROTOCOL, isUnsupportedDevelopmentState, requireCurrentProtocol } from "../protocol/versions.js";
+import { assertJournalEventType, type JournalEventType } from "./events.js";
 
 export interface AppendEventInput {
   readonly type: JournalEventType;
@@ -94,9 +87,7 @@ function parseEvent(value: string, expectedThreadId: string): EventRecord {
     throw new Error("Invalid journal event record");
   }
   if (parsed.threadId !== expectedThreadId) {
-    throw new Error(
-      `Journal event belongs to ${parsed.threadId}, expected ${expectedThreadId}`,
-    );
+    throw new Error(`Journal event belongs to ${parsed.threadId}, expected ${expectedThreadId}`);
   }
   requireCurrentProtocol("journalEvent", parsed.schemaVersion);
   assertJournalEventType(parsed.type);
@@ -125,16 +116,15 @@ function journalFileIdentity(filePath: string): JournalFileIdentity {
   }
 }
 
-function sameJournalFileIdentity(
-  left: Readonly<JournalFileIdentity>,
-  right: Readonly<JournalFileIdentity>,
-): boolean {
-  return left.exists === right.exists &&
+function sameJournalFileIdentity(left: Readonly<JournalFileIdentity>, right: Readonly<JournalFileIdentity>): boolean {
+  return (
+    left.exists === right.exists &&
     left.device === right.device &&
     left.inode === right.inode &&
     left.size === right.size &&
     left.modifiedAt === right.modifiedAt &&
-    left.changedAt === right.changedAt;
+    left.changedAt === right.changedAt
+  );
 }
 
 function freezeJsonValue(value: unknown): void {
@@ -160,11 +150,7 @@ export class EventJournal {
   private cachedScan?: CachedJournalScan;
   private cachedEventIds?: Set<string>;
 
-  constructor(
-    dataDir: string,
-    threadId: string,
-    options: EventJournalOptions = {},
-  ) {
+  constructor(dataDir: string, threadId: string, options: EventJournalOptions = {}) {
     assertSafeThreadId(threadId);
     this.threadId = threadId;
     const threadDir = path.join(path.resolve(dataDir), "threads", threadId);
@@ -186,9 +172,7 @@ export class EventJournal {
     }
     const previous = scan.events[scan.events.length - 1];
     const eventId = input.eventId ?? createId("event");
-    const eventIds = this.cachedEventIds ?? new Set(
-      scan.events.map((event) => event.eventId),
-    );
+    const eventIds = this.cachedEventIds ?? new Set(scan.events.map((event) => event.eventId));
     if (eventIds.has(eventId)) {
       throw new Error(`Duplicate event id: ${eventId}`);
     }
@@ -269,10 +253,7 @@ export class EventJournal {
 
   private scan(): JournalScan {
     let before = journalFileIdentity(this.filePath);
-    if (
-      this.cachedScan &&
-      sameJournalFileIdentity(this.cachedScan.identity, before)
-    ) {
+    if (this.cachedScan && sameJournalFileIdentity(this.cachedScan.identity, before)) {
       return this.cachedScan.scan;
     }
 
@@ -322,9 +303,7 @@ export class EventJournal {
           const previous = events[events.length - 1];
           const expectedSequence = (previous?.sequence ?? 0) + 1;
           if (event.sequence !== expectedSequence) {
-            throw new Error(
-              `Invalid journal sequence ${event.sequence}; expected ${expectedSequence}`,
-            );
+            throw new Error(`Invalid journal sequence ${event.sequence}; expected ${expectedSequence}`);
           }
           if (eventIds.has(event.eventId)) {
             throw new Error(`Duplicate event id: ${event.eventId}`);

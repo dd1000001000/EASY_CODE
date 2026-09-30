@@ -20,7 +20,10 @@ import { describe, it } from "./harness.js";
 // Count actual Unicode layout work, not wall time (which depends on CI load).
 function countSegmentation(run: (counts: { characters: number; constructors: number }) => void): void {
   const intl = Intl as unknown as {
-    Segmenter: new (locale?: string, options?: { granularity: "grapheme" }) => {
+    Segmenter: new (
+      locale?: string,
+      options?: { granularity: "grapheme" },
+    ) => {
       segment(value: string): Iterable<{ segment: string }>;
     };
   };
@@ -28,18 +31,26 @@ function countSegmentation(run: (counts: { characters: number; constructors: num
   const counts = { characters: 0, constructors: 0 };
   intl.Segmenter = class {
     private readonly delegate = new Original(undefined, { granularity: "grapheme" });
-    constructor() { counts.constructors += 1; }
+    constructor() {
+      counts.constructors += 1;
+    }
     segment(value: string) {
       counts.characters += value.length;
       return this.delegate.segment(value);
     }
   };
-  try { run(counts); } finally { intl.Segmenter = Original; }
+  try {
+    run(counts);
+  } finally {
+    intl.Segmenter = Original;
+  }
 }
 
 function history(count = 100): VirtualDocumentNode[] {
   return Array.from({ length: count }, (_, index) => ({
-    id: `text-${index}`, kind: "text", text: `row ${index} 中文🙂\n`.repeat(50),
+    id: `text-${index}`,
+    kind: "text",
+    text: `row ${index} 中文🙂\n`.repeat(50),
   }));
 }
 
@@ -47,15 +58,20 @@ describe("TUI layout cache", () => {
   it("does no transcript segmentation during repeated scrolling or status ticks", () => {
     countSegmentation((counts) => {
       let state = createDisclosureViewState({
-        nodes: history(), columns: 80, rows: 24,
-        headerLines: ["header"], composerLines: ["Request >"], footerLines: ["status"],
+        nodes: history(),
+        columns: 80,
+        rows: 24,
+        headerLines: ["header"],
+        composerLines: ["Request >"],
+        footerLines: ["status"],
       });
       renderDisclosureView(state);
       counts.characters = 0;
       for (let index = 0; index < 30; index += 1) {
         state = scrollDisclosureView(state, -1);
         state = updateDisclosureViewChrome(state, {
-          headerLines: ["header"], composerLines: ["Request >"],
+          headerLines: ["header"],
+          composerLines: ["Request >"],
         });
         renderDisclosureView(state);
       }
@@ -75,7 +91,10 @@ describe("TUI layout cache", () => {
       renderDisclosureView(state);
       const original = state.nodes;
       counts.characters = 0;
-      state = replaceDisclosureViewNodes(state, state.nodes.map((node) => ({ ...node })));
+      state = replaceDisclosureViewNodes(
+        state,
+        state.nodes.map((node) => ({ ...node })),
+      );
       assert.equal(state.nodes, original);
       state = appendDisclosureViewNode(state, { id: "new", kind: "text", text: "new 中文🙂" });
       const frame = renderDisclosureView(state);
@@ -96,14 +115,24 @@ describe("TUI layout cache", () => {
     assert.equal(layoutVirtualDocument(next, 20).lines[0]?.text, "changed");
 
     let state = createDisclosureViewState({
-      nodes: [{ id: "think", kind: "thinking", title: "Thinking", preview: "preview", body: "body 中文🙂", expanded: false }],
-      columns: 80, rows: 12,
+      nodes: [
+        { id: "think", kind: "thinking", title: "Thinking", preview: "preview", body: "body 中文🙂", expanded: false },
+      ],
+      columns: 80,
+      rows: 12,
     });
     state = toggleDisclosureView(state, { id: "think", kind: "thinking" }, true);
     assert.ok(renderDisclosureView(state).rows.includes("body 中文🙂"));
-    state = replaceDisclosureViewNodes(state, [{
-      id: "think", kind: "thinking", title: "Thinking", preview: "preview", body: "new body", expanded: false,
-    }]);
+    state = replaceDisclosureViewNodes(state, [
+      {
+        id: "think",
+        kind: "thinking",
+        title: "Thinking",
+        preview: "preview",
+        body: "new body",
+        expanded: false,
+      },
+    ]);
     assert.ok(renderDisclosureView(state).rows.includes("new body"));
     state = toggleDisclosureView(state, undefined, false);
     assert.ok(renderDisclosureView(state).rows.includes("preview"));
@@ -133,9 +162,15 @@ describe("TUI layout cache", () => {
 
   it("validates node IDs without laying out text at one-column width", () => {
     countSegmentation((counts) => {
-      assert.throws(() => createDisclosureViewState({
-        nodes: [{ id: "", kind: "text", text: "huge body".repeat(1000) }], columns: 80, rows: 24,
-      }), /cannot be empty/);
+      assert.throws(
+        () =>
+          createDisclosureViewState({
+            nodes: [{ id: "", kind: "text", text: "huge body".repeat(1000) }],
+            columns: 80,
+            rows: 24,
+          }),
+        /cannot be empty/,
+      );
       assert.equal(counts.characters, 0);
       const nodes = history(5);
       createDisclosureViewState({ nodes, columns: 80, rows: 24 });

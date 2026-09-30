@@ -3,14 +3,27 @@ import { writeSync } from "node:fs";
 import path from "node:path";
 import { encodeSandboxControl } from "./control.js";
 import { BENCHMARK_BRIDGE_ROOT } from "./benchmark-backend.js";
-import { benchmarkCleanupControl, benchmarkExecutionControl, benchmarkExecutionSchema,
-  benchmarkResultSchema } from "./benchmark-result.js";
+import {
+  benchmarkCleanupControl,
+  benchmarkExecutionControl,
+  benchmarkExecutionSchema,
+  benchmarkResultSchema,
+} from "./benchmark-result.js";
 
 const [directory, commandId] = process.argv.slice(2);
-if (!directory?.startsWith(`${BENCHMARK_BRIDGE_ROOT}/commands/request-`) || !/^command_[a-f0-9-]{36}$/u.test(commandId ?? "")) throw new Error("Invalid controller request");
-const emit = (value: Parameters<typeof encodeSandboxControl>[1]) => { writeSync(3, encodeSandboxControl(commandId!, value)); };
+if (
+  !directory?.startsWith(`${BENCHMARK_BRIDGE_ROOT}/commands/request-`) ||
+  !/^command_[a-f0-9-]{36}$/u.test(commandId ?? "")
+)
+  throw new Error("Invalid controller request");
+const emit = (value: Parameters<typeof encodeSandboxControl>[1]) => {
+  writeSync(3, encodeSandboxControl(commandId!, value));
+};
 let canceled = false;
-process.on("SIGTERM", () => { canceled = true; void writeFile(path.join(directory, "cancel"), "cancel"); });
+process.on("SIGTERM", () => {
+  canceled = true;
+  void writeFile(path.join(directory, "cancel"), "cancel");
+});
 const positions = { stdout: 0, stderr: 0 };
 const pump = async () => {
   for (const kind of ["stdout", "stderr"] as const) {
@@ -21,9 +34,14 @@ const pump = async () => {
       let read;
       do {
         read = await handle.read(bytes, 0, bytes.length, positions[kind]);
-        if (read.bytesRead) { process[kind].write(bytes.subarray(0, read.bytesRead)); positions[kind] += read.bytesRead; }
+        if (read.bytesRead) {
+          process[kind].write(bytes.subarray(0, read.bytesRead));
+          positions[kind] += read.bytesRead;
+        }
       } while (read.bytesRead);
-    } finally { await handle.close(); }
+    } finally {
+      await handle.close();
+    }
   }
 };
 await emit({ type: "ready", backend: "benchmark-container" });
@@ -58,12 +76,22 @@ try {
         }
       }
       await pump();
-      if (!targetExited) emit(benchmarkExecutionControl({ version: terminal.version, exitCode: terminal.exitCode,
-        outcome: terminal.outcome, ...(terminal.executionError ? { executionError: terminal.executionError } : {}) }));
+      if (!targetExited)
+        emit(
+          benchmarkExecutionControl({
+            version: terminal.version,
+            exitCode: terminal.exitCode,
+            outcome: terminal.outcome,
+            ...(terminal.executionError ? { executionError: terminal.executionError } : {}),
+          }),
+        );
       emit(benchmarkCleanupControl(terminal));
       process.exitCode = canceled ? 130 : terminal.exitCode;
       break;
     }
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
-} catch (error) { await emit({ type: "cleanup_error", message: String(error) }); process.exitCode = 1; }
+} catch (error) {
+  await emit({ type: "cleanup_error", message: String(error) });
+  process.exitCode = 1;
+}

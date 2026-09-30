@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
-import {
-  renderFileDiff,
-  sanitizeDiffText,
-} from "../src/cli/file-diff.js";
+import { renderFileDiff, sanitizeDiffText } from "../src/cli/file-diff.js";
 import { Terminal } from "../src/cli/terminal.js";
 import { describe, it } from "./harness.js";
 
@@ -101,10 +98,7 @@ describe("file diff UI", () => {
         type: "file_diff",
         path: "src/large-preview.ts",
         before: "",
-        after: Array.from(
-          { length: 500 },
-          (_, index) => `line ${index + 1}`,
-        ).join("\n"),
+        after: Array.from({ length: 500 }, (_, index) => `line ${index + 1}`).join("\n"),
       },
       // Callers cannot raise this UI-only safety boundary.
       { color: false, maxLines: 10_000 },
@@ -153,10 +147,7 @@ describe("file diff UI", () => {
   });
 
   it("describes an empty file without inventing a code line", () => {
-    const output = renderFileDiff(
-      { type: "file_diff", path: "empty.txt", before: "", after: "" },
-      { color: false },
-    );
+    const output = renderFileDiff({ type: "file_diff", path: "empty.txt", before: "", after: "" }, { color: false });
     assert.match(output, /Empty file created/u);
     assert.doesNotMatch(output, /│ \+/u);
   });

@@ -27,8 +27,7 @@ export const DEFAULT_SUBAGENT_WAIT_MS = 30_000;
 
 const UNSAFE_SUBAGENT_TEXT =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/gu;
-const TERMINAL_ESCAPE_SEQUENCE =
-  /\u001B(?:\][^\u0007]*(?:\u0007|\u001B\\)|\[[0-?]*[ -/]*[@-~])/gu;
+const TERMINAL_ESCAPE_SEQUENCE = /\u001B(?:\][^\u0007]*(?:\u0007|\u001B\\)|\[[0-?]*[ -/]*[@-~])/gu;
 
 /** Keep useful line breaks while removing terminal controls, bidi spoofing, and secrets. */
 export function sanitizeSubagentText(value: string): string {
@@ -51,14 +50,7 @@ export function truncateSubagentMessage(value: string, maximum: number): string 
 }
 
 export type SubagentStatus =
-  | "running"
-  | "stopping"
-  | "completed"
-  | "blocked"
-  | "needs_parent_decision"
-  | "failed"
-  | "stopped"
-  | "interrupted";
+  "running" | "stopping" | "completed" | "blocked" | "needs_parent_decision" | "failed" | "stopped" | "interrupted";
 
 export interface StandaloneSubagentTask {
   title: string;
@@ -212,28 +204,10 @@ export interface SubagentView {
  */
 export interface SubagentControl {
   assertAuthorized(context: ToolContext): void | Promise<void>;
-  spawn(
-    request: SpawnSubagentRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult>;
-  status(
-    request: SubagentStatusRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult>;
-  wait(
-    request: WaitForSubagentsRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult>;
-  followUp(
-    request: FollowUpSubagentRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult>;
-  stop(
-    request: StopSubagentRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult>;
-  handoff(
-    request: HandoffSubagentRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult>;
+  spawn(request: SpawnSubagentRequest, context: ToolContext): Promise<ToolExecutionResult>;
+  status(request: SubagentStatusRequest, context: ToolContext): Promise<ToolExecutionResult>;
+  wait(request: WaitForSubagentsRequest, context: ToolContext): Promise<ToolExecutionResult>;
+  followUp(request: FollowUpSubagentRequest, context: ToolContext): Promise<ToolExecutionResult>;
+  stop(request: StopSubagentRequest, context: ToolContext): Promise<ToolExecutionResult>;
+  handoff(request: HandoffSubagentRequest, context: ToolContext): Promise<ToolExecutionResult>;
 }

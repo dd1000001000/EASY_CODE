@@ -7,19 +7,13 @@ import { sharedReviewEvidenceOwner } from "./context/recall.js";
 
 import chalk from "chalk";
 
-import {
-  consumeHarborProviderApiKeyFile,
-  resolveHarborOuterSandbox,
-} from "./benchmarks/swebench.js";
+import { consumeHarborProviderApiKeyFile, resolveHarborOuterSandbox } from "./benchmarks/swebench.js";
 import { Terminal, printBanner } from "./cli/terminal.js";
 import { formatTokenCount } from "./cli/token-count.js";
 import type { AppInteractionPort, UserSubmission } from "./ui/interaction-port.js";
 import { DECISION_TIMEOUT_MS } from "./ui/decision-timeout.js";
-import {
-  helpText,
-  parseModelCommand,
-  parseSlashCommand,
-} from "./cli/slash-command.js";
+import { compactionRunning } from "./ui/compaction.js";
+import { helpText, parseModelCommand, parseSlashCommand } from "./cli/slash-command.js";
 import {
   SystemKeyringCredentialStore,
   apiKeyConfigKey,
@@ -48,11 +42,7 @@ import { autoApproveLocal } from "./command/local-approval.js";
 import { ApprovalQueue, reviewCommandApproval } from "./command/approval-agent.js";
 import { canGrantCommandPrefix } from "./command/approval.js";
 import { CommandRuntime } from "./command/runtime.js";
-import {
-  ContextArtifactIndex,
-  renderContextCheckpoint,
-  renderRetrievedContext,
-} from "./context/artifact-index.js";
+import { ContextArtifactIndex, renderContextCheckpoint, renderRetrievedContext } from "./context/artifact-index.js";
 import { ContextManager } from "./context/manager.js";
 import type {
   AgentMode,
@@ -96,11 +86,7 @@ import { MemoryMaintenance } from "./memory/maintenance.js";
 import { redactSensitiveInformation } from "./memory/sensitive.js";
 import { MemoryVectorIndex } from "./memory/vector-index.js";
 import { formatPlanProposal } from "./plans/plan.js";
-import {
-  activePromptBundleBinding,
-  ensurePromptBundle,
-  loadPromptBundleCatalog,
-} from "./prompt-bundle/index.js";
+import { activePromptBundleBinding, ensurePromptBundle, loadPromptBundleCatalog } from "./prompt-bundle/index.js";
 import { deleteThreadTree } from "./threads/delete-thread.js";
 import { ThreadTitleStore } from "./threads/thread-title.js";
 import {
@@ -117,9 +103,7 @@ import {
   USER_MODEL_REGISTRY_PATH,
   sweBenchVerified50Profile,
 } from "./models/catalog.js";
-import {
-  thinkingEffortIsApplied,
-} from "./models/thinking.js";
+import { thinkingEffortIsApplied } from "./models/thinking.js";
 import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
 import { TokenCalibration } from "./context/token-calibration.js";
@@ -130,11 +114,7 @@ import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js
 import { WorkspaceToolObserver } from "./coordination/observer.js";
 import { NativeSandboxBackend } from "./sandbox/native-backend.js";
 import { NativeSandboxStartupService } from "./sandbox/native-startup.js";
-import {
-  runSandboxStartupGuide,
-  type SandboxStartupService,
-} from "./sandbox/startup.js";
-import { createSessionState } from "./runtime/state.js";
+import { runSandboxStartupGuide, type SandboxStartupService } from "./sandbox/startup.js";
 import { createStorage, workspaceIdFromRoot, type EasyCodeStorage } from "./storage/database.js";
 import {
   SubagentCoordinator,
@@ -144,16 +124,10 @@ import {
   type SubagentExecutionRequest,
 } from "./subagents/coordinator.js";
 import { SubagentMessageMailbox } from "./subagents/messages.js";
-import {
-  WorkspaceMutationLock,
-} from "./subagents/workspace-mutation-lock.js";
+import { WorkspaceMutationLock } from "./subagents/workspace-mutation-lock.js";
 import { isToolAvailable, toolMetadata } from "./tools/capabilities.js";
 import { BuiltinToolSource } from "./tools/builtin-source.js";
-import {
-  ToolCatalog,
-  type ToolCatalogSnapshot,
-  type ToolSource,
-} from "./tools/catalog.js";
+import { ToolCatalog, type ToolCatalogSnapshot, type ToolSource } from "./tools/catalog.js";
 import type { ToolExecutionAuthorizer, ToolExecutionAuthorizationRequest } from "./tools/execution-gateway.js";
 import { toolApprovalIdentity, type ToolApprovalIdentity } from "./tools/approval.js";
 import { reviewToolApproval, type ToolApprovalReview } from "./tools/approval-agent.js";
@@ -167,17 +141,10 @@ import {
 } from "./threads/thread-store.js";
 import type { UISessionInfo } from "./ui/contracts.js";
 import type { PlanReviewDecision } from "./ui/interaction-port.js";
-import {
-  applySubagentTaskOperation,
-  taskGraphView,
-} from "./tasks/task-graph.js";
+import { applySubagentTaskOperation, taskGraphView } from "./tasks/task-graph.js";
 import { createId } from "./utils/ids.js";
-import { sha256 } from "./utils/hash.js";
 import { foldPendingOperations } from "./context/pending-operations.js";
-import {
-  WorkspaceManager,
-  type WorkspaceRestoreSummary,
-} from "./workspace/manager.js";
+import { WorkspaceManager, type WorkspaceRestoreSummary } from "./workspace/manager.js";
 import {
   ExecutionEnvironmentManager,
   type ActiveExecutionEnvironment,
@@ -185,7 +152,12 @@ import {
 } from "./workspace/execution-environment.js";
 import type { ProjectWorkspace } from "./projects/types.js";
 import { ProjectIndex } from "./web-server/projects.js";
-import { DocumentConverter, ThreadDocumentService, ThreadResourceStore, type ThreadResourceAttachment } from "./resources/index.js";
+import {
+  DocumentConverter,
+  ThreadDocumentService,
+  ThreadResourceStore,
+  type ThreadResourceAttachment,
+} from "./resources/index.js";
 
 export interface EasyCodeAppOptions {
   workspaceRoot?: string;
@@ -230,9 +202,7 @@ export interface ToolSourceFactoryContext {
   readonly assignedTaskId?: string;
 }
 
-export type ToolSourceFactory = (
-  context: Readonly<ToolSourceFactoryContext>,
-) => ToolSource | Promise<ToolSource>;
+export type ToolSourceFactory = (context: Readonly<ToolSourceFactoryContext>) => ToolSource | Promise<ToolSource>;
 
 /** Add durable parent-thread attribution without mutating a child's private audit record. */
 export function attributeSubagentCommandAudit(
@@ -293,10 +263,7 @@ function promptBundleText(path: string): string {
   return loadPromptBundleCatalog().readText(path).trimEnd();
 }
 
-function renderPromptBundleText(
-  path: string,
-  values: Readonly<Record<string, string | number | boolean>>,
-): string {
+function renderPromptBundleText(path: string, values: Readonly<Record<string, string | number | boolean>>): string {
   return loadPromptBundleCatalog().render(path, values).trimEnd();
 }
 
@@ -315,9 +282,10 @@ function messagePreview(message: ChatMessage): string {
     content = `[Tool calls: ${message.tool_calls.map((call) => call.function.name).join(", ")}]`;
   }
   const compact = redactSensitiveInformation(content.replace(/\s+/gu, " ").trim()).slice(0, 240);
-  const labels = message.role === "user" && message.images?.length
-    ? ` [${message.images.map((image) => image.label).join(", ")}]`
-    : "";
+  const labels =
+    message.role === "user" && message.images?.length
+      ? ` [${message.images.map((image) => image.label).join(", ")}]`
+      : "";
   return `${role}: ${compact || "(empty)"}${labels}`;
 }
 
@@ -337,7 +305,10 @@ function parseQuotedArguments(value: string): string[] {
       else current += char;
     } else if (char === '"' || char === "'") quote = char;
     else if (/\s/u.test(char)) {
-      if (current) { args.push(current); current = ""; }
+      if (current) {
+        args.push(current);
+        current = "";
+      }
     } else current += char;
   }
   if (quote) throw new Error("Unclosed quote in command arguments");
@@ -349,10 +320,7 @@ function stripPasteFailureMarkers(value: string): string {
   return value.replace(/\s*\[Image paste failed\]\s*/gu, " ").trim();
 }
 
-function stripImageMarkers(
-  value: string,
-  images: readonly ImageAttachment[],
-): string {
+function stripImageMarkers(value: string, images: readonly ImageAttachment[]): string {
   let result = value;
   for (const image of images) {
     result = result.replaceAll(`[${image.label}]`, " ");
@@ -363,14 +331,8 @@ function stripImageMarkers(
 export function repairInterruptedTurn(threadStore: ThreadStore, state: SessionState): boolean {
   const turnId = state.activeTurnId;
   if (!turnId) return false;
-  const interruptedPlanReview = threadStore.interruptedPlanReview(
-    state.threadId,
-    turnId,
-  );
-  const finalAssistantWasDurable = threadStore.hasDurableFinalAssistant(
-    state.threadId,
-    turnId,
-  );
+  const interruptedPlanReview = threadStore.interruptedPlanReview(state.threadId, turnId);
+  const finalAssistantWasDurable = threadStore.hasDurableFinalAssistant(state.threadId, turnId);
 
   const repairedMessages: ChatMessage[] = [];
   for (let index = state.messages.length - 1; index >= 0; index -= 1) {
@@ -379,8 +341,7 @@ export function repairInterruptedTurn(threadStore: ThreadStore, state: SessionSt
     const completedCallIds = new Set(
       state.messages
         .slice(index + 1)
-        .filter((message): message is Extract<ChatMessage, { role: "tool" }> =>
-          message.role === "tool")
+        .filter((message): message is Extract<ChatMessage, { role: "tool" }> => message.role === "tool")
         .map((message) => message.tool_call_id),
     );
     for (const call of candidate.tool_calls) {
@@ -433,15 +394,13 @@ export function releaseOrphanedSubagentTasks(
 ): number {
   let released = 0;
   const resumableBindings = new Set(
-    threadStore.unobservedSubagentAssignments(state.threadId)
+    threadStore
+      .unobservedSubagentAssignments(state.threadId)
       .filter(
         (entry) =>
           Boolean(entry.assignment.childThreadId) &&
           Boolean(entry.assignment.environmentId) &&
-          !threadStore.hasCommittedSubagentStop(
-            state.threadId,
-            entry.assignment.agentId,
-          ),
+          !threadStore.hasCommittedSubagentStop(state.threadId, entry.assignment.agentId),
       )
       .map((entry) => entry.assignment.agentId),
   );
@@ -455,25 +414,17 @@ export function releaseOrphanedSubagentTasks(
     );
     if (!orphan?.assignedAgentId) break;
     const turnId = createId("turn");
-    const durableResult = threadStore.latestSubagentResult(
-      state.threadId,
-      orphan.assignedAgentId,
-      orphan.id,
-    );
-    const stopWasCommitted = threadStore.hasCommittedSubagentStop(
-      state.threadId,
-      orphan.assignedAgentId,
-    );
-    const completedReport = !stopWasCommitted &&
+    const durableResult = threadStore.latestSubagentResult(state.threadId, orphan.assignedAgentId, orphan.id);
+    const stopWasCommitted = threadStore.hasCommittedSubagentStop(state.threadId, orphan.assignedAgentId);
+    const completedReport =
+      !stopWasCommitted &&
       durableResult?.reason === "completed" &&
       durableResult.report?.outcome === "completed" &&
       durableResult.report.taskId === orphan.id &&
       durableResult.report.completionEvidence.length === orphan.completionChecks.length &&
-      durableResult.report.completionEvidence.every(
-        (item, index) => item.check === orphan.completionChecks[index],
-      )
-      ? durableResult.report
-      : undefined;
+      durableResult.report.completionEvidence.every((item, index) => item.check === orphan.completionChecks[index])
+        ? durableResult.report
+        : undefined;
     const operation = completedReport
       ? {
           action: "complete" as const,
@@ -499,9 +450,7 @@ export function releaseOrphanedSubagentTasks(
         subagentTaskOperation: operation,
         agentId: orphan.assignedAgentId,
         taskId: orphan.id,
-        reason: completedReport
-          ? "Recovered the child's durable verified result."
-          : reason,
+        reason: completedReport ? "Recovered the child's durable verified result." : reason,
         ...(completedReport ? { report: completedReport } : {}),
       },
     });
@@ -527,8 +476,7 @@ function resumeRecoverySummary(
     compactedMessageCount: state.compactedMessageCount,
     workingSummaryRestored: Boolean(state.workingSummary.trim()),
     restoredReasoningBlocks: state.messages.reduce(
-      (count, message) =>
-        count + (message.role === "assistant" && message.reasoning_content?.trim() ? 1 : 0),
+      (count, message) => count + (message.role === "assistant" && message.reasoning_content?.trim() ? 1 : 0),
       0,
     ),
     restoredReadVersions: workspace.restoredReadVersions,
@@ -600,6 +548,8 @@ export class EasyCodeApp {
   private memoryMaintenanceWork?: Promise<void>;
   private activeTurnController?: AbortController;
   private compacting = false;
+  /** Automatic maintenance inside the running turn; interjections wait until it ends. */
+  private autoCompacting = false;
   private activeTurnSteering?: ActiveTurnSteering;
   private readonly toolObservers = new Set<WorkspaceToolObserver>();
   private sandboxSetupDeferred = false;
@@ -629,11 +579,10 @@ export class EasyCodeApp {
     this.workspace = workspace;
     this.terminal.configureStreaming(config.limits);
     this.state = state;
-    this.terminal.setContextTokensProvider(
-      () => this.contextManager.estimateShortTermTokens(this.state),
-    );
+    this.terminal.setContextTokensProvider(() => this.contextManager.estimateShortTermTokens(this.state));
     this.threadLease = threadLease;
-    this.commandExecutionMode = trustedOuterSandbox === "harbor" ? "unrestricted" : assumeYes ? "auto_approve" : "manual";
+    this.commandExecutionMode =
+      trustedOuterSandbox === "harbor" ? "unrestricted" : assumeYes ? "auto_approve" : "manual";
     // Startup/Resume never silently raises user authority to enable orchestration.
     if (this.commandExecutionMode === "manual") this.state.orchestrationEnabled = false;
     // Use the already resolved trusted cache root so normal launches and the
@@ -652,7 +601,7 @@ export class EasyCodeApp {
         const detail = error instanceof Error ? error.message : String(error);
         terminal.info(
           `Semantic memory search is unavailable (${detail}). ` +
-          "EASY CODE is using lexical fallback; reinstall without --ignore-scripts to repair the local embedding model.",
+            "EASY CODE is using lexical fallback; reinstall without --ignore-scripts to repair the local embedding model.",
         );
       },
     });
@@ -666,7 +615,7 @@ export class EasyCodeApp {
         const detail = error instanceof Error ? error.message : String(error);
         terminal.info(
           `Semantic Thread-context retrieval is unavailable (${detail}). ` +
-          "EASY CODE is continuing with SQLite FTS5 retrieval.",
+            "EASY CODE is continuing with SQLite FTS5 retrieval.",
         );
       },
       { backgroundVectors: true, limits: config.limits },
@@ -677,7 +626,6 @@ export class EasyCodeApp {
     this.executionEnvironments = new ExecutionEnvironmentManager({
       logicalWorkspaceRoot: workspace.root,
       dataDir: config.dataDir,
-      defaultIsolation: workspace.folders.length > 1 ? "shared" : config.subagentIsolation,
       baseMode: config.worktreeBaseMode,
       worktreeRoot: config.worktreeRoot,
       maxManagedWorktrees: config.limits.maxManagedWorktrees,
@@ -705,35 +653,32 @@ export class EasyCodeApp {
       onViewChange: (parentThreadId) => {
         if (this.state.threadId === parentThreadId) this.printSubagents();
       },
-      pendingMessages: (parentThreadId, agentIds) =>
-        this.subagentMessages.pending(parentThreadId, agentIds),
-      handoff: (artifact, destination) =>
-        this.handoffSubagentResult(artifact, destination),
+      pendingMessages: (parentThreadId, agentIds) => this.subagentMessages.pending(parentThreadId, agentIds),
+      handoff: (artifact, destination) => this.handoffSubagentResult(artifact, destination),
     });
   }
 
   static async create(options: EasyCodeAppOptions = {}): Promise<EasyCodeApp> {
-    if (options.maxModelRequests !== undefined &&
-        (!Number.isSafeInteger(options.maxModelRequests) || options.maxModelRequests < 1)) {
+    if (
+      options.maxModelRequests !== undefined &&
+      (!Number.isSafeInteger(options.maxModelRequests) || options.maxModelRequests < 1)
+    ) {
       throw new RangeError("maxModelRequests must be a positive safe integer when provided");
     }
     // Validate the benchmark-only outer boundary before creating a Thread or
     // touching workspace state. Invalid host claims fail without side effects.
     const trustedOuterSandbox = resolveHarborOuterSandbox();
-    const harborProviderApiKey = consumeHarborProviderApiKeyFile(
-      trustedOuterSandbox,
-    );
+    const harborProviderApiKey = consumeHarborProviderApiKeyFile(trustedOuterSandbox);
     const benchmarkProvider = sweBenchVerified50Profile().provider;
     // Library consumers do not pass through CLI main(), so activate the same
     // verified immutable Bundle here as well. This is idempotent.
     await ensurePromptBundle();
     const promptBundle = activePromptBundleBinding();
-    const credentialStore = options.credentialStore === false
-      ? undefined
-      : options.credentialStore ?? new SystemKeyringCredentialStore();
+    const credentialStore =
+      options.credentialStore === false ? undefined : (options.credentialStore ?? new SystemKeyringCredentialStore());
     let config = await loadEasyCodeConfig({
       workspaceRoot: options.workspaceRoot,
-      credentialStore: harborProviderApiKey ? false : credentialStore ?? false,
+      credentialStore: harborProviderApiKey ? false : (credentialStore ?? false),
     });
     if (harborProviderApiKey) config.providers[benchmarkProvider]!.apiKey = harborProviderApiKey;
     const terminal: AppInteractionPort = options.terminal ?? new Terminal();
@@ -743,21 +688,15 @@ export class EasyCodeApp {
     let threadStore: ThreadStore | undefined;
     let threadLease: ThreadLease | undefined;
     try {
-      const explicitWorkspace = Boolean(
-        options.workspaceRoot ||
-        process.env.EASY_CODE_WORKSPACE_ROOT?.trim(),
-      );
+      const explicitWorkspace = Boolean(options.workspaceRoot || process.env.EASY_CODE_WORKSPACE_ROOT?.trim());
       if (options.resumeThreadId && !explicitWorkspace) {
         // The Thread journal is stored in the user data directory, so it can
         // identify its own workspace before workspace-local configuration is
         // loaded. This lets `easy-code --resume <id>` work from another cwd.
-        const savedWorkspace = peekThreadWorkspaceRoot(
-          config.dataDir,
-          options.resumeThreadId,
-        );
+        const savedWorkspace = peekThreadWorkspaceRoot(config.dataDir, options.resumeThreadId);
         const discoveredConfig = await loadEasyCodeConfig({
           workspaceRoot: savedWorkspace,
-          credentialStore: harborProviderApiKey ? false : credentialStore ?? false,
+          credentialStore: harborProviderApiKey ? false : (credentialStore ?? false),
         });
         if (harborProviderApiKey) discoveredConfig.providers[benchmarkProvider]!.apiKey = harborProviderApiKey;
         if (!samePath(discoveredConfig.dataDir, config.dataDir)) {
@@ -770,10 +709,7 @@ export class EasyCodeApp {
         if (options.approvalPolicy) config.approvalPolicy = options.approvalPolicy;
       }
       let workspace = await WorkspaceManager.create(options.projectWorkspace ?? config.workspaceRoot);
-      config.dataDir = await prepareDataDirectoryOutsideWorkspace(
-        config.dataDir,
-        workspace.root,
-      );
+      config.dataDir = await prepareDataDirectoryOutsideWorkspace(config.dataDir, workspace.root);
       storage = createStorage(config.dataDir);
       terminal.setLanguage?.(readLanguage(storage));
       if (!options.resumeThreadId && !harborProviderApiKey) {
@@ -794,8 +730,7 @@ export class EasyCodeApp {
       if (!options.projectWorkspace) {
         const projects = new ProjectIndex(storage);
         if (options.resumeThreadId) {
-          const summary = threadStore.list({ limit: 100_000 })
-            .find(item => item.threadId === options.resumeThreadId);
+          const summary = threadStore.list({ limit: 100_000 }).find((item) => item.threadId === options.resumeThreadId);
           if (!summary) throw new Error(`Thread not found: ${options.resumeThreadId}`);
           workspace = await WorkspaceManager.create(projects.workspace(summary.workspaceId));
         } else {
@@ -818,19 +753,23 @@ export class EasyCodeApp {
         threadLease = threadStore.acquireThreadLease(options.resumeThreadId);
         state = threadStore.recover(options.resumeThreadId);
         if (options.projectWorkspace && state.projectId !== options.projectWorkspace.projectId) {
-          throw new Error(
-            `Thread ${state.threadId} belongs to another project.`,
-          );
+          throw new Error(`Thread ${state.threadId} belongs to another project.`);
         }
         state.projectId = workspace.projectId ?? state.projectId;
         state.workspaceRevision = workspace.revision;
         state.workspaceFolders = workspace.folders.map((folder, index) => ({
-          id: folder.id ?? `folder_${index + 1}`, key: folder.key, path: folder.path,
+          id: folder.id ?? `folder_${index + 1}`,
+          key: folder.key,
+          path: folder.path,
         }));
-        state.primaryWorkspaceFolderId = state.workspaceFolders.find(folder => samePath(folder.path, workspace.root))?.id;
+        state.primaryWorkspaceFolderId = state.workspaceFolders.find((folder) =>
+          samePath(folder.path, workspace.root),
+        )?.id;
         state.workspaceRoot = workspace.root;
         if (!config.providers[state.provider] || !resolveCatalogModel(state.provider, state.model)) {
-          terminal.warning(`The saved model ${state.provider}/${state.model} is no longer available. Using the current default; choose another with /model.`);
+          terminal.warning(
+            `The saved model ${state.provider}/${state.model} is no longer available. Using the current default; choose another with /model.`,
+          );
           state.provider = config.provider;
           state.model = config.providers[config.provider]!.model;
           shouldCheckpoint = true;
@@ -840,22 +779,11 @@ export class EasyCodeApp {
         const previousModel = state.model;
         const previousThinkingEffort = state.thinkingEffort;
         const resumedMode = options.mode ?? state.mode;
-        if (
-          resumedMode !== state.mode &&
-          state.taskGraph &&
-          state.taskGraph.status !== "completed"
-        ) {
-          throw new Error(
-            "Finish or resolve the active task DAG before changing modes on resume.",
-          );
+        if (resumedMode !== state.mode && state.taskGraph && state.taskGraph.status !== "completed") {
+          throw new Error("Finish or resolve the active task DAG before changing modes on resume.");
         }
-        if (
-          resumedMode !== state.mode &&
-          threadStore.unobservedSubagentAssignments(state.threadId).length > 0
-        ) {
-          throw new Error(
-            "Collect outstanding child assignments before changing modes on resume.",
-          );
+        if (resumedMode !== state.mode && threadStore.unobservedSubagentAssignments(state.threadId).length > 0) {
+          throw new Error("Collect outstanding child assignments before changing modes on resume.");
         }
         state.mode = resumedMode;
         state.thinkingEffort = options.thinkingEffort ?? state.thinkingEffort;
@@ -867,24 +795,17 @@ export class EasyCodeApp {
             ? config.providers[selectedProvider]!.model
             : state.model;
         const savedChanges = JSON.stringify(state.changes);
-        const restoredWorkspace = workspace.restorePersistedState(
-          state.filesRead,
-          state.changes,
-        );
-        state.filesRead = new Map(
-          workspace.getReadVersions().map((version) => [version.path, version]),
-        );
+        const restoredWorkspace = workspace.restorePersistedState(state.filesRead, state.changes);
+        state.filesRead = new Map(workspace.getReadVersions().map((version) => [version.path, version]));
         state.changes = workspace.getChangeSet();
-        const releasedOrphanedSubagents = releaseOrphanedSubagentTasks(
-          threadStore,
-          state,
-        );
+        const releasedOrphanedSubagents = releaseOrphanedSubagentTasks(threadStore, state);
         const repairedInterruptedTurn = repairInterruptedTurn(threadStore, state);
         resumeRecovery = resumeRecoverySummary(state, restoredWorkspace, {
           interruptedTurnRepaired: repairedInterruptedTurn,
           reconciledSubagentAssignments: releasedOrphanedSubagents,
         });
-        shouldCheckpoint = shouldCheckpoint ||
+        shouldCheckpoint =
+          shouldCheckpoint ||
           previousMode !== state.mode ||
           previousProvider !== state.provider ||
           previousModel !== state.model ||
@@ -904,9 +825,11 @@ export class EasyCodeApp {
           projectId: workspace.projectId,
           workspaceRevision: workspace.revision,
           workspaceFolders: workspace.folders.map((folder, index) => ({
-            id: folder.id ?? `folder_${index + 1}`, key: folder.key, path: folder.path,
+            id: folder.id ?? `folder_${index + 1}`,
+            key: folder.key,
+            path: folder.path,
           })),
-          primaryWorkspaceFolderId: workspace.folders.find(folder => samePath(folder.path, workspace.root))?.id,
+          primaryWorkspaceFolderId: workspace.folders.find((folder) => samePath(folder.path, workspace.root))?.id,
           mode: selectedMode,
           provider: selectedProvider,
           model: selectedModel,
@@ -938,12 +861,18 @@ export class EasyCodeApp {
         credentialStore,
         options.startupInteraction ?? "none",
         options.sandboxStartup
-          ? options.sandboxStartupService ?? new NativeSandboxStartupService(config.limits, config.dataDir,
-            message => terminal.info(message), workspace.writableRoots)
+          ? (options.sandboxStartupService ??
+              new NativeSandboxStartupService(
+                config.limits,
+                config.dataDir,
+                (message) => terminal.info(message),
+                workspace.writableRoots,
+              ))
           : undefined,
-        options.clipboardImageReader ?? new SystemClipboardImageReader({
-          currentDirectory: workspace.root,
-        }),
+        options.clipboardImageReader ??
+          new SystemClipboardImageReader({
+            currentDirectory: workspace.root,
+          }),
         options.toolSourceFactories ?? [],
         options.authorizeToolExecution,
         resumeRecovery,
@@ -1032,20 +961,31 @@ export class EasyCodeApp {
 
   private startMemoryMaintenance(): void {
     if (this.trustedOuterSandbox || this.memoryMaintenanceTimer) return;
-    this.memoryMaintenanceTimer = setInterval(() => { void this.maintainMemoryWhenIdle(); }, 60_000);
+    this.memoryMaintenanceTimer = setInterval(() => {
+      void this.maintainMemoryWhenIdle();
+    }, 60_000);
     this.memoryMaintenanceTimer.unref();
   }
 
   private async maintainMemoryWhenIdle(): Promise<void> {
-    if (this.closed || this.uninstallRequested || this.uninstallController ||
-        this.state.activeTurnId || this.memoryMaintenanceWork) return;
+    if (
+      this.closed ||
+      this.uninstallRequested ||
+      this.uninstallController ||
+      this.state.activeTurnId ||
+      this.memoryMaintenanceWork
+    )
+      return;
     const controller = new AbortController();
     this.memoryMaintenanceController = controller;
     const work = (async () => {
       try {
-        const maintenance = new MemoryMaintenance(this.storage,
-          this.memoryManager, this.workspace.root,
-          this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root));
+        const maintenance = new MemoryMaintenance(
+          this.storage,
+          this.memoryManager,
+          this.workspace.root,
+          this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root),
+        );
         maintenance.recover(this.state.threadId);
         this.memoryManager.expireDueMemories(this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root));
         this.memoryManager.expireDueMemories(GLOBAL_MEMORY_WORKSPACE_ID);
@@ -1059,7 +999,9 @@ export class EasyCodeApp {
       }
     })();
     this.memoryMaintenanceWork = work;
-    try { await work; } finally {
+    try {
+      await work;
+    } finally {
       if (this.memoryMaintenanceController === controller) this.memoryMaintenanceController = undefined;
       if (this.memoryMaintenanceWork === work) this.memoryMaintenanceWork = undefined;
     }
@@ -1078,7 +1020,9 @@ export class EasyCodeApp {
     this.startMemoryMaintenance();
   }
 
-  sessionInfo(): UISessionInfo { return this.terminalSessionInfo(); }
+  sessionInfo(): UISessionInfo {
+    return this.terminalSessionInfo();
+  }
   async selectHostedModel(): Promise<void> {
     this.assertNoRunningSubagents("switch models or thinking effort");
     await this.selectModelFromPicker(false);
@@ -1093,39 +1037,64 @@ export class EasyCodeApp {
   async selectHostedMode(): Promise<void> {
     this.assertNoRunningSubagents("switch modes");
     const language = readLanguage(this.storage);
-    const selected = await this.terminal.selectChoice(translate(language, "ui.mode"), [
-      { id: "plan", label: translate(language, "ui.modePlan"),
-        disabled: Boolean(this.state.mode !== "plan" && this.state.taskGraph && this.state.taskGraph.status !== "completed") },
-      { id: "auto", label: translate(language, "ui.modeAuto") },
-      { id: "code", label: translate(language, "ui.modeCode") },
-    ], this.state.mode);
+    const selected = await this.terminal.selectChoice(
+      translate(language, "ui.mode"),
+      [
+        {
+          id: "plan",
+          label: translate(language, "ui.modePlan"),
+          disabled: Boolean(
+            this.state.mode !== "plan" && this.state.taskGraph && this.state.taskGraph.status !== "completed",
+          ),
+        },
+        { id: "auto", label: translate(language, "ui.modeAuto") },
+        { id: "code", label: translate(language, "ui.modeCode") },
+      ],
+      this.state.mode,
+    );
     if (selected && selected !== this.state.mode) await this.handleSlashCommand(`/mode ${selected}`);
   }
-  dataDirectory(): string { return this.config.dataDir; }
-  allThreads(): readonly ThreadSummary[] {
-    return this.threadStore.list({ limit: 100_000 })
-      .filter(session => !this.threadStore.isBoundSubagentThread(session.threadId));
+  dataDirectory(): string {
+    return this.config.dataDir;
   }
-  isRequestActive(): boolean { return this.activeTurnController !== undefined; }
-  isCompacting(): boolean { return this.compacting; }
+  allThreads(): readonly ThreadSummary[] {
+    return this.threadStore
+      .list({ limit: 100_000 })
+      .filter((session) => !this.threadStore.isBoundSubagentThread(session.threadId));
+  }
+  isRequestActive(): boolean {
+    return this.activeTurnController !== undefined;
+  }
+  isCompacting(): boolean {
+    return Boolean(this.compacting || this.autoCompacting);
+  }
 
   /** Project membership is immutable while any Thread-owned execution can
    * still observe or mutate its bound workspace revision. */
   isProjectWorkspaceBusy(): boolean {
-    return this.isRequestActive() || this.hasRunningCommands() ||
+    return (
+      this.isRequestActive() ||
+      this.hasRunningCommands() ||
       this.subagentCoordinator.hasUnfinished(this.state.threadId) ||
       this.subagentCoordinator.hasOutstanding(this.state.threadId) ||
-      Boolean(this.pendingPlan());
+      Boolean(this.pendingPlan())
+    );
   }
-  threadEvents(): readonly EventRecord[] { return this.threadStore.journal(this.state.threadId).read(); }
-  workspaceThreads(): readonly ThreadSummary[] { return this.resumableThreads(); }
+  threadEvents(): readonly EventRecord[] {
+    return this.threadStore.journal(this.state.threadId).read();
+  }
+  workspaceThreads(): readonly ThreadSummary[] {
+    return this.resumableThreads();
+  }
   deleteHostedThread(threadId: string): readonly string[] {
     if (this.isRequestActive() || threadId === this.state.threadId) {
       throw new Error("Switch away from the active conversation before deleting it.");
     }
     return deleteThreadTree(this.storage, this.threadStore, threadId);
   }
-  pendingPlan(): PlanProposal | undefined { return this.state.planReview?.proposal; }
+  pendingPlan(): PlanProposal | undefined {
+    return this.state.planReview?.proposal;
+  }
   nextHostedImageLabel(stagedCount = 0): string {
     const number = nextThreadImageNumber(this.state.messages, this.pendingImages) + stagedCount;
     assertThreadImageNumberAvailable(number);
@@ -1174,7 +1143,9 @@ export class EasyCodeApp {
     });
   }
 
-  hostedDocumentMaxBytes(): number { return this.threadDocumentService.maxBytes; }
+  hostedDocumentMaxBytes(): number {
+    return this.threadDocumentService.maxBytes;
+  }
 
   discardHostedResource(resource: ThreadResourceAttachment): Promise<void> {
     return this.threadResourceStore.remove(this.state.threadId, resource.id);
@@ -1189,15 +1160,19 @@ export class EasyCodeApp {
 
   async runInteractive(): Promise<void> {
     if (!this.terminal.isInteractive()) {
-      throw new Error("Interactive mode requires a TTY; use `easy-code run \"<task>\"` for non-interactive use.");
+      throw new Error('Interactive mode requires a TTY; use `easy-code run "<task>"` for non-interactive use.');
     }
     // Start the retained shell before startup selection so the initial
     // provider/model/effort flow uses the same modal overlays as /model.
     this.terminal.beginShell(this.terminalSessionInfo());
     if (this.sandboxStartupService) {
       this.sandboxSetupDeferred = false;
-      if (!(await runSandboxStartupGuide(this.sandboxStartupService, this.terminal, true,
-        () => { this.sandboxSetupDeferred = true; }))) return;
+      if (
+        !(await runSandboxStartupGuide(this.sandboxStartupService, this.terminal, true, () => {
+          this.sandboxSetupDeferred = true;
+        }))
+      )
+        return;
     }
     if (!(await this.prepareInteractiveStartup())) return;
     this.syncTerminalView();
@@ -1224,8 +1199,7 @@ export class EasyCodeApp {
       let response: UserSubmission | null;
       try {
         response = await this.terminal.readPrompt(this.prompt(), {
-          initialImageCount:
-            nextThreadImageNumber(this.state.messages, this.pendingImages) - 1,
+          initialImageCount: nextThreadImageNumber(this.state.messages, this.pendingImages) - 1,
           captureImage: async (index, signal) => {
             const attachment = await this.captureClipboardImage(
               index,
@@ -1239,8 +1213,7 @@ export class EasyCodeApp {
             promptImages.push(attachment);
             return attachment;
           },
-          captureText: async (signal) =>
-            this.clipboardImageReader.readText?.(signal),
+          captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
         });
       } catch (error) {
         await this.discardImages(promptImages);
@@ -1254,9 +1227,7 @@ export class EasyCodeApp {
         return;
       }
       const referencedImageIds = new Set(response.images.map((image) => image.id));
-      await this.discardImages(
-        promptImages.filter((image) => !referencedImageIds.has(image.id)),
-      );
+      await this.discardImages(promptImages.filter((image) => !referencedImageIds.has(image.id)));
       for (const error of response.pasteErrors) {
         this.terminal.error(`Image paste failed: ${error}`);
       }
@@ -1272,9 +1243,7 @@ export class EasyCodeApp {
       if (slash) {
         if (response.images.length) {
           this.pendingImages.push(...response.images);
-          this.terminal.info(
-            `Queued ${response.images.map((image) => image.label).join(", ")} for the next task.`,
-          );
+          this.terminal.info(`Queued ${response.images.map((image) => image.label).join(", ")} for the next task.`);
         }
         try {
           const shouldExit = await this.handleSlashCommand(commandInput);
@@ -1287,10 +1256,7 @@ export class EasyCodeApp {
 
       let result: AgentRunResult;
       try {
-        result = await this.submitUserMessage(
-          input || "Analyze the attached image(s).",
-          images,
-        );
+        result = await this.submitUserMessage(input || "Analyze the attached image(s).", images);
         this.pendingImages = [];
       } catch (error) {
         this.pendingImages = images;
@@ -1320,15 +1286,10 @@ export class EasyCodeApp {
     if (!normalized && this.pendingImages.length === 0) {
       throw new Error("A non-empty prompt or at least one image is required");
     }
-    const result = await this.executePrompt(
-      normalized || "Analyze the attached image(s).",
-      this.pendingImages,
-    );
+    const result = await this.executePrompt(normalized || "Analyze the attached image(s).", this.pendingImages);
     this.pendingImages = [];
     if (result.planProposal) {
-      this.terminal.info(
-        `Resume thread ${result.threadId} interactively to approve, reject, or adjust this plan.`,
-      );
+      this.terminal.info(`Resume thread ${result.threadId} interactively to approve, reject, or adjust this plan.`);
     }
     return result;
   }
@@ -1353,8 +1314,9 @@ export class EasyCodeApp {
       }
     }
     const resourceNotice = resources.length
-      ? `\n\nAttached read-only Thread resources:\n${resources.map(resource =>
-        `- ${resource.filename}: ${resource.uri}`).join("\n")}\nUse read_file with these exact paths to inspect their contents.`
+      ? `\n\nAttached read-only Thread resources:\n${resources
+          .map((resource) => `- ${resource.filename}: ${resource.uri}`)
+          .join("\n")}\nUse read_file with these exact paths to inspect their contents.`
       : "";
     return this.executePrompt(`${text.trim()}${resourceNotice}`.trim(), images, true);
   }
@@ -1368,12 +1330,10 @@ export class EasyCodeApp {
   }
 
   /** Queue an adjustment for the running turn; the Journal owns it after enqueue succeeds. */
-  async submitAdjustment(
-    text: string,
-    images: readonly ImageAttachment[] = [],
-  ): Promise<number> {
-    if (this.compacting) throw new Error("Adjustments are unavailable during context compaction.");
-    if (parseSlashCommand(text)?.name === "compact") throw new Error("/compact is only available when the conversation is idle.");
+  async submitAdjustment(text: string, images: readonly ImageAttachment[] = []): Promise<number> {
+    if (this.isCompacting()) throw new Error("Adjustments are unavailable during context compaction.");
+    if (parseSlashCommand(text)?.name === "compact")
+      throw new Error("/compact is only available when the conversation is idle.");
     const active = this.activeTurnSteering;
     const turnId = this.state.activeTurnId;
     if (!active || !turnId || active.threadId !== this.state.threadId || active.controller.signal.aborted) {
@@ -1390,15 +1350,11 @@ export class EasyCodeApp {
     for (const image of images) unique.set(image.id, image);
     validateImageAttachmentCollection([...unique.values()]);
     validateProviderImageAttachments(this.state.provider, images);
-    const entry: TurnSteeringEntry = this.threadStore.enqueueTurnSteering(
-      active.threadId,
-      turnId,
-      {
-        role: "user",
-        content: text,
-        ...(images.length ? { images: images.map((image) => ({ ...image })) } : {}),
-      },
-    );
+    const entry: TurnSteeringEntry = this.threadStore.enqueueTurnSteering(active.threadId, turnId, {
+      role: "user",
+      content: text,
+      ...(images.length ? { images: images.map((image) => ({ ...image })) } : {}),
+    });
     this.dirty = true;
     // The durable message, not the editor, now owns these attachments.
     for (const image of images) active.draftImages.delete(image.id);
@@ -1428,9 +1384,11 @@ export class EasyCodeApp {
       case "language": {
         const result = executeLanguageCommand(this.storage, command.args);
         this.terminal.setLanguage?.(result.language);
-        this.terminal.success(translate(result.language,
-          command.args.length ? "language.changed" : "language.current",
-          { language: languageName(result.language) }));
+        this.terminal.success(
+          translate(result.language, command.args.length ? "language.changed" : "language.current", {
+            language: languageName(result.language),
+          }),
+        );
         return false;
       }
       case "mode": {
@@ -1442,14 +1400,8 @@ export class EasyCodeApp {
         if (mode !== this.state.mode && this.pendingPlan()) {
           throw new Error("Resolve the pending plan review before switching modes.");
         }
-        if (
-          mode !== this.state.mode &&
-          this.state.taskGraph &&
-          this.state.taskGraph.status !== "completed"
-        ) {
-          throw new Error(
-            "Finish or resolve the active task DAG before switching modes.",
-          );
+        if (mode !== this.state.mode && this.state.taskGraph && this.state.taskGraph.status !== "completed") {
+          throw new Error("Finish or resolve the active task DAG before switching modes.");
         }
         this.state.mode = mode;
         this.config.mode = mode;
@@ -1457,22 +1409,22 @@ export class EasyCodeApp {
         this.save();
         this.terminal.setSessionInfo(this.terminalSessionInfo());
         const language = readLanguage(this.storage);
-        this.terminal.success(translate(language, "cli.modeSwitched", { mode: language === "zh_cn"
-          ? translate(language, mode === "plan" ? "ui.modePlan" : mode === "code" ? "ui.modeCode" : "ui.modeAuto") : mode }));
+        this.terminal.success(
+          translate(language, "cli.modeSwitched", {
+            mode:
+              language === "zh_cn"
+                ? translate(language, mode === "plan" ? "ui.modePlan" : mode === "code" ? "ui.modeCode" : "ui.modeAuto")
+                : mode,
+          }),
+        );
         return false;
       }
       case "provider": {
         this.assertNoRunningSubagents("switch providers");
         const provider = command.args[0] as ProviderName | undefined;
         const supportedProviders = PROVIDER_CATALOG.map((entry) => entry.provider);
-        if (
-          !provider ||
-          command.args.length !== 1 ||
-          !supportedProviders.includes(provider)
-        ) {
-          throw new Error(
-            `Usage: /provider ${supportedProviders.join("|")}`,
-          );
+        if (!provider || command.args.length !== 1 || !supportedProviders.includes(provider)) {
+          throw new Error(`Usage: /provider ${supportedProviders.join("|")}`);
         }
         this.requireProviderApiKey(provider);
         const model = requireCatalogModel(provider, this.config.providers[provider]!.model).id;
@@ -1498,7 +1450,10 @@ export class EasyCodeApp {
         return false;
       }
       case "approval":
-        if (command.args.length > 1 || (command.args[0] && !["manual", "auto_approve", "unrestricted"].includes(command.args[0])))
+        if (
+          command.args.length > 1 ||
+          (command.args[0] && !["manual", "auto_approve", "unrestricted"].includes(command.args[0]))
+        )
           throw new Error("Usage: /approval [manual|auto_approve|unrestricted]");
         this.assertNoRunningCommands("change command execution mode");
         await this.selectCommandExecutionMode(true, command.args[0] as CommandExecutionMode | undefined);
@@ -1540,30 +1495,36 @@ export class EasyCodeApp {
       case "mcp":
         if (command.args.length !== 0 && command.args.length !== 2)
           throw new Error(`Usage: /mcp [server-id ${MCP_SERVER_ACTION_IDS.join("|")}]`);
-        if (command.args.length === 2 && (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(command.args[0]!) ||
-          !(MCP_SERVER_ACTION_IDS as readonly string[]).includes(command.args[1]!)))
+        if (
+          command.args.length === 2 &&
+          (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(command.args[0]!) ||
+            !(MCP_SERVER_ACTION_IDS as readonly string[]).includes(command.args[1]!))
+        )
           throw new Error("Invalid MCP server or action.");
-        await this.showMcpServers(command.args.length === 2
-          ? { serverId: command.args[0]!, action: command.args[1]! } : undefined);
+        await this.showMcpServers(
+          command.args.length === 2 ? { serverId: command.args[0]!, action: command.args[1]! } : undefined,
+        );
         return false;
       case "permissions":
         this.updatePermissions(command.args);
         return false;
       case "context":
-        this.terminal.write(`${json({
-          configuredWindowTokens: this.config.limits.maxContextTokens,
-          effectiveTokenBudget: this.contextManager.tokenCapacity ?? null,
-          thresholds: { reference: this.config.limits.contextReferenceTriggerRatio,
-            summary: this.config.limits.contextCompactionTriggerRatio, force: this.config.limits.contextForceRatio,
-            target: this.config.limits.contextCompactionTargetRatio },
-          ...this.contextManager.inspect(this.state, this.activeContextCharLimit()),
-          lastProviderRequest:
-            this.lastProviderContext?.threadId === this.state.threadId
-              ? this.lastProviderContext
-              : null,
-          note:
-            "Durable history remains complete locally. projectedActiveChars and lastProviderRequest reflect the lightweight provider projection; null means this process has not sent a request for the current Thread yet.",
-        })}\n`);
+        this.terminal.write(
+          `${json({
+            configuredWindowTokens: this.config.limits.maxContextTokens,
+            effectiveTokenBudget: this.contextManager.tokenCapacity ?? null,
+            thresholds: {
+              reference: this.config.limits.contextReferenceTriggerRatio,
+              summary: this.config.limits.contextCompactionTriggerRatio,
+              force: this.config.limits.contextForceRatio,
+              target: this.config.limits.contextCompactionTargetRatio,
+            },
+            ...this.contextManager.inspect(this.state, this.activeContextCharLimit()),
+            lastProviderRequest:
+              this.lastProviderContext?.threadId === this.state.threadId ? this.lastProviderContext : null,
+            note: "Durable history remains complete locally. projectedActiveChars and lastProviderRequest reflect the lightweight provider projection; null means this process has not sent a request for the current Thread yet.",
+          })}\n`,
+        );
         return false;
       case "usage": {
         if (command.args.length) throw new Error("Usage: /usage");
@@ -1571,8 +1532,7 @@ export class EasyCodeApp {
           `${json({
             threadId: this.state.threadId,
             ...this.threadStore.modelUsageSummary(this.state.threadId),
-            note:
-              "Totals include completed provider responses reported by this EASY CODE version. Failed requests and providers that omit usage cannot be assigned exact tokens.",
+            note: "Totals include completed provider responses reported by this EASY CODE version. Failed requests and providers that omit usage cannot be assigned exact tokens.",
           })}\n`,
         );
         return false;
@@ -1585,7 +1545,7 @@ export class EasyCodeApp {
         return false;
       case "resume": {
         if (command.args.length > 1) throw new Error("Usage: /resume [thread-id]");
-        const threadId = command.args[0] ?? await this.selectResumeThread();
+        const threadId = command.args[0] ?? (await this.selectResumeThread());
         if (!threadId) {
           this.terminal.info(translate(readLanguage(this.storage), "cli.resumeCanceled"));
           return false;
@@ -1618,7 +1578,7 @@ export class EasyCodeApp {
   }
 
   close(): void {
-    if ([...this.toolObservers].some(observer => observer.hasPending)) {
+    if ([...this.toolObservers].some((observer) => observer.hasPending)) {
       throw new Error("Background tool observations are pending; use closeAsync() to finish recording them.");
     }
     if (this.memoryMaintenanceWork) {
@@ -1631,18 +1591,13 @@ export class EasyCodeApp {
         "Cannot close synchronously while background commands are running; use closeAsync() so they are canceled and audited first.",
       );
     }
-    if (
-      !this.closed &&
-      this.subagentCoordinator.hasOutstanding(this.state.threadId)
-    ) {
+    if (!this.closed && this.subagentCoordinator.hasOutstanding(this.state.threadId)) {
       throw new Error(
         "Cannot close synchronously while child work is outstanding; use closeAsync() so children are stopped and reconciled first.",
       );
     }
     if ([...this.mainToolCatalogs.values()].some((catalog) => catalog.requiresAsyncClose())) {
-      throw new Error(
-        "Cannot close synchronously while a tool source has a managed lifecycle; use closeAsync().",
-      );
+      throw new Error("Cannot close synchronously while a tool source has a managed lifecycle; use closeAsync().");
     }
     if (this.mcpConnections?.hasConnections()) {
       throw new Error("Cannot close synchronously while MCP servers are connected; use closeAsync().");
@@ -1699,7 +1654,11 @@ export class EasyCodeApp {
     const cleanupErrors: unknown[] = [];
     if (this.memoryMaintenanceTimer) clearInterval(this.memoryMaintenanceTimer);
     this.memoryMaintenanceTimer = undefined;
-    try { await this.pauseMemoryMaintenance(true); } catch (error) { cleanupErrors.push(error); }
+    try {
+      await this.pauseMemoryMaintenance(true);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
     try {
       await this.cancelRunningCommands();
     } catch (error) {
@@ -1710,7 +1669,7 @@ export class EasyCodeApp {
     } catch (error) {
       cleanupErrors.push(error);
     }
-    await Promise.all([...this.toolObservers].map(observer => observer.drain()));
+    await Promise.all([...this.toolObservers].map((observer) => observer.drain()));
     try {
       await this.clearPendingImages();
       await this.imageStore.shutdown();
@@ -1766,10 +1725,12 @@ export class EasyCodeApp {
       }
 
       if (shouldShowPlan) this.terminal.showPlan(proposal);
-      const decision = suppliedDecision ?? await this.terminal.reviewPlan({
-        plan: proposal,
-        captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
-      });
+      const decision =
+        suppliedDecision ??
+        (await this.terminal.reviewPlan({
+          plan: proposal,
+          captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
+        }));
       suppliedDecision = undefined;
       if (decision.action === "defer") {
         this.dirty = true;
@@ -1864,29 +1825,49 @@ export class EasyCodeApp {
 
   private async compactCurrentSession(): Promise<void> {
     if (this.isRequestActive()) throw new Error("/compact is only available when the conversation is idle.");
-    if (this.hasRunningCommands() || this.subagentCoordinator.hasUnfinished(this.state.threadId) ||
-        this.subagentCoordinator.hasOutstanding(this.state.threadId)) {
+    if (
+      this.hasRunningCommands() ||
+      this.subagentCoordinator.hasUnfinished(this.state.threadId) ||
+      this.subagentCoordinator.hasOutstanding(this.state.threadId)
+    ) {
       throw new Error("Wait for running commands and agents to finish before compacting.");
     }
     const controller = new AbortController();
     this.activeTurnController = controller;
     this.compacting = true;
     const operationId = createId("compact");
+    const startedAt = Date.now();
     const onInterrupt = () => controller.abort();
     process.on("SIGINT", onInterrupt);
     try {
       this.terminal.setCurrentRequest("/compact", [], { onInterrupt });
-      this.terminal.compactionProgress?.({ operationId, phase: "preparing", beforeChars: 0 });
+      this.terminal.compactionProgress?.({
+        operationId,
+        mode: "manual",
+        startedAt,
+        phase: "preparing",
+        beforeChars: 0,
+      });
       const runtime = await this.createRuntime(false);
       const result = await runtime.compactSession(this.state, {
-        maxContextChars: this.activeContextCharLimit(), signal: controller.signal, operationId,
-        onProgress: progress => this.terminal.compactionProgress?.(progress),
+        maxContextChars: this.activeContextCharLimit(),
+        signal: controller.signal,
+        operationId,
+        startedAt,
+        onProgress: (progress) => this.terminal.compactionProgress?.(progress),
       });
       if (result.reason) this.terminal.warning(result.reason);
       this.dirty = true;
     } catch (error) {
-      this.terminal.compactionProgress?.({ operationId, phase: controller.signal.aborted ? "cancelled" : "failed", beforeChars: 0,
-        reason: error instanceof Error ? error.message : String(error) });
+      this.terminal.compactionProgress?.({
+        operationId,
+        mode: "manual",
+        startedAt,
+        completedAt: Date.now(),
+        phase: controller.signal.aborted ? "cancelled" : "failed",
+        beforeChars: 0,
+        reason: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     } finally {
       process.removeListener("SIGINT", onInterrupt);
@@ -1926,7 +1907,9 @@ export class EasyCodeApp {
     await this.pauseMemoryMaintenance();
     await this.prepareProjectSandbox(this.workspace);
     if (this.commandExecutionMode === "manual" && this.hasActiveOrchestration()) {
-      throw new Error("This thread has unfinished DAG/subagent work. Select /approval → Approve for me or Full access before continuing; no child has been started by this request.");
+      throw new Error(
+        "This thread has unfinished DAG/subagent work. Select /approval → Approve for me or Full access before continuing; no child has been started by this request.",
+      );
     }
     await this.drainPendingSubagentArtifacts(this.state.threadId);
     this.requireProviderApiKey(this.state.provider);
@@ -1939,9 +1922,7 @@ export class EasyCodeApp {
     const steeringNotifier = new TurnSteeringAttemptNotifier();
     const capturedSteeringImages = new Map<string, ImageAttachment>();
     const pendingSteering = this.threadStore.pendingTurnSteering(this.state.threadId);
-    const pendingSteeringImages = pendingSteering.flatMap(
-      (entry) => entry.message.images ?? [],
-    );
+    const pendingSteeringImages = pendingSteering.flatMap((entry) => entry.message.images ?? []);
     if (pendingSteeringImages.length > 0) this.requireCurrentModelVision();
     validateImageAttachmentCollection([...images, ...pendingSteeringImages]);
     validateProviderImageAttachments(this.state.provider, pendingSteeringImages);
@@ -1993,17 +1974,9 @@ export class EasyCodeApp {
       };
       this.terminal.setCurrentRequest(userInput, images, {
         onInterrupt,
-        initialImageCount:
-          nextThreadImageNumber(
-            this.state.messages,
-            [...images, ...pendingSteeringImages],
-          ) - 1,
+        initialImageCount: nextThreadImageNumber(this.state.messages, [...images, ...pendingSteeringImages]) - 1,
         captureImage: async (index, signal) => {
-          const attachment = await this.captureClipboardImage(
-            index,
-            steeringImages(),
-            signal,
-          );
+          const attachment = await this.captureClipboardImage(index, steeringImages(), signal);
           capturedSteeringImages.set(attachment.id, attachment);
           return attachment;
         },
@@ -2021,38 +1994,46 @@ export class EasyCodeApp {
         },
       });
       const runtime = await this.createRuntime(presentReasoning, steeringNotifier);
-      const result = await runtime.run(this.state, { text: userInput, images }, {
-        maxModelRequests: this.maxModelRequests,
-        orchestrationEnabled: this.orchestrationEnabled(),
-        isOrchestrationEnabled: () => this.orchestrationEnabled(),
-        maxContextChars: this.activeContextCharLimit(),
-        maxContextTokens: this.config.limits.maxContextTokens || undefined,
-        maxOutputChars: this.config.limits.maxOutputChars,
-        commandTimeoutMs: this.config.limits.commandTimeoutMs,
-        approvalPolicy: this.config.approvalPolicy,
-        commandExecutionMode: this.commandExecutionMode,
-        isUnrestrictedHostAccessActive: () =>
-          this.commandExecutionMode === "unrestricted",
-        unrestrictedHostAccessEpoch: () => this.hostAccessEpoch,
-        signal: controller.signal,
-        ...runtimeOptions,
-      });
+      const result = await runtime.run(
+        this.state,
+        { text: userInput, images },
+        {
+          maxModelRequests: this.maxModelRequests,
+          orchestrationEnabled: this.orchestrationEnabled(),
+          isOrchestrationEnabled: () => this.orchestrationEnabled(),
+          maxContextChars: this.activeContextCharLimit(),
+          maxContextTokens: this.config.limits.maxContextTokens || undefined,
+          maxOutputChars: this.config.limits.maxOutputChars,
+          commandTimeoutMs: this.config.limits.commandTimeoutMs,
+          approvalPolicy: this.config.approvalPolicy,
+          commandExecutionMode: this.commandExecutionMode,
+          isUnrestrictedHostAccessActive: () => this.commandExecutionMode === "unrestricted",
+          unrestrictedHostAccessEpoch: () => this.hostAccessEpoch,
+          signal: controller.signal,
+          ...runtimeOptions,
+        },
+      );
 
       this.syncWorkspaceState();
-      const turnEvents = this.threadStore.journal(result.threadId).read()
-        .filter(event => event.turnId === result.turnId);
-      const startedAt = Date.parse(turnEvents.find(event =>
-        event.type === "turn.started" || event.type === "message.user")?.timestamp ?? "");
-      const completedAt = Date.parse([...turnEvents].reverse().find(event =>
-        event.type === "turn.completed")?.timestamp ?? "");
-      const timing = Number.isFinite(startedAt) && Number.isFinite(completedAt)
-        ? { startedAt, completedAt } : undefined;
+      const turnEvents = this.threadStore
+        .journal(result.threadId)
+        .read()
+        .filter((event) => event.turnId === result.turnId);
+      const startedAt = Date.parse(
+        turnEvents.find((event) => event.type === "turn.started" || event.type === "message.user")?.timestamp ?? "",
+      );
+      const completedAt = Date.parse(
+        [...turnEvents].reverse().find((event) => event.type === "turn.completed")?.timestamp ?? "",
+      );
+      const timing =
+        Number.isFinite(startedAt) && Number.isFinite(completedAt) ? { startedAt, completedAt } : undefined;
       if (!this.terminal.finalizeStreamedAnswer(result.text, timing)) {
         this.terminal.write(`\n${result.text.trim()}\n\n`);
       }
       return result;
     } finally {
       try {
+        this.autoCompacting = false;
         if (this.activeTurnSteering?.controller === controller) this.activeTurnSteering = undefined;
         this.terminal.clearCurrentRequest();
         await this.discardImages([...capturedSteeringImages.values()]);
@@ -2072,18 +2053,19 @@ export class EasyCodeApp {
   ): Promise<AgentRuntime> {
     const effectiveConfig = this.effectiveConfig();
     const promptStartedAt = new Date();
-    const childrenRunning = this.subagentCoordinator.snapshot(this.state.threadId)
+    const childrenRunning = this.subagentCoordinator
+      .snapshot(this.state.threadId)
       .some((child) => child.status === "running" || child.status === "stopping");
-    const reviewPending = this.state.reviewSessions?.some(session => session.status !== "applied");
-    const budget = childrenRunning || reviewPending || this.compacting ? this.sharedTaskBudget(this.state.threadId) : this.newTaskBudget(this.state.threadId);
+    const reviewPending = this.state.reviewSessions?.some((session) => session.status !== "applied");
+    const budget =
+      childrenRunning || reviewPending || this.compacting
+        ? this.sharedTaskBudget(this.state.threadId)
+        : this.newTaskBudget(this.state.threadId);
     this.taskBudgets.set(this.state.threadId, budget);
     const visionCapable = modelSupportsVision(this.state.provider, this.state.model);
-    const provider = createProvider(
-      effectiveConfig,
-      this.state.provider,
-      this.state.model,
-      { loadImage: (attachment) => this.imageStore.load(this.state.threadId, attachment) },
-    );
+    const provider = createProvider(effectiveConfig, this.state.provider, this.state.model, {
+      loadImage: (attachment) => this.imageStore.load(this.state.threadId, attachment),
+    });
     const workspaceId = this.state.projectId ?? workspaceIdFromRoot(this.workspace.root);
     const projectMemoryId = this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
     const commandRuntime = this.createCommandRuntime(this.workspace);
@@ -2096,33 +2078,48 @@ export class EasyCodeApp {
     return new AgentRuntime({
       provider,
       localDecision: (task, input, signal) => {
-        this.localLayaClient ??= new LocalLayaClient({
-          startupMs: this.config.limits.layaStartupTimeoutMs,
-          decisionMs: this.config.limits.layaDecisionTimeoutMs,
-          idleMs: this.config.limits.layaIdleTimeoutMs,
-        }, { dataDir: this.config.dataDir,
-          python: process.env.EASY_CODE_LAYA_PYTHON || path.join(this.config.dataDir,
-            "runtimes", "laya-decision-onnx", process.platform === "win32" ? "Scripts/python.exe" : "bin/python") });
+        this.localLayaClient ??= new LocalLayaClient(
+          {
+            startupMs: this.config.limits.layaStartupTimeoutMs,
+            decisionMs: this.config.limits.layaDecisionTimeoutMs,
+            idleMs: this.config.limits.layaIdleTimeoutMs,
+          },
+          {
+            dataDir: this.config.dataDir,
+            python:
+              process.env.EASY_CODE_LAYA_PYTHON ||
+              path.join(
+                this.config.dataDir,
+                "runtimes",
+                "laya-decision-onnx",
+                process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+              ),
+          },
+        );
         return this.localLayaClient.decide(task, input, signal);
       },
-      recordLocalDecision: trace => appendLocalDecisionTrace(this.workspace.root, trace),
-      recordLocalDecisionFallback: trace => appendLocalDecisionFallbackTrace(this.workspace.root, trace),
-      deliveryChallengeAlreadyUsed: threadId => {
+      recordLocalDecision: (trace) => appendLocalDecisionTrace(this.workspace.root, trace),
+      recordLocalDecisionFallback: (trace) => appendLocalDecisionFallbackTrace(this.workspace.root, trace),
+      deliveryChallengeAlreadyUsed: (threadId) => {
         const events = this.threadStore.journal(threadId).read();
         for (let index = events.length - 1; index >= 0; index -= 1) {
           const event = events[index];
           if (event?.type === "decision.delivery.challenge_requested") return true;
-          const completedReason = event?.payload && typeof event.payload === "object" &&
-            "reason" in event.payload ? event.payload.reason : undefined;
-          if (event?.type === "turn.completed" &&
-              (completedReason === "success" || completedReason === "planned")) return false;
+          const completedReason =
+            event?.payload && typeof event.payload === "object" && "reason" in event.payload
+              ? event.payload.reason
+              : undefined;
+          if (event?.type === "turn.completed" && (completedReason === "success" || completedReason === "planned"))
+            return false;
         }
         return false;
       },
       limits: this.config.limits,
       taskBudget: budget,
-      tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
-        effectiveConfig.providers[provider.name]!.baseUrl]), this.storage),
+      tokenCalibration: new TokenCalibration(
+        JSON.stringify([provider.name, provider.model, effectiveConfig.providers[provider.name]!.baseUrl]),
+        this.storage,
+      ),
       toolCatalog,
       threadTitle: {
         isUnclaimed: (threadId) => this.threadTitles.isUnclaimed(threadId),
@@ -2131,10 +2128,9 @@ export class EasyCodeApp {
       onThreadTitleClaimed: (title) => this.terminal.threadTitleChanged?.(title),
       connectedMcpServers: this.mcpConnections?.connectedServers() ?? [],
       visionAvailable: visionCapable,
-      authorizeToolExecution: request => this.authorizeCatalogToolCall(request),
+      authorizeToolExecution: (request) => this.authorizeCatalogToolCall(request),
       agentIdentity: { role: "main_agent" },
-      takeSubagentMessages: async (threadId, turnId) =>
-        this.subagentMessages.deliverToModel(threadId, turnId),
+      takeSubagentMessages: async (threadId, turnId) => this.subagentMessages.deliverToModel(threadId, turnId),
       contextManager: this.contextManager,
       buildSystemPrompt: async ({
         mode,
@@ -2149,8 +2145,11 @@ export class EasyCodeApp {
         buildSystemPrompt({
           config: effectiveConfig,
           workspaceFolders: this.workspace.folders,
-          skillStore: SkillStore.forProject(this.workspace.root, this.config.dataDir,
-            this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
+          skillStore: SkillStore.forProject(
+            this.workspace.root,
+            this.config.dataDir,
+            this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
+          ),
           now: promptStartedAt,
           mode,
           workspaceSummary,
@@ -2163,31 +2162,31 @@ export class EasyCodeApp {
           ...(planReview ? { planReview } : {}),
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
-      searchMemories: async (query, options) => this.memoryManager.searchScoped(projectMemoryId, query,
-        { workspaceRoot: this.workspace.root, limit: options?.limit ?? this.config.limits.memorySearchLimit,
-          includeInactive: options?.includeInactive, scope: options?.scope,
-          includeGlobalPreferences: options === undefined }),
+      searchMemories: async (query, options) =>
+        this.memoryManager.searchScoped(projectMemoryId, query, {
+          workspaceRoot: this.workspace.root,
+          limit: options?.limit ?? this.config.limits.memorySearchLimit,
+          includeInactive: options?.includeInactive,
+          scope: options?.scope,
+          includeGlobalPreferences: options === undefined,
+        }),
       memoryGeneration: () => this.memoryManager.scopeGenerationKey(projectMemoryId),
-      recordMemoryRecall: (threadId, turnId, memoryIds) =>
-        this.memoryManager.recordRecall(threadId, turnId, memoryIds),
+      recordMemoryRecall: (threadId, turnId, memoryIds) => this.memoryManager.recordRecall(threadId, turnId, memoryIds),
       captureToolEvidence: (state, callId, tool, result) =>
         this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
       readToolEvidence: (state, id, offset, limit) =>
         this.memoryManager.evidenceStore.read(workspaceId, sharedReviewEvidenceOwner(state, id), id, offset, limit),
       getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
         const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
-        const hits = await this.contextArtifactIndex.search(
-          workspaceId,
-          state.threadId,
-          query,
-          { beforeMessageIndex, queries, limit: this.config.limits.memorySearchLimit },
-        );
+        const hits = await this.contextArtifactIndex.search(workspaceId, state.threadId, query, {
+          beforeMessageIndex,
+          queries,
+          limit: this.config.limits.memorySearchLimit,
+        });
         return {
           workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
           evidence: hits,
-          ...(hits.length
-            ? { retrievedThreadEvidence: renderRetrievedContext(hits) }
-            : {}),
+          ...(hits.length ? { retrievedThreadEvidence: renderRetrievedContext(hits) } : {}),
         };
       },
       checkpointContext: async (state) => {
@@ -2214,26 +2213,25 @@ export class EasyCodeApp {
       ...(steeringNotifier
         ? {
             steeringNotifier,
-            takeSteering: async ({ threadId, turnId, boundary }: {
+            takeSteering: async ({
+              threadId,
+              turnId,
+              boundary,
+            }: {
               threadId: string;
               turnId: string;
               boundary: import("./core/types.js").TurnSteeringBoundary;
             }) => this.threadStore.drainTurnSteering(threadId, turnId, this.config.limits, boundary !== "after_model"),
-            sealSteering: async ({ threadId, turnId }: {
-              threadId: string;
-              turnId: string;
-            }) => this.terminal.sealCurrentRequestSteering(
-              () => this.threadStore.sealTurnSteering(threadId, turnId, this.config.limits),
-            ),
-            hasPendingSteering: async ({ threadId, turnId }: {
-              threadId: string;
-              turnId: string;
-            }) => this.threadStore.hasPendingTurnSteering(threadId, turnId),
-            onSteeringApplied: (
-              batch: Readonly<TurnSteeringBatch>,
-            ) => {
+            sealSteering: async ({ threadId, turnId }: { threadId: string; turnId: string }) =>
+              this.terminal.sealCurrentRequestSteering(() =>
+                this.threadStore.sealTurnSteering(threadId, turnId, this.config.limits),
+              ),
+            hasPendingSteering: async ({ threadId, turnId }: { threadId: string; turnId: string }) =>
+              this.threadStore.hasPendingTurnSteering(threadId, turnId),
+            onSteeringApplied: (batch: Readonly<TurnSteeringBatch>) => {
               if (batch.source === "peer_message") {
-                for (const entry of batch.entries) this.terminal.peerMessage?.(entry.senderThreadId!, entry.message.content);
+                for (const entry of batch.entries)
+                  this.terminal.peerMessage?.(entry.senderThreadId!, entry.message.content);
                 return;
               }
               const first = batch.entries[0]?.sequence;
@@ -2257,22 +2255,14 @@ export class EasyCodeApp {
           const sent = result.data as { targetThreadId: string; message: string };
           this.terminal.peerMessage?.(sent.targetThreadId, sent.message, true);
         }
-        this.terminal.toolCompleted(
-          displayName ?? toolName,
-          result.ok,
-          result.summary,
-          result.error,
-          details,
-        );
+        this.terminal.toolCompleted(displayName ?? toolName, result.ok, result.summary, result.error, details);
         if (toolName === "name_thread" && result.ok) {
           const title = (result.data as { title?: unknown } | undefined)?.title;
           if (typeof title === "string") this.terminal.threadTitleChanged?.(title);
         }
         let mergedSubagentArtifacts: ObservedSubagentArtifacts | undefined;
         if (result.ok && result.subagentLifecycle) {
-          const artifacts = this.subagentCoordinator.commitLifecycle(
-            result.subagentLifecycle,
-          );
+          const artifacts = this.subagentCoordinator.commitLifecycle(result.subagentLifecycle);
           if (artifacts) {
             await this.mergeSubagentArtifacts(_state, artifacts);
             mergedSubagentArtifacts = artifacts;
@@ -2281,21 +2271,13 @@ export class EasyCodeApp {
         this.syncWorkspaceState();
         this.save();
         if (mergedSubagentArtifacts) {
-          this.subagentCoordinator.finalizeArtifactMerge(
-            mergedSubagentArtifacts.agentId,
-          );
+          this.subagentCoordinator.finalizeArtifactMerge(mergedSubagentArtifacts.agentId);
         }
-        if (
-          (toolName === "manage_tasks" || toolName === "manage_subagents") &&
-          result.ok &&
-          result.taskGraphUpdate
-        ) {
+        if ((toolName === "manage_tasks" || toolName === "manage_subagents") && result.ok && result.taskGraphUpdate) {
           try {
             this.terminal.taskGraph(taskGraphView(result.taskGraphUpdate));
           } catch {
-            this.terminal.info(
-              "The task DAG was updated successfully, but its terminal view could not be rendered.",
-            );
+            this.terminal.info("The task DAG was updated successfully, but its terminal view could not be rendered.");
           }
         }
         if (toolName === "manage_subagents" && result.ok) {
@@ -2318,50 +2300,78 @@ export class EasyCodeApp {
       onSubagentLifecycleRollback: (update) => {
         this.subagentCoordinator.rollbackLifecycle(update);
       },
-      getOutstandingSubagents: () =>
-        this.subagentCoordinator.outstanding(this.state.threadId),
-      collectReadySubagents: (state, turnId, signal) =>
-        this.collectReadySubagentResults(state, turnId, signal),
+      getOutstandingSubagents: () => this.subagentCoordinator.outstanding(this.state.threadId),
+      collectReadySubagents: (state, turnId, signal) => this.collectReadySubagentResults(state, turnId, signal),
       requestApproval: async (request) => {
         return this.requestToolApproval(request);
       },
-      runReviewSession: async (input) => this.workspaceMutationLock.runExclusive(async () => {
-        // A background writer outlives its run_command lock; do not snapshot it.
-        if (this.hasRunningCommands()) return { decision: "unavailable" as const, requests: 0, reused: true,
-          reason: "A supervised command is still running; observe its terminal result before review." };
-        const reviewUiId = this.terminal.startReview();
-        try {
-          return await runWorkspaceReview(input, {
-            workspace: this.workspace, store: this.threadStore, memory: this.memoryManager, index: this.contextArtifactIndex,
-            provider, budget, limits: this.config.limits,
-            sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH, USER_MCP_CONFIG_PATH],
-            dataDir: this.config.dataDir,
-            lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
-            status: text => this.terminal.status(text),
-            onProgress: progress => this.terminal.updateReview(reviewUiId, progress.phase),
-            approve: async (context, request) => this.approvalQueue.run(async () => {
-              if (request.signal?.aborted || request.command?.scope === "host") return false;
-              const saved = this.threadStore.recover(context.threadId);
-              if (isCommandApprovalPrefixGranted(saved.commandApprovalPrefixes, request.commandPrefix)) return true;
-              // Review permissions do not inherit main-thread Full access.
-              const decision = await this.reviewApproval(request);
-              this.threadStore.appendEvent(context.threadId, { type: "approval.reviewed", payload: decision });
-              let vote = decision.decision;
-              if (vote === "reject") {
-                if (this.trustedOuterSandbox || request.allowPrompt === false || !process.stdin.isTTY) return false;
-                vote = await this.terminal.approve({ ...request, description: `${request.description}\nApproval reviewer: ${decision.reason}` });
-              }
-              if (request.signal?.aborted) return false;
-              if (vote === "allow_prefix" && canGrantCommandPrefix(request.commandPrefix))
-                this.threadStore.recordCommandApprovalPrefixGrant(context.threadId, request.commandPrefix, context.turnId);
-              return vote !== "reject";
-            }),
-          });
-        } finally {
-          this.terminal.stopReview(reviewUiId);
-        }
-      }, input.signal),
+      runReviewSession: async (input) =>
+        this.workspaceMutationLock.runExclusive(async () => {
+          // A background writer outlives its run_command lock; do not snapshot it.
+          if (this.hasRunningCommands())
+            return {
+              decision: "unavailable" as const,
+              requests: 0,
+              reused: true,
+              reason: "A supervised command is still running; observe its terminal result before review.",
+            };
+          const reviewUiId = this.terminal.startReview();
+          try {
+            return await runWorkspaceReview(input, {
+              workspace: this.workspace,
+              store: this.threadStore,
+              memory: this.memoryManager,
+              index: this.contextArtifactIndex,
+              provider,
+              budget,
+              limits: this.config.limits,
+              sensitivePaths: [
+                this.config.configDir,
+                this.config.dataDir,
+                this.config.cacheDir,
+                USER_MODEL_REGISTRY_PATH,
+                USER_MCP_CONFIG_PATH,
+              ],
+              dataDir: this.config.dataDir,
+              lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"),
+              offline: this.trustedOuterSandbox === "harbor",
+              status: (text) => this.terminal.status(text),
+              onProgress: (progress) => this.terminal.updateReview(reviewUiId, progress.phase),
+              approve: async (context, request) =>
+                this.approvalQueue.run(async () => {
+                  if (request.signal?.aborted || request.command?.scope === "host") return false;
+                  const saved = this.threadStore.recover(context.threadId);
+                  if (isCommandApprovalPrefixGranted(saved.commandApprovalPrefixes, request.commandPrefix)) return true;
+                  // Review permissions do not inherit main-thread Full access.
+                  const decision = await this.reviewApproval(request);
+                  this.threadStore.appendEvent(context.threadId, { type: "approval.reviewed", payload: decision });
+                  let vote = decision.decision;
+                  if (vote === "reject") {
+                    if (this.trustedOuterSandbox || request.allowPrompt === false || !process.stdin.isTTY) return false;
+                    vote = await this.terminal.approve({
+                      ...request,
+                      description: `${request.description}\nApproval reviewer: ${decision.reason}`,
+                    });
+                  }
+                  if (request.signal?.aborted) return false;
+                  if (vote === "allow_prefix" && canGrantCommandPrefix(request.commandPrefix))
+                    this.threadStore.recordCommandApprovalPrefixGrant(
+                      context.threadId,
+                      request.commandPrefix,
+                      context.turnId,
+                    );
+                  return vote !== "reject";
+                }),
+            });
+          } finally {
+            this.terminal.stopReview(reviewUiId);
+          }
+        }, input.signal),
       onStatus: (status) => this.terminal.status(status),
+      onCompactionProgress: (progress) => {
+        this.autoCompacting = progress.mode === "automatic" && compactionRunning(progress);
+        this.terminal.compactionProgress?.(progress);
+      },
       onModeSelected: (mode) => {
         this.config.mode = mode;
         this.syncTerminalView();
@@ -2372,8 +2382,7 @@ export class EasyCodeApp {
           this.terminal.stopActivity(activityToken);
         }
       },
-      onToolExecutionStart: (toolName, text) =>
-        this.terminal.startActivity(text, "tool", toolName),
+      onToolExecutionStart: (toolName, text) => this.terminal.startActivity(text, "tool", toolName),
       onToolExecutionEnd: (_toolName, activityToken) => {
         if (typeof activityToken === "string") {
           this.terminal.stopActivity(activityToken);
@@ -2414,18 +2423,14 @@ export class EasyCodeApp {
         : {}),
       ...(visionCapable
         ? {
-            attachImage: (input: {
-              threadId: string;
-              label: string;
-              absolutePath: string;
-              sourceName?: string;
-            }) => this.imageStore.importFile(
-              input.threadId,
-              input.label,
-              input.absolutePath,
-              input.sourceName,
-              this.workspace.root,
-            ),
+            attachImage: (input: { threadId: string; label: string; absolutePath: string; sourceName?: string }) =>
+              this.imageStore.importFile(
+                input.threadId,
+                input.label,
+                input.absolutePath,
+                input.sourceName,
+                this.workspace.root,
+              ),
             discardImage: (threadId: string, attachment: ImageAttachment) =>
               this.imageStore.remove(threadId, attachment),
           }
@@ -2433,9 +2438,7 @@ export class EasyCodeApp {
     });
   }
 
-  private async runSubagent(
-    request: SubagentExecutionRequest,
-  ): Promise<SubagentExecutionOutcome> {
+  private async runSubagent(request: SubagentExecutionRequest): Promise<SubagentExecutionOutcome> {
     let activeEnvironment: ActiveExecutionEnvironment | undefined;
     let childWorkspace: WorkspaceManager | undefined;
     let childToolCatalog: ToolCatalog | undefined;
@@ -2448,9 +2451,7 @@ export class EasyCodeApp {
 
     const persistChildState = (): void => {
       if (!childState || !childWorkspace) return;
-      childState.filesRead = new Map(
-        childWorkspace.getReadVersions().map((version) => [version.path, version]),
-      );
+      childState.filesRead = new Map(childWorkspace.getReadVersions().map((version) => [version.path, version]));
       childState.changes = childWorkspace.getChangeSet();
       this.threadStore.save(childState);
     };
@@ -2458,16 +2459,9 @@ export class EasyCodeApp {
       if (!childState || !childWorkspace || !activeEnvironment) return;
       const allChanges = childWorkspace.getChangeSet();
       const changes = allChanges.slice(persistedChangeCount);
-      const commands = childState.commands.filter(
-        (entry) => !persistedCommandIds.has(entry.id),
-      );
+      const commands = childState.commands.filter((entry) => !persistedCommandIds.has(entry.id));
       if (changes.length || commands.length) {
-        this.recordSubagentProgress(
-          request,
-          changes,
-          commands,
-          activeEnvironment.descriptor.kind === "shared",
-        );
+        this.recordSubagentProgress(request, changes, commands, activeEnvironment.descriptor.kind === "shared");
         persistedChangeCount = allChanges.length;
         for (const entry of commands) persistedCommandIds.add(entry.id);
       }
@@ -2485,10 +2479,7 @@ export class EasyCodeApp {
       dependencyArtifacts = dependencyTasks.flatMap((dependency) =>
         dependency.resultArtifact ? [dependency.resultArtifact] : [],
       );
-      if (
-        dependencyArtifacts.length > 0 &&
-        dependencyArtifacts.length !== dependencyTasks.length
-      ) {
+      if (dependencyArtifacts.length > 0 && dependencyArtifacts.length !== dependencyTasks.length) {
         throw new Error(
           "This DAG mixes isolated result artifacts with dependencies that have no Runtime artifact; integrate them before starting the child",
         );
@@ -2499,32 +2490,24 @@ export class EasyCodeApp {
         }
       }
       const existingChild = this.threadStore.get(request.record.childThreadId);
-      const hasDurableChildBinding = this.threadStore.isBoundSubagentThread(
-        request.record.childThreadId,
-      );
+      const hasDurableChildBinding = this.threadStore.isBoundSubagentThread(request.record.childThreadId);
       try {
-        const savedEnvironment = await this.executionEnvironments.loadEnvironment(
-          request.record.environmentId,
-        );
+        const savedEnvironment = await this.executionEnvironments.loadEnvironment(request.record.environmentId);
         if (
           !samePath(savedEnvironment.logicalWorkspaceRoot, this.workspace.root) ||
           savedEnvironment.requestedIsolation !== request.record.requestedIsolation ||
-          (savedEnvironment.agentId !== undefined &&
-            savedEnvironment.agentId !== request.record.id) ||
+          (savedEnvironment.agentId !== undefined && savedEnvironment.agentId !== request.record.id) ||
           (savedEnvironment.parentThreadId !== undefined &&
             savedEnvironment.parentThreadId !== request.record.parentThreadId) ||
           (savedEnvironment.childThreadId !== undefined &&
             savedEnvironment.childThreadId !== request.record.childThreadId) ||
-          (savedEnvironment.taskId !== undefined &&
-            savedEnvironment.taskId !== request.task.id)
+          (savedEnvironment.taskId !== undefined && savedEnvironment.taskId !== request.task.id)
         ) {
           throw new Error(
             `Execution environment ${request.record.environmentId} does not match its durable child binding`,
           );
         }
-        activeEnvironment = await this.executionEnvironments.restore(
-          request.record.environmentId,
-        );
+        activeEnvironment = await this.executionEnvironments.restore(request.record.environmentId);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         if (existingChild || hasDurableChildBinding) {
@@ -2552,16 +2535,11 @@ export class EasyCodeApp {
 
       if (existingChild) {
         if (!samePath(existingChild.workspaceRoot, childWorkspace.root)) {
-          throw new Error(
-            `Child thread ${request.record.childThreadId} is bound to a different execution root`,
-          );
+          throw new Error(`Child thread ${request.record.childThreadId} is bound to a different execution root`);
         }
         childLease = this.threadStore.acquireThreadLease(existingChild.threadId);
         repairInterruptedTurn(this.threadStore, existingChild);
-        childWorkspace.restorePersistedState(
-          existingChild.filesRead,
-          existingChild.changes,
-        );
+        childWorkspace.restorePersistedState(existingChild.filesRead, existingChild.changes);
         childState = existingChild;
       } else {
         childState = this.threadStore.create({
@@ -2569,7 +2547,7 @@ export class EasyCodeApp {
           workspaceRoot: childWorkspace.root,
           projectId: this.state.projectId,
           workspaceRevision: this.state.workspaceRevision,
-          workspaceFolders: this.state.workspaceFolders?.map(folder => ({ ...folder })),
+          workspaceFolders: this.state.workspaceFolders?.map((folder) => ({ ...folder })),
           primaryWorkspaceFolderId: this.state.primaryWorkspaceFolderId,
           mode: request.record.mode,
           provider: request.record.provider,
@@ -2578,10 +2556,7 @@ export class EasyCodeApp {
           promptBundle: activePromptBundleBinding(),
           modelRegistryHash: this.state.modelRegistryHash,
           goal: request.task.title,
-          constraints: [
-            `Parent thread: ${request.record.parentThreadId}`,
-            `Assigned task: ${request.task.id}`,
-          ],
+          constraints: [`Parent thread: ${request.record.parentThreadId}`, `Assigned task: ${request.task.id}`],
         });
         childLease = this.threadStore.acquireThreadLease(childState.threadId);
       }
@@ -2617,9 +2592,7 @@ export class EasyCodeApp {
           payload.mode !== request.record.mode ||
           environment?.id !== request.record.environmentId
         ) {
-          throw new Error(
-            `Child thread ${request.record.childThreadId} has a conflicting durable binding`,
-          );
+          throw new Error(`Child thread ${request.record.childThreadId} has a conflicting durable binding`);
         }
       } else {
         this.threadStore.appendEvent(request.record.parentThreadId, {
@@ -2634,9 +2607,7 @@ export class EasyCodeApp {
           payload: bindingPayload,
         });
       }
-      const runningEnvironment = await this.executionEnvironments.markRunning(
-        activeEnvironment.descriptor.id,
-      );
+      const runningEnvironment = await this.executionEnvironments.markRunning(activeEnvironment.descriptor.id);
       activeEnvironment = {
         descriptor: runningEnvironment,
         workspace: childWorkspace,
@@ -2650,51 +2621,57 @@ export class EasyCodeApp {
       childConfig.provider = request.record.provider;
       childConfig.thinkingEffort = request.record.thinkingEffort;
       childConfig.providers[request.record.provider]!.model = request.record.model;
-      const provider = createProvider(
-        childConfig,
-        request.record.provider,
-        request.record.model,
-      );
+      const provider = createProvider(childConfig, request.record.provider, request.record.model);
       const childCommandRuntime = this.createCommandRuntime(childWorkspace);
-      const mutationLock = activeEnvironment.descriptor.kind === "shared"
-        ? this.workspaceMutationLock
-        : new WorkspaceMutationLock();
+      const mutationLock =
+        activeEnvironment.descriptor.kind === "shared" ? this.workspaceMutationLock : new WorkspaceMutationLock();
       childToolCatalog = this.observedToolCatalog(childWorkspace, childCommandRuntime);
-      childToolCatalog.registerSource(new BuiltinToolSource({
-        profile: this.trustedOuterSandbox ? "benchmark" : undefined,
-        coordination: this.threadStore.coordination,
-        workspace: childWorkspace,
-        skillStore: SkillStore.forProject(childWorkspace.root, this.config.dataDir,
-          this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
-        commandRuntime: childCommandRuntime,
-        limits: this.config.limits,
-        mutationLock,
-        boundTask: request.task,
-        parentMessage: {
-          binding: {
+      childToolCatalog.registerSource(
+        new BuiltinToolSource({
+          profile: this.trustedOuterSandbox ? "benchmark" : undefined,
+          coordination: this.threadStore.coordination,
+          workspace: childWorkspace,
+          skillStore: SkillStore.forProject(
+            childWorkspace.root,
+            this.config.dataDir,
+            this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
+          ),
+          commandRuntime: childCommandRuntime,
+          limits: this.config.limits,
+          mutationLock,
+          boundTask: request.task,
+          parentMessage: {
+            binding: {
+              agentId: request.record.id,
+              childThreadId: request.record.childThreadId,
+              parentThreadId: request.record.parentThreadId,
+              taskId: request.task.id,
+              taskTitle: request.task.title,
+            },
+            post: (message, childThreadId, toolCallId) => {
+              if (request.signal.aborted) throw new Error("The child is no longer running");
+              const posted = this.subagentMessages.post(
+                request.record.parentThreadId,
+                message,
+                childThreadId,
+                toolCallId,
+              );
+              this.subagentCoordinator.notifyMessage(request.record.parentThreadId);
+              return posted;
+            },
+          },
+        }),
+      );
+      for (const factory of this.trustedOuterSandbox ? [] : (this.toolSourceFactories ?? [])) {
+        childToolCatalog.registerSource(
+          await factory({
+            workspaceRoot: childWorkspace.root,
+            threadId: request.record.childThreadId,
+            role: "subagent",
             agentId: request.record.id,
-            childThreadId: request.record.childThreadId,
-            parentThreadId: request.record.parentThreadId,
-            taskId: request.task.id,
-            taskTitle: request.task.title,
-          },
-          post: (message, childThreadId, toolCallId) => {
-            if (request.signal.aborted) throw new Error("The child is no longer running");
-            const posted = this.subagentMessages.post(request.record.parentThreadId,
-              message, childThreadId, toolCallId);
-            this.subagentCoordinator.notifyMessage(request.record.parentThreadId);
-            return posted;
-          },
-        },
-      }));
-      for (const factory of this.trustedOuterSandbox ? [] : this.toolSourceFactories ?? []) {
-        childToolCatalog.registerSource(await factory({
-          workspaceRoot: childWorkspace.root,
-          threadId: request.record.childThreadId,
-          role: "subagent",
-          agentId: request.record.id,
-          assignedTaskId: request.task.id,
-        }));
+            assignedTaskId: request.task.id,
+          }),
+        );
       }
       const toolCatalog = await childToolCatalog.snapshot();
       const workspaceId = this.state.projectId ?? workspaceIdFromRoot(this.workspace.root);
@@ -2706,9 +2683,7 @@ export class EasyCodeApp {
         isolation: activeEnvironment.descriptor.kind,
         mode: request.record.mode,
         assignmentKind: request.record.assignmentKind,
-        ...(request.record.taskGraphId
-          ? { taskGraphId: request.record.taskGraphId }
-          : {}),
+        ...(request.record.taskGraphId ? { taskGraphId: request.record.taskGraphId } : {}),
         task: {
           id: request.task.id,
           title: request.task.title,
@@ -2728,8 +2703,10 @@ export class EasyCodeApp {
         assignedTaskId: request.task.id,
       };
       const runtime = new AgentRuntime({
-        takeSteering: async ({ threadId, turnId, boundary }) => this.threadStore.drainTurnSteering(threadId, turnId, this.config.limits, boundary !== "after_model"),
-        sealSteering: async ({ threadId, turnId }) => this.threadStore.sealTurnSteering(threadId, turnId, this.config.limits),
+        takeSteering: async ({ threadId, turnId, boundary }) =>
+          this.threadStore.drainTurnSteering(threadId, turnId, this.config.limits, boundary !== "after_model"),
+        sealSteering: async ({ threadId, turnId }) =>
+          this.threadStore.sealTurnSteering(threadId, turnId, this.config.limits),
         onModelRequestStart: () => request.reportActivity("thinking"),
         onModelRequestEnd: () => request.reportActivity("working"),
         onToolExecutionStart: (toolName) => request.reportActivity("tool", toolName),
@@ -2737,19 +2714,20 @@ export class EasyCodeApp {
         provider,
         limits: this.config.limits,
         taskBudget: this.sharedTaskBudget(request.record.parentThreadId),
-        tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
-          childConfig.providers[provider.name]!.baseUrl]), this.storage),
+        tokenCalibration: new TokenCalibration(
+          JSON.stringify([provider.name, provider.model, childConfig.providers[provider.name]!.baseUrl]),
+          this.storage,
+        ),
         toolCatalog,
         visionAvailable: false,
-        authorizeToolExecution: request => this.authorizeCatalogToolCall(request),
+        authorizeToolExecution: (request) => this.authorizeCatalogToolCall(request),
         agentIdentity: {
           role: "subagent",
           agentId: request.record.id,
           assignedTaskId: request.task.id,
         },
         contextManager: new ContextManager(),
-        hasOpenCommandHandles: () =>
-          childCommandRuntime.hasOpenCommandHandles(childCommandOwner),
+        hasOpenCommandHandles: () => childCommandRuntime.hasOpenCommandHandles(childCommandOwner),
         getEnvironmentFault: () => childCommandRuntime.environmentFault(),
         buildSystemPrompt: async ({
           mode,
@@ -2762,8 +2740,11 @@ export class EasyCodeApp {
           const base = await buildSystemPrompt({
             config: childConfig,
             workspaceFolders: childWorkspace!.folders,
-            skillStore: SkillStore.forProject(childWorkspace!.root, this.config.dataDir,
-              this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
+            skillStore: SkillStore.forProject(
+              childWorkspace!.root,
+              this.config.dataDir,
+              this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
+            ),
             now: childPromptStartedAt,
             mode,
             workspaceSummary,
@@ -2774,13 +2755,14 @@ export class EasyCodeApp {
             commandExecutionMode: this.commandExecutionMode,
           });
           const environmentKind = activeEnvironment?.descriptor.kind ?? "unknown";
-          const executionEnvironment = this.commandExecutionMode === "unrestricted"
-            ? renderPromptBundleText("agents/child-environment-unrestricted.md", {
-                environmentKind,
-              })
-            : renderPromptBundleText("agents/child-environment-sandboxed.md", {
-                environmentKind,
-              });
+          const executionEnvironment =
+            this.commandExecutionMode === "unrestricted"
+              ? renderPromptBundleText("agents/child-environment-unrestricted.md", {
+                  environmentKind,
+                })
+              : renderPromptBundleText("agents/child-environment-sandboxed.md", {
+                  environmentKind,
+                });
           const approvalBehavior = promptBundleText(
             this.commandExecutionMode === "unrestricted"
               ? "agents/child-approval-unrestricted.md"
@@ -2802,9 +2784,14 @@ export class EasyCodeApp {
           this.memoryManager.searchScoped(
             projectMemoryId,
             `${request.task.title}\n${request.task.description}\n${query}`,
-            { workspaceRoot: childWorkspace?.root, limit: options?.limit ?? this.config.limits.memorySearchLimit,
-              includeInactive: options?.includeInactive, readOnly: true, scope: options?.scope,
-              includeGlobalPreferences: options === undefined },
+            {
+              workspaceRoot: childWorkspace?.root,
+              limit: options?.limit ?? this.config.limits.memorySearchLimit,
+              includeInactive: options?.includeInactive,
+              readOnly: true,
+              scope: options?.scope,
+              includeGlobalPreferences: options === undefined,
+            },
           ),
         memoryGeneration: () => this.memoryManager.scopeGenerationKey(projectMemoryId),
         getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
@@ -2818,17 +2805,13 @@ export class EasyCodeApp {
           return {
             workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
             evidence: hits,
-            ...(hits.length
-              ? { retrievedThreadEvidence: renderRetrievedContext(hits) }
-              : {}),
+            ...(hits.length ? { retrievedThreadEvidence: renderRetrievedContext(hits) } : {}),
           };
         },
         checkpointContext: async (state) => {
           if (childWorkspace && childState) {
             await childWorkspace.fullConsistencyCheck();
-            childState.filesRead = new Map(
-              childWorkspace.getReadVersions().map((version) => [version.path, version]),
-            );
+            childState.filesRead = new Map(childWorkspace.getReadVersions().map((version) => [version.path, version]));
             childState.changes = childWorkspace.getChangeSet();
           }
           await this.contextArtifactIndex.checkpoint(workspaceId, state);
@@ -2857,10 +2840,11 @@ export class EasyCodeApp {
           });
           if (this.state.threadId === request.record.parentThreadId) this.dirty = true;
         },
-        requestApproval: (approval) => this.requestSubagentApproval(approval, {
-          agentId: request.record.id,
-          taskId: request.task.id,
-        }),
+        requestApproval: (approval) =>
+          this.requestSubagentApproval(approval, {
+            agentId: request.record.id,
+            taskId: request.task.id,
+          }),
         takeAdditionalInstructions: request.drainFollowUps,
         onToolCompleted: async (_state, _toolName, result) => {
           if (result.presentation) presentations.push(result.presentation);
@@ -2870,9 +2854,7 @@ export class EasyCodeApp {
             childWorkspace &&
             !childCommandRuntime.hasRunningCommands()
           ) {
-            const checkpoint = await this.executionEnvironments.checkpoint(
-              activeEnvironment,
-            );
+            const checkpoint = await this.executionEnvironments.checkpoint(activeEnvironment);
             activeEnvironment = {
               descriptor: checkpoint,
               workspace: childWorkspace,
@@ -2886,9 +2868,7 @@ export class EasyCodeApp {
         try {
           return await runtime.run(
             childState,
-            existingChild
-              ? promptBundleText("agents/child-resume.md")
-              : promptBundleText("agents/child-start.md"),
+            existingChild ? promptBundleText("agents/child-resume.md") : promptBundleText("agents/child-start.md"),
             {
               maxModelRequests: this.maxModelRequests,
               maxContextChars: this.config.limits.maxContextChars,
@@ -2897,8 +2877,7 @@ export class EasyCodeApp {
               commandTimeoutMs: this.config.limits.commandTimeoutMs,
               approvalPolicy: this.config.approvalPolicy,
               commandExecutionMode: this.commandExecutionMode,
-              isUnrestrictedHostAccessActive: () =>
-                this.commandExecutionMode === "unrestricted",
+              isUnrestrictedHostAccessActive: () => this.commandExecutionMode === "unrestricted",
               unrestrictedHostAccessEpoch: () => this.hostAccessEpoch,
               signal: request.signal,
             },
@@ -2913,10 +2892,7 @@ export class EasyCodeApp {
       })();
       persistProgress();
       if (request.isPauseRequested()) {
-        const pausedEnvironment = await this.executionEnvironments.checkpoint(
-          activeEnvironment,
-          "ready",
-        );
+        const pausedEnvironment = await this.executionEnvironments.checkpoint(activeEnvironment, "ready");
         request.reportEnvironment(pausedEnvironment);
         return {
           reason: "interrupted",
@@ -2931,21 +2907,14 @@ export class EasyCodeApp {
       // started, a verified terminal report wins over a concurrent shutdown so
       // the durable artifact and terminal reason cannot disagree.
       const stoppedBeforeFinalize = request.signal.aborted;
-      const acceptedReport = stoppedBeforeFinalize
-        ? undefined
-        : result.subagentTaskReport;
-      const resultArtifact = await this.executionEnvironments.finalize(
-        activeEnvironment,
-        {
-          agentId: request.record.id,
-          taskId: request.task.id,
-          accepted: acceptedReport?.outcome === "completed",
-          parentArtifactIds: dependencyArtifacts.map((artifact) => artifact.id),
-        },
-      );
-      const finalEnvironment = await this.executionEnvironments.loadEnvironment(
-        activeEnvironment.descriptor.id,
-      );
+      const acceptedReport = stoppedBeforeFinalize ? undefined : result.subagentTaskReport;
+      const resultArtifact = await this.executionEnvironments.finalize(activeEnvironment, {
+        agentId: request.record.id,
+        taskId: request.task.id,
+        accepted: acceptedReport?.outcome === "completed",
+        parentArtifactIds: dependencyArtifacts.map((artifact) => artifact.id),
+      });
+      const finalEnvironment = await this.executionEnvironments.loadEnvironment(activeEnvironment.descriptor.id);
       request.reportEnvironment(finalEnvironment);
       const outcome: SubagentExecutionOutcome = {
         ...(acceptedReport ? { report: acceptedReport } : {}),
@@ -2958,9 +2927,7 @@ export class EasyCodeApp {
               : result.reason === "paused"
                 ? "needs_parent_decision"
                 : "failed",
-        ...(!acceptedReport
-          ? { error: redactSensitiveInformation(result.text).slice(0, 2_000) }
-          : {}),
+        ...(!acceptedReport ? { error: redactSensitiveInformation(result.text).slice(0, 2_000) } : {}),
         changes: childWorkspace.getChangeSet(),
         commands: [...childState.commands],
         presentations,
@@ -2979,10 +2946,7 @@ export class EasyCodeApp {
         let pausedEnvironment = activeEnvironment?.descriptor;
         if (activeEnvironment) {
           try {
-            pausedEnvironment = await this.executionEnvironments.checkpoint(
-              activeEnvironment,
-              "ready",
-            );
+            pausedEnvironment = await this.executionEnvironments.checkpoint(activeEnvironment, "ready");
             request.reportEnvironment(pausedEnvironment);
           } catch {
             // Keep the registered checkout. Resume will validate it before use.
@@ -2994,9 +2958,7 @@ export class EasyCodeApp {
           changes: childWorkspace?.getChangeSet() ?? [],
           commands: [...(childState?.commands ?? [])],
           presentations,
-          ...(pausedEnvironment
-            ? { environment: pausedEnvironment }
-            : {}),
+          ...(pausedEnvironment ? { environment: pausedEnvironment } : {}),
         };
       }
       let retainedArtifact: ResultArtifact | undefined;
@@ -3009,9 +2971,7 @@ export class EasyCodeApp {
             accepted: false,
             parentArtifactIds: dependencyArtifacts.map((artifact) => artifact.id),
           });
-          finalEnvironment = await this.executionEnvironments.loadEnvironment(
-            activeEnvironment.descriptor.id,
-          );
+          finalEnvironment = await this.executionEnvironments.loadEnvironment(activeEnvironment.descriptor.id);
           request.reportEnvironment(finalEnvironment);
         } catch {
           // Preserve the original execution failure. Provisioning metadata is
@@ -3020,9 +2980,7 @@ export class EasyCodeApp {
       }
       const outcome: SubagentExecutionOutcome = {
         reason: request.signal.aborted ? "stopped" : "failed",
-        error: redactSensitiveInformation(
-          error instanceof Error ? error.message : String(error),
-        ).slice(0, 2_000),
+        error: redactSensitiveInformation(error instanceof Error ? error.message : String(error)).slice(0, 2_000),
         changes: childWorkspace?.getChangeSet() ?? [],
         commands: [...(childState?.commands ?? [])],
         presentations,
@@ -3075,17 +3033,13 @@ export class EasyCodeApp {
         taskId: request.task.id,
       }),
     );
-    this.threadStore.recordSubagentArtifacts(
-      request.record.parentThreadId,
-      request.record.createdByTurnId,
-      {
-        agentId: request.record.id,
-        taskId: request.task.id,
-        changes,
-        commands: attributedCommands,
-        mergeIntoParent,
-      },
-    );
+    this.threadStore.recordSubagentArtifacts(request.record.parentThreadId, request.record.createdByTurnId, {
+      agentId: request.record.id,
+      taskId: request.task.id,
+      changes,
+      commands: attributedCommands,
+      mergeIntoParent,
+    });
     if (this.state.threadId !== request.record.parentThreadId) return;
     if (!mergeIntoParent) {
       this.dirty = true;
@@ -3098,9 +3052,11 @@ export class EasyCodeApp {
       ),
     );
     const knownWorkspaceChanges = new Set(
-      this.workspace.getChangeSet().map((change) =>
-        [change.timestamp, change.path, change.operation, change.beforeHash ?? "", change.afterHash ?? ""].join("|"),
-      ),
+      this.workspace
+        .getChangeSet()
+        .map((change) =>
+          [change.timestamp, change.path, change.operation, change.beforeHash ?? "", change.afterHash ?? ""].join("|"),
+        ),
     );
     for (const change of changes) {
       const key = [
@@ -3129,23 +3085,16 @@ export class EasyCodeApp {
     this.dirty = true;
   }
 
-  private recordSubagentOutcome(
-    request: SubagentExecutionRequest,
-    outcome: SubagentExecutionOutcome,
-  ): void {
-    this.threadStore.recordSubagentResult(
-      request.record.parentThreadId,
-      request.record.createdByTurnId,
-      {
-        agentId: request.record.id,
-        taskId: request.task.id,
-        reason: outcome.reason,
-        ...(outcome.report ? { report: outcome.report } : {}),
-        ...(outcome.error ? { error: outcome.error } : {}),
-        ...(outcome.environment ? { environment: outcome.environment } : {}),
-        ...(outcome.resultArtifact ? { resultArtifact: outcome.resultArtifact } : {}),
-      },
-    );
+  private recordSubagentOutcome(request: SubagentExecutionRequest, outcome: SubagentExecutionOutcome): void {
+    this.threadStore.recordSubagentResult(request.record.parentThreadId, request.record.createdByTurnId, {
+      agentId: request.record.id,
+      taskId: request.task.id,
+      reason: outcome.reason,
+      ...(outcome.report ? { report: outcome.report } : {}),
+      ...(outcome.error ? { error: outcome.error } : {}),
+      ...(outcome.environment ? { environment: outcome.environment } : {}),
+      ...(outcome.resultArtifact ? { resultArtifact: outcome.resultArtifact } : {}),
+    });
     if (this.state.threadId === request.record.parentThreadId) this.dirty = true;
   }
 
@@ -3163,8 +3112,9 @@ export class EasyCodeApp {
       let collected = 0;
       const terminal = new Set(["completed", "blocked", "needs_parent_decision", "failed", "stopped", "interrupted"]);
       for (;;) {
-        const candidate = this.subagentCoordinator.outstanding(state.threadId)
-          .find(record => terminal.has(record.status));
+        const candidate = this.subagentCoordinator
+          .outstanding(state.threadId)
+          .find((record) => terminal.has(record.status));
         if (!candidate) break;
         const context: ToolContext = {
           workspaceRoot: state.workspaceRoot,
@@ -3182,20 +3132,30 @@ export class EasyCodeApp {
           limits: this.config.limits,
           taskGraph: state.taskGraph,
         };
-        const result = await this.subagentCoordinator.wait({
-          action: "wait",
-          agentIds: [candidate.id],
-          timeoutMs: 0,
-        }, context);
+        const result = await this.subagentCoordinator.wait(
+          {
+            action: "wait",
+            agentIds: [candidate.id],
+            timeoutMs: 0,
+          },
+          context,
+        );
         if (!result.ok || !result.subagentLifecycle || !result.subagentAssignment) break;
-        const data = result.data && typeof result.data === "object"
-          ? result.data as { result?: { summary?: string }; error?: string }
-          : undefined;
+        const data =
+          result.data && typeof result.data === "object"
+            ? (result.data as { result?: { summary?: string }; error?: string })
+            : undefined;
         const message: ChatMessage = {
           role: "user",
-          content: "RUNTIME_SUBAGENT_RESULT_COLLECTED (authoritative child lifecycle, not a new user requirement)\n" +
-            JSON.stringify({ agentId: candidate.id, taskId: candidate.taskId, status: candidate.status,
-              summary: data?.result?.summary, error: data?.error }),
+          content:
+            "RUNTIME_SUBAGENT_RESULT_COLLECTED (authoritative child lifecycle, not a new user requirement)\n" +
+            JSON.stringify({
+              agentId: candidate.id,
+              taskId: candidate.taskId,
+              status: candidate.status,
+              summary: data?.result?.summary,
+              error: data?.error,
+            }),
         };
         const payload = {
           tool: "manage_subagents",
@@ -3230,16 +3190,13 @@ export class EasyCodeApp {
     }, signal);
   }
 
-  private async mergeSubagentArtifacts(
-    state: SessionState,
-    artifacts: ObservedSubagentArtifacts,
-  ): Promise<void> {
+  private async mergeSubagentArtifacts(state: SessionState, artifacts: ObservedSubagentArtifacts): Promise<void> {
     const isolated = artifacts.environment?.kind === "worktree";
     if (!isolated) {
       const knownChanges = new Set(
-        this.workspace.getChangeSet().map((change) =>
-          [change.timestamp, change.path, change.operation, change.afterHash ?? ""].join("|"),
-        ),
+        this.workspace
+          .getChangeSet()
+          .map((change) => [change.timestamp, change.path, change.operation, change.afterHash ?? ""].join("|")),
       );
       for (const change of artifacts.changes) {
         const key = [change.timestamp, change.path, change.operation, change.afterHash ?? ""].join("|");
@@ -3259,11 +3216,7 @@ export class EasyCodeApp {
         taskId: artifacts.taskId,
       });
       state.commands.push(attributedEntry);
-      this.threadStore.recordToolAudit(
-        state.threadId,
-        state.activeTurnId,
-        attributedEntry,
-      );
+      this.threadStore.recordToolAudit(state.threadId, state.activeTurnId, attributedEntry);
       knownCommands.add(entry.id);
     }
     for (const presentation of artifacts.presentations) {
@@ -3304,13 +3257,8 @@ export class EasyCodeApp {
       },
     });
     try {
-      const before = destination.type === "local"
-        ? await this.workspace.captureSnapshot()
-        : undefined;
-      const delivered = await this.executionEnvironments.handoff(
-        artifact,
-        destination,
-      );
+      const before = destination.type === "local" ? await this.workspace.captureSnapshot() : undefined;
+      const delivered = await this.executionEnvironments.handoff(artifact, destination);
       if (destination.type === "local" && before) {
         const after = await this.workspace.captureSnapshot();
         this.workspace.applyRuntimeSnapshots(before, after);
@@ -3319,9 +3267,7 @@ export class EasyCodeApp {
       let cleanedEnvironment: string | undefined;
       if (delivered.status === "delivered") {
         try {
-          const cleaned = await this.executionEnvironments.cleanup(
-            delivered.environmentId,
-          );
+          const cleaned = await this.executionEnvironments.cleanup(delivered.environmentId);
           if (cleaned.status === "removed") cleanedEnvironment = cleaned.id;
         } catch {
           // Delivery is already durable; a busy Worktree remains recoverable
@@ -3353,9 +3299,7 @@ export class EasyCodeApp {
           agentId: artifact.agentId,
           taskId: artifact.taskId,
           artifactId: artifact.id,
-          error: redactSensitiveInformation(
-            error instanceof Error ? error.message : String(error),
-          ).slice(0, 2_000),
+          error: redactSensitiveInformation(error instanceof Error ? error.message : String(error)).slice(0, 2_000),
         },
       });
       this.dirty = true;
@@ -3375,17 +3319,18 @@ export class EasyCodeApp {
     if (request.signal?.aborted) return false;
     const threadId = this.state.threadId;
     const mode = this.commandExecutionMode ?? (this.assumeYes ? "auto_approve" : "manual");
-    if (request.requiredReviewer !== "user" &&
-      (request.network ? autoApproveNetwork(mode, request.network.effect) : autoApproveLocal(mode, request.risk))) {
+    if (
+      request.requiredReviewer !== "user" &&
+      (request.network ? autoApproveNetwork(mode, request.network.effect) : autoApproveLocal(mode, request.risk))
+    ) {
       request.observeDecision?.("allow_once");
       return true;
     }
 
     if (
-      isCommandApprovalPrefixGranted(
-        this.state.commandApprovalPrefixes,
-        request.commandPrefix,
-      ) || request.existingNetworkCommandPrefix !== undefined && isCommandApprovalPrefixGranted(this.state.commandApprovalPrefixes, request.existingNetworkCommandPrefix)
+      isCommandApprovalPrefixGranted(this.state.commandApprovalPrefixes, request.commandPrefix) ||
+      (request.existingNetworkCommandPrefix !== undefined &&
+        isCommandApprovalPrefixGranted(this.state.commandApprovalPrefixes, request.existingNetworkCommandPrefix))
     ) {
       request.observeDecision?.("allow_prefix");
       return true;
@@ -3394,22 +3339,36 @@ export class EasyCodeApp {
     let decision: import("./core/types.js").ApprovalDecision | undefined;
     if (mode === "auto_approve" && request.requiredReviewer !== "user") {
       const review = await this.reviewApproval(request);
-      this.threadStore.appendEvent(threadId, { type: "approval.reviewed", payload: { id: request.id, source: request.source, ...review } });
-      if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
-      if (review.decision !== "reject" && (review.decision !== "allow_prefix" || canGrantCommandPrefix(request.commandPrefix))) decision = review.decision;
+      this.threadStore.appendEvent(threadId, {
+        type: "approval.reviewed",
+        payload: { id: request.id, source: request.source, ...review },
+      });
+      if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode)
+        return false;
+      if (
+        review.decision !== "reject" &&
+        (review.decision !== "allow_prefix" || canGrantCommandPrefix(request.commandPrefix))
+      )
+        decision = review.decision;
       else {
         request = { ...request, description: `${request.description}\nApproval agent: ${review.reason}` };
       }
     }
     if (!decision) {
       if (request.allowPrompt === false) {
-        this.threadStore.appendEvent(this.state.threadId, { type: "approval.user_required", payload: { id: request.id, source: request.source } });
+        this.threadStore.appendEvent(this.state.threadId, {
+          type: "approval.user_required",
+          payload: { id: request.id, source: request.source },
+        });
         throw new Error("User approval is required but interactive approval is unavailable");
       }
       decision = await this.terminal.approve(request);
     }
     if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
-    this.threadStore.appendEvent(threadId, { type: "approval.decided", payload: { id: request.id, decision, source: request.source } });
+    this.threadStore.appendEvent(threadId, {
+      type: "approval.decided",
+      payload: { id: request.id, decision, source: request.source },
+    });
     if (decision === "reject") {
       request.observeDecision?.("reject");
       this.terminal.info("Command execution rejected.");
@@ -3417,19 +3376,18 @@ export class EasyCodeApp {
     }
     if (decision === "allow_once") {
       request.observeDecision?.("allow_once");
-      this.terminal.info(request.executionTiming === "future_resubmission"
-        ? "Approved once for the next exact resubmission; the stopped command was not replayed."
-        : "Approved once; starting the command.");
+      this.terminal.info(
+        request.executionTiming === "future_resubmission"
+          ? "Approved once for the next exact resubmission; the stopped command was not replayed."
+          : "Approved once; starting the command.",
+      );
       return true;
     }
 
     // Validate and derive the next in-memory state before writing the
     // authoritative event. If the durable append fails, the exception reaches
     // CommandRuntime and the command fails closed without executing.
-    const prefixes = grantCommandApprovalPrefix(
-      this.state.commandApprovalPrefixes,
-      request.commandPrefix,
-    );
+    const prefixes = grantCommandApprovalPrefix(this.state.commandApprovalPrefixes, request.commandPrefix);
     this.threadStore.recordCommandApprovalPrefixGrant(
       this.state.threadId,
       request.commandPrefix,
@@ -3451,31 +3409,71 @@ export class EasyCodeApp {
     return this.requestToolApproval({ ...request, source, title: `[${source.agentId}] ${request.title}` });
   }
 
-  private async reviewApproval(request: ApprovalRequest): Promise<import("./command/approval-agent.js").ApprovalReview> {
+  private async reviewApproval(
+    request: ApprovalRequest,
+  ): Promise<import("./command/approval-agent.js").ApprovalReview> {
     try {
       const threadId = this.state.threadId;
       const turnId = this.state.activeTurnId;
-      const provider = createProvider(this.effectiveConfig(), this.state.provider, this.config.approvalModel ?? this.state.model);
-      const task = this.state.messages.filter(message => message.role === "user").slice(-3).map(message => message.content).join("\n");
+      const provider = createProvider(
+        this.effectiveConfig(),
+        this.state.provider,
+        this.config.approvalModel ?? this.state.model,
+      );
+      const task = this.state.messages
+        .filter((message) => message.role === "user")
+        .slice(-3)
+        .map((message) => message.content)
+        .join("\n");
       return await reviewCommandApproval(request, task, {
-        provider, budget: this.sharedTaskBudget(threadId), limits: this.config.limits, maxInputChars: this.config.limits.approvalInputChars,
+        provider,
+        budget: this.sharedTaskBudget(threadId),
+        limits: this.config.limits,
+        maxInputChars: this.config.limits.approvalInputChars,
         maxOutputTokens: this.config.limits.approvalOutputTokens,
-        onResponse: response => this.threadStore.appendEvent(threadId, { type: "model.output.captured", turnId,
-          payload: { purpose: "command_approval", finishReason: response.finishReason ?? null,
-            message: JSON.parse(redactSensitiveInformation(JSON.stringify({ content: response.message.content,
-              tool_calls: response.message.tool_calls }))) } }),
+        onResponse: (response) =>
+          this.threadStore.appendEvent(threadId, {
+            type: "model.output.captured",
+            turnId,
+            payload: {
+              purpose: "command_approval",
+              finishReason: response.finishReason ?? null,
+              message: JSON.parse(
+                redactSensitiveInformation(
+                  JSON.stringify({ content: response.message.content, tool_calls: response.message.tool_calls }),
+                ),
+              ),
+            },
+          }),
         onUsage: (usage, attempt) => {
-          if (attempt) this.threadStore.appendEvent(threadId, { type: "model.api_attempt", turnId, phase: attempt.outcome,
-            payload: { ...attempt, actor: "approval_agent", purpose: "command_approval" } });
+          if (attempt)
+            this.threadStore.appendEvent(threadId, {
+              type: "model.api_attempt",
+              turnId,
+              phase: attempt.outcome,
+              payload: { ...attempt, actor: "approval_agent", purpose: "command_approval" },
+            });
           // A failed API attempt still completes an unreported usage record.
           // model.usage has a completed-only journal protocol; its phase is not the API outcome.
-          this.threadStore.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
-            actor: "approval_agent", purpose: "command_approval", provider: provider.name, model: provider.model,
-            turnId, retry: attempt?.retry ?? false, attempt: attempt?.attempt, usage,
-          } });
+          this.threadStore.appendEvent(threadId, {
+            type: "model.usage",
+            phase: "completed",
+            payload: {
+              actor: "approval_agent",
+              purpose: "command_approval",
+              provider: provider.name,
+              model: provider.model,
+              turnId,
+              retry: attempt?.retry ?? false,
+              attempt: attempt?.attempt,
+              usage,
+            },
+          });
         },
       });
-    } catch (error) { return { decision: "reject", reason: redactSensitiveInformation(String(error)), unavailable: true }; }
+    } catch (error) {
+      return { decision: "reject", reason: redactSensitiveInformation(String(error)), unavailable: true };
+    }
   }
 
   private requireCurrentModelVision(): void {
@@ -3493,12 +3491,7 @@ export class EasyCodeApp {
     }
     assertThreadImageNumberAvailable(index);
     const data = await this.clipboardImageReader.readImage(signal);
-    const attachment = await this.imageStore.importBuffer(
-      this.state.threadId,
-      `Image #${index}`,
-      data,
-      "clipboard",
-    );
+    const attachment = await this.imageStore.importBuffer(this.state.threadId, `Image #${index}`, data, "clipboard");
     try {
       validateImageAttachmentCollection([...currentImages, attachment]);
       validateProviderImageAttachments(this.state.provider, [attachment]);
@@ -3522,9 +3515,7 @@ export class EasyCodeApp {
       normalized = normalized.slice(1, -1);
     }
     if (!normalized) throw new Error("Image path must not be empty.");
-    const absolutePath = path.isAbsolute(normalized)
-      ? normalized
-      : path.resolve(this.workspace.root, normalized);
+    const absolutePath = path.isAbsolute(normalized) ? normalized : path.resolve(this.workspace.root, normalized);
     const imageNumber = nextThreadImageNumber(this.state.messages, this.pendingImages);
     assertThreadImageNumberAvailable(imageNumber);
     const attachment = await this.imageStore.importFile(
@@ -3542,17 +3533,20 @@ export class EasyCodeApp {
     }
     this.pendingImages.push(attachment);
     if (announce) {
-      this.terminal.success(translate(readLanguage(this.storage), "cli.queuedImageFile", {
-        label: attachment.label, width: attachment.width, height: attachment.height, mediaType: attachment.mediaType,
-      }));
+      this.terminal.success(
+        translate(readLanguage(this.storage), "cli.queuedImageFile", {
+          label: attachment.label,
+          width: attachment.width,
+          height: attachment.height,
+          mediaType: attachment.mediaType,
+        }),
+      );
     }
     return attachment;
   }
 
   private async discardImages(images: readonly ImageAttachment[]): Promise<void> {
-    await Promise.all(images.map((image) =>
-      this.imageStore.remove(this.state.threadId, image).catch(() => undefined),
-    ));
+    await Promise.all(images.map((image) => this.imageStore.remove(this.state.threadId, image).catch(() => undefined)));
   }
 
   private async clearPendingImages(): Promise<void> {
@@ -3581,50 +3575,50 @@ export class EasyCodeApp {
     if (!(await this.ensureProviderApiKey(selection.provider))) return false;
 
     if (this.startupInteraction === "select-model") {
-      this.commitModelSelection(
-        selection.provider,
-        selection.model,
-        "Selected",
-        selection.thinkingEffort,
-      );
+      this.commitModelSelection(selection.provider, selection.model, "Selected", selection.thinkingEffort);
     } else {
-      const applied = thinkingEffortIsApplied(
-        selection.provider,
-        selection.model,
-        selection.thinkingEffort,
-      );
+      const applied = thinkingEffortIsApplied(selection.provider, selection.model, selection.thinkingEffort);
       const language = readLanguage(this.storage);
-      this.terminal.success(translate(language, "cli.selectedModel", {
-        provider: providerLabel(selection.provider), model: selection.model, effort: selection.thinkingEffort,
-        suffix: applied ? "" : translate(language, "cli.notAppliedSuffix"),
-      }));
+      this.terminal.success(
+        translate(language, "cli.selectedModel", {
+          provider: providerLabel(selection.provider),
+          model: selection.model,
+          effort: selection.thinkingEffort,
+          suffix: applied ? "" : translate(language, "cli.notAppliedSuffix"),
+        }),
+      );
     }
     return true;
   }
 
-  private async selectCommandExecutionMode(announceCancellation = true, requested?: CommandExecutionMode): Promise<void> {
+  private async selectCommandExecutionMode(
+    announceCancellation = true,
+    requested?: CommandExecutionMode,
+  ): Promise<void> {
     const language = readLanguage(this.storage);
-    const selected = requested ?? await this.terminal.selectChoice(
-      translate(language, "cli.selectApproval"),
-      [
-        {
-          id: "manual",
-          label: translate(language, "ui.manualApproval"),
-          detail: translate(language, "cli.manualApprovalDetail"),
-        },
-        {
-          id: "auto_approve",
-          label: translate(language, "cli.autoApprove"),
-          detail: translate(language, "cli.autoApproveDetail"),
-        },
-        {
-          id: "unrestricted",
-          label: translate(language, "ui.fullAccess"),
-          detail: translate(language, "cli.fullAccessDetail"),
-        },
-      ],
-      this.commandExecutionMode,
-    ) as CommandExecutionMode | undefined;
+    const selected =
+      requested ??
+      ((await this.terminal.selectChoice(
+        translate(language, "cli.selectApproval"),
+        [
+          {
+            id: "manual",
+            label: translate(language, "ui.manualApproval"),
+            detail: translate(language, "cli.manualApprovalDetail"),
+          },
+          {
+            id: "auto_approve",
+            label: translate(language, "cli.autoApprove"),
+            detail: translate(language, "cli.autoApproveDetail"),
+          },
+          {
+            id: "unrestricted",
+            label: translate(language, "ui.fullAccess"),
+            detail: translate(language, "cli.fullAccessDetail"),
+          },
+        ],
+        this.commandExecutionMode,
+      )) as CommandExecutionMode | undefined);
     if (!selected) {
       if (announceCancellation) this.terminal.info(translate(language, "cli.approvalCanceled"));
       return;
@@ -3676,7 +3670,14 @@ export class EasyCodeApp {
     if ((previousMode === "unrestricted") !== (selected === "unrestricted")) {
       this.hostAccessEpoch += 1;
     }
-    this.threadStore.appendEvent(this.state.threadId, { type: "approval.mode_changed", payload: { previousMode, selected, orchestrationEnabled: selected === "manual" ? false : this.state.orchestrationEnabled } });
+    this.threadStore.appendEvent(this.state.threadId, {
+      type: "approval.mode_changed",
+      payload: {
+        previousMode,
+        selected,
+        orchestrationEnabled: selected === "manual" ? false : this.state.orchestrationEnabled,
+      },
+    });
     this.commandExecutionMode = selected;
     if (selected === "manual") this.state.orchestrationEnabled = false;
     this.dirty = true;
@@ -3691,9 +3692,13 @@ export class EasyCodeApp {
     // posture immediately without duplicating the EASY CODE title.
     this.syncTerminalView();
     if (selected === "manual") {
-      this.terminal.success(translate(language, previousMode === "unrestricted" ? "cli.manualRestored" : "cli.manualEnabled"));
+      this.terminal.success(
+        translate(language, previousMode === "unrestricted" ? "cli.manualRestored" : "cli.manualEnabled"),
+      );
     } else if (selected === "auto_approve") {
-      this.terminal.success(translate(language, previousMode === "unrestricted" ? "cli.autoRestored" : "cli.autoEnabled"));
+      this.terminal.success(
+        translate(language, previousMode === "unrestricted" ? "cli.autoRestored" : "cli.autoEnabled"),
+      );
     } else {
       this.terminal.warning(translate(language, "cli.fullAccessEnabled"));
     }
@@ -3709,11 +3714,14 @@ export class EasyCodeApp {
     await this.handleSlashCommand(`/model ${selection.provider} ${selection.model} ${selection.thinkingEffort}`);
   }
 
-  private async selectProviderAndModel(): Promise<{
-    provider: ProviderName;
-    model: string;
-    thinkingEffort: ThinkingEffort;
-  } | undefined> {
+  private async selectProviderAndModel(): Promise<
+    | {
+        provider: ProviderName;
+        model: string;
+        thinkingEffort: ThinkingEffort;
+      }
+    | undefined
+  > {
     const provider = await this.terminal.selectProvider(
       PROVIDER_CATALOG.map((entry) => ({
         provider: entry.provider,
@@ -3725,13 +3733,8 @@ export class EasyCodeApp {
     if (!provider) return undefined;
 
     const configuredModel = this.config.providers[provider]!.model;
-    const initialModel = resolveCatalogModel(provider, configuredModel)?.id ??
-      DEFAULT_MODEL_IDS[provider];
-    const model = await this.terminal.selectModel(
-      providerLabel(provider),
-      modelsForProvider(provider),
-      initialModel,
-    );
+    const initialModel = resolveCatalogModel(provider, configuredModel)?.id ?? DEFAULT_MODEL_IDS[provider];
+    const model = await this.terminal.selectModel(providerLabel(provider), modelsForProvider(provider), initialModel);
     if (!model) return undefined;
     const canonicalModel = requireCatalogModel(provider, model).id;
     const language = readLanguage(this.storage);
@@ -3740,8 +3743,16 @@ export class EasyCodeApp {
       canonicalModel,
       THINKING_EFFORTS.map((effort) => ({
         id: effort,
-        label: translate(language, effort === "none" ? "ui.effortNone" :
-          effort === "low" ? "ui.effortLow" : effort === "medium" ? "ui.effortMedium" : "ui.effortHigh"),
+        label: translate(
+          language,
+          effort === "none"
+            ? "ui.effortNone"
+            : effort === "low"
+              ? "ui.effortLow"
+              : effort === "medium"
+                ? "ui.effortMedium"
+                : "ui.effortHigh",
+        ),
         applied: thinkingEffortIsApplied(provider, canonicalModel, effort),
       })),
       this.state.thinkingEffort,
@@ -3754,7 +3765,7 @@ export class EasyCodeApp {
     if (this.config.providers[provider]?.apiKey) return true;
     if (!this.credentialStore) {
       throw new Error(
-          `No ${provider} API key is configured, and the system credential store is unavailable. ` +
+        `No ${provider} API key is configured, and the system credential store is unavailable. ` +
           `Run easy-code config set ${apiKeyConfigKey(provider)}.`,
       );
     }
@@ -3773,7 +3784,10 @@ export class EasyCodeApp {
       throw error;
     }
     const normalized = await storeVerifiedApiKey(
-      this.credentialStore, provider, value, this.config.providers[provider]?.baseUrl,
+      this.credentialStore,
+      provider,
+      value,
+      this.config.providers[provider]?.baseUrl,
     );
     this.config.providers[provider]!.apiKey = normalized;
     this.terminal.success(translate(language, "cli.apiKeySaved", { key: apiKeyConfigKey(provider) }));
@@ -3819,12 +3833,20 @@ export class EasyCodeApp {
     this.syncTerminalView();
     const applied = thinkingEffortIsApplied(provider, canonicalModel, thinkingEffort);
     const language = readLanguage(this.storage);
-    const verbKey = verb === "Selected" ? "cli.selectedModel" : verb === "Provider switched to"
-      ? "cli.providerSwitched" : "cli.modelSwitched";
-    this.terminal.success(translate(language, verbKey, {
-      provider: providerLabel(provider), model: canonicalModel, effort: thinkingEffort,
-      suffix: applied ? "" : translate(language, "cli.notAppliedSuffix"),
-    }));
+    const verbKey =
+      verb === "Selected"
+        ? "cli.selectedModel"
+        : verb === "Provider switched to"
+          ? "cli.providerSwitched"
+          : "cli.modelSwitched";
+    this.terminal.success(
+      translate(language, verbKey, {
+        provider: providerLabel(provider),
+        model: canonicalModel,
+        effort: thinkingEffort,
+        suffix: applied ? "" : translate(language, "cli.notAppliedSuffix"),
+      }),
+    );
     if (this.pendingImages.length && !modelSupportsVision(provider, canonicalModel)) {
       this.terminal.info(translate(language, "cli.imagesUnsupported", { count: this.pendingImages.length }));
     }
@@ -3838,7 +3860,9 @@ export class EasyCodeApp {
         thinkingEffort: this.state.thinkingEffort,
       });
     } catch (error) {
-      this.terminal.warning(`Could not save the last-used model: ${error instanceof Error ? error.message : String(error)}`);
+      this.terminal.warning(
+        `Could not save the last-used model: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -3848,9 +3872,9 @@ export class EasyCodeApp {
       mode: this.state.mode,
       thinkingEffort: this.state.thinkingEffort,
       provider: this.state.provider,
-      providers: Object.fromEntries(Object.entries(this.config.providers).map(
-        ([provider, providerConfig]) => [provider, { ...providerConfig }],
-      )),
+      providers: Object.fromEntries(
+        Object.entries(this.config.providers).map(([provider, providerConfig]) => [provider, { ...providerConfig }]),
+      ),
     };
     config.providers[this.state.provider]!.model = this.state.model;
     return config;
@@ -3859,63 +3883,44 @@ export class EasyCodeApp {
   private restoreReasoningHistory(): number {
     return this.terminal.restoreReasoning(
       this.state.messages.flatMap((message) =>
-        message.role === "assistant" && message.reasoning_content?.trim()
-          ? [message.reasoning_content]
-          : [],
+        message.role === "assistant" && message.reasoning_content?.trim() ? [message.reasoning_content] : [],
       ),
     );
   }
 
   private restoreSubagents(): number {
-    const assignments = this.threadStore.subagentAssignments(
-      this.state.threadId,
-    );
+    const assignments = this.threadStore.subagentAssignments(this.state.threadId);
     const preparedAgentIds: string[] = [];
     let restored = 0;
     try {
       for (const entry of assignments) {
         const { assignment } = entry;
-        if (
-          this.subagentCoordinator.hasAgent(
-            assignment.agentId,
-            this.state.threadId,
-          )
-        ) {
+        if (this.subagentCoordinator.hasAgent(assignment.agentId, this.state.threadId)) {
           continue;
         }
-        const task = assignment.kind === "dag"
-          ? this.state.taskGraph?.tasks.find(
-              (candidate) =>
-                candidate.id === assignment.taskId &&
-                candidate.owner === "subagent" &&
-                candidate.assignedAgentId === assignment.agentId &&
-                candidate.status === "in_progress",
-            )
-          : undefined;
+        const task =
+          assignment.kind === "dag"
+            ? this.state.taskGraph?.tasks.find(
+                (candidate) =>
+                  candidate.id === assignment.taskId &&
+                  candidate.owner === "subagent" &&
+                  candidate.assignedAgentId === assignment.agentId &&
+                  candidate.status === "in_progress",
+              )
+            : undefined;
         if (assignment.kind === "dag" && !task && !entry.observed) {
           // Do not resurrect a child against a different current graph.
           continue;
         }
-        let durable = this.threadStore.latestSubagentResult(
-          this.state.threadId,
-          assignment.agentId,
-          assignment.taskId,
-        );
-        const stopped = this.threadStore.hasCommittedSubagentStop(
-          this.state.threadId,
-          assignment.agentId,
-        );
+        let durable = this.threadStore.latestSubagentResult(this.state.threadId, assignment.agentId, assignment.taskId);
+        const stopped = this.threadStore.hasCommittedSubagentStop(this.state.threadId, assignment.agentId);
         if (stopped && durable?.reason !== "stopped") {
-          const event = this.threadStore.recordSubagentResult(
-            this.state.threadId,
-            entry.createdByTurnId,
-            {
-              agentId: assignment.agentId,
-              taskId: assignment.taskId,
-              reason: "stopped",
-              error: "The parent had durably requested cancellation before recovery.",
-            },
-          );
+          const event = this.threadStore.recordSubagentResult(this.state.threadId, entry.createdByTurnId, {
+            agentId: assignment.agentId,
+            taskId: assignment.taskId,
+            reason: "stopped",
+            error: "The parent had durably requested cancellation before recovery.",
+          });
           durable = {
             agentId: assignment.agentId,
             taskId: assignment.taskId,
@@ -3926,21 +3931,22 @@ export class EasyCodeApp {
         }
         if (!durable) {
           if (entry.observed) continue;
-          this.subagentCoordinator.restore({
-            parentThreadId: this.state.threadId,
-            createdByTurnId: entry.createdByTurnId,
-            assignment,
-            ...(task ? { task } : {}),
-          }, { deferActivation: true });
+          this.subagentCoordinator.restore(
+            {
+              parentThreadId: this.state.threadId,
+              createdByTurnId: entry.createdByTurnId,
+              assignment,
+              ...(task ? { task } : {}),
+            },
+            { deferActivation: true },
+          );
           preparedAgentIds.push(assignment.agentId);
           restored += 1;
           continue;
         }
         const recoveredArtifact = durable.resultArtifact
-          ? this.threadStore.latestSubagentHandoffArtifact(
-              this.state.threadId,
-              durable.resultArtifact.id,
-            ) ?? durable.resultArtifact
+          ? (this.threadStore.latestSubagentHandoffArtifact(this.state.threadId, durable.resultArtifact.id) ??
+            durable.resultArtifact)
           : undefined;
         const recovered = {
           parentThreadId: this.state.threadId,
@@ -3960,10 +3966,7 @@ export class EasyCodeApp {
           preparedAgentIds.push(assignment.agentId);
           restored += 1;
         } else if (assignment.kind === "standalone") {
-          this.subagentCoordinator.restoreStandalone(
-            { ...recovered, assignment },
-            { deferActivation: true },
-          );
+          this.subagentCoordinator.restoreStandalone({ ...recovered, assignment }, { deferActivation: true });
           preparedAgentIds.push(assignment.agentId);
           restored += 1;
         }
@@ -4010,11 +4013,24 @@ export class EasyCodeApp {
     if (args.length > 1 || (args[0] && !["on", "off"].includes(args[0]))) {
       throw new Error("Usage: /orchestration [on|off]");
     }
-    const selected = args[0] ?? await this.terminal.selectChoice(
-      translate(language, "cli.orchestrationTitle"), [
-        { id: "off", label: translate(language, "cli.orchestrationOff"), detail: translate(language, "cli.orchestrationOffDetail") },
-        { id: "on", label: translate(language, "cli.orchestrationOn"), detail: translate(language, "cli.orchestrationOnDetail") },
-      ], this.orchestrationEnabled() ? "on" : "off");
+    const selected =
+      args[0] ??
+      (await this.terminal.selectChoice(
+        translate(language, "cli.orchestrationTitle"),
+        [
+          {
+            id: "off",
+            label: translate(language, "cli.orchestrationOff"),
+            detail: translate(language, "cli.orchestrationOffDetail"),
+          },
+          {
+            id: "on",
+            label: translate(language, "cli.orchestrationOn"),
+            detail: translate(language, "cli.orchestrationOnDetail"),
+          },
+        ],
+        this.orchestrationEnabled() ? "on" : "off",
+      ));
     if (!selected) {
       if (reportCancel) this.terminal.info(translate(language, "cli.orchestrationCanceled"));
       return;
@@ -4024,14 +4040,30 @@ export class EasyCodeApp {
       return;
     }
     if (selected === "on" && this.commandExecutionMode === "manual") {
-      const confirmed = await this.terminal.selectChoice(translate(language, "cli.orchestrationQuestion"), [
-        { id: "cancel", label: translate(language, "ui.cancel"), detail: translate(language, "cli.orchestrationKeep") },
-        { id: "enable", label: translate(language, "cli.orchestrationBoth"), detail: translate(language, "cli.orchestrationBothDetail") },
-      ], "cancel");
+      const confirmed = await this.terminal.selectChoice(
+        translate(language, "cli.orchestrationQuestion"),
+        [
+          {
+            id: "cancel",
+            label: translate(language, "ui.cancel"),
+            detail: translate(language, "cli.orchestrationKeep"),
+          },
+          {
+            id: "enable",
+            label: translate(language, "cli.orchestrationBoth"),
+            detail: translate(language, "cli.orchestrationBothDetail"),
+          },
+        ],
+        "cancel",
+      );
       if (confirmed !== "enable") return;
     }
-    const nextMode = selected === "on" && this.commandExecutionMode === "manual" ? "auto_approve" : this.commandExecutionMode;
-    this.threadStore.appendEvent(this.state.threadId, { type: "approval.mode_changed", payload: { previousMode: this.commandExecutionMode, selected: nextMode, orchestrationEnabled: selected === "on" } });
+    const nextMode =
+      selected === "on" && this.commandExecutionMode === "manual" ? "auto_approve" : this.commandExecutionMode;
+    this.threadStore.appendEvent(this.state.threadId, {
+      type: "approval.mode_changed",
+      payload: { previousMode: this.commandExecutionMode, selected: nextMode, orchestrationEnabled: selected === "on" },
+    });
     if (nextMode !== this.commandExecutionMode) this.config.approvalPolicy = "safe";
     this.commandExecutionMode = nextMode;
     this.state.orchestrationEnabled = selected === "on";
@@ -4039,21 +4071,27 @@ export class EasyCodeApp {
     this.save();
     if (this.commandExecutionMode !== "manual") this.subagentCoordinator.activatePrepared(this.state.threadId);
     this.syncTerminalView();
-    this.terminal.success(translate(language, "cli.orchestrationChanged", {
-      state: translate(language, selected === "on" ? "cli.on" : "cli.off"),
-    }));
+    this.terminal.success(
+      translate(language, "cli.orchestrationChanged", {
+        state: translate(language, selected === "on" ? "cli.on" : "cli.off"),
+      }),
+    );
   }
 
   private hasActiveOrchestration(): boolean {
-    return Boolean(this.state.taskGraph && this.state.taskGraph.status !== "completed") ||
-      this.subagentCoordinator.hasUnfinished(this.state.threadId) || this.subagentCoordinator.hasOutstanding(this.state.threadId) ||
-      this.hasRunningCommands();
+    return (
+      Boolean(this.state.taskGraph && this.state.taskGraph.status !== "completed") ||
+      this.subagentCoordinator.hasUnfinished(this.state.threadId) ||
+      this.subagentCoordinator.hasOutstanding(this.state.threadId) ||
+      this.hasRunningCommands()
+    );
   }
 
   private sharedTaskBudget(threadId: string): TaskBudget {
     let budget = this.taskBudgets.get(threadId);
     if (!budget) {
-      const saved = [...this.threadStore.journal(threadId).read()].reverse()
+      const saved = [...this.threadStore.journal(threadId).read()]
+        .reverse()
         .find((event) => event.type === "runtime.task_budget");
       budget = saved
         ? TaskBudget.restore(saved.payload, this.persistTaskBudget(threadId), {
@@ -4066,19 +4104,24 @@ export class EasyCodeApp {
     return budget;
   }
 
-  private persistTaskBudget(threadId: string): (snapshot: import("./runtime/task-budget.js").TaskBudgetSnapshot) => void {
-    return (snapshot) => { this.threadStore.appendEvent(threadId, { type: "runtime.task_budget", payload: snapshot }); };
+  private persistTaskBudget(
+    threadId: string,
+  ): (snapshot: import("./runtime/task-budget.js").TaskBudgetSnapshot) => void {
+    return (snapshot) => {
+      this.threadStore.appendEvent(threadId, { type: "runtime.task_budget", payload: snapshot });
+    };
   }
 
   private newTaskBudget(threadId: string): TaskBudget {
-    return new TaskBudget(this.maxModelRequests ?? null, this.config.limits.maxTaskTokens,
-      this.persistTaskBudget(threadId));
+    return new TaskBudget(
+      this.maxModelRequests ?? null,
+      this.config.limits.maxTaskTokens,
+      this.persistTaskBudget(threadId),
+    );
   }
 
   private syncWorkspaceState(): void {
-    const currentVersions = new Map(
-      this.workspace.getReadVersions().map((version) => [version.path, version]),
-    );
+    const currentVersions = new Map(this.workspace.getReadVersions().map((version) => [version.path, version]));
     let versionsChanged = currentVersions.size !== this.state.filesRead.size;
     if (!versionsChanged) {
       for (const [filename, version] of currentVersions) {
@@ -4109,7 +4152,8 @@ export class EasyCodeApp {
   }
 
   private currentProjectWorkspace(): ProjectWorkspace | undefined {
-    if (!this.state.projectId || !this.state.primaryWorkspaceFolderId || !this.state.workspaceFolders?.length) return undefined;
+    if (!this.state.projectId || !this.state.primaryWorkspaceFolderId || !this.state.workspaceFolders?.length)
+      return undefined;
     return {
       projectId: this.state.projectId,
       revision: this.state.workspaceRevision ?? 1,
@@ -4127,7 +4171,8 @@ export class EasyCodeApp {
   private async replaceProjectWorkspace(descriptor: ProjectWorkspace): Promise<void> {
     this.assertNoRunningCommands("change project folders");
     this.assertNoRunningSubagents("change project folders");
-    if (this.activeTurnController) throw new Error("Wait for the current request to finish before changing project folders.");
+    if (this.activeTurnController)
+      throw new Error("Wait for the current request to finish before changing project folders.");
     if (this.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
     for (const catalog of this.mainToolCatalogs.values()) await catalog.close();
     this.mainToolCatalogs.clear();
@@ -4139,8 +4184,10 @@ export class EasyCodeApp {
     this.commandRuntimes.delete(previous);
     this.state.projectId = descriptor.projectId;
     this.state.workspaceRevision = descriptor.revision;
-    this.state.workspaceFolders = descriptor.folders.map(folder => ({
-      id: folder.id, key: folder.key, path: folder.path,
+    this.state.workspaceFolders = descriptor.folders.map((folder) => ({
+      id: folder.id,
+      key: folder.key,
+      path: folder.path,
     }));
     this.state.primaryWorkspaceFolderId = descriptor.primaryFolderId;
     this.state.workspaceRoot = next.root;
@@ -4148,7 +4195,6 @@ export class EasyCodeApp {
     this.executionEnvironments = new ExecutionEnvironmentManager({
       logicalWorkspaceRoot: next.root,
       dataDir: this.config.dataDir,
-      defaultIsolation: next.folders.length > 1 ? "shared" : this.config.subagentIsolation,
       baseMode: this.config.worktreeBaseMode,
       worktreeRoot: this.config.worktreeRoot,
       maxManagedWorktrees: this.config.limits.maxManagedWorktrees,
@@ -4165,7 +4211,8 @@ export class EasyCodeApp {
     if (!projectId) throw new Error("This thread is not attached to a logical project.");
     const projects = new ProjectIndex(this.storage);
     if (action === "list") {
-      if (args.length !== 1) throw new Error("Usage: /workspace list|refresh|add <path>|remove <folder-id>|primary <folder-id>");
+      if (args.length !== 1)
+        throw new Error("Usage: /workspace list|refresh|add <path>|remove <folder-id>|primary <folder-id>");
       this.terminal.write(`${json(projects.get(projectId))}\n`);
       return;
     }
@@ -4178,17 +4225,20 @@ export class EasyCodeApp {
     // otherwise a rejected hot swap could leave storage ahead of this Thread.
     this.assertNoRunningCommands("change project folders");
     this.assertNoRunningSubagents("change project folders");
-    if (this.activeTurnController) throw new Error("Wait for the current request to finish before changing project folders.");
+    if (this.activeTurnController)
+      throw new Error("Wait for the current request to finish before changing project folders.");
     if (this.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
     if (action === "add") {
-      if (args.length !== 2) throw new Error("Usage: /workspace add \"<absolute-folder-path>\"");
+      if (args.length !== 2) throw new Error('Usage: /workspace add "<absolute-folder-path>"');
       await assertDataDirectoryOutsideWorkspace(this.config.dataDir, args[1]!);
       projects.addFolder(projectId, args[1]!);
     } else if (action === "remove") {
       if (args.length !== 2) throw new Error("Usage: /workspace remove <folder-id>");
       const project = projects.get(projectId);
-      if (project.folders.filter(folder => folder.active).length <= 1)
-        throw new Error("The CLI cannot detach the final folder while this conversation is open. Use the Web project manager.");
+      if (project.folders.filter((folder) => folder.active).length <= 1)
+        throw new Error(
+          "The CLI cannot detach the final folder while this conversation is open. Use the Web project manager.",
+        );
       projects.removeFolder(projectId, args[1]!);
     } else if (action === "primary") {
       if (args.length !== 2) throw new Error("Usage: /workspace primary <folder-id>");
@@ -4210,7 +4260,7 @@ export class EasyCodeApp {
       workspaceRoot: nextWorkspace.root,
       projectId: this.state.projectId,
       workspaceRevision: this.state.workspaceRevision,
-      workspaceFolders: this.state.workspaceFolders?.map(folder => ({ ...folder })),
+      workspaceFolders: this.state.workspaceFolders?.map((folder) => ({ ...folder })),
       primaryWorkspaceFolderId: this.state.primaryWorkspaceFolderId,
       mode: "auto",
       provider: this.state.provider,
@@ -4219,9 +4269,7 @@ export class EasyCodeApp {
       promptBundle: activePromptBundleBinding(),
       modelRegistryHash: this.state.modelRegistryHash,
     });
-    let nextLease: ThreadLease | undefined = this.threadStore.acquireThreadLease(
-      nextState.threadId,
-    );
+    let nextLease: ThreadLease | undefined = this.threadStore.acquireThreadLease(nextState.threadId);
     let currentChildrenPaused = false;
     try {
       currentChildrenPaused = true;
@@ -4296,41 +4344,40 @@ export class EasyCodeApp {
     let releasedOrphanedSubagents = 0;
     try {
       if (this.threadStore.isBoundSubagentThread(threadId)) {
-        throw new Error(
-          `Thread ${threadId} is a parent-managed child session; resume its parent thread instead`,
-        );
+        throw new Error(`Thread ${threadId} is a parent-managed child session; resume its parent thread instead`);
       }
       nextLease = this.threadStore.acquireThreadLease(threadId);
       recovered = this.threadStore.recover(threadId);
       if (!this.config.providers[recovered.provider] || !resolveCatalogModel(recovered.provider, recovered.model)) {
-        this.terminal.warning(`The saved model ${recovered.provider}/${recovered.model} is no longer available. Using the current default; choose another with /model.`);
+        this.terminal.warning(
+          `The saved model ${recovered.provider}/${recovered.model} is no longer available. Using the current default; choose another with /model.`,
+        );
         recovered.provider = this.config.provider;
         recovered.model = this.config.providers[this.config.provider]!.model;
         resumedModelChanged = true;
       }
-      if ((recovered.projectId ?? workspaceIdFromRoot(recovered.workspaceRoot)) !==
-          (this.state.projectId ?? workspaceIdFromRoot(this.workspace.root))) {
-        throw new Error(
-          `Thread ${threadId} belongs to another project.`,
-        );
+      if (
+        (recovered.projectId ?? workspaceIdFromRoot(recovered.workspaceRoot)) !==
+        (this.state.projectId ?? workspaceIdFromRoot(this.workspace.root))
+      ) {
+        throw new Error(`Thread ${threadId} belongs to another project.`);
       }
       const currentProject = this.currentProjectWorkspace();
       nextWorkspace = await WorkspaceManager.create(currentProject ?? recovered.workspaceRoot);
       recovered.projectId = nextWorkspace.projectId ?? recovered.projectId;
       recovered.workspaceRevision = nextWorkspace.revision;
       recovered.workspaceFolders = nextWorkspace.folders.map((folder, index) => ({
-        id: folder.id ?? `folder_${index + 1}`, key: folder.key, path: folder.path,
+        id: folder.id ?? `folder_${index + 1}`,
+        key: folder.key,
+        path: folder.path,
       }));
-      recovered.primaryWorkspaceFolderId = recovered.workspaceFolders.find(folder => samePath(folder.path, nextWorkspace.root))?.id;
+      recovered.primaryWorkspaceFolderId = recovered.workspaceFolders.find((folder) =>
+        samePath(folder.path, nextWorkspace.root),
+      )?.id;
       recovered.workspaceRoot = nextWorkspace.root;
       const savedChanges = JSON.stringify(recovered.changes);
-      restoredWorkspace = nextWorkspace.restorePersistedState(
-        recovered.filesRead,
-        recovered.changes,
-      );
-      recovered.filesRead = new Map(
-        nextWorkspace.getReadVersions().map((version) => [version.path, version]),
-      );
+      restoredWorkspace = nextWorkspace.restorePersistedState(recovered.filesRead, recovered.changes);
+      recovered.filesRead = new Map(nextWorkspace.getReadVersions().map((version) => [version.path, version]));
       recovered.changes = nextWorkspace.getChangeSet();
       restoredChangesChanged = JSON.stringify(recovered.changes) !== savedChanges;
       if (restoredChangesChanged) {
@@ -4356,10 +4403,7 @@ export class EasyCodeApp {
       await this.pauseSubagentsForResume();
       await this.cancelRunningCommands();
       this.save();
-      releasedOrphanedSubagents = releaseOrphanedSubagentTasks(
-        this.threadStore,
-        recovered,
-      );
+      releasedOrphanedSubagents = releaseOrphanedSubagentTasks(this.threadStore, recovered);
       repairedInterruptedTurn = repairInterruptedTurn(this.threadStore, recovered);
       this.threadStore.releaseThreadLease(previousLease);
     } catch (error) {
@@ -4403,14 +4447,10 @@ export class EasyCodeApp {
       releasedOrphanedSubagents > 0;
     const restoredReasoningBlocks = this.restoreReasoningHistory();
     const recoveredStandaloneSubagents = this.restoreSubagents();
-    this.pendingResumeRecovery = resumeRecoverySummary(
-      recovered,
-      restoredWorkspace,
-      {
-        interruptedTurnRepaired: repairedInterruptedTurn,
-        reconciledSubagentAssignments: releasedOrphanedSubagents,
-      },
-    );
+    this.pendingResumeRecovery = resumeRecoverySummary(recovered, restoredWorkspace, {
+      interruptedTurnRepaired: repairedInterruptedTurn,
+      reconciledSubagentAssignments: releasedOrphanedSubagents,
+    });
     this.pendingResumeRecovery = {
       ...this.pendingResumeRecovery,
       restoredReasoningBlocks,
@@ -4433,24 +4473,6 @@ export class EasyCodeApp {
         `Cannot ${action} while a child assignment is still outstanding. Continue the task so the main agent can wait for or stop and collect it first.`,
       );
     }
-  }
-
-  private async stopAndReleaseSubagents(reason: string): Promise<void> {
-    const threadId = this.state.threadId;
-    await this.subagentCoordinator.shutdown(threadId);
-    await this.drainPendingSubagentArtifacts(threadId);
-    const released = releaseOrphanedSubagentTasks(
-      this.threadStore,
-      this.state,
-      reason,
-    );
-    if (released > 0) {
-      this.dirty = true;
-      this.terminal.info(
-        `Stopped child execution and reconciled ${released} assigned task(s) from durable child state.`,
-      );
-    }
-    this.subagentCoordinator.discardThread(threadId);
   }
 
   private async pauseSubagentsForResume(): Promise<void> {
@@ -4492,14 +4514,18 @@ export class EasyCodeApp {
       workspaceRoot: this.workspace.root,
       projectId: this.state.projectId,
       workspaceRevision: this.state.workspaceRevision,
-      workspaceFolders: this.state.workspaceFolders?.map(folder => ({ ...folder })),
+      workspaceFolders: this.state.workspaceFolders?.map((folder) => ({ ...folder })),
       mode: this.state.mode,
       provider: this.state.provider,
       model: this.state.model,
       thinkingEffort: this.state.thinkingEffort,
       approvalPolicy: this.config.approvalPolicy,
       commandExecutionMode: this.commandExecutionMode,
-      commandEnvironment: this.trustedOuterSandbox ? "container" : this.commandExecutionMode === "unrestricted" ? "host" : "container",
+      commandEnvironment: this.trustedOuterSandbox
+        ? "container"
+        : this.commandExecutionMode === "unrestricted"
+          ? "host"
+          : "container",
       contextTokens: this.contextManager.estimateShortTermTokens(this.state),
     };
   }
@@ -4516,10 +4542,12 @@ export class EasyCodeApp {
   }
 
   private resumableThreads(): ThreadSummary[] {
-    return this.threadStore.list({
-      workspaceId: this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
-      limit: 50,
-    }).filter((session) => !this.threadStore.isBoundSubagentThread(session.threadId));
+    return this.threadStore
+      .list({
+        workspaceId: this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
+        limit: 50,
+      })
+      .filter((session) => !this.threadStore.isBoundSubagentThread(session.threadId));
   }
 
   private async selectResumeThread(): Promise<string | undefined> {
@@ -4533,9 +4561,7 @@ export class EasyCodeApp {
       sessions.map((session) => ({
         id: session.threadId,
         label: session.goal?.trim() || session.threadId,
-        detail:
-          `${session.provider}/${session.model} · ${session.mode} · ` +
-          `${session.updatedAt}`,
+        detail: `${session.provider}/${session.model} · ${session.mode} · ` + `${session.updatedAt}`,
       })),
       this.state.threadId,
     );
@@ -4544,8 +4570,7 @@ export class EasyCodeApp {
   private printStatus(): void {
     const providerConfig = this.effectiveConfig().providers[this.state.provider];
     if (!providerConfig) throw new Error(`Provider ${this.state.provider} is not configured`);
-    const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests,
-      ...activeLimits } = this.config.limits;
+    const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests, ...activeLimits } = this.config.limits;
     void legacySteps;
     void legacyMaxModelRequests;
     this.terminal.write(
@@ -4556,11 +4581,7 @@ export class EasyCodeApp {
         provider: this.state.provider,
         model: this.state.model,
         thinkingEffort: this.state.thinkingEffort,
-        thinkingApplied: thinkingEffortIsApplied(
-          this.state.provider,
-          this.state.model,
-          this.state.thinkingEffort,
-        ),
+        thinkingApplied: thinkingEffortIsApplied(this.state.provider, this.state.model, this.state.thinkingEffort),
         limits: activeLimits,
         orchestrationEnabled: this.orchestrationEnabled(),
         reviewerEnabled: true,
@@ -4583,9 +4604,9 @@ export class EasyCodeApp {
           : null,
         subagents: this.subagentCoordinator.snapshot(this.state.threadId),
         subagentConcurrency: {
-          active: this.subagentCoordinator.snapshot(this.state.threadId).filter(
-            (agent) => agent.status === "running" || agent.status === "stopping",
-          ).length,
+          active: this.subagentCoordinator
+            .snapshot(this.state.threadId)
+            .filter((agent) => agent.status === "running" || agent.status === "stopping").length,
           limit: this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort],
         },
         planReview: this.state.planReview
@@ -4608,19 +4629,21 @@ export class EasyCodeApp {
   }
 
   private printSubagents(): void {
-    const taskGraph = this.state.taskGraph
-      ? taskGraphView(this.state.taskGraph)
-      : undefined;
+    const taskGraph = this.state.taskGraph ? taskGraphView(this.state.taskGraph) : undefined;
     const agents = this.subagentCoordinator.snapshot(this.state.threadId);
     const concurrencyLimit = this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort];
-    this.terminal.subagents(agents.filter(agent => agent.status === "running" || agent.status === "stopping"), taskGraph, concurrencyLimit);
+    this.terminal.subagents(
+      agents.filter((agent) => agent.status === "running" || agent.status === "stopping"),
+      taskGraph,
+      concurrencyLimit,
+    );
   }
 
   private requireProviderApiKey(provider: ProviderName): void {
     if (this.config.providers[provider]?.apiKey) return;
     throw new Error(
       `No ${provider} API key is configured. Run ` +
-      `easy-code config set ${apiKeyConfigKey(provider)} (saved to the system credential store), then restart EASY CODE.`,
+        `easy-code config set ${apiKeyConfigKey(provider)} (saved to the system credential store), then restart EASY CODE.`,
     );
   }
 
@@ -4638,8 +4661,7 @@ export class EasyCodeApp {
         source: toolMetadata(tool).identity.sourceId,
         name: tool.name,
         description: tool.definition.function.description,
-        available:
-          availableForMode,
+        available: availableForMode,
         mutating: tool.mutating,
         effects: toolMetadata(tool).effects,
       };
@@ -4671,19 +4693,23 @@ export class EasyCodeApp {
       const servers = Object.entries(config.servers).sort(([left], [right]) => left.localeCompare(right));
       if (servers.length === 0) {
         if (requested) throw new Error(`MCP server ${requested.serverId} is not configured.`);
-        this.terminal.info(`User MCPs (${this.mcpConfigStore.filePath}): none configured. Ask the agent to add a server.`);
+        this.terminal.info(
+          `User MCPs (${this.mcpConfigStore.filePath}): none configured. Ask the agent to add a server.`,
+        );
         return;
       }
-      const selected = requested?.serverId ?? await this.terminal.selectChoice(
-        `User MCPs (${this.mcpConfigStore.filePath})`,
-        servers.map(([id, server]) => ({
-          id,
-          label: id,
-          detail: this.mcp().status(id).connected
-            ? `✓ connected · ${this.mcp().status(id).toolCount} tool(s) · ${server.transport}`
-            : `${server.enabled ? "enabled · disconnected" : "disabled"} · ${server.transport}`,
-        })),
-      );
+      const selected =
+        requested?.serverId ??
+        (await this.terminal.selectChoice(
+          `User MCPs (${this.mcpConfigStore.filePath})`,
+          servers.map(([id, server]) => ({
+            id,
+            label: id,
+            detail: this.mcp().status(id).connected
+              ? `✓ connected · ${this.mcp().status(id).toolCount} tool(s) · ${server.transport}`
+              : `${server.enabled ? "enabled · disconnected" : "disabled"} · ${server.transport}`,
+          })),
+        ));
       if (!selected) return;
       const server = config.servers[selected];
       if (!server) {
@@ -4693,69 +4719,118 @@ export class EasyCodeApp {
       let authenticated = false;
       let authStoreReady = true;
       if (server.transport !== "stdio" && server.auth === "oauth") {
-        try { authenticated = await new McpOauthCredentials(selected, server.url, this.config.dataDir).hasTokens(); }
-        catch (error) {
+        try {
+          authenticated = await new McpOauthCredentials(selected, server.url, this.config.dataDir).hasTokens();
+        } catch (error) {
           authStoreReady = false;
-          this.terminal.warning(`MCP OAuth credential store is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+          this.terminal.warning(
+            `MCP OAuth credential store is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
       }
       const connected = this.mcp().status(selected).connected;
-      const bearerReady = server.transport === "stdio" || server.auth !== "bearer" ||
-        Boolean(process.env[server.bearerTokenEnvVar!]);
+      const bearerReady =
+        server.transport === "stdio" || server.auth !== "bearer" || Boolean(process.env[server.bearerTokenEnvVar!]);
       if (!bearerReady) {
         this.terminal.warning(`Set ${server.bearerTokenEnvVar} in EASY CODE's environment before connecting.`);
       }
       const availableActions = mcpServerActions(server, {
-        connected, authenticated, bearerReady, authStoreReady,
+        connected,
+        authenticated,
+        bearerReady,
+        authStoreReady,
         benchmark: this.trustedOuterSandbox === "harbor",
       });
-      const action = requested?.action ?? await this.terminal.selectChoice(`MCP server: ${selected}`, availableActions);
+      const action =
+        requested?.action ?? (await this.terminal.selectChoice(`MCP server: ${selected}`, availableActions));
       if (!action || action === "back") {
         if (requested) return;
         continue;
       }
-      if (!availableActions.some(choice => choice.id === action && !choice.disabled))
+      if (!availableActions.some((choice) => choice.id === action && !choice.disabled))
         throw new Error(`MCP action ${action} is not available for ${selected}.`);
       if (!requested) {
         await this.handleSlashCommand(`/mcp ${selected} ${action}`);
         return;
       }
       if (action === "details") {
-        this.terminal.write(`${json(server.transport === "stdio"
-          ? { id: selected, transport: server.transport, command: server.command, args: server.args,
-            cwd: server.cwd, env: Object.fromEntries(Object.entries(server.env).map(([name, value]) =>
-              [name, "value" in value ? "literal" : `env:${value.fromEnv}`])),
-            executableApproved: Boolean(server.executableHash), enabled: server.enabled }
-          : { id: selected, transport: server.transport, url: server.url, auth: server.auth,
-            bearerTokenEnvVar: server.bearerTokenEnvVar,
-            headers: Object.fromEntries(Object.entries(server.headers).map(([name, value]) =>
-              [name, "value" in value ? "literal" : `env:${value.fromEnv}`])),
-            query: Object.fromEntries(Object.entries(server.query).map(([name, value]) =>
-              [name, "value" in value ? "literal" : `env:${value.fromEnv}`])), enabled: server.enabled })}\n`);
+        this.terminal.write(
+          `${json(
+            server.transport === "stdio"
+              ? {
+                  id: selected,
+                  transport: server.transport,
+                  command: server.command,
+                  args: server.args,
+                  cwd: server.cwd,
+                  env: Object.fromEntries(
+                    Object.entries(server.env).map(([name, value]) => [
+                      name,
+                      "value" in value ? "literal" : `env:${value.fromEnv}`,
+                    ]),
+                  ),
+                  executableApproved: Boolean(server.executableHash),
+                  enabled: server.enabled,
+                }
+              : {
+                  id: selected,
+                  transport: server.transport,
+                  url: server.url,
+                  auth: server.auth,
+                  bearerTokenEnvVar: server.bearerTokenEnvVar,
+                  headers: Object.fromEntries(
+                    Object.entries(server.headers).map(([name, value]) => [
+                      name,
+                      "value" in value ? "literal" : `env:${value.fromEnv}`,
+                    ]),
+                  ),
+                  query: Object.fromEntries(
+                    Object.entries(server.query).map(([name, value]) => [
+                      name,
+                      "value" in value ? "literal" : `env:${value.fromEnv}`,
+                    ]),
+                  ),
+                  enabled: server.enabled,
+                },
+          )}\n`,
+        );
         return;
       } else if (action === "authenticate" && server.transport !== "stdio" && server.auth === "oauth") {
         this.terminal.info("Waiting for MCP authorization (up to 6 minutes). Press Ctrl+C to cancel.");
         try {
-          await this.terminal.withCancellableExternalOperation(signal =>
-            authorizeMcpServer(selected, server.url, async url => {
-              this.terminal.write(`MCP sign-in URL: ${url}\n`);
-              try {
-                await openAuthorizationUrl(url);
-                this.terminal.info("Asked the system to open the authorization link with its default handler.");
-              } catch (error) {
-                this.terminal.warning(`Could not open the authorization link automatically: ${error instanceof Error ? error.message : String(error)}. Open the URL above manually.`);
-              }
-            }, new McpOauthCredentials(selected, server.url, this.config.dataDir), signal));
+          await this.terminal.withCancellableExternalOperation((signal) =>
+            authorizeMcpServer(
+              selected,
+              server.url,
+              async (url) => {
+                this.terminal.write(`MCP sign-in URL: ${url}\n`);
+                try {
+                  await openAuthorizationUrl(url);
+                  this.terminal.info("Asked the system to open the authorization link with its default handler.");
+                } catch (error) {
+                  this.terminal.warning(
+                    `Could not open the authorization link automatically: ${error instanceof Error ? error.message : String(error)}. Open the URL above manually.`,
+                  );
+                }
+              },
+              new McpOauthCredentials(selected, server.url, this.config.dataDir),
+              signal,
+            ),
+          );
           this.terminal.success(`MCP server ${selected} authenticated.`);
         } catch (error) {
-          this.terminal.warning(`MCP authorization did not complete: ${error instanceof Error ? error.message : String(error)}`);
+          this.terminal.warning(
+            `MCP authorization did not complete: ${error instanceof Error ? error.message : String(error)}`,
+          );
           return;
         }
         try {
           const toolCount = await this.connectAuthenticatedMcpServer(selected, server);
           this.terminal.success(`MCP server ${selected} connected with ${toolCount} tool(s).`);
         } catch (error) {
-          this.terminal.warning(`MCP server ${selected} was authenticated but could not connect: ${error instanceof Error ? error.message : String(error)}`);
+          this.terminal.warning(
+            `MCP server ${selected} was authenticated but could not connect: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
         return;
       } else if (action === "clear_auth" && server.transport !== "stdio" && server.auth === "oauth") {
@@ -4773,31 +4848,63 @@ export class EasyCodeApp {
         if (server.transport === "stdio") {
           this.createCommandRuntime(this.workspace).assertEnvironmentSafe();
           const resolved = await new CommandResolver(this.workspace).resolve({
-            program: server.command, args: server.args, cwd: server.cwd, intent: "run",
+            program: server.command,
+            args: server.args,
+            cwd: server.cwd,
+            intent: "run",
           });
-          this.terminal.write(`${json({ executable: resolved.executablePath, args: resolved.args,
-            cwd: resolved.cwdAbsolute, executableSha256: resolved.executableHash,
-            environmentReferences: server.env, network: "denied" })}\n`);
-          const approved = await this.terminal.selectChoice(`Run MCP server ${selected} inside the workspace sandbox?`, [
-            { id: "cancel", label: "Cancel" },
-            { id: "run", label: "Approve and connect",
-              detail: `${resolved.executablePath} ${resolved.args.join(" ")} · cwd=${resolved.cwdAbsolute} · sha256=${resolved.executableHash?.slice(0, 12)}`.slice(0, 400) },
-          ], "cancel");
+          this.terminal.write(
+            `${json({
+              executable: resolved.executablePath,
+              args: resolved.args,
+              cwd: resolved.cwdAbsolute,
+              executableSha256: resolved.executableHash,
+              environmentReferences: server.env,
+              network: "denied",
+            })}\n`,
+          );
+          const approved = await this.terminal.selectChoice(
+            `Run MCP server ${selected} inside the workspace sandbox?`,
+            [
+              { id: "cancel", label: "Cancel" },
+              {
+                id: "run",
+                label: "Approve and connect",
+                detail:
+                  `${resolved.executablePath} ${resolved.args.join(" ")} · cwd=${resolved.cwdAbsolute} · sha256=${resolved.executableHash?.slice(0, 12)}`.slice(
+                    0,
+                    400,
+                  ),
+              },
+            ],
+            "cancel",
+          );
           if (approved !== "run") return;
           approvedExecutableHash = resolved.executableHash;
           toolCount = await this.mcp().connect(selected, server, approvedExecutableHash);
         } else {
-          if (server.auth === "oauth" && !await new McpOauthCredentials(selected, server.url, this.config.dataDir).hasTokens()) {
+          if (
+            server.auth === "oauth" &&
+            !(await new McpOauthCredentials(selected, server.url, this.config.dataDir).hasTokens())
+          ) {
             this.terminal.warning("Authenticate this MCP server before connecting.");
             return;
           }
-          const approved = await this.terminal.selectChoice(`Connect to remote MCP server ${selected}?`, [
-            { id: "cancel", label: "Cancel" },
-            { id: "connect", label: "Approve connection", detail: `${server.url} · ${server.auth}` },
-          ], "cancel");
+          const approved = await this.terminal.selectChoice(
+            `Connect to remote MCP server ${selected}?`,
+            [
+              { id: "cancel", label: "Cancel" },
+              { id: "connect", label: "Approve connection", detail: `${server.url} · ${server.auth}` },
+            ],
+            "cancel",
+          );
           if (approved !== "connect") return;
-          toolCount = await this.mcp().connect(selected, server, undefined,
-            server.auth === "oauth" ? storedMcpOauthProvider(selected, server.url, this.config.dataDir) : undefined);
+          toolCount = await this.mcp().connect(
+            selected,
+            server,
+            undefined,
+            server.auth === "oauth" ? storedMcpOauthProvider(selected, server.url, this.config.dataDir) : undefined,
+          );
         }
         await this.mcpConfigStore.setEnabled(selected, true, approvedExecutableHash);
         this.terminal.success(`MCP server ${selected} connected with ${toolCount} tool(s).`);
@@ -4812,10 +4919,14 @@ export class EasyCodeApp {
         this.terminal.success(`Disabled MCP server ${selected}.`);
         return;
       } else if (action === "remove") {
-        const confirmed = await this.terminal.selectChoice(`Remove MCP server ${selected}?`, [
-          { id: "cancel", label: "Cancel" },
-          { id: "remove", label: "Remove configuration" },
-        ], "cancel");
+        const confirmed = await this.terminal.selectChoice(
+          `Remove MCP server ${selected}?`,
+          [
+            { id: "cancel", label: "Cancel" },
+            { id: "remove", label: "Remove configuration" },
+          ],
+          "cancel",
+        );
         if (confirmed === "remove") {
           await this.mcp().disconnect(selected);
           if (server.transport !== "stdio" && server.auth === "oauth") {
@@ -4830,47 +4941,62 @@ export class EasyCodeApp {
   }
 
   private async connectAuthenticatedMcpServer(id: string, server: RemoteMcpServerConfig): Promise<number> {
-    const toolCount = await this.mcp().connect(id, server, undefined,
-      storedMcpOauthProvider(id, server.url, this.config.dataDir));
-    try { await this.mcpConfigStore.setEnabled(id, true); }
-    catch (error) { await this.mcp().disconnect(id); throw error; }
+    const toolCount = await this.mcp().connect(
+      id,
+      server,
+      undefined,
+      storedMcpOauthProvider(id, server.url, this.config.dataDir),
+    );
+    try {
+      await this.mcpConfigStore.setEnabled(id, true);
+    } catch (error) {
+      await this.mcp().disconnect(id);
+      throw error;
+    }
     return toolCount;
   }
 
   private mcp(): McpConnections {
     this.mcpConnections ??= new McpConnections(this.workspace, this.config.dataDir, this.config.limits, {
       onCatalogChanged: () => undefined,
-      onReconnectError: (serverId, error) => this.terminal.warning(
-        `MCP server ${serverId} reconnect failed: ${error instanceof Error ? error.message : String(error)}`),
+      onReconnectError: (serverId, error) =>
+        this.terminal.warning(
+          `MCP server ${serverId} reconnect failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
     });
     return this.mcpConnections;
   }
 
   private async connectEnabledMcpServers(): Promise<void> {
     const config = await this.mcpConfigStore.read();
-    await Promise.all(Object.entries(config.servers).filter(([, server]) => server.enabled).map(async ([id, server]) => {
-      if (this.mcp().status(id).connected) return;
-      try {
-        if (server.transport === "stdio") {
-          if (!server.executableHash) throw new Error("the approved executable identity is missing");
-          await this.mcp().connect(id, server, server.executableHash);
-        } else {
-          const authProvider = server.auth === "oauth"
-            ? storedMcpOauthProvider(id, server.url, this.config.dataDir) : undefined;
-          await this.mcp().connect(id, server, undefined, authProvider);
-        }
-      } catch (error) {
-        this.terminal.warning(`Enabled MCP server ${id} could not connect: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }));
+    await Promise.all(
+      Object.entries(config.servers)
+        .filter(([, server]) => server.enabled)
+        .map(async ([id, server]) => {
+          if (this.mcp().status(id).connected) return;
+          try {
+            if (server.transport === "stdio") {
+              if (!server.executableHash) throw new Error("the approved executable identity is missing");
+              await this.mcp().connect(id, server, server.executableHash);
+            } else {
+              const authProvider =
+                server.auth === "oauth" ? storedMcpOauthProvider(id, server.url, this.config.dataDir) : undefined;
+              await this.mcp().connect(id, server, undefined, authProvider);
+            }
+          } catch (error) {
+            this.terminal.warning(
+              `Enabled MCP server ${id} could not connect: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }),
+    );
   }
 
   private async authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {
     if (request.binding?.sourceId !== "mcp" && request.binding?.sourceId !== "builtin") {
       return this.authorizeToolExecution?.(request) ?? false;
     }
-    const identity = toolApprovalIdentity(request.tool, request.input, request.binding,
-      request.context.workspaceRoot);
+    const identity = toolApprovalIdentity(request.tool, request.input, request.binding, request.context.workspaceRoot);
     const parentThreadId = this.state.threadId;
     const threadId = request.context.threadId;
     const mode = request.context.commandExecutionMode ?? this.commandExecutionMode;
@@ -4889,9 +5015,17 @@ export class EasyCodeApp {
       let reviewerReason: string | undefined;
       if (mode === "auto_approve") {
         const review = await this.reviewCatalogToolApproval(identity, threadId, request.context.turnId, signal);
-        this.threadStore.appendEvent(threadId, { type: "approval.reviewed", turnId: request.context.turnId,
-          payload: { id: approvalId, tool: identity.label, decision: review.decision,
-            reason: review.reason, unavailable: review.unavailable ?? false } });
+        this.threadStore.appendEvent(threadId, {
+          type: "approval.reviewed",
+          turnId: request.context.turnId,
+          payload: {
+            id: approvalId,
+            tool: identity.label,
+            decision: review.decision,
+            reason: review.reason,
+            unavailable: review.unavailable ?? false,
+          },
+        });
         if (review.decision === "reject") {
           reviewerReason = review.reason;
         } else decision = review.decision;
@@ -4899,22 +5033,32 @@ export class EasyCodeApp {
       if (signal?.aborted || parentThreadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
       if (!decision) {
         const preview = redactSensitiveInformation(JSON.stringify(identity.input)).slice(0, 300);
-        const selected = await this.terminal.selectChoice(`Allow tool ${identity.label}?`, [
-          { id: "allow_once", label: "Allow this call once", detail: preview },
-          { id: "allow_same_tool", label: "Allow this tool in this Thread",
-            detail: "Later arguments may differ" },
-          { id: "reject", label: "Reject", detail: reviewerReason?.slice(0, 160) },
-        ], "allow_once", { idleTimeoutMs: DECISION_TIMEOUT_MS, idleChoiceId: "allow_once", signal });
+        const selected = await this.terminal.selectChoice(
+          `Allow tool ${identity.label}?`,
+          [
+            { id: "allow_once", label: "Allow this call once", detail: preview },
+            { id: "allow_same_tool", label: "Allow this tool in this Thread", detail: "Later arguments may differ" },
+            { id: "reject", label: "Reject", detail: reviewerReason?.slice(0, 160) },
+          ],
+          "allow_once",
+          { idleTimeoutMs: DECISION_TIMEOUT_MS, idleChoiceId: "allow_once", signal },
+        );
         if (!selected) {
-          this.threadStore.appendEvent(threadId, { type: "approval.user_required", turnId: request.context.turnId,
-            payload: { id: approvalId, tool: identity.label } });
+          this.threadStore.appendEvent(threadId, {
+            type: "approval.user_required",
+            turnId: request.context.turnId,
+            payload: { id: approvalId, tool: identity.label },
+          });
           return false;
         }
         decision = selected as "allow_once" | "allow_same_tool" | "reject";
       }
       if (signal?.aborted || parentThreadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
-      this.threadStore.appendEvent(threadId, { type: "approval.decided", turnId: request.context.turnId,
-        payload: { id: approvalId, tool: identity.label, decision } });
+      this.threadStore.appendEvent(threadId, {
+        type: "approval.decided",
+        turnId: request.context.turnId,
+        payload: { id: approvalId, tool: identity.label, decision },
+      });
       if (decision === "reject") return false;
       if (decision === "allow_same_tool") {
         this.threadStore.recordToolApprovalGrant(threadId, identity.key, request.context.turnId);
@@ -4928,33 +5072,69 @@ export class EasyCodeApp {
     });
   }
 
-  private async reviewCatalogToolApproval(identity: ToolApprovalIdentity, threadId: string, turnId: string,
-    signal?: AbortSignal): Promise<ToolApprovalReview> {
+  private async reviewCatalogToolApproval(
+    identity: ToolApprovalIdentity,
+    threadId: string,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<ToolApprovalReview> {
     try {
       const parentThreadId = this.state.threadId;
-      const provider = createProvider(this.effectiveConfig(), this.state.provider,
-        this.config.approvalModel ?? this.state.model);
-      const task = this.threadStore.recover(threadId).messages.filter(message => message.role === "user")
-        .slice(-3).map(message => message.content).join("\n");
+      const provider = createProvider(
+        this.effectiveConfig(),
+        this.state.provider,
+        this.config.approvalModel ?? this.state.model,
+      );
+      const task = this.threadStore
+        .recover(threadId)
+        .messages.filter((message) => message.role === "user")
+        .slice(-3)
+        .map((message) => message.content)
+        .join("\n");
       return await reviewToolApproval(identity, task, {
-        provider, budget: this.sharedTaskBudget(parentThreadId),
+        provider,
+        budget: this.sharedTaskBudget(parentThreadId),
         systemPrompt: promptBundleText("agents/tool-approval.md"),
-        limits: this.config.limits, signal,
+        limits: this.config.limits,
+        signal,
         maxInputChars: this.config.limits.approvalInputChars,
         maxOutputTokens: this.config.limits.approvalOutputTokens,
-        onResponse: response => this.threadStore.appendEvent(threadId, { type: "model.output.captured",
-          turnId,
-          payload: { purpose: "tool_approval", finishReason: response.finishReason ?? null,
-            message: JSON.parse(redactSensitiveInformation(JSON.stringify({ content: response.message.content,
-              tool_calls: response.message.tool_calls }))) } }),
+        onResponse: (response) =>
+          this.threadStore.appendEvent(threadId, {
+            type: "model.output.captured",
+            turnId,
+            payload: {
+              purpose: "tool_approval",
+              finishReason: response.finishReason ?? null,
+              message: JSON.parse(
+                redactSensitiveInformation(
+                  JSON.stringify({ content: response.message.content, tool_calls: response.message.tool_calls }),
+                ),
+              ),
+            },
+          }),
         onUsage: (usage, attempt) => {
-          if (attempt) this.threadStore.appendEvent(threadId, { type: "model.api_attempt",
-            turnId, phase: attempt.outcome,
-            payload: { ...attempt, actor: "approval_agent", purpose: "tool_approval" } });
-          this.threadStore.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
-            actor: "approval_agent", purpose: "tool_approval", provider: provider.name, model: provider.model,
-            turnId, retry: attempt?.retry ?? false, attempt: attempt?.attempt, usage,
-          } });
+          if (attempt)
+            this.threadStore.appendEvent(threadId, {
+              type: "model.api_attempt",
+              turnId,
+              phase: attempt.outcome,
+              payload: { ...attempt, actor: "approval_agent", purpose: "tool_approval" },
+            });
+          this.threadStore.appendEvent(threadId, {
+            type: "model.usage",
+            phase: "completed",
+            payload: {
+              actor: "approval_agent",
+              purpose: "tool_approval",
+              provider: provider.name,
+              model: provider.model,
+              turnId,
+              retry: attempt?.retry ?? false,
+              attempt: attempt?.attempt,
+              usage,
+            },
+          });
         },
       });
     } catch (error) {
@@ -4964,9 +5144,14 @@ export class EasyCodeApp {
 
   private observedToolCatalog(workspace: WorkspaceManager, runtime: CommandRuntime): ToolCatalog {
     if (this.trustedOuterSandbox) return new ToolCatalog();
-    const observer = new WorkspaceToolObserver(workspace, this.threadStore.coordination, this.config.limits,
-      message => this.terminal.warning(message), id => runtime.whenSettled(id),
-      [this.config.dataDir, this.config.cacheDir, this.config.configDir]);
+    const observer = new WorkspaceToolObserver(
+      workspace,
+      this.threadStore.coordination,
+      this.config.limits,
+      (message) => this.terminal.warning(message),
+      (id) => runtime.whenSettled(id),
+      [this.config.dataDir, this.config.cacheDir, this.config.configDir],
+    );
     this.toolObservers.add(observer);
     return new ToolCatalog(observer);
   }
@@ -4983,46 +5168,50 @@ export class EasyCodeApp {
       if (!this.trustedOuterSandbox) {
         let broker = this.downloadBrokers.get(threadId);
         if (!broker) {
-          broker = DownloadBroker.create(
-            this.workspace,
-            this.config.configDir,
-            this.config.cacheDir,
-            threadId,
-          );
+          broker = DownloadBroker.create(this.workspace, this.config.configDir, this.config.cacheDir, threadId);
           this.downloadBrokers.set(threadId, broker);
         }
         downloadBroker = await broker;
       }
       const commandRuntime = this.createCommandRuntime(this.workspace);
       catalog = this.observedToolCatalog(this.workspace, commandRuntime);
-      catalog.registerSource(new BuiltinToolSource({
-        profile: this.trustedOuterSandbox ? "benchmark" : undefined,
-        coordination: this.threadStore.coordination,
-        workspace: this.workspace,
-        skillStore: SkillStore.forProject(this.workspace.root, this.config.dataDir,
-          this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
-        memoryManager: this.memoryManager,
-        subagentControl: this.subagentCoordinator,
-        commandRuntime,
-        downloadBroker,
-        limits: this.config.limits,
-        mutationLock: this.workspaceMutationLock,
-        threadTitleStore: this.threadTitles,
-        threadResourceStore: this.threadResourceStore,
-        threadDocumentService: this.threadDocumentService,
-        includePublicWebTools: this.trustedOuterSandbox !== "harbor",
-        ...(this.trustedOuterSandbox ? {} : {
-          mcpConfigStore: this.mcpConfigStore,
-          onMcpConfigChanged: (id: string) => this.mcp().disconnect(id),
+      catalog.registerSource(
+        new BuiltinToolSource({
+          profile: this.trustedOuterSandbox ? "benchmark" : undefined,
+          coordination: this.threadStore.coordination,
+          workspace: this.workspace,
+          skillStore: SkillStore.forProject(
+            this.workspace.root,
+            this.config.dataDir,
+            this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
+          ),
+          memoryManager: this.memoryManager,
+          subagentControl: this.subagentCoordinator,
+          commandRuntime,
+          downloadBroker,
+          limits: this.config.limits,
+          mutationLock: this.workspaceMutationLock,
+          threadTitleStore: this.threadTitles,
+          threadResourceStore: this.threadResourceStore,
+          threadDocumentService: this.threadDocumentService,
+          includePublicWebTools: this.trustedOuterSandbox !== "harbor",
+          ...(this.trustedOuterSandbox
+            ? {}
+            : {
+                mcpConfigStore: this.mcpConfigStore,
+                onMcpConfigChanged: (id: string) => this.mcp().disconnect(id),
+              }),
         }),
-      }));
+      );
       if (!this.trustedOuterSandbox) catalog.registerSource(new McpToolSource(this.mcp()));
-      for (const factory of this.trustedOuterSandbox ? [] : this.toolSourceFactories ?? []) {
-        catalog.registerSource(await factory({
-          workspaceRoot: this.workspace.root,
-          threadId,
-          role: "main_agent",
-        }));
+      for (const factory of this.trustedOuterSandbox ? [] : (this.toolSourceFactories ?? [])) {
+        catalog.registerSource(
+          await factory({
+            workspaceRoot: this.workspace.root,
+            threadId,
+            role: "main_agent",
+          }),
+        );
       }
       this.mainToolCatalogs.set(threadId, catalog);
     }
@@ -5033,30 +5222,32 @@ export class EasyCodeApp {
       try {
         await catalog.close();
       } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          `Failed to load and close tool catalog for thread ${threadId}`,
-        );
+        throw new AggregateError([error, cleanupError], `Failed to load and close tool catalog for thread ${threadId}`);
       }
       throw error;
     }
   }
 
   private async prepareProjectSandbox(workspace: WorkspaceManager): Promise<void> {
-    if (process.platform !== "win32" || this.trustedOuterSandbox ||
-      this.commandExecutionMode === "unrestricted" || !this.sandboxStartupService ||
-      this.sandboxSetupDeferred) return;
+    if (
+      process.platform !== "win32" ||
+      this.trustedOuterSandbox ||
+      this.commandExecutionMode === "unrestricted" ||
+      !this.sandboxStartupService ||
+      this.sandboxSetupDeferred
+    )
+      return;
     const service = new NativeSandboxStartupService(
       this.config.limits,
       this.config.dataDir,
-      message => this.terminal.info(message),
+      (message) => this.terminal.info(message),
       workspace.writableRoots,
     );
     const readiness = await service.prepare();
     if (readiness.status !== "ready") {
       throw new Error(
         `Project command sandbox is not ready: ${readiness.details.join("; ")}. ` +
-        "No command was dispatched. Complete Windows sandbox setup before continuing.",
+          "No command was dispatched. Complete Windows sandbox setup before continuing.",
       );
     }
   }
@@ -5064,7 +5255,14 @@ export class EasyCodeApp {
   private createCommandRuntime(workspace: WorkspaceManager): CommandRuntime {
     const existing = this.commandRuntimes.get(workspace);
     if (existing) return existing;
-    for (const root of [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH, USER_MCP_CONFIG_PATH]) workspace.pathGuard.protect(root);
+    for (const root of [
+      this.config.configDir,
+      this.config.dataDir,
+      this.config.cacheDir,
+      USER_MODEL_REGISTRY_PATH,
+      USER_MCP_CONFIG_PATH,
+    ])
+      workspace.pathGuard.protect(root);
     workspace.pathGuard.protect(fileURLToPath(new URL("./", import.meta.url)));
     workspace.pathGuard.protect(fileURLToPath(new URL("../node_modules", import.meta.url)));
     const runtime = new CommandRuntime(
@@ -5073,21 +5271,41 @@ export class EasyCodeApp {
       this.trustedOuterSandbox === "harbor"
         ? new BenchmarkContainerBackend()
         : new NativeSandboxBackend(workspace, {
-        limits: this.config.limits,
-        dataDir: this.config.dataDir,
-      }),
+            limits: this.config.limits,
+            dataDir: this.config.dataDir,
+          }),
       undefined,
       {
         networkProfile: this.trustedOuterSandbox === "harbor" ? "benchmark" : "development",
         limits: this.config.limits,
-        quarantinePath: path.join(this.config.dataDir, "command-quarantine", `${workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root)}.json`),
-        lifecycleDirectory: path.join(this.config.dataDir, "command-leases", workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root)),
-        boundaryStatePath: path.join(this.config.dataDir, "command-boundary", `${workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root)}.json`),
-        createOutputArchive: (commandId, context) => this.memoryManager.evidenceStore.createCommandArchive(
-          this.state.projectId ?? workspaceIdFromRoot(this.workspace.root), context.threadId, commandId),
+        quarantinePath: path.join(
+          this.config.dataDir,
+          "command-quarantine",
+          `${workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root)}.json`,
+        ),
+        lifecycleDirectory: path.join(
+          this.config.dataDir,
+          "command-leases",
+          workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root),
+        ),
+        boundaryStatePath: path.join(
+          this.config.dataDir,
+          "command-boundary",
+          `${workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root)}.json`,
+        ),
+        createOutputArchive: (commandId, context) =>
+          this.memoryManager.evidenceStore.createCommandArchive(
+            this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
+            context.threadId,
+            commandId,
+          ),
         recordLifecycle: (context, commandId, type, payload) => {
-          this.threadStore.appendEvent(context.threadId, { type, turnId: context.turnId,
-            phase: "completed", payload: { commandId, detail: payload } });
+          this.threadStore.appendEvent(context.threadId, {
+            type,
+            turnId: context.turnId,
+            phase: "completed",
+            payload: { commandId, detail: payload },
+          });
         },
       },
     );
@@ -5100,9 +5318,7 @@ export class EasyCodeApp {
   }
 
   private async cancelRunningCommands(): Promise<void> {
-    await Promise.all(
-      [...this.commandRuntimes.values()].map((runtime) => runtime.cancelAll()),
-    );
+    await Promise.all([...this.commandRuntimes.values()].map((runtime) => runtime.cancelAll()));
   }
 
   private assertNoRunningCommands(action: string): void {
@@ -5122,17 +5338,31 @@ export class EasyCodeApp {
         commandExecutionMode: this.commandExecutionMode,
         independentApprovalAgent: this.commandExecutionMode === "auto_approve",
         fullAccess: this.commandExecutionMode === "unrestricted",
-        threadExecutableGrants: this.state.commandApprovalPrefixes.map((prefix, index) => ({ index: index + 1, prefix: formatCommandApprovalPrefix(prefix) })),
+        threadExecutableGrants: this.state.commandApprovalPrefixes.map((prefix, index) => ({
+          index: index + 1,
+          prefix: formatCommandApprovalPrefix(prefix),
+        })),
         osSandbox: {
           enabled: Boolean(this.trustedOuterSandbox) || this.commandExecutionMode !== "unrestricted",
           failClosed: true,
-          backend: this.trustedOuterSandbox === "harbor" ? "benchmark-container" : this.commandExecutionMode === "unrestricted" ? "host-unrestricted" : "native",
+          backend:
+            this.trustedOuterSandbox === "harbor"
+              ? "benchmark-container"
+              : this.commandExecutionMode === "unrestricted"
+                ? "host-unrestricted"
+                : "native",
           filesystem: this.trustedOuterSandbox === "harbor" ? "container" : "host",
-          network: this.trustedOuterSandbox ? "offline worker: no external networking" : this.commandExecutionMode === "unrestricted" ? "host network, no approval" : "per-command approval and network gate; explicit host escalation uses host networking",
+          network: this.trustedOuterSandbox
+            ? "offline worker: no external networking"
+            : this.commandExecutionMode === "unrestricted"
+              ? "host network, no approval"
+              : "per-command approval and network gate; explicit host escalation uses host networking",
           setup: "easy-code sandbox doctor | easy-code sandbox setup",
         },
-        commandBoundary: "structured argv; Plan discourages direct editing, not command writes; normal CLI commands use the platform-native OS sandbox; explicit host scope requires approval; full access is unsandboxed; Benchmark keeps its offline Harbor container bridge",
-        npmInstall: "normal command approvals apply; requested scripts/flags are preserved; Benchmark dependencies must be preinstalled or available offline",
+        commandBoundary:
+          "structured argv; Plan discourages direct editing, not command writes; normal CLI commands use the platform-native OS sandbox; explicit host scope requires approval; full access is unsandboxed; Benchmark keeps its offline Harbor container bridge",
+        npmInstall:
+          "normal command approvals apply; requested scripts/flags are preserved; Benchmark dependencies must be preinstalled or available offline",
         subagents:
           "main agent only; Code mode; DAG-bound or standalone isolated tasks; parent effort limits none/low=2, medium=4, high=8; no nested children; shared mutations serialized",
         note: "File tools remain workspace-scoped in every mode. Failed isolation never falls back to host execution.",
@@ -5141,15 +5371,21 @@ export class EasyCodeApp {
   }
 
   private updatePermissions(args: string[]): void {
-    if (!args.length) { this.printPermissions(); return; }
-    if (args[0] !== "revoke" || args.length !== 2 || !/^[1-9]\d*$/u.test(args[1]!)) throw new Error("Usage: /permissions [revoke <index>]");
+    if (!args.length) {
+      this.printPermissions();
+      return;
+    }
+    if (args[0] !== "revoke" || args.length !== 2 || !/^[1-9]\d*$/u.test(args[1]!))
+      throw new Error("Usage: /permissions [revoke <index>]");
     this.assertNoRunningCommands("revoke a command prefix");
     const prefix = this.state.commandApprovalPrefixes[Number(args[1]) - 1];
     if (!prefix) throw new Error("Permission index does not exist; use /permissions");
     this.threadStore.recordCommandApprovalPrefixRevocation(this.state.threadId, prefix, this.state.activeTurnId);
-    this.state.commandApprovalPrefixes = this.state.commandApprovalPrefixes.filter(p => p !== prefix);
+    this.state.commandApprovalPrefixes = this.state.commandApprovalPrefixes.filter((p) => p !== prefix);
     this.dirty = true;
-    this.terminal.info(`Revoked: ${formatCommandApprovalPrefix(prefix)}. This removes the saved grant; dangerous mode remains no-prompt.`);
+    this.terminal.info(
+      `Revoked: ${formatCommandApprovalPrefix(prefix)}. This removes the saved grant; dangerous mode remains no-prompt.`,
+    );
   }
 
   private printMemory(args: string[]): void {
@@ -5164,10 +5400,7 @@ export class EasyCodeApp {
         throw new Error("Usage: /memory short [limit] (limit must be an integer from 1 to 500)");
       }
       this.syncWorkspaceState();
-      const compactedMessageCount = Math.min(
-        Math.max(0, this.state.compactedMessageCount),
-        this.state.messages.length,
-      );
+      const compactedMessageCount = Math.min(Math.max(0, this.state.compactedMessageCount), this.state.messages.length);
       const activeMessages = this.state.messages.slice(compactedMessageCount);
       const recentMessagePreviews = activeMessages.slice(-limit).map(messagePreview);
       this.terminal.write(
@@ -5189,8 +5422,7 @@ export class EasyCodeApp {
 
     if (kind === "long" && args.length <= 3) {
       const projectId = this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
-      const scope = args[1] === "global" || args[1] === "project" || args[1] === "all"
-        ? args[1] : "all";
+      const scope = args[1] === "global" || args[1] === "project" || args[1] === "all" ? args[1] : "all";
       const id = scope === "all" && args[1] !== "all" ? args[1] : args[2];
       const memories = this.memoryManager.listScoped(projectId, scope, {
         limit: 500,
@@ -5201,9 +5433,14 @@ export class EasyCodeApp {
         if (!memory) throw new Error(`Long-term memory not found: ${id}`);
         this.terminal.write(`${json(memory)}\n`);
       } else {
-        this.terminal.write(memories.length ? `${json({ global: memories.filter(memory => memory.scope === "global"),
-          project: memories.filter(memory => memory.scope === "project") })}\n`
-          : "No long-term memories in the selected scope.\n");
+        this.terminal.write(
+          memories.length
+            ? `${json({
+                global: memories.filter((memory) => memory.scope === "global"),
+                project: memories.filter((memory) => memory.scope === "project"),
+              })}\n`
+            : "No long-term memories in the selected scope.\n",
+        );
       }
       return;
     }
@@ -5218,11 +5455,10 @@ export class EasyCodeApp {
 
   private prompt(): string {
     const shortTermTokens = this.contextManager.estimateShortTermTokens(this.state);
-    const text = `${this.commandExecutionMode === "unrestricted" ? "! EASY CODE FULL ACCESS " : "EASY CODE "}` +
+    const text =
+      `${this.commandExecutionMode === "unrestricted" ? "! EASY CODE FULL ACCESS " : "EASY CODE "}` +
       `[${this.state.mode} ${this.state.provider}/${this.state.model} ` +
       `thinking:${this.state.thinkingEffort} approval:${this.commandExecutionMode === "auto_approve" ? "agent" : this.commandExecutionMode} env:${this.trustedOuterSandbox ? "container/offline" : this.commandExecutionMode === "unrestricted" ? "host" : "sandbox"} DAG/agents:${this.orchestrationEnabled() ? "on" : "off"} context:${formatTokenCount(shortTermTokens)}] > `;
-    return this.commandExecutionMode === "unrestricted"
-      ? chalk.bold.red(text)
-      : chalk.bold.cyan(text);
+    return this.commandExecutionMode === "unrestricted" ? chalk.bold.red(text) : chalk.bold.cyan(text);
   }
 }

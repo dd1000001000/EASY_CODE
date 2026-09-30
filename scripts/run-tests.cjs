@@ -9,12 +9,12 @@ async function main() {
   const projectRoot = path.resolve(__dirname, "..");
   const testsDir = path.resolve(__dirname, "..", "dist-test", "tests");
   const bundleHome = fs.mkdtempSync(path.join(os.tmpdir(), "easy-code-test-bundle-"));
-  const manager = await import(pathToFileURL(
-    path.join(projectRoot, "dist-test", "src", "prompt-bundle", "manager.js"),
-  ).href);
-  const generated = await import(pathToFileURL(
-    path.join(projectRoot, "dist-test", "src", "prompt-bundle", "generated.js"),
-  ).href);
+  const manager = await import(
+    pathToFileURL(path.join(projectRoot, "dist-test", "src", "prompt-bundle", "manager.js")).href
+  );
+  const generated = await import(
+    pathToFileURL(path.join(projectRoot, "dist-test", "src", "prompt-bundle", "generated.js")).href
+  );
   await manager.ensurePromptBundleForTesting({
     homeDirectory: bundleHome,
     packagedBundleDirectory: path.join(projectRoot, "resources", "prompt-bundle"),
@@ -43,14 +43,18 @@ async function main() {
 let completed = false;
 process.once("beforeExit", () => {
   if (completed) return;
-  process.stderr.write("Test runner exited before completing all tests (an unresolved promise may have no live handles).\n");
+  process.stderr.write(
+    "Test runner exited before completing all tests (an unresolved promise may have no live handles).\n",
+  );
   process.exitCode = 1;
 });
 
-main().then(() => {
-  completed = true;
-}).catch((error) => {
-  completed = true;
-  process.stderr.write(`${error.stack || error.message || String(error)}\n`);
-  process.exitCode = 1;
-});
+main()
+  .then(() => {
+    completed = true;
+  })
+  .catch((error) => {
+    completed = true;
+    process.stderr.write(`${error.stack || error.message || String(error)}\n`);
+    process.exitCode = 1;
+  });

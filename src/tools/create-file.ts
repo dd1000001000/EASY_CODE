@@ -1,19 +1,9 @@
 import { open, readFile, unlink } from "node:fs/promises";
 import { z } from "zod";
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import {
-  assertMatchingWorkspace,
-  assertWritableMode,
-  toolFailure,
-  toolSuccess,
-} from "./base.js";
+import { assertMatchingWorkspace, assertWritableMode, toolFailure, toolSuccess } from "./base.js";
 import {
   acquireHostFileMutationLock,
   assertHostFileMutationStillAllowed,
@@ -104,17 +94,21 @@ export class CreateFileTool implements AgentTool {
         size: Buffer.byteLength(parsed.content, "utf8"),
       });
 
-      return toolSuccess(`Created ${target.displayPath}`, {
-        path: target.displayPath,
-        contentHash: hash,
-        bytesWritten: Buffer.byteLength(parsed.content, "utf8"),
-      }, {
-        type: "file_diff",
-        operation: "create",
-        path: target.displayPath,
-        before: "",
-        after: parsed.content,
-      });
+      return toolSuccess(
+        `Created ${target.displayPath}`,
+        {
+          path: target.displayPath,
+          contentHash: hash,
+          bytesWritten: Buffer.byteLength(parsed.content, "utf8"),
+        },
+        {
+          type: "file_diff",
+          operation: "create",
+          path: target.displayPath,
+          before: "",
+          after: parsed.content,
+        },
+      );
     } catch (error) {
       if (createdTarget) {
         try {

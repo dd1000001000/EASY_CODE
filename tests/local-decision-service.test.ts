@@ -16,11 +16,17 @@ async function waitForExit(address: string): Promise<void> {
   // Probing itself is a connection, so leave the one-second last-client grace
   // between probes instead of continually keeping the service alive.
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 1250));
-    const alive = await new Promise<boolean>(resolve => {
+    await new Promise((resolve) => setTimeout(resolve, 1250));
+    const alive = await new Promise<boolean>((resolve) => {
       const socket = createConnection(address);
-      socket.once("connect", () => { socket.destroy(); resolve(true); });
-      socket.once("error", () => { socket.destroy(); resolve(false); });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        resolve(false);
+      });
     });
     if (!alive) return;
   }
@@ -49,11 +55,14 @@ process.stdin.on('data', chunk => {
   }
 });`;
     await writeFile(workerPath, source);
-    await writeFile(separateClient, `import { pathToFileURL } from 'node:url';
+    await writeFile(
+      separateClient,
+      `import { pathToFileURL } from 'node:url';
 const { LocalLayaClient } = await import(pathToFileURL(process.argv[2]).href);
 const client = new LocalLayaClient(JSON.parse(process.argv[3]), JSON.parse(process.argv[4]));
 try { process.stdout.write((await client.decide('route', 'another process')).decision); }
-finally { client.close(); }`);
+finally { client.close(); }`,
+    );
     const options = { dataDir: root, python: process.execPath, workerPath };
     const limits = { startupMs: 10_000, decisionMs: 5_000, idleMs: 2_500 };
     const first = new LocalLayaClient(limits, options);
@@ -65,16 +74,19 @@ finally { client.close(); }`);
       assert.equal(b.decision, "RELEASE");
       assert.equal((await readFile(marker, "utf8")).trim().split("\n").length, 1);
       const modulePath = fileURLToPath(new URL("../src/local-decision/client.js", import.meta.url));
-      const external = await execFileAsync(process.execPath, [separateClient, modulePath,
-        JSON.stringify(limits), JSON.stringify(options)], { timeout: 10_000 });
+      const external = await execFileAsync(
+        process.execPath,
+        [separateClient, modulePath, JSON.stringify(limits), JSON.stringify(options)],
+        { timeout: 10_000 },
+      );
       assert.equal(external.stdout, "DIRECT");
       assert.equal((await readFile(marker, "utf8")).trim().split("\n").length, 1);
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       assert.equal((await first.decide("route", "after idle")).decision, "DIRECT");
       assert.equal((await readFile(marker, "utf8")).trim().split("\n").length, 2);
       const controller = new AbortController();
       const canceled = first.decide("route", "slow", controller.signal);
-      await new Promise(resolve => setTimeout(resolve, 30));
+      await new Promise((resolve) => setTimeout(resolve, 30));
       controller.abort();
       await assert.rejects(canceled);
       assert.equal((await second.decide("route", "still alive")).decision, "DIRECT");
@@ -83,17 +95,28 @@ finally { client.close(); }`);
       second.close();
       await waitForExit(endpoint.address);
       if (process.platform !== "win32") {
-        const stale = spawnSync(process.execPath, ["-e", `const net=require('node:net'); const fs=require('node:fs');
+        const stale = spawnSync(
+          process.execPath,
+          [
+            "-e",
+            `const net=require('node:net'); const fs=require('node:fs');
           net.createServer().listen(${JSON.stringify(endpoint.address)}, () => {
             fs.writeSync(1, 'bound'); process.kill(process.pid, 'SIGKILL');
-          });`], { encoding: "utf8", timeout: 5000 });
+          });`,
+          ],
+          { encoding: "utf8", timeout: 5000 },
+        );
         assert.equal(stale.stdout, "bound");
         const recovered = new LocalLayaClient(limits, options);
-        try { assert.equal((await recovered.decide("route", "after crash")).decision, "DIRECT"); }
-        finally { recovered.close(); }
+        try {
+          assert.equal((await recovered.decide("route", "after crash")).decision, "DIRECT");
+        } finally {
+          recovered.close();
+        }
       }
     } finally {
-      first.close(); second.close();
+      first.close();
+      second.close();
       await waitForExit(endpoint.address);
       await rm(root, { recursive: true, force: true });
     }

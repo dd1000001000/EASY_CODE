@@ -3,20 +3,24 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 import type { WebEntry, WebEntryKind } from "../web-contracts.js";
 import { safeToolDisplayDetails } from "../runtime/tool-display-details.js";
-import { compactionLabel, type CompactionProgress } from "../ui/compaction.js";
+import { compactionLabel, compactionNoticeKind, type CompactionProgress } from "../ui/compaction.js";
+import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown> : undefined;
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 function safe(text: string): string {
   return redactSensitiveInformation(sanitizeTerminalText(text, { allowSgr: false }));
 }
 function imageLabels(value: unknown): WebEntry["images"] {
   if (!Array.isArray(value)) return undefined;
-  return value.flatMap(item => {
+  return value.flatMap((item) => {
     const entry = object(item);
-    return entry && typeof entry.id === "string" && typeof entry.label === "string" &&
+    return entry &&
+      typeof entry.id === "string" &&
+      typeof entry.label === "string" &&
       typeof entry.mediaType === "string"
       ? [{ id: entry.id, label: entry.label, mediaType: entry.mediaType as ImageAttachment["mediaType"] }]
       : [];
@@ -24,16 +28,20 @@ function imageLabels(value: unknown): WebEntry["images"] {
 }
 function toolDetails(value: unknown): WebEntry["toolDetails"] {
   if (!Array.isArray(value)) return undefined;
-  const details = safeToolDisplayDetails(value.flatMap(item => {
-    const entry = object(item);
-    return typeof entry?.label === "string" && typeof entry.value === "string"
-      ? [{ label: entry.label, value: entry.value }] : [];
-  }));
+  const details = safeToolDisplayDetails(
+    value.flatMap((item) => {
+      const entry = object(item);
+      return typeof entry?.label === "string" && typeof entry.value === "string"
+        ? [{ label: entry.label, value: entry.value }]
+        : [];
+    }),
+  );
   return details.length ? details : undefined;
 }
 
 /** Project only user-facing conversation facts; never expose raw Journal payloads or credentials. */
-export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
+export function projectWebHistory(events: readonly EventRecord[], language: Language = DEFAULT_LANGUAGE): WebEntry[] {
+  const chinese = language === "zh_cn";
   const entries: WebEntry[] = [];
   const pendingToolCalls = new Map<string, WebEntry>();
   const peerCalls = new Map<string, { target: string; text: string }>();
@@ -50,9 +58,17 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
       turnCompletedAt.set(event.turnId, timestamp);
     }
   }
-  const append = (event: EventRecord, kind: WebEntryKind, text: string, suffix = "", images?: WebEntry["images"],
-    details?: WebEntry["toolDetails"], toolName?: string, toolStatus?: WebEntry["toolStatus"],
-    answerState?: WebEntry["answerState"]): WebEntry | undefined => {
+  const append = (
+    event: EventRecord,
+    kind: WebEntryKind,
+    text: string,
+    suffix = "",
+    images?: WebEntry["images"],
+    details?: WebEntry["toolDetails"],
+    toolName?: string,
+    toolStatus?: WebEntry["toolStatus"],
+    answerState?: WebEntry["answerState"],
+  ): WebEntry | undefined => {
     if (!text.trim() && !images?.length) return undefined;
     const entry: WebEntry = {
       id: `${event.eventId}${suffix}`,
@@ -71,21 +87,32 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
   };
   for (const event of events) {
     const payload = object(event.payload);
-    if (event.type === "context.manual.started" || event.type === "context.manual.finished") {
+    if (
+      ["context.manual.started", "context.manual.finished", "context.auto.started", "context.auto.finished"].includes(
+        event.type,
+      )
+    ) {
       if (typeof payload?.operationId !== "string" || typeof payload.beforeChars !== "number") continue;
       const progress = { ...payload } as unknown as CompactionProgress;
-      if (event.type === "context.manual.started") {
+      progress.startedAt ??=
+        compactions.get(progress.operationId)?.compaction?.startedAt ?? (Date.parse(event.timestamp) || 0);
+      if (event.type === "context.auto.started" || event.type === "context.auto.finished") progress.mode = "automatic";
+      if (event.type.endsWith(".finished")) progress.completedAt ??= Date.parse(event.timestamp) || 0;
+      if (event.type.endsWith(".started")) {
         progress.phase = "cancelled";
         progress.reason = "Compaction was interrupted before completion.";
       }
       const existing = compactions.get(progress.operationId);
       if (existing) {
         existing.compaction = progress;
-        existing.text = compactionLabel(progress);
-        existing.kind = progress.phase === "completed" ? "success" : "warning";
+        existing.text = compactionLabel(progress, chinese);
+        existing.kind = compactionNoticeKind(progress);
       } else {
-        const entry = append(event, progress.phase === "completed" ? "success" : "warning", compactionLabel(progress));
-        if (entry) { entry.compaction = progress; compactions.set(progress.operationId, entry); }
+        const entry = append(event, compactionNoticeKind(progress), compactionLabel(progress, chinese));
+        if (entry) {
+          entry.compaction = progress;
+          compactions.set(progress.operationId, entry);
+        }
       }
       continue;
     }
@@ -106,9 +133,20 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
     } else if (event.type === "message.assistant" || event.type === "message.assistant.synthetic") {
       const message = object(event.payload);
       if (message?.role !== "assistant") continue;
-      if (typeof message.reasoning_content === "string") append(event, "thinking", message.reasoning_content, ":thinking");
-      if (typeof message.content === "string") append(event, "assistant", message.content, ":answer", undefined,
-        undefined, undefined, undefined, message.phase === "final_answer" ? "finalizing" : "streaming");
+      if (typeof message.reasoning_content === "string")
+        append(event, "thinking", message.reasoning_content, ":thinking");
+      if (typeof message.content === "string")
+        append(
+          event,
+          "assistant",
+          message.content,
+          ":answer",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          message.phase === "final_answer" ? "finalizing" : "streaming",
+        );
     } else if (event.type === "tool.call") {
       const call = object(event.payload);
       const fn = object(call?.function);
@@ -117,7 +155,9 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
           const input = object(JSON.parse(fn.arguments));
           if (typeof input?.targetThreadId === "string" && typeof input.message === "string")
             peerCalls.set(call.id, { target: input.targetThreadId, text: input.message });
-        } catch { /* Invalid calls have no outgoing message. */ }
+        } catch {
+          /* Invalid calls have no outgoing message. */
+        }
       }
       if (typeof fn?.name === "string") {
         const entry = append(event, "tool", `Calling ${fn.name}`, ":call", undefined, undefined, fn.name, "running");
@@ -144,14 +184,22 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
         pending.toolDetails = toolDetails(payload?.toolDetails);
         pendingToolCalls.delete(callId!);
       } else {
-        append(event, "tool", text, ":result", undefined, toolDetails(payload?.toolDetails),
-          name, completed ? "completed" : "failed");
+        append(
+          event,
+          "tool",
+          text,
+          ":result",
+          undefined,
+          toolDetails(payload?.toolDetails),
+          name,
+          completed ? "completed" : "failed",
+        );
       }
     }
   }
   for (const [turnId, completedAt] of turnCompletedAt) {
-    const turnEntries = entries.filter(entry => entry.turnId === turnId);
-    const finalAnswer = [...turnEntries].reverse().find(entry => entry.kind === "assistant" && !entry.peerThreadId);
+    const turnEntries = entries.filter((entry) => entry.turnId === turnId);
+    const finalAnswer = [...turnEntries].reverse().find((entry) => entry.kind === "assistant" && !entry.peerThreadId);
     const terminal = finalAnswer ?? turnEntries.at(-1);
     if (!terminal) continue;
     for (const entry of turnEntries) {

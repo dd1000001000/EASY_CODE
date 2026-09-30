@@ -14,10 +14,11 @@ export class RequestPrefixTracker {
     });
     const previous = this.previous?.key === key ? this.previous.blocks : undefined;
     let unchangedPrefixChars = 0;
-    if (previous) for (let index = 0; index < Math.min(previous.length, blocks.length); index += 1) {
-      if (previous[index]!.hash !== blocks[index]!.hash) break;
-      unchangedPrefixChars += blocks[index]!.chars;
-    }
+    if (previous)
+      for (let index = 0; index < Math.min(previous.length, blocks.length); index += 1) {
+        if (previous[index]!.hash !== blocks[index]!.hash) break;
+        unchangedPrefixChars += blocks[index]!.chars;
+      }
     this.previous = { key, blocks };
     return {
       hasPrefixBaseline: previous !== undefined,

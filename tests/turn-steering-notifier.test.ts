@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 
-import {
-  TurnSteeringAttemptNotifier,
-} from "../src/runtime/turn-steering-notifier.js";
+import { TurnSteeringAttemptNotifier } from "../src/runtime/turn-steering-notifier.js";
 import { describe, it } from "./harness.js";
 
 describe("turn steering attempt notifier", () => {

@@ -14,14 +14,18 @@ describe("shared Laya endpoint identity", () => {
       const options = { dataDir: root, python: path.join(root, "python"), workerPath };
       const first = sharedLayaEndpoint(options);
       assert.equal(sharedLayaEndpoint(options).address, first.address);
-      assert.notEqual(sharedLayaEndpoint({ ...options, python: path.join(root, "other-python") }).address,
-        first.address);
+      assert.notEqual(
+        sharedLayaEndpoint({ ...options, python: path.join(root, "other-python") }).address,
+        first.address,
+      );
       await writeFile(workerPath, "version two");
       assert.notEqual(sharedLayaEndpoint(options).address, first.address);
       const updated = sharedLayaEndpoint(options).address;
       await writeFile(path.join(root, "runtime.py"), "new ONNX runtime");
       assert.notEqual(sharedLayaEndpoint(options).address, updated);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
   it("does not carry provider credentials into the long-lived service", () => {
     const name = "EASY_CODE_LOCAL_DECISION_TEST_SECRET";

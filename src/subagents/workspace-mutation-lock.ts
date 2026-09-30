@@ -1,8 +1,4 @@
-import type {
-  AgentTool,
-  ToolExecutionResult,
-  ToolName,
-} from "../core/types.js";
+import type { AgentTool, ToolExecutionResult, ToolName } from "../core/types.js";
 
 const SERIALIZED_WORKSPACE_TOOL_NAMES: ReadonlySet<ToolName> = new Set([
   "create_file",
@@ -97,8 +93,11 @@ export class WorkspaceMutationLock {
   /** Convert an acquired service start into an owner reservation. The caller
    * must still release its short-operation lock after registering the lease. */
   retainService(owner: string): () => void {
-    if (!this.locked || this.currentOwner !== owner ||
-      (this.serviceOwner !== undefined && this.serviceOwner !== owner)) {
+    if (
+      !this.locked ||
+      this.currentOwner !== owner ||
+      (this.serviceOwner !== undefined && this.serviceOwner !== owner)
+    ) {
       throw new Error("Service lease requires the owning agent's acquired workspace lock");
     }
     this.serviceOwner = owner;
@@ -119,9 +118,10 @@ export class WorkspaceMutationLock {
     if (this.locked) return;
 
     while (this.waiters.length > 0) {
-      const index = this.serviceOwner === undefined
-        ? 0
-        : this.waiters.findIndex((candidate) => candidate.owner === this.serviceOwner);
+      const index =
+        this.serviceOwner === undefined
+          ? 0
+          : this.waiters.findIndex((candidate) => candidate.owner === this.serviceOwner);
       if (index < 0) return;
       const [waiter] = this.waiters.splice(index, 1);
       if (!waiter || waiter.canceled) continue;
@@ -161,11 +161,7 @@ export class WorkspaceMutationLock {
 
 function mutationOwner(context: Parameters<AgentTool["execute"]>[1]): string | undefined {
   if (context.agentRole === "subagent" && !context.agentId) return undefined;
-  return JSON.stringify([
-    context.threadId,
-    context.agentRole ?? "main_agent",
-    context.agentId ?? "",
-  ]);
+  return JSON.stringify([context.threadId, context.agentRole ?? "main_agent", context.agentId ?? ""]);
 }
 
 /**
@@ -200,11 +196,7 @@ export function wrapAgentToolsWithWorkspaceMutationLock(
         if (tool.name === "start_command") {
           return runCommandStartWithLease(tool, input, context, lock);
         }
-        return lock.runExclusive(
-          () => tool.execute(input, context),
-          context.signal,
-          mutationOwner(context),
-        );
+        return lock.runExclusive(() => tool.execute(input, context), context.signal, mutationOwner(context));
       },
     };
   });
@@ -215,8 +207,10 @@ interface AsyncCommandLifecycleTool extends AgentTool {
 }
 
 function hasAsyncCommandLifecycle(tool: AgentTool): tool is AsyncCommandLifecycleTool {
-  return "whenCommandSettled" in tool &&
-    typeof (tool as Partial<AsyncCommandLifecycleTool>).whenCommandSettled === "function";
+  return (
+    "whenCommandSettled" in tool &&
+    typeof (tool as Partial<AsyncCommandLifecycleTool>).whenCommandSettled === "function"
+  );
 }
 
 async function runCommandStartWithLease(
@@ -226,8 +220,8 @@ async function runCommandStartWithLease(
   lock: WorkspaceMutationLock,
 ): Promise<ToolExecutionResult> {
   const owner = mutationOwner(context);
-  const serviceRequested = input !== null && typeof input === "object" &&
-    (input as { backgroundKind?: unknown }).backgroundKind === "service";
+  const serviceRequested =
+    input !== null && typeof input === "object" && (input as { backgroundKind?: unknown }).backgroundKind === "service";
   if (serviceRequested && !owner) {
     throw new Error("Service mode requires a Runtime-issued agent identity");
   }
@@ -236,14 +230,11 @@ async function runCommandStartWithLease(
   try {
     if (context.signal?.aborted) throw new WorkspaceMutationLockAbortError();
     const result = await tool.execute(input, context);
-    const data = result.data && typeof result.data === "object"
-      ? result.data as { commandId?: unknown; status?: unknown }
-      : undefined;
-    if (
-      result.ok &&
-      data?.status === "running" &&
-      typeof data.commandId === "string"
-    ) {
+    const data =
+      result.data && typeof result.data === "object"
+        ? (result.data as { commandId?: unknown; status?: unknown })
+        : undefined;
+    if (result.ok && data?.status === "running" && typeof data.commandId === "string") {
       if (!hasAsyncCommandLifecycle(tool)) {
         throw new Error("start_command returned no Runtime completion lifecycle");
       }

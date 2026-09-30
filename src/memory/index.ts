@@ -26,7 +26,4 @@ export {
   type MemoryVectorSearchOptions,
   type PreparedMemoryEmbedding,
 } from "./vector-index.js";
-export {
-  containsSensitiveInformation,
-  redactSensitiveInformation,
-} from "./sensitive.js";
+export { containsSensitiveInformation, redactSensitiveInformation } from "./sensitive.js";

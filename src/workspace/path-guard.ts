@@ -1,11 +1,5 @@
 import { constants } from "node:fs";
-import {
-  access,
-  lstat,
-  mkdir,
-  realpath,
-  stat,
-} from "node:fs/promises";
+import { access, lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
@@ -44,11 +38,7 @@ function comparable(value: string): string {
 
 function isInsideOrEqual(parent: string, candidate: string): boolean {
   const relative = path.relative(comparable(parent), comparable(candidate));
-  return relative === "" || (
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  );
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 /**
@@ -63,7 +53,9 @@ export class WorkspacePathGuard {
   private readonly protectedRoots: string[] = [];
 
   /** Runtime-owned mount exclusions; callers cannot mutate the guard. */
-  protectedPaths(): readonly string[] { return [...this.protectedRoots]; }
+  protectedPaths(): readonly string[] {
+    return [...this.protectedRoots];
+  }
 
   constructor(workspaceRoot: string) {
     if (!workspaceRoot || workspaceRoot.includes("\0")) {
@@ -71,11 +63,13 @@ export class WorkspacePathGuard {
     }
 
     const absolute = path.resolve(workspaceRoot);
-    if (/^(?:\\\\|\/\/)/u.test(workspaceRoot)) throw new Error("Network/device workspace roots are not supported by offline tools");
+    if (/^(?:\\\\|\/\/)/u.test(workspaceRoot))
+      throw new Error("Network/device workspace roots are not supported by offline tools");
     let ancestor = path.parse(absolute).root;
     for (const segment of absolute.slice(ancestor.length).split(path.sep).filter(Boolean)) {
       ancestor = path.join(ancestor, segment);
-      if (lstatSync(ancestor).isSymbolicLink()) throw new Error("Workspace roots must not traverse symbolic links or junctions");
+      if (lstatSync(ancestor).isSymbolicLink())
+        throw new Error("Workspace roots must not traverse symbolic links or junctions");
     }
     const info = realpathSync.native(absolute);
     if (!statSync(info).isDirectory()) {
@@ -134,10 +128,7 @@ export class WorkspacePathGuard {
     return absolute;
   }
 
-  async resolveExisting(
-    input: string,
-    options: ResolveExistingOptions = {},
-  ): Promise<string> {
+  async resolveExisting(input: string, options: ResolveExistingOptions = {}): Promise<string> {
     const lexical = this.resolveLexical(input);
     await this.assertNoRedirectedAncestors(lexical);
     const linkInfo = await lstat(lexical);
@@ -195,7 +186,7 @@ export class WorkspacePathGuard {
     const root = comparable(this.root);
     const value = comparable(path.resolve(candidate));
     const relative = path.relative(root, value);
-    if (this.protectedRoots.some(protectedRoot => isInsideOrEqual(protectedRoot, value))) {
+    if (this.protectedRoots.some((protectedRoot) => isInsideOrEqual(protectedRoot, value))) {
       throw new Error("Runtime resources cannot be accessed through workspace tools");
     }
     if (relative === "") return;
@@ -203,9 +194,7 @@ export class WorkspacePathGuard {
       throw new Error("Resolved path escapes the workspace boundary");
     }
     if (isInsideOrEqual(getEasyCodeHome(), value)) {
-      throw new Error(
-        "Official EASY CODE Runtime resources cannot be accessed through agent workspace tools",
-      );
+      throw new Error("Official EASY CODE Runtime resources cannot be accessed through agent workspace tools");
     }
   }
 
@@ -224,7 +213,9 @@ export class WorkspacePathGuard {
       current = path.join(current, segment);
       try {
         if ((await lstat(current)).isSymbolicLink()) {
-          throw new Error("Symbolic link/junction access is rejected before traversal: target may escape the workspace boundary or initiate network access");
+          throw new Error(
+            "Symbolic link/junction access is rejected before traversal: target may escape the workspace boundary or initiate network access",
+          );
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
@@ -261,7 +252,10 @@ export class WorkspacePathGuard {
   }
 }
 
-export interface NamedWorkspaceRoot { readonly key: string; readonly path: string }
+export interface NamedWorkspaceRoot {
+  readonly key: string;
+  readonly path: string;
+}
 
 /**
  * Routes a namespaced logical path to one of several independent host roots.
@@ -277,11 +271,13 @@ export class MultiRootPathGuard implements WorkspaceBoundary {
 
   constructor(roots: readonly NamedWorkspaceRoot[], primaryKey: string) {
     if (!roots.length) throw new Error("At least one workspace folder is required");
-    const entries = roots.map(entry => {
-      if (!/^[a-z0-9](?:[a-z0-9-]{0,62})$/u.test(entry.key)) throw new Error(`Invalid workspace folder key: ${entry.key}`);
+    const entries = roots.map((entry) => {
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,62})$/u.test(entry.key))
+        throw new Error(`Invalid workspace folder key: ${entry.key}`);
       return [entry.key, new WorkspacePathGuard(entry.path)] as const;
     });
-    if (new Set(entries.map(([key]) => key)).size !== entries.length) throw new Error("Workspace folder keys must be unique");
+    if (new Set(entries.map(([key]) => key)).size !== entries.length)
+      throw new Error("Workspace folder keys must be unique");
     const primary = entries.find(([key]) => key === primaryKey);
     if (!primary) throw new Error("The primary workspace folder is missing");
     this.primaryKey = primaryKey;
@@ -291,25 +287,29 @@ export class MultiRootPathGuard implements WorkspaceBoundary {
   }
 
   protectedPaths(): readonly string[] {
-    return [...this.guards.values()].flatMap(guard => guard.protectedPaths());
+    return [...this.guards.values()].flatMap((guard) => guard.protectedPaths());
   }
 
   private route(input: string, requireChild = false): { key: string; guard: WorkspacePathGuard; inner: string } {
-    if (typeof input !== "string" || !input.length || input.includes("\0") || input.includes("\r") || input.includes("\n"))
+    if (
+      typeof input !== "string" ||
+      !input.length ||
+      input.includes("\0") ||
+      input.includes("\r") ||
+      input.includes("\n")
+    )
       throw new Error("Path must be a non-empty workspace-relative string");
     if (path.isAbsolute(input) || looksLikeAbsoluteOnAnotherPlatform(input))
       throw new Error("Absolute paths are not allowed; use a workspace-relative path");
     if (this.guards.size === 1) {
       const [key, guard] = [...this.guards][0]!;
-      const segments = input.split(/[\\/]+/u).filter(segment => segment && segment !== ".");
+      const segments = input.split(/[\\/]+/u).filter((segment) => segment && segment !== ".");
       // Accept the previously persisted namespaced form when a multi-root
       // project is reduced to one folder, then normalize back to legacy paths.
-      const innerInput = segments[0] === key && segments.length > 1
-        ? segments.slice(1).join("/")
-        : input;
+      const innerInput = segments[0] === key && segments.length > 1 ? segments.slice(1).join("/") : input;
       return { key, guard, inner: guard.normalizeRelative(innerInput) };
     }
-    const segments = input.split(/[\\/]+/u).filter(segment => segment && segment !== ".");
+    const segments = input.split(/[\\/]+/u).filter((segment) => segment && segment !== ".");
     let key = segments[0];
     let guard = key ? this.guards.get(key) : undefined;
     // Paths recorded while a project had one folder remain valid after a
@@ -373,21 +373,35 @@ export class MultiRootPathGuard implements WorkspaceBoundary {
       const target = await this.resolveExisting(input);
       await access(target, constants.R_OK);
       return true;
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   }
 
   assertInside(candidate: string): void {
     for (const guard of this.guards.values()) {
-      try { guard.assertInside(candidate); return; } catch { /* continue */ }
+      try {
+        guard.assertInside(candidate);
+        return;
+      } catch {
+        /* continue */
+      }
     }
     throw new Error("Resolved path escapes every project folder boundary");
   }
 
-  protect(root: string): void { for (const guard of this.guards.values()) guard.protect(root); }
+  protect(root: string): void {
+    for (const guard of this.guards.values()) guard.protect(root);
+  }
 
   rootForPath(candidate: string): string {
     for (const guard of this.guards.values()) {
-      try { guard.assertInside(candidate); return guard.root; } catch { /* continue */ }
+      try {
+        guard.assertInside(candidate);
+        return guard.root;
+      } catch {
+        /* continue */
+      }
     }
     throw new Error("Resolved path escapes every project folder boundary");
   }

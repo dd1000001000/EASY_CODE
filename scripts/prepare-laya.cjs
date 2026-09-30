@@ -10,8 +10,11 @@ const VERIFY_TIMEOUT_MS = 2 * 60 * 1000;
 
 function run(program, args, options = {}) {
   return spawnSync(program, args, {
-    encoding: "utf8", windowsHide: true, input: options.input,
-    timeout: options.timeout || VERIFY_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024,
+    encoding: "utf8",
+    windowsHide: true,
+    input: options.input,
+    timeout: options.timeout || VERIFY_TIMEOUT_MS,
+    maxBuffer: 4 * 1024 * 1024,
     stdio: options.stdio || "pipe",
     env: { ...process.env, PYTHONIOENCODING: "utf-8", USE_TF: "0" },
   });
@@ -30,12 +33,12 @@ function resultDetail(result, fallback) {
 function prepareLaya(options = {}) {
   const dataDir = path.resolve(options.dataDir || process.env.EASY_CODE_DATA_DIR || defaultDataDir());
   const runtime = path.join(dataDir, "runtimes", "laya-decision-onnx");
-  const python = process.platform === "win32"
-    ? path.join(runtime, "Scripts", "python.exe")
-    : path.join(runtime, "bin", "python");
+  const python =
+    process.platform === "win32" ? path.join(runtime, "Scripts", "python.exe") : path.join(runtime, "bin", "python");
   const worker = options.workerPath || path.join(__dirname, "..", "resources", "laya-decision", "worker.py");
-  const modelFile = options.modelPath || path.join(__dirname, "..", "model-weights", "laya-multilingual",
-    "joint-v2", "model", "model.onnx");
+  const modelFile =
+    options.modelPath ||
+    path.join(__dirname, "..", "model-weights", "laya-multilingual", "joint-v2", "model", "model.onnx");
   const invoke = options.run || run;
   const exists = options.existsSync || fs.existsSync;
   const makeDirectory = options.mkdirSync || fs.mkdirSync;
@@ -44,25 +47,37 @@ function prepareLaya(options = {}) {
   const verify = () => {
     if (!exists(python) || !exists(worker)) return false;
     const checked = invoke(python, [worker], {
-      input: JSON.stringify({ id: "install-smoke", task: "route", input: "Implement a small change and run its test." }) + "\n",
+      input:
+        JSON.stringify({ id: "install-smoke", task: "route", input: "Implement a small change and run its test." }) +
+        "\n",
       timeout: VERIFY_TIMEOUT_MS,
     });
     if (checked.status !== 0) return false;
     try {
-      const messages = checked.stdout.trim().split(/\r?\n/u).map(line => JSON.parse(line));
-      return messages[0]?.type === "ready" && messages[0]?.backend === "onnx-fp32" &&
+      const messages = checked.stdout
+        .trim()
+        .split(/\r?\n/u)
+        .map((line) => JSON.parse(line));
+      return (
+        messages[0]?.type === "ready" &&
+        messages[0]?.backend === "onnx-fp32" &&
         messages[1]?.type === "result" &&
-        ["DIRECT", "PLAN", "CODE"].includes(messages[1]?.decision);
-    } catch { return false; }
+        ["DIRECT", "PLAN", "CODE"].includes(messages[1]?.decision)
+      );
+    } catch {
+      return false;
+    }
   };
 
   if (verify()) return { runtime, python, reused: true };
   makeDirectory(path.dirname(runtime), { recursive: true, mode: 0o700 });
   if (!exists(python)) {
     const bootstrap = options.python || findPython();
-    const created = invoke(bootstrap.program, [...bootstrap.prefix, "-m", "venv", runtime],
-      { timeout: VERIFY_TIMEOUT_MS });
-    if (created.status !== 0) throw new Error(`Laya virtualenv creation failed: ${resultDetail(created, "Python venv unavailable")}`);
+    const created = invoke(bootstrap.program, [...bootstrap.prefix, "-m", "venv", runtime], {
+      timeout: VERIFY_TIMEOUT_MS,
+    });
+    if (created.status !== 0)
+      throw new Error(`Laya virtualenv creation failed: ${resultDetail(created, "Python venv unavailable")}`);
   }
   const version = invoke(python, ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"]);
   const match = version.status === 0 ? /^(\d+)\.(\d+)$/u.exec(version.stdout.trim()) : null;
@@ -73,15 +88,27 @@ function prepareLaya(options = {}) {
     throw new Error(`Laya requires a tested Python 3.10–3.14 runtime; found ${major}.${minor}`);
   // 1.24 dropped Python 3.10 and Intel macOS wheels. Both releases support
   // the published opset-20 graph; no training framework is installed here.
-  const ortVersion = minor === 10 || (process.platform === "darwin" && process.arch === "x64")
-    ? "1.23.2" : "1.24.3";
+  const ortVersion = minor === 10 || (process.platform === "darwin" && process.arch === "x64") ? "1.23.2" : "1.24.3";
   if (minor === 14 && process.platform === "darwin" && process.arch === "x64")
     throw new Error("Intel macOS requires Python 3.10–3.13 for the ONNX runtime wheels");
-  const installed = invoke(python, ["-m", "pip", "install", "--disable-pip-version-check",
-    "--no-input", "--only-binary=:all:", `onnxruntime==${ortVersion}`, "tokenizers==0.23.2"],
-  { timeout: INSTALL_TIMEOUT_MS, stdio: "inherit" });
-  if (installed.status !== 0) throw new Error(`Laya dependency installation failed: ${resultDetail(installed, "pip failed")}`);
-  if (!verify()) throw new Error("Laya installation verification failed: the bundled model could not complete a local choice.");
+  const installed = invoke(
+    python,
+    [
+      "-m",
+      "pip",
+      "install",
+      "--disable-pip-version-check",
+      "--no-input",
+      "--only-binary=:all:",
+      `onnxruntime==${ortVersion}`,
+      "tokenizers==0.23.2",
+    ],
+    { timeout: INSTALL_TIMEOUT_MS, stdio: "inherit" },
+  );
+  if (installed.status !== 0)
+    throw new Error(`Laya dependency installation failed: ${resultDetail(installed, "pip failed")}`);
+  if (!verify())
+    throw new Error("Laya installation verification failed: the bundled model could not complete a local choice.");
   return { runtime, python, reused: false };
 }
 
@@ -92,7 +119,9 @@ if (require.main === module) {
     const result = prepareLaya();
     process.stdout.write(`EASY CODE: local Laya decision runtime ready at ${result.runtime}.\n`);
   } catch (error) {
-    process.stderr.write(`EASY CODE: local Laya setup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(
+      `EASY CODE: local Laya setup failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
     process.exitCode = 1;
   }
 }

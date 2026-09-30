@@ -7,7 +7,12 @@ export interface ClipboardExecutionContext {
 /** Shared security boundary for the three clipboard implementations. */
 export interface ClipboardPlatformHost {
   readonly sourceEnv: NodeJS.ProcessEnv;
-  run(program: string, args: readonly string[], maxOutputBytes: number, execution: ClipboardExecutionContext): Promise<Buffer>;
+  run(
+    program: string,
+    args: readonly string[],
+    maxOutputBytes: number,
+    execution: ClipboardExecutionContext,
+  ): Promise<Buffer>;
   resolveFixedProgram(program: string, platform: "win32" | "darwin" | "linux"): Promise<string>;
   resolveUnixHelper(name: "wl-paste" | "xclip"): Promise<string>;
   windowsRoot(): string;

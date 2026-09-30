@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
-import {
-  renderApprovalSelector,
-  selectApproval,
-} from "../src/cli/approval-selector.js";
+import { renderApprovalSelector, selectApproval } from "../src/cli/approval-selector.js";
 import { Terminal } from "../src/cli/terminal.js";
 import type { ApprovalRequest } from "../src/core/types.js";
 import { describe, it } from "./harness.js";
@@ -21,10 +18,7 @@ class TtyInput extends PassThrough {
     return this;
   }
 
-  override pipe<T extends NodeJS.WritableStream>(
-    destination: T,
-    options?: { end?: boolean },
-  ): T {
+  override pipe<T extends NodeJS.WritableStream>(destination: T, options?: { end?: boolean }): T {
     this.rawModeAtPipe.push(this.isRaw);
     return super.pipe(destination, options);
   }
@@ -57,30 +51,35 @@ function approvalRequest(commandPrefix = "E:\\tools\\git.exe"): ApprovalRequest 
 
 describe("command approval selector", () => {
   it("allows only this command once after an unattended timeout", async () => {
-    const input = new TtyInput(), output = new TtyOutput(); output.resume();
+    const input = new TtyInput(),
+      output = new TtyOutput();
+    output.resume();
     const result = selectApproval("git", { input, output, color: false, idleTimeoutMs: 15 });
     assert.equal(await result, "allow_once");
     assert.equal(input.isRaw, false);
   });
   it("keeps an explicit cancellation denied even when a timeout is configured", async () => {
-    const input = new TtyInput(), output = new TtyOutput(); output.resume();
+    const input = new TtyInput(),
+      output = new TtyOutput();
+    output.resume();
     const result = selectApproval("git", { input, output, color: false, idleTimeoutMs: 15 });
     input.write("\u001B");
     assert.equal(await result, "reject");
   });
   it("offers only one-shot approval or rejection for interpreters", async () => {
-    const input = new TtyInput(), output = new TtyOutput(); output.resume();
+    const input = new TtyInput(),
+      output = new TtyOutput();
+    output.resume();
     const result = selectApproval("C:\\tools\\node.exe", { input, output, color: false });
     input.write("\u001B[B\r");
     assert.equal(await result, "reject");
-    assert.doesNotMatch(renderApprovalSelector("/usr/bin/python3", 0, false).join("\n"), /authorize this exact executable/u);
+    assert.doesNotMatch(
+      renderApprovalSelector("/usr/bin/python3", 0, false).join("\n"),
+      /authorize this exact executable/u,
+    );
   });
   it("renders the selected choice in white, the others in gray, and escapes controls", () => {
-    const lines = renderApprovalSelector(
-      "E:\\safe\u001B[31m\u202Ehidden.exe",
-      1,
-      true,
-    );
+    const lines = renderApprovalSelector("E:\\safe\u001B[31m\u202Ehidden.exe", 1, true);
 
     assert.equal(lines.length, 5);
     assert.match(lines[1] ?? "", /\u001B\[90m/u);
@@ -90,11 +89,7 @@ describe("command approval selector", () => {
     assert.match(lines[2] ?? "", /Yes, authorize this exact executable/u);
     assert.match(lines[3] ?? "", /Reject/u);
 
-    const plain = renderApprovalSelector(
-      "E:\\safe\u001B[31m\u202Ehidden.exe",
-      1,
-      false,
-    ).join("\n");
+    const plain = renderApprovalSelector("E:\\safe\u001B[31m\u202Ehidden.exe", 1, false).join("\n");
     assert.doesNotMatch(plain, /\u001B/u);
     assert.doesNotMatch(plain, /\u202E/u);
     // JSON array formatting escapes ESC before the shared label sanitizer sees
@@ -367,7 +362,9 @@ describe("command approval selector", () => {
   });
 
   it("cancels an expired Runtime approval and restores input ownership", async () => {
-    const input = new TtyInput(), output = new TtyOutput(); output.resume();
+    const input = new TtyInput(),
+      output = new TtyOutput();
+    output.resume();
     const terminal = new Terminal(input, output);
     const controller = new AbortController();
     try {
@@ -376,7 +373,10 @@ describe("command approval selector", () => {
       assert.equal(await pending, "reject");
       assert.equal(input.isRaw, false);
       const next = terminal.approve(approvalRequest());
-      input.write("\r"); assert.equal(await next, "allow_once");
-    } finally { terminal.close(); }
+      input.write("\r");
+      assert.equal(await next, "allow_once");
+    } finally {
+      terminal.close();
+    }
   });
 });

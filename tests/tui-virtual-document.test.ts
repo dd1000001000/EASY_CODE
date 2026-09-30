@@ -46,56 +46,61 @@ describe("virtual terminal document", () => {
     ];
 
     const layout = layoutVirtualDocument(nodes, 80);
-    assert.deepEqual(layout.lines.map((line) => [line.part, line.text]), [
-      ["text", "ordinary answer"],
-      ["title", "Thinking #1"],
-      ["preview", "thinking preview"],
-      ["title", "Adjustment #1"],
-      ["body", "first requested change"],
-      ["body", "second requested change"],
-    ]);
-    assert.equal(nodes[1]?.kind === "thinking" ? nodes[1].body : "", thinkingBody);
-    assert.equal(
-      nodes[2]?.kind === "adjustment" ? nodes[2].body : "",
-      adjustmentBody,
+    assert.deepEqual(
+      layout.lines.map((line) => [line.part, line.text]),
+      [
+        ["text", "ordinary answer"],
+        ["title", "Thinking #1"],
+        ["preview", "thinking preview"],
+        ["title", "Adjustment #1"],
+        ["body", "first requested change"],
+        ["body", "second requested change"],
+      ],
     );
+    assert.equal(nodes[1]?.kind === "thinking" ? nodes[1].body : "", thinkingBody);
+    assert.equal(nodes[2]?.kind === "adjustment" ? nodes[2].body : "", adjustmentBody);
   });
 
   it("wraps every row to terminal columns without inserting omission markers", () => {
     const body = "A中文B\nplain text";
-    const nodes: readonly VirtualDocumentNode[] = [{
-      id: "thinking",
-      kind: "thinking",
-      title: "标题",
-      preview: "预览",
-      body,
-      expanded: true,
-    }];
+    const nodes: readonly VirtualDocumentNode[] = [
+      {
+        id: "thinking",
+        kind: "thinking",
+        title: "标题",
+        preview: "预览",
+        body,
+        expanded: true,
+      },
+    ];
 
     const layout = layoutVirtualDocument(nodes, 3);
-    assert.deepEqual(layout.lines.map((line) => line.text), [
-      "标",
-      "题",
-      "A中",
-      "文B",
-      "pla",
-      "in ",
-      "tex",
-      "t",
-    ]);
+    assert.deepEqual(
+      layout.lines.map((line) => line.text),
+      ["标", "题", "A中", "文B", "pla", "in ", "tex", "t"],
+    );
     for (const line of layout.lines) assert.ok(displayWidth(line.text) <= 3);
-    assert.equal(layout.lines.some((line) => /truncated|hidden/iu.test(line.text)), false);
+    assert.equal(
+      layout.lines.some((line) => /truncated|hidden/iu.test(line.text)),
+      false,
+    );
   });
 
   it("keeps disclosure body styling on every physical row after wrapping", () => {
-    const layout = layoutVirtualDocument([{
-      id: "thinking",
-      kind: "thinking",
-      title: "Thinking #1",
-      preview: "preview",
-      body: "\u001B[90mThe complete thinking body remains gray while it wraps.\u001B[0m",
-      expanded: true,
-    }], 16, { preserveAnsi: true });
+    const layout = layoutVirtualDocument(
+      [
+        {
+          id: "thinking",
+          kind: "thinking",
+          title: "Thinking #1",
+          preview: "preview",
+          body: "\u001B[90mThe complete thinking body remains gray while it wraps.\u001B[0m",
+          expanded: true,
+        },
+      ],
+      16,
+      { preserveAnsi: true },
+    );
     const bodyRows = layout.lines.filter((line) => line.part === "body");
 
     assert.ok(bodyRows.length > 1);
@@ -116,35 +121,32 @@ describe("virtual terminal document", () => {
       columns: 80,
       viewportRows: 7,
       followTail: false,
-      nodes: [{
-        id: "adjustment",
-        kind: "adjustment",
-        title: "Adjustment #9",
-        preview: "short preview",
-        body,
-        expanded: true,
-      }],
+      nodes: [
+        {
+          id: "adjustment",
+          kind: "adjustment",
+          title: "Adjustment #9",
+          preview: "short preview",
+          body,
+          expanded: true,
+        },
+      ],
     });
 
     const layout = layoutVirtualDocument(state.nodes, state.columns);
     assert.equal(layout.totalRows, 251);
     assert.equal(layout.lines.filter((line) => line.part === "body").length, 250);
-    assert.equal(
-      state.nodes[0]?.kind === "adjustment" ? state.nodes[0].body : "",
-      body,
-    );
+    assert.equal(state.nodes[0]?.kind === "adjustment" ? state.nodes[0].body : "", body);
     const first = renderVirtualViewport(state);
     assert.equal(first.lines.length, 7);
-    assert.deepEqual(first.lines.map((line) => line.text), [
-      "Adjustment #9",
-      "body-0",
-      "body-1",
-      "body-2",
-      "body-3",
-      "body-4",
-      "body-5",
-    ]);
-    assert.equal(first.lines.some((line) => /later|truncated|hidden/iu.test(line.text)), false);
+    assert.deepEqual(
+      first.lines.map((line) => line.text),
+      ["Adjustment #9", "body-0", "body-1", "body-2", "body-3", "body-4", "body-5"],
+    );
+    assert.equal(
+      first.lines.some((line) => /later|truncated|hidden/iu.test(line.text)),
+      false,
+    );
   });
 
   it("replaces preview with body in place and anchors the visible title row", () => {
@@ -181,7 +183,10 @@ describe("virtual terminal document", () => {
     const after = renderVirtualViewport(state);
     const afterTitle = after.lines.findIndex((line) => line.nodeId === "thinking");
     assert.equal(afterTitle, beforeTitle);
-    assert.equal(after.lines.some((line) => line.part === "preview"), false);
+    assert.equal(
+      after.lines.some((line) => line.part === "preview"),
+      false,
+    );
     assert.ok(after.lines.some((line) => line.part === "body"));
     assert.equal(state.followTail, false);
 
@@ -191,7 +196,10 @@ describe("virtual terminal document", () => {
       collapsed.lines.findIndex((line) => line.nodeId === "thinking"),
       beforeTitle,
     );
-    assert.equal(collapsed.lines.some((line) => line.part === "body"), false);
+    assert.equal(
+      collapsed.lines.some((line) => line.part === "body"),
+      false,
+    );
     assert.ok(collapsed.lines.some((line) => line.part === "preview"));
   });
 
@@ -199,11 +207,13 @@ describe("virtual terminal document", () => {
     let state = createVirtualViewportState({
       columns: 80,
       viewportRows: 3,
-      nodes: [{
-        id: "initial",
-        kind: "text",
-        text: Array.from({ length: 6 }, (_, index) => `line-${index}`).join("\n"),
-      }],
+      nodes: [
+        {
+          id: "initial",
+          kind: "text",
+          text: Array.from({ length: 6 }, (_, index) => `line-${index}`).join("\n"),
+        },
+      ],
     });
     assert.equal(renderVirtualViewport(state).scrollOffset, 3);
 
@@ -234,11 +244,13 @@ describe("virtual terminal document", () => {
     let state = createVirtualViewportState({
       columns: 80,
       viewportRows: 5,
-      nodes: [{
-        id: "long",
-        kind: "text",
-        text: Array.from({ length: 20 }, (_, index) => String(index)).join("\n"),
-      }],
+      nodes: [
+        {
+          id: "long",
+          kind: "text",
+          text: Array.from({ length: 20 }, (_, index) => String(index)).join("\n"),
+        },
+      ],
     });
     assert.equal(state.scrollOffset, 15);
 
@@ -285,10 +297,14 @@ describe("virtual terminal document", () => {
 
   it("rejects ambiguous duplicate IDs and ignores unknown disclosure IDs", () => {
     assert.throws(
-      () => layoutVirtualDocument([
-        { id: "same", kind: "text", text: "a" },
-        { id: "same", kind: "text", text: "b" },
-      ], 80),
+      () =>
+        layoutVirtualDocument(
+          [
+            { id: "same", kind: "text", text: "a" },
+            { id: "same", kind: "text", text: "b" },
+          ],
+          80,
+        ),
       /Duplicate virtual document node ID/u,
     );
     const state = createVirtualViewportState({
@@ -301,11 +317,13 @@ describe("virtual terminal document", () => {
   });
 
   it("renders every logical row in order as the viewport scrolls", () => {
-    const nodes: readonly VirtualDocumentNode[] = [{
-      id: "all",
-      kind: "text",
-      text: Array.from({ length: 17 }, (_, index) => `row-${index}`).join("\n"),
-    }];
+    const nodes: readonly VirtualDocumentNode[] = [
+      {
+        id: "all",
+        kind: "text",
+        text: Array.from({ length: 17 }, (_, index) => `row-${index}`).join("\n"),
+      },
+    ];
     let state = createVirtualViewportState({
       columns: 80,
       viewportRows: 1,

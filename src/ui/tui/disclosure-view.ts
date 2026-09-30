@@ -67,16 +67,9 @@ export interface DisclosureViewState {
   readonly preserveAnsi: boolean;
 }
 
-export type DisclosureViewFrameRegion =
-  | "header"
-  | "transcript"
-  | "composer"
-  | "footer";
+export type DisclosureViewFrameRegion = "header" | "transcript" | "composer" | "footer";
 
-export type DisclosureViewFramePart =
-  | VirtualDocumentLinePart
-  | "chrome"
-  | "blank";
+export type DisclosureViewFramePart = VirtualDocumentLinePart | "chrome" | "blank";
 
 /** Metadata for one physical screen row. */
 export interface DisclosureViewFrameRow {
@@ -144,9 +137,7 @@ interface ViewBounds {
  * materialized as title + preview, irrespective of stale `expanded` flags in
  * the input. Complete bodies stay retained in `state.nodes`.
  */
-export function createDisclosureViewState(
-  options: CreateDisclosureViewOptions,
-): DisclosureViewState {
+export function createDisclosureViewState(options: CreateDisclosureViewOptions): DisclosureViewState {
   const columns = positiveInteger(options.columns, 1);
   const rows = positiveInteger(options.rows, 1);
   const nodes = cloneNodes(options.nodes);
@@ -156,18 +147,10 @@ export function createDisclosureViewState(
   const headerLines = cloneLines(options.headerLines);
   const composerLines = cloneLines(options.composerLines);
   const footerLines = cloneLines(options.footerLines);
-  const chrome = layoutChrome(
-    headerLines,
-    composerLines,
-    footerLines,
-    columns,
-    rows,
-    preserveAnsi,
-  );
+  const chrome = layoutChrome(headerLines, composerLines, footerLines, columns, rows, preserveAnsi);
   const anchorScreenRow = clamp(
     finiteInteger(
-      options.anchorScreenRow ??
-        chrome.transcriptStartRow + chrome.viewportRows - 1,
+      options.anchorScreenRow ?? chrome.transcriptStartRow + chrome.viewportRows - 1,
       chrome.transcriptStartRow,
     ),
     chrome.transcriptStartRow,
@@ -176,7 +159,7 @@ export function createDisclosureViewState(
   const state: DisclosureViewState = {
     nodes,
     target,
-    targetExpanded: target === undefined ? false : options.expanded ?? true,
+    targetExpanded: target === undefined ? false : (options.expanded ?? true),
     columns,
     rows,
     headerLines,
@@ -192,9 +175,7 @@ export function createDisclosureViewState(
 }
 
 /** Render a fixed-height frame without shortening transcript content. */
-export function renderDisclosureView(
-  state: Readonly<DisclosureViewState>,
-): DisclosureViewFrame {
+export function renderDisclosureView(state: Readonly<DisclosureViewState>): DisclosureViewFrame {
   validateState(state);
   const chrome = stateChrome(state);
   const layout = stateDocumentLayout(state);
@@ -230,18 +211,14 @@ export function renderDisclosureView(
       nodeKind: line.nodeKind,
       nodeRow: line.nodeRow,
       partRow: line.partRow,
-      targetTitle: state.target !== undefined &&
-        line.nodeId === state.target.id &&
-        line.part === "title",
+      targetTitle: state.target !== undefined && line.nodeId === state.target.id && line.part === "title",
     });
   }
 
   appendChromeRows(visibleRows, "composer", chrome.composer);
   appendChromeRows(visibleRows, "footer", chrome.footer);
   if (visibleRows.length !== state.rows) {
-    throw new Error(
-      `Disclosure frame invariant failed: expected ${state.rows} rows, got ${visibleRows.length}.`,
-    );
+    throw new Error(`Disclosure frame invariant failed: expected ${state.rows} rows, got ${visibleRows.length}.`);
   }
 
   const title = visibleRows.find((row) => row.targetTitle);
@@ -287,15 +264,10 @@ export function resizeDisclosureView(
     ...state,
     columns: nextColumns,
     rows: nextRows,
-    headerLines: chromeUpdates.headerLines === undefined
-      ? state.headerLines
-      : cloneLines(chromeUpdates.headerLines),
-    composerLines: chromeUpdates.composerLines === undefined
-      ? state.composerLines
-      : cloneLines(chromeUpdates.composerLines),
-    footerLines: chromeUpdates.footerLines === undefined
-      ? state.footerLines
-      : cloneLines(chromeUpdates.footerLines),
+    headerLines: chromeUpdates.headerLines === undefined ? state.headerLines : cloneLines(chromeUpdates.headerLines),
+    composerLines:
+      chromeUpdates.composerLines === undefined ? state.composerLines : cloneLines(chromeUpdates.composerLines),
+    footerLines: chromeUpdates.footerLines === undefined ? state.footerLines : cloneLines(chromeUpdates.footerLines),
   };
   const chrome = stateChrome(provisional);
   const oldTitleRow = before.viewport.targetTitleScreenRow;
@@ -306,22 +278,18 @@ export function resizeDisclosureView(
   );
   const next = { ...provisional, anchorScreenRow: nextAnchor };
   const bounds = viewBounds(next);
-  const logicalTopOffset = state.target === undefined && !state.followTail
-    ? resizedLogicalTopOffset(
-      before,
-      beforeLayout,
-      stateDocumentLayout(next),
-      bounds,
-    )
-    : undefined;
+  const logicalTopOffset =
+    state.target === undefined && !state.followTail
+      ? resizedLogicalTopOffset(before, beforeLayout, stateDocumentLayout(next), bounds)
+      : undefined;
   return {
     ...next,
-    scrollOffset: oldTitleRow !== undefined
-      ? bounds.anchorOffset
-      : state.followTail
-      ? bounds.maximum
-      : logicalTopOffset ??
-        clamp(state.scrollOffset, bounds.minimum, bounds.maximum),
+    scrollOffset:
+      oldTitleRow !== undefined
+        ? bounds.anchorOffset
+        : state.followTail
+          ? bounds.maximum
+          : (logicalTopOffset ?? clamp(state.scrollOffset, bounds.minimum, bounds.maximum)),
   };
 }
 
@@ -338,23 +306,19 @@ export function updateDisclosureViewChrome(
   state: Readonly<DisclosureViewState>,
   updates: Readonly<UpdateDisclosureViewChromeOptions>,
 ): DisclosureViewState {
-  if ((updates.headerLines === undefined || linesEqual(updates.headerLines, state.headerLines)) &&
-      (updates.composerLines === undefined || linesEqual(updates.composerLines, state.composerLines)) &&
-      (updates.footerLines === undefined || linesEqual(updates.footerLines, state.footerLines))) {
+  if (
+    (updates.headerLines === undefined || linesEqual(updates.headerLines, state.headerLines)) &&
+    (updates.composerLines === undefined || linesEqual(updates.composerLines, state.composerLines)) &&
+    (updates.footerLines === undefined || linesEqual(updates.footerLines, state.footerLines))
+  ) {
     return state;
   }
   const before = renderDisclosureView(state);
   const provisional: DisclosureViewState = {
     ...state,
-    headerLines: updates.headerLines === undefined
-      ? state.headerLines
-      : cloneLines(updates.headerLines),
-    composerLines: updates.composerLines === undefined
-      ? state.composerLines
-      : cloneLines(updates.composerLines),
-    footerLines: updates.footerLines === undefined
-      ? state.footerLines
-      : cloneLines(updates.footerLines),
+    headerLines: updates.headerLines === undefined ? state.headerLines : cloneLines(updates.headerLines),
+    composerLines: updates.composerLines === undefined ? state.composerLines : cloneLines(updates.composerLines),
+    footerLines: updates.footerLines === undefined ? state.footerLines : cloneLines(updates.footerLines),
   };
 
   // Validate/reflow the replacement before deriving bounds. This also gives
@@ -373,11 +337,12 @@ export function updateDisclosureViewChrome(
   const bounds = viewBounds(next);
   return {
     ...next,
-    scrollOffset: visibleTitleRow !== undefined
-      ? bounds.anchorOffset
-      : state.followTail
-      ? bounds.maximum
-      : clamp(state.scrollOffset, bounds.minimum, bounds.maximum),
+    scrollOffset:
+      visibleTitleRow !== undefined
+        ? bounds.anchorOffset
+        : state.followTail
+          ? bounds.maximum
+          : clamp(state.scrollOffset, bounds.minimum, bounds.maximum),
   };
 }
 
@@ -397,11 +362,12 @@ export function replaceDisclosureViewNodes(
   const bounds = viewBounds(provisional);
   return {
     ...provisional,
-    scrollOffset: visibleTitleRow !== undefined
-      ? bounds.anchorOffset
-      : state.followTail
-      ? bounds.maximum
-      : clamp(state.scrollOffset, bounds.minimum, bounds.maximum),
+    scrollOffset:
+      visibleTitleRow !== undefined
+        ? bounds.anchorOffset
+        : state.followTail
+          ? bounds.maximum
+          : clamp(state.scrollOffset, bounds.minimum, bounds.maximum),
   };
 }
 
@@ -429,11 +395,8 @@ export function toggleDisclosureView(
   const nextTarget = cloneTarget(target);
   assertTarget(state.nodes, nextTarget);
   const before = renderDisclosureView(state);
-  const sameTarget = state.target !== undefined &&
-    targetsEqual(state.target, nextTarget);
-  const targetRow = before.visibleRows.find(
-    (row) => row.nodeId === nextTarget.id && row.part === "title",
-  )?.screenRow;
+  const sameTarget = state.target !== undefined && targetsEqual(state.target, nextTarget);
+  const targetRow = before.visibleRows.find((row) => row.nodeId === nextTarget.id && row.part === "title")?.screenRow;
   const chrome = stateChrome(state);
   const anchorScreenRow = clamp(
     targetRow ?? state.anchorScreenRow,
@@ -460,9 +423,7 @@ export function toggleDisclosureView(
  * scrollbar to the newest output. Call `scrollDisclosureViewToEnd` when the
  * caller intentionally wants to resume following streamed output.
  */
-export function clearDisclosureViewTarget(
-  state: Readonly<DisclosureViewState>,
-): DisclosureViewState {
+export function clearDisclosureViewTarget(state: Readonly<DisclosureViewState>): DisclosureViewState {
   if (state.target === undefined) return state;
 
   const before = renderDisclosureView(state);
@@ -483,30 +444,18 @@ export function clearDisclosureViewTarget(
   };
   const layout = stateDocumentLayout(provisional);
   const bounds = viewBoundsFrom(provisional, chrome, layout);
-  const titleRow = visibleTitleRow === undefined
-    ? undefined
-    : layout.titleRows.get(previousTarget.id);
-  const scrollOffset = titleRow === undefined || visibleTitleRow === undefined
-    ? clamp(state.scrollOffset, bounds.minimum, bounds.maximum)
-    : clamp(
-      titleRow - (visibleTitleRow - chrome.transcriptStartRow),
-      bounds.minimum,
-      bounds.maximum,
-    );
+  const titleRow = visibleTitleRow === undefined ? undefined : layout.titleRows.get(previousTarget.id);
+  const scrollOffset =
+    titleRow === undefined || visibleTitleRow === undefined
+      ? clamp(state.scrollOffset, bounds.minimum, bounds.maximum)
+      : clamp(titleRow - (visibleTitleRow - chrome.transcriptStartRow), bounds.minimum, bounds.maximum);
 
   return { ...provisional, scrollOffset };
 }
 
-export function scrollDisclosureView(
-  state: Readonly<DisclosureViewState>,
-  lines: number,
-): DisclosureViewState {
+export function scrollDisclosureView(state: Readonly<DisclosureViewState>, lines: number): DisclosureViewState {
   const bounds = viewBounds(state);
-  const scrollOffset = clamp(
-    state.scrollOffset + finiteInteger(lines, 0),
-    bounds.minimum,
-    bounds.maximum,
-  );
+  const scrollOffset = clamp(state.scrollOffset + finiteInteger(lines, 0), bounds.minimum, bounds.maximum);
   return {
     ...state,
     scrollOffset,
@@ -514,16 +463,12 @@ export function scrollDisclosureView(
   };
 }
 
-export function scrollDisclosureViewToStart(
-  state: Readonly<DisclosureViewState>,
-): DisclosureViewState {
+export function scrollDisclosureViewToStart(state: Readonly<DisclosureViewState>): DisclosureViewState {
   const bounds = viewBounds(state);
   return { ...state, scrollOffset: bounds.minimum, followTail: false };
 }
 
-export function scrollDisclosureViewToEnd(
-  state: Readonly<DisclosureViewState>,
-): DisclosureViewState {
+export function scrollDisclosureViewToEnd(state: Readonly<DisclosureViewState>): DisclosureViewState {
   const bounds = viewBounds(state);
   return { ...state, scrollOffset: bounds.maximum, followTail: true };
 }
@@ -544,41 +489,52 @@ export function applyDisclosureViewCommand(
     case "scroll-end":
       return scrollDisclosureViewToEnd(state);
     case "follow-tail":
-      return command.enabled
-        ? scrollDisclosureViewToEnd(state)
-        : { ...state, followTail: false };
+      return command.enabled ? scrollDisclosureViewToEnd(state) : { ...state, followTail: false };
   }
 }
 
-const materializedDocuments = new WeakMap<readonly VirtualDocumentNode[], {
-  targetId: string | undefined;
-  targetKind: DisclosureViewTargetKind | undefined;
-  expanded: boolean;
-  nodes: readonly VirtualDocumentNode[];
-}>();
+const materializedDocuments = new WeakMap<
+  readonly VirtualDocumentNode[],
+  {
+    targetId: string | undefined;
+    targetKind: DisclosureViewTargetKind | undefined;
+    expanded: boolean;
+    nodes: readonly VirtualDocumentNode[];
+  }
+>();
 
-function materializeNodes(
-  state: Readonly<DisclosureViewState>,
-): readonly VirtualDocumentNode[] {
+function materializeNodes(state: Readonly<DisclosureViewState>): readonly VirtualDocumentNode[] {
   const cached = materializedDocuments.get(state.nodes);
-  if (cached && cached.targetId === state.target?.id &&
-      cached.targetKind === state.target?.kind && cached.expanded === state.targetExpanded) {
+  if (
+    cached &&
+    cached.targetId === state.target?.id &&
+    cached.targetKind === state.target?.kind &&
+    cached.expanded === state.targetExpanded
+  ) {
     return cached.nodes;
   }
-  const nodes = snapshotVirtualDocumentNodes(state.nodes.map((node) => {
-    if (node.kind === "text") return node;
-    const expanded = state.target !== undefined && state.targetExpanded &&
-      node.id === state.target.id && node.kind === state.target.kind;
-    if (node.expanded === expanded) return node;
-    return {
-      ...node,
-      expanded,
-    };
-  }), cached?.nodes ?? state.nodes);
+  const nodes = snapshotVirtualDocumentNodes(
+    state.nodes.map((node) => {
+      if (node.kind === "text") return node;
+      const expanded =
+        state.target !== undefined &&
+        state.targetExpanded &&
+        node.id === state.target.id &&
+        node.kind === state.target.kind;
+      if (node.expanded === expanded) return node;
+      return {
+        ...node,
+        expanded,
+      };
+    }),
+    cached?.nodes ?? state.nodes,
+  );
   if (isVirtualDocumentSnapshot(state.nodes)) {
     materializedDocuments.set(state.nodes, {
-      targetId: state.target?.id, targetKind: state.target?.kind,
-      expanded: state.targetExpanded, nodes,
+      targetId: state.target?.id,
+      targetKind: state.target?.kind,
+      expanded: state.targetExpanded,
+      nodes,
     });
   }
   return nodes;
@@ -663,23 +619,22 @@ function layoutChrome(
   };
 }
 
-function wrapChrome(
-  lines: readonly string[],
-  columns: number,
-  preserveAnsi: boolean,
-): readonly string[] {
+function wrapChrome(lines: readonly string[], columns: number, preserveAnsi: boolean): readonly string[] {
   const cached = chromeLines.get(lines);
   if (cached?.columns === columns && cached.preserveAnsi === preserveAnsi) return cached.wrapped;
-  const wrapped = lines.flatMap((line) =>
-    wrapToWidth(line, columns, { preserveAnsi })
-  );
+  const wrapped = lines.flatMap((line) => wrapToWidth(line, columns, { preserveAnsi }));
   if (Object.isFrozen(lines)) chromeLines.set(lines, { columns, preserveAnsi, wrapped });
   return wrapped;
 }
 
-const chromeLines = new WeakMap<readonly string[], {
-  columns: number; preserveAnsi: boolean; wrapped: readonly string[];
-}>();
+const chromeLines = new WeakMap<
+  readonly string[],
+  {
+    columns: number;
+    preserveAnsi: boolean;
+    wrapped: readonly string[];
+  }
+>();
 
 function appendChromeRows(
   rows: DisclosureViewFrameRow[],
@@ -705,33 +660,22 @@ function validateState(state: Readonly<DisclosureViewState>): void {
   stateChrome(state);
 }
 
-function validateNodesAndTarget(
-  nodes: readonly VirtualDocumentNode[],
-  target: DisclosureViewTarget | undefined,
-): void {
+function validateNodesAndTarget(nodes: readonly VirtualDocumentNode[], target: DisclosureViewTarget | undefined): void {
   validateVirtualDocumentNodes(nodes);
   if (target !== undefined) assertTarget(nodes, target, false);
 }
 
-function assertTarget(
-  nodes: readonly VirtualDocumentNode[],
-  target: DisclosureViewTarget,
-  validateNodes = true,
-): void {
+function assertTarget(nodes: readonly VirtualDocumentNode[], target: DisclosureViewTarget, validateNodes = true): void {
   if (validateNodes) {
     validateVirtualDocumentNodes(nodes);
   }
   const node = nodes.find((candidate) => candidate.id === target.id);
   if (!node || node.kind === "text" || node.kind !== target.kind) {
-    throw new Error(
-      `Disclosure target ${target.kind}/${target.id} does not match a transcript disclosure.`,
-    );
+    throw new Error(`Disclosure target ${target.kind}/${target.id} does not match a transcript disclosure.`);
   }
 }
 
-function cloneNodes(
-  nodes: readonly VirtualDocumentNode[],
-): readonly VirtualDocumentNode[] {
+function cloneNodes(nodes: readonly VirtualDocumentNode[]): readonly VirtualDocumentNode[] {
   return snapshotVirtualDocumentNodes(nodes);
 }
 
@@ -747,16 +691,11 @@ function cloneTarget(target: DisclosureViewTarget): DisclosureViewTarget {
   return { id: target.id, kind: target.kind };
 }
 
-function cloneOptionalTarget(
-  target: DisclosureViewTarget | undefined,
-): DisclosureViewTarget | undefined {
+function cloneOptionalTarget(target: DisclosureViewTarget | undefined): DisclosureViewTarget | undefined {
   return target === undefined ? undefined : cloneTarget(target);
 }
 
-function targetsEqual(
-  left: DisclosureViewTarget,
-  right: DisclosureViewTarget,
-): boolean {
+function targetsEqual(left: DisclosureViewTarget, right: DisclosureViewTarget): boolean {
   return left.id === right.id && left.kind === right.kind;
 }
 

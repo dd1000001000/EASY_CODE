@@ -1,14 +1,27 @@
 import path from "node:path";
 import { MAX_IMAGE_BYTES } from "../image-store.js";
-import type { ClipboardPlatformHost, ClipboardPlatformReader, ClipboardExecutionContext } from "../clipboard-platform.js";
+import type {
+  ClipboardPlatformHost,
+  ClipboardPlatformReader,
+  ClipboardExecutionContext,
+} from "../clipboard-platform.js";
 import { clipboardError, isClipboardAbort } from "../clipboard-platform.js";
 
-const powershellArgs = (script: string): string[] =>
-  ["-STA", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script];
+const powershellArgs = (script: string): string[] => [
+  "-STA",
+  "-NoLogo",
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  script,
+];
 
 export function windowsClipboard(host: ClipboardPlatformHost): ClipboardPlatformReader {
-  const powershell = (): Promise<string> => host.resolveFixedProgram(
-    path.win32.join(host.windowsRoot(), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "win32");
+  const powershell = (): Promise<string> =>
+    host.resolveFixedProgram(
+      path.win32.join(host.windowsRoot(), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      "win32",
+    );
   return {
     async readImage(execution: ClipboardExecutionContext): Promise<Buffer> {
       try {

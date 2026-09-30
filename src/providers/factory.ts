@@ -1,13 +1,5 @@
-import type {
-  EasyCodeConfig,
-  ModelProvider,
-  ProviderName,
-} from "../core/types.js";
-import {
-  modelSupportsVision,
-  providerCatalogEntry,
-  resolveCatalogModel,
-} from "../models/catalog.js";
+import type { EasyCodeConfig, ModelProvider, ProviderName } from "../core/types.js";
+import { modelSupportsVision, providerCatalogEntry, resolveCatalogModel } from "../models/catalog.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
 import { ResponsesProvider } from "./responses.js";
@@ -32,22 +24,14 @@ export function createProvider(
     streamIdleTimeoutByEffort: config.limits.providerStreamIdleTimeoutMs,
     bufferedTimeoutByEffort: config.limits.providerBufferedTimeoutMs,
     maxResponseBytes: runtime?.maxResponseBytes ?? config.limits.providerResponseMaxBytes,
-    visionSupported:
-      runtime?.visionSupported ??
-      modelSupportsVision(providerName, providerConfig.model),
-    supportsTemperature:
-      runtime?.supportsTemperature ?? providerCatalogEntry(providerName).supportsTemperature,
-    supportsStrictTools:
-      runtime?.supportsStrictTools ?? providerCatalogEntry(providerName).supportsStrictTools,
+    visionSupported: runtime?.visionSupported ?? modelSupportsVision(providerName, providerConfig.model),
+    supportsTemperature: runtime?.supportsTemperature ?? providerCatalogEntry(providerName).supportsTemperature,
+    supportsStrictTools: runtime?.supportsStrictTools ?? providerCatalogEntry(providerName).supportsStrictTools,
     toolCallingSupported:
-      runtime?.toolCallingSupported ??
-      (resolveCatalogModel(providerName, providerConfig.model)?.toolCalling ?? true),
-    supportsStreaming:
-      runtime?.supportsStreaming ?? providerCatalogEntry(providerName).supportsStreaming,
-    supportsStreamUsage:
-      runtime?.supportsStreamUsage ?? providerCatalogEntry(providerName).supportsStreamUsage,
-    toolStream:
-      runtime?.toolStream ?? providerCatalogEntry(providerName).toolStream,
+      runtime?.toolCallingSupported ?? resolveCatalogModel(providerName, providerConfig.model)?.toolCalling ?? true,
+    supportsStreaming: runtime?.supportsStreaming ?? providerCatalogEntry(providerName).supportsStreaming,
+    supportsStreamUsage: runtime?.supportsStreamUsage ?? providerCatalogEntry(providerName).supportsStreamUsage,
+    toolStream: runtime?.toolStream ?? providerCatalogEntry(providerName).toolStream,
   };
 
   switch (providerCatalogEntry(providerName).wireApi) {

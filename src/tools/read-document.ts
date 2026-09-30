@@ -8,9 +8,11 @@ import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
 import { recordFileToolRead, resolveExistingFileToolTarget } from "./file-access.js";
 import { documentToolSchema } from "./metadata.js";
 
-export const readDocumentInputSchema = z.object({
-  path: z.string().min(1).max(4_096),
-}).strict();
+export const readDocumentInputSchema = z
+  .object({
+    path: z.string().min(1).max(4_096),
+  })
+  .strict();
 
 /** Converts one workspace document into an immutable, Thread-owned Markdown snapshot. */
 export class ReadDocumentTool implements AgentTool {
@@ -56,10 +58,11 @@ export class ReadDocumentTool implements AgentTool {
         signal: context.signal,
       });
       recordFileToolRead(this.workspace, target, sha256(data), context);
-      return toolSuccess(
-        `Converted ${target.displayPath} to read-only Thread resource ${attachment.uri}.`,
-        { path: target.displayPath, ...attachment, readOnly: true },
-      );
+      return toolSuccess(`Converted ${target.displayPath} to read-only Thread resource ${attachment.uri}.`, {
+        path: target.displayPath,
+        ...attachment,
+        readOnly: true,
+      });
     } catch (error) {
       return toolFailure(error, "Unable to read document");
     }

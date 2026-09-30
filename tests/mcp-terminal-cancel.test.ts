@@ -7,7 +7,10 @@ import { describe, it } from "./harness.js";
 class TtyInput extends PassThrough {
   readonly isTTY = true;
   isRaw = false;
-  setRawMode(value: boolean): this { this.isRaw = value; return this; }
+  setRawMode(value: boolean): this {
+    this.isRaw = value;
+    return this;
+  }
 }
 class TtyOutput extends PassThrough {
   readonly isTTY = true;
@@ -15,13 +18,22 @@ class TtyOutput extends PassThrough {
   rows = 30;
 }
 
-const session: UISessionInfo = { threadId: "thread_mcp_cancel", workspaceRoot: process.cwd(),
-  mode: "auto", provider: "deepseek", model: "deepseek-v4-flash",
-  thinkingEffort: "low", contextTokens: 0 };
+const session: UISessionInfo = {
+  threadId: "thread_mcp_cancel",
+  workspaceRoot: process.cwd(),
+  mode: "auto",
+  provider: "deepseek",
+  model: "deepseek-v4-flash",
+  thinkingEffort: "low",
+  contextTokens: 0,
+};
 
 function waitForAbort(signal: AbortSignal): Promise<void> {
   return new Promise((_, reject) => {
-    if (signal.aborted) { reject(signal.reason); return; }
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });
   });
 }
@@ -38,21 +50,29 @@ describe("MCP authorization terminal cancellation", () => {
     process.env.TERM = "xterm-256color";
     try {
       assert.equal(terminal.beginShell(session), true);
-      const prompt = terminal.readPrompt("> ", { captureImage: async () => { throw new Error("No image expected"); } });
+      const prompt = terminal.readPrompt("> ", {
+        captureImage: async () => {
+          throw new Error("No image expected");
+        },
+      });
       input.write("/mcp\r");
       assert.equal((await prompt)?.text, "/mcp");
       assert.equal(input.isRaw, true);
       const before = process.listenerCount("SIGINT");
       const pending = terminal.withCancellableExternalOperation(waitForAbort);
       input.write(Buffer.from([0x03]));
-      await Promise.race([assert.rejects(pending, /canceled by user/u),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Raw Ctrl+C was not delivered")), 1_000))]);
+      await Promise.race([
+        assert.rejects(pending, /canceled by user/u),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Raw Ctrl+C was not delivered")), 1_000)),
+      ]);
       assert.equal(process.listenerCount("SIGINT"), before);
       assert.equal(input.isRaw, true);
     } finally {
       terminal.close();
-      if (previousCI === undefined) delete process.env.CI; else process.env.CI = previousCI;
-      if (previousTerm === undefined) delete process.env.TERM; else process.env.TERM = previousTerm;
+      if (previousCI === undefined) delete process.env.CI;
+      else process.env.CI = previousCI;
+      if (previousTerm === undefined) delete process.env.TERM;
+      else process.env.TERM = previousTerm;
     }
   });
 
@@ -64,6 +84,8 @@ describe("MCP authorization terminal cancellation", () => {
       process.emit("SIGINT");
       await assert.rejects(pending, /canceled by user/u);
       assert.equal(process.listenerCount("SIGINT"), before);
-    } finally { terminal.close(); }
+    } finally {
+      terminal.close();
+    }
   });
 });

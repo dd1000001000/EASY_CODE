@@ -6,7 +6,6 @@ export * from "./execution-gateway.js";
 export * from "./content.js";
 export * from "./fetch-artifact.js";
 export * from "./errors.js";
-export * from "./compact-context.js";
 export * from "./context-read.js";
 export * from "./create-file.js";
 export * from "./delete-file.js";

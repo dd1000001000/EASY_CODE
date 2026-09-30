@@ -1,9 +1,6 @@
 import { Chalk } from "chalk";
 
-import {
-  sanitizeCommandOutput,
-  stripTerminalControls,
-} from "../command/output-stream.js";
+import { sanitizeCommandOutput, stripTerminalControls } from "../command/output-stream.js";
 import type { ImageAttachment } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText, wrapToWidth } from "../ui/render/layout.js";
@@ -25,16 +22,15 @@ export interface AdjustmentRenderOptions {
   readonly columns?: number;
 }
 
-function boundedInteger(
-  value: number | undefined,
-  fallback: number,
-  maximum: number,
-): number {
+function boundedInteger(value: number | undefined, fallback: number, maximum: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.min(Math.trunc(value), maximum));
 }
 
-function takeCodePoints(value: string, maximum: number): {
+function takeCodePoints(
+  value: string,
+  maximum: number,
+): {
   readonly text: string;
   readonly truncated: boolean;
 } {
@@ -51,9 +47,7 @@ function takeCodePoints(value: string, maximum: number): {
 }
 
 function safeLabel(value: string): string {
-  return sanitizeTerminalText(value, { allowSgr: false })
-    .replace(/\s+/gu, " ")
-    .trim();
+  return sanitizeTerminalText(value, { allowSgr: false }).replace(/\s+/gu, " ").trim();
 }
 
 function prepareAdjustmentText(value: string): {
@@ -72,9 +66,10 @@ function prepareAdjustmentText(value: string): {
   // Adjustment bodies are user-authored and already bounded by the composer.
   // Retain the complete submitted value for expansion while stripping unsafe
   // terminal controls and redacting credentials before it enters UI state.
-  const text = redactSensitiveInformation(
-    sanitizeCommandOutput(stripTerminalControls(normalized)),
-  ).replace(/\t/gu, "    ");
+  const text = redactSensitiveInformation(sanitizeCommandOutput(stripTerminalControls(normalized))).replace(
+    /\t/gu,
+    "    ",
+  );
   return { text, sourceChars, sourceLines, truncated: false };
 }
 
@@ -97,8 +92,7 @@ function previewWithImageBadges(block: Readonly<AdjustmentBlock>): string {
 
 function adjustmentSummary(block: Readonly<AdjustmentBlock>): string {
   const imageCount = block.imageLabels.length;
-  return `${block.sourceChars} chars` +
-    (imageCount > 0 ? ` · ${imageCount} image${imageCount === 1 ? "" : "s"}` : "");
+  return `${block.sourceChars} chars` + (imageCount > 0 ? ` · ${imageCount} image${imageCount === 1 ? "" : "s"}` : "");
 }
 
 /** Process-local display registry. Durable steering remains in ThreadStore. */
@@ -106,11 +100,7 @@ export class AdjustmentRegistry {
   private readonly blocks = new Map<number, AdjustmentBlock>();
   private latestId?: number;
 
-  add(
-    id: number,
-    text: string,
-    images: readonly Readonly<ImageAttachment>[] = [],
-  ): AdjustmentBlock {
+  add(id: number, text: string, images: readonly Readonly<ImageAttachment>[] = []): AdjustmentBlock {
     if (!Number.isSafeInteger(id) || id <= 0) {
       throw new Error("Adjustment ID must be a positive safe integer");
     }
@@ -118,9 +108,7 @@ export class AdjustmentRegistry {
     const block: AdjustmentBlock = {
       id,
       ...prepared,
-      imageLabels: images
-        .map((image) => safeLabel(image.label))
-        .filter((label) => label.length > 0),
+      imageLabels: images.map((image) => safeLabel(image.label)).filter((label) => label.length > 0),
     };
     this.blocks.delete(id);
     this.blocks.set(id, block);
@@ -144,11 +132,7 @@ export function renderAdjustmentMarker(
   options: AdjustmentRenderOptions = {},
 ): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
-  const previewLimit = boundedInteger(
-    options.previewChars,
-    DEFAULT_ADJUSTMENT_PREVIEW_CHARS,
-    2_000,
-  );
+  const previewLimit = boundedInteger(options.previewChars, DEFAULT_ADJUSTMENT_PREVIEW_CHARS, 2_000);
   const content = previewWithImageBadges(block);
   const retained = takeCodePoints(content, previewLimit);
   const omitted = retained.truncated || block.truncated;
@@ -159,29 +143,7 @@ export function renderAdjustmentMarker(
   );
 }
 
-export function renderAdjustmentHistoryMarker(
-  block: Readonly<AdjustmentBlock>,
-  options: AdjustmentRenderOptions = {},
-): string {
-  const palette = new Chalk({ level: options.color ? 1 : 0 });
-  const previewLimit = boundedInteger(
-    options.previewChars,
-    DEFAULT_ADJUSTMENT_PREVIEW_CHARS,
-    2_000,
-  );
-  const content = previewWithImageBadges(block);
-  const retained = takeCodePoints(content, previewLimit);
-  return palette.gray(
-    `• Queued adjustment #${block.id} · ${adjustmentSummary(block)} · ` +
-      `retained in thread history\n` +
-      `  ${retained.text}${retained.truncated || block.truncated ? "..." : ""}\n`,
-  );
-}
-
-export function renderAdjustmentPanel(
-  block: Readonly<AdjustmentBlock>,
-  options: AdjustmentRenderOptions = {},
-): string {
+export function renderAdjustmentPanel(block: Readonly<AdjustmentBlock>, options: AdjustmentRenderOptions = {}): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
   const columns = boundedInteger(options.columns, 80, 10_000);
   const text = block.text || "(No text; this adjustment contains attachments only.)";
@@ -189,8 +151,7 @@ export function renderAdjustmentPanel(
   const wrappedText = wrapToWidth(text, innerWidth, {
     preserveAnsi: false,
   });
-  const body = wrappedText
-    .map((line) => palette.gray(`  ${line}`));
+  const body = wrappedText.map((line) => palette.gray(`  ${line}`));
   const hiddenBadges = block.imageLabels
     .filter((label) => !block.text.includes(`[${label}]`))
     .map((label) => `[${label}]`)
@@ -203,10 +164,7 @@ export function renderAdjustmentPanel(
   return [header, ...body].join("\n");
 }
 
-export function renderAdjustmentBody(
-  block: Readonly<AdjustmentBlock>,
-  options: AdjustmentRenderOptions = {},
-): string {
+export function renderAdjustmentBody(block: Readonly<AdjustmentBlock>, options: AdjustmentRenderOptions = {}): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
   const attachments = imageBadges(block);
   const text = block.text || "(No text; this adjustment contains attachments only.)";

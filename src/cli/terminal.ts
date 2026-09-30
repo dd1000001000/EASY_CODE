@@ -1,7 +1,12 @@
 import readline from "node:readline";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
-import { compactionLabel, compactionRunning, type CompactionProgress } from "../ui/compaction.js";
+import {
+  compactionActivityLabel,
+  compactionLabel,
+  compactionRunning,
+  type CompactionProgress,
+} from "../ui/compaction.js";
 import { translate } from "../i18n/catalog.js";
 import chalk from "chalk";
 import { sanitizeCommandOutput } from "../command/output-stream.js";
@@ -19,10 +24,7 @@ import type {
 import { selectApproval } from "./approval-selector.js";
 import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
 import { formatCommandApprovalPrefix } from "../command/approval.js";
-import {
-  formatPlanProposal,
-  sanitizePlanText,
-} from "../plans/plan.js";
+import { formatPlanProposal, sanitizePlanText } from "../plans/plan.js";
 import { readSecretInput } from "../config/secret-input.js";
 import { renderFileDiff } from "./file-diff.js";
 import { completeSlashCommandPrefix } from "./slash-command.js";
@@ -41,12 +43,7 @@ import {
   renderReasoningMarker,
   type ReasoningBlock,
 } from "./reasoning.js";
-import {
-  AdjustmentRegistry,
-  renderAdjustmentBody,
-  renderAdjustmentMarker,
-  type AdjustmentBlock,
-} from "./adjustment.js";
+import { AdjustmentRegistry, renderAdjustmentBody, type AdjustmentBlock } from "./adjustment.js";
 import {
   selectModel,
   selectProvider,
@@ -61,11 +58,7 @@ import { renderTaskGraph } from "./task-graph.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
 import { renderSubagents } from "./subagents.js";
 import type { SubagentView } from "../subagents/types.js";
-import {
-  renderMenu,
-  selectMenuIndex,
-  type MenuSelectorOverlay,
-} from "./menu-selector.js";
+import { renderMenu, selectMenuIndex, type MenuSelectorOverlay } from "./menu-selector.js";
 import { createVsCodeMenuBridge } from "./vscode-menu-bridge.js";
 import type {
   UIActivityKind,
@@ -104,19 +97,10 @@ import {
   type DisclosureViewTarget,
   type VirtualDocumentNode,
 } from "../ui/tui/index.js";
-import {
-  TuiInputCore,
-  type TuiInputEvent,
-} from "./tui-input.js";
-import {
-  displayWidth,
-  stripAnsi,
-  truncateToWidth,
-  wrapToWidth,
-} from "../ui/render/layout.js";
+import { TuiInputCore, type TuiInputEvent } from "./tui-input.js";
+import { displayWidth, stripAnsi, truncateToWidth, wrapToWidth } from "../ui/render/layout.js";
 import {
   renderComposerStatusRegion,
-  renderDangerStatusLabel,
   renderFixedBottomRegions,
   renderLiveActivityRegion,
   renderLiveRegion,
@@ -194,10 +178,7 @@ interface ActiveDisclosureViewer {
   closing: boolean;
 }
 
-type StableStatusKind = Extract<
-  UITranscriptKind,
-  "info" | "success" | "warning" | "error"
->;
+type StableStatusKind = Extract<UITranscriptKind, "info" | "success" | "warning" | "error">;
 
 type StatusPresentation =
   | { readonly destination: "live"; readonly kind: UIProgressItem["kind"] }
@@ -216,9 +197,7 @@ function classifyStatus(text: string): StatusPresentation {
   if (/^Step\s+\d+(?:\/\d+)?:?\s*requesting\b/iu.test(text)) {
     return { destination: "live", kind: "step" };
   }
-  if (
-    /^Auto mode is choosing how to handle this request\.\.\.$/iu.test(text)
-  ) {
+  if (/^Auto mode is choosing how to handle this request\.\.\.$/iu.test(text)) {
     return { destination: "live", kind: "status" };
   }
 
@@ -235,18 +214,7 @@ function classifyStatus(text: string): StatusPresentation {
 }
 
 export class Terminal implements AppInteractionPort {
-  private static readonly ACTIVITY_FRAMES = [
-    "⠋",
-    "⠙",
-    "⠹",
-    "⠸",
-    "⠼",
-    "⠴",
-    "⠦",
-    "⠧",
-    "⠇",
-    "⠏",
-  ] as const;
+  private static readonly ACTIVITY_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
   // Human-readable elapsed time does not need an 80 ms repaint cadence. This
   // fixed UI cadence reduces ConPTY work without becoming runtime config.
   private static readonly ACTIVITY_INTERVAL_MS = 160;
@@ -292,7 +260,6 @@ export class Terminal implements AppInteractionPort {
    */
   private currentTurnTranscriptStart?: number;
   /** Exclusive completed-turn boundary; active turns grow to transcript.length. */
-  private currentTurnTranscriptEnd?: number;
   /** User row committed by readPrompt before executePrompt calls setCurrentRequest. */
   private pendingRequestTranscriptStart?: number;
   /** A completed turn remains viewable, but a later direct/resumed request is new. */
@@ -338,6 +305,8 @@ export class Terminal implements AppInteractionPort {
   private activitySequence = 0;
   private compactionActivity?: string;
   private compactionPhase?: string;
+  /** Re-opens steering after automatic compaction; interjections are not admitted meanwhile. */
+  private resumeAfterCompaction?: () => void;
   private agentConcurrencyLimit?: number;
   /** Track DEC cursor visibility while EASY CODE owns the inline shell. */
   private terminalCursorVisible = true;
@@ -358,7 +327,7 @@ export class Terminal implements AppInteractionPort {
 
   constructor(
     private readonly input: PromptInput = process.stdin,
-    private readonly output: NodeJS.WritableStream = process.stdout
+    private readonly output: NodeJS.WritableStream = process.stdout,
   ) {
     // VS Code terminal links use the authenticated loopback bridge whenever
     // both sides advertise support. Keeping this event out of the PTY avoids
@@ -387,10 +356,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   isInteractive(): boolean {
-    return Boolean(
-      this.input.isTTY &&
-      (this.output as NodeJS.WriteStream).isTTY,
-    );
+    return Boolean(this.input.isTTY && (this.output as NodeJS.WriteStream).isTTY);
   }
 
   configureStreaming(limits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number }): void {
@@ -450,9 +416,7 @@ export class Terminal implements AppInteractionPort {
       this.refreshDisclosureViewer();
       return;
     }
-    this.screen.commit(
-      `\n${renderSessionHeader(this.uiState, this.viewOptions())}\n\n`,
-    );
+    this.screen.commit(`\n${renderSessionHeader(this.uiState, this.viewOptions())}\n\n`);
     this.refresh();
   }
 
@@ -474,15 +438,10 @@ export class Terminal implements AppInteractionPort {
     // visible. Starting the next busy turn is the ownership boundary at which
     // the current expansion closes. Retained Thinking can still be reopened.
     if (!this.uiState.composer.busy) this.freezeCurrentTurnDisclosures();
-    const pendingEntry = pendingStart === undefined
-      ? undefined
-      : this.uiState.transcript[pendingStart];
+    const pendingEntry = pendingStart === undefined ? undefined : this.uiState.transcript[pendingStart];
     if (pendingEntry?.kind === "user") {
       this.currentTurnTranscriptStart = pendingStart;
-    } else if (
-      this.currentTurnTranscriptStart === undefined ||
-      this.currentTurnCompleted
-    ) {
+    } else if (this.currentTurnTranscriptStart === undefined || this.currentTurnCompleted) {
       // Resumed/approved operations can enter executePrompt without passing
       // through the interactive Request editor. Retain their request in this
       // turn's virtual transcript without printing a duplicate scrollback row.
@@ -501,7 +460,6 @@ export class Terminal implements AppInteractionPort {
     this.resetModelStreams();
     this.streamedAnswerCandidate = undefined;
     this.streamedReasoningCandidate = undefined;
-    this.currentTurnTranscriptEnd = undefined;
     this.progressItems = [];
     this.progressSequence = 0;
     this.uiState = applyEvent(this.uiState, { type: "progress.clear" });
@@ -525,9 +483,7 @@ export class Terminal implements AppInteractionPort {
       // An explicit new request returns the conversation to its live edge.
       // Manual inspection stays stable during streaming, but it must not hide
       // the next user turn above the visible viewport.
-      this.disclosureViewer.state = scrollDisclosureViewToEnd(
-        this.disclosureViewer.state,
-      );
+      this.disclosureViewer.state = scrollDisclosureViewToEnd(this.disclosureViewer.state);
       this.refreshDisclosureViewer(true);
     } else {
       this.refresh();
@@ -543,12 +499,12 @@ export class Terminal implements AppInteractionPort {
     this.currentRequestOptions = undefined;
     this.currentRequestInterruptSignaled = false;
     this.steeringAdmissionPaused = false;
+    this.resumeAfterCompaction = undefined;
     this.stopBusyComposer();
     this.stopBusyInputOwner();
     this.stopInputOwnerWatchdog();
     if (!this.inlineShellActive) return;
     this.currentTurnCompleted = true;
-    this.currentTurnTranscriptEnd = this.uiState.transcript.length;
     this.progressItems = [];
     this.progressSequence = 0;
     this.uiState = applyEvent(this.uiState, { type: "progress.clear" });
@@ -566,13 +522,29 @@ export class Terminal implements AppInteractionPort {
    * the callback returns undefined the editor remains frozen until the request
    * is cleared.
    */
-  async sealCurrentRequestSteering<T>(
-    seal: () => T | undefined | Promise<T | undefined>,
-  ): Promise<T | undefined> {
-    const requestOptions = this.currentRequestOptions;
-    if (!requestOptions?.onSteer || this.steeringAdmissionPaused) {
-      return seal();
+  async sealCurrentRequestSteering<T>(seal: () => T | undefined | Promise<T | undefined>): Promise<T | undefined> {
+    const paused = this.pauseSteeringAdmission();
+    if (!paused) return seal();
+    try {
+      await paused.flush();
+      await this.steeringDeliveryQueue.catch(() => undefined);
+      const result = await seal();
+      if (result !== undefined) paused.resume();
+      return result;
+    } catch (error) {
+      paused.resume();
+      throw error;
     }
+  }
+
+  /**
+   * Freeze the busy editor and own stdin so no new adjustment can be typed or
+   * submitted until resume(). Undefined when steering admission is not open.
+   * resume() is a no-op once the request that was paused has been cleared.
+   */
+  private pauseSteeringAdmission(): { flush(): Promise<void>; resume(): void } | undefined {
+    const requestOptions = this.currentRequestOptions;
+    if (!requestOptions?.onSteer || this.steeringAdmissionPaused) return undefined;
 
     this.steeringAdmissionPaused = true;
     const session = this.busyPromptSession;
@@ -612,16 +584,12 @@ export class Terminal implements AppInteractionPort {
       this.startBusyInputOwner();
     };
 
-    try {
-      await session?.flushSubmissions();
-      await this.steeringDeliveryQueue.catch(() => undefined);
-      const result = await seal();
-      if (result !== undefined) resume();
-      return result;
-    } catch (error) {
-      resume();
-      throw error;
-    }
+    return {
+      flush: async () => {
+        await session?.flushSubmissions();
+      },
+      resume,
+    };
   }
 
   /** Route audited runtime progress to live UI and retain all other notices. */
@@ -662,40 +630,35 @@ export class Terminal implements AppInteractionPort {
     this.refresh();
   }
 
-  toolCompleted(
-    toolName: string,
-    ok: boolean,
-    summary?: string,
-    error?: string,
-  ): void {
+  toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string): void {
     if (!this.inlineShellActive) return;
     // Completion is durable scrollback. Keeping a second completed copy in the
     // redrawable region makes every tool appear twice and lets Progress grow
     // for the lifetime of a request.
     this.removeRunningProgress("tool");
-    const completeSummary = summary
-      ? redactSensitiveInformation(sanitizeCommandOutput(summary)).trim()
-      : "";
-    const summaryPreview = completeSummary
-      ? this.safeInline(completeSummary, 160)
-      : "";
+    const completeSummary = summary ? redactSensitiveInformation(sanitizeCommandOutput(summary)).trim() : "";
+    const summaryPreview = completeSummary ? this.safeInline(completeSummary, 160) : "";
     const detail = summaryPreview ? ` — ${summaryPreview}` : "";
     // The completion row stays compact, but it must not become the only copy
     // of a longer or multiline tool summary. Keep the full sanitized summary
     // directly below its preview in stable scrollback.
-    const summaryBody = completeSummary && completeSummary !== summaryPreview
-      ? `\n${completeSummary.split(/\r?\n/gu).map((line) => `  ${line}`).join("\n")}`
-      : "";
-    const completeError = !ok && error
-      ? redactSensitiveInformation(sanitizeCommandOutput(error)).trim()
-      : "";
+    const summaryBody =
+      completeSummary && completeSummary !== summaryPreview
+        ? `\n${completeSummary
+            .split(/\r?\n/gu)
+            .map((line) => `  ${line}`)
+            .join("\n")}`
+        : "";
+    const completeError = !ok && error ? redactSensitiveInformation(sanitizeCommandOutput(error)).trim() : "";
     const errorBody = completeError
-      ? `\n${completeError.split(/\r?\n/gu).map((line) => `  ${line}`).join("\n")}`
+      ? `\n${completeError
+          .split(/\r?\n/gu)
+          .map((line) => `  ${line}`)
+          .join("\n")}`
       : "";
     this.commitTranscript({
       kind: "tool",
-      text: `${ok ? "✓" : "✗"} Tool: ${this.safeInline(toolName, 80)}${detail}` +
-        `${summaryBody}${errorBody}\n`,
+      text: `${ok ? "✓" : "✗"} Tool: ${this.safeInline(toolName, 80)}${detail}` + `${summaryBody}${errorBody}\n`,
       title: toolName,
     });
     this.refresh();
@@ -709,7 +672,6 @@ export class Terminal implements AppInteractionPort {
     this.currentTurnDisclosures = [];
     this.retainedReasoningDisclosures.clear();
     this.currentTurnTranscriptStart = this.uiState.composer.busy ? 0 : undefined;
-    this.currentTurnTranscriptEnd = undefined;
     this.pendingRequestTranscriptStart = undefined;
     this.resetModelStreams();
     this.streamedAnswerCandidate = undefined;
@@ -728,10 +690,15 @@ export class Terminal implements AppInteractionPort {
       viewer.primaryDisplayDirty = true;
       // Do not normalize the previous (possibly very large) document just to
       // clear its selection/scroll offset. Build an empty projection instead.
-      viewer.state = createDisclosureViewState({ nodes: [], columns: viewer.state.columns,
-        rows: viewer.state.rows, headerLines: viewer.state.headerLines,
-        composerLines: viewer.state.composerLines, footerLines: viewer.state.footerLines,
-        preserveAnsi: viewer.state.preserveAnsi });
+      viewer.state = createDisclosureViewState({
+        nodes: [],
+        columns: viewer.state.columns,
+        rows: viewer.state.rows,
+        headerLines: viewer.state.headerLines,
+        composerLines: viewer.state.composerLines,
+        footerLines: viewer.state.footerLines,
+        preserveAnsi: viewer.state.preserveAnsi,
+      });
       delete viewer.kind;
       delete viewer.registryId;
       this.refreshDisclosureViewer(true);
@@ -757,7 +724,6 @@ export class Terminal implements AppInteractionPort {
     this.clearCurrentTurnDisclosures();
     this.retainedReasoningDisclosures.clear();
     this.currentTurnTranscriptStart = undefined;
-    this.currentTurnTranscriptEnd = undefined;
     this.pendingRequestTranscriptStart = undefined;
     this.currentTurnCompleted = false;
     this.resetModelStreams();
@@ -824,17 +790,12 @@ export class Terminal implements AppInteractionPort {
     if (this.rl || this.promptActive || this.guardedInputActive) {
       throw new Error("A terminal prompt is already active.");
     }
-    if (
-      !this.input.isTTY ||
-      !(this.output as NodeJS.WriteStream).isTTY
-    ) {
+    if (!this.input.isTTY || !(this.output as NodeJS.WriteStream).isTTY) {
       const text = await this.question(prompt);
       return text === null ? null : { text, pasteErrors: [] };
     }
     if (typeof this.input.setRawMode !== "function") {
-      this.warning(
-        "Multiline plan feedback requires terminal Raw Mode support.",
-      );
+      this.warning("Multiline plan feedback requires terminal Raw Mode support.");
       return null;
     }
 
@@ -872,11 +833,7 @@ export class Terminal implements AppInteractionPort {
           if (session) {
             ownedSession = session;
             this.activePromptSession = session;
-            if (
-              this.inlineShellActive &&
-              !this.startPersistentViewer(session) &&
-              this.disclosureViewer
-            ) {
+            if (this.inlineShellActive && !this.startPersistentViewer(session) && this.disclosureViewer) {
               throw new Error("The persistent Request editor could not claim terminal input.");
             }
             return;
@@ -929,9 +886,7 @@ export class Terminal implements AppInteractionPort {
       const submission = await this.multilineTextQuestion(prompt, captureText);
       if (submission === null) return null;
       if (submission.pasteErrors.length === 0) return submission.text;
-      this.warning(
-        `Plan feedback paste failed: ${submission.pasteErrors.join("; ")}`,
-      );
+      this.warning(`Plan feedback paste failed: ${submission.pasteErrors.join("; ")}`);
     }
     return null;
   }
@@ -954,9 +909,7 @@ export class Terminal implements AppInteractionPort {
     });
     const rendered = `${formatSubmittedRequest(feedback)}\n\n`;
     if (this.disclosureViewer) {
-      this.disclosureViewer.state = scrollDisclosureViewToEnd(
-        this.disclosureViewer.state,
-      );
+      this.disclosureViewer.state = scrollDisclosureViewToEnd(this.disclosureViewer.state);
       this.disclosureViewer.deferredCommits.push({ text: rendered });
       this.refreshDisclosureViewer(true);
     } else {
@@ -968,10 +921,7 @@ export class Terminal implements AppInteractionPort {
     prompt: string,
     options: {
       initialImageCount?: number;
-      captureImage: (
-        index: number,
-        signal?: AbortSignal,
-      ) => Promise<ImageAttachment>;
+      captureImage: (index: number, signal?: AbortSignal) => Promise<ImageAttachment>;
       captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
     },
   ): Promise<PromptSubmission | null> {
@@ -1013,18 +963,14 @@ export class Terminal implements AppInteractionPort {
         signal: promptController.signal,
         captureImage: options.captureImage,
         captureText: options.captureText,
-        completionProvider: (draft) =>
-          completeSlashCommandPrefix(draft.text, draft.cursor),
+        completionProvider: (draft) => completeSlashCommandPrefix(draft.text, draft.cursor),
         startSuspended: this.inlineShellActive,
         onSessionReady: (session) => {
           if (session) {
             ownedSession = session;
             this.activePromptSession = session;
             if (this.inlineShellActive) {
-              if (
-                !this.startPersistentViewer(session) &&
-                this.disclosureViewer
-              ) {
+              if (!this.startPersistentViewer(session) && this.disclosureViewer) {
                 throw new Error("The persistent Request editor could not claim terminal input.");
               }
             } else {
@@ -1045,9 +991,7 @@ export class Terminal implements AppInteractionPort {
               text: draft.text,
               cursor: draft.cursor,
               images: draft.images,
-              ...(draft.completionSuffix
-                ? { completionSuffix: draft.completionSuffix }
-                : {}),
+              ...(draft.completionSuffix ? { completionSuffix: draft.completionSuffix } : {}),
             },
           });
           this.refresh();
@@ -1061,9 +1005,7 @@ export class Terminal implements AppInteractionPort {
             }
           : {}),
         onShowThinking: (id) => {
-          const shown = id === "last"
-            ? this.showLatestReasoning()
-            : this.showReasoning(id);
+          const shown = id === "last" ? this.showLatestReasoning() : this.showReasoning(id);
           if (!shown) {
             this.info(
               id === "last"
@@ -1092,9 +1034,7 @@ export class Terminal implements AppInteractionPort {
           images: result.images,
         })}\n\n`;
         if (this.disclosureViewer) {
-          this.disclosureViewer.state = scrollDisclosureViewToEnd(
-            this.disclosureViewer.state,
-          );
+          this.disclosureViewer.state = scrollDisclosureViewToEnd(this.disclosureViewer.state);
           this.disclosureViewer.deferredCommits.push({ text: rendered });
           this.refreshDisclosureViewer(true);
         } else {
@@ -1118,7 +1058,8 @@ export class Terminal implements AppInteractionPort {
     initialProvider: ProviderSelectorChoice["provider"],
   ): Promise<ProviderSelectorChoice["provider"] | undefined> {
     if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive || this.guardedInputActive) throw new Error("Provider selection cannot start while a prompt is active.");
+    if (this.rl || this.promptActive || this.guardedInputActive)
+      throw new Error("Provider selection cannot start while a prompt is active.");
     return this.withPrivateProtocolFilteredInput((input) =>
       selectProvider(choices, {
         input: input as ModelSelectorInput,
@@ -1128,9 +1069,7 @@ export class Terminal implements AppInteractionPort {
         ...(this.inlineShellActive
           ? {
               overlay: this.menuOverlay("provider-picker", "picker"),
-              ...(this.vscodeMenuBridge
-                ? { navigation: this.vscodeMenuBridge }
-                : {}),
+              ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
             }
           : {}),
       }),
@@ -1143,7 +1082,8 @@ export class Terminal implements AppInteractionPort {
     initialModel?: string,
   ): Promise<string | undefined> {
     if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive || this.guardedInputActive) throw new Error("Model selection cannot start while a prompt is active.");
+    if (this.rl || this.promptActive || this.guardedInputActive)
+      throw new Error("Model selection cannot start while a prompt is active.");
     return this.withPrivateProtocolFilteredInput((input) =>
       selectModel(providerName, choices, {
         input: input as ModelSelectorInput,
@@ -1153,9 +1093,7 @@ export class Terminal implements AppInteractionPort {
         ...(this.inlineShellActive
           ? {
               overlay: this.menuOverlay("model-picker", "picker"),
-              ...(this.vscodeMenuBridge
-                ? { navigation: this.vscodeMenuBridge }
-                : {}),
+              ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
             }
           : {}),
       }),
@@ -1169,7 +1107,8 @@ export class Terminal implements AppInteractionPort {
     initialEffort: ThinkingEffort,
   ): Promise<ThinkingEffort | undefined> {
     if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive || this.guardedInputActive) throw new Error("Thinking effort selection cannot start while a prompt is active.");
+    if (this.rl || this.promptActive || this.guardedInputActive)
+      throw new Error("Thinking effort selection cannot start while a prompt is active.");
     return this.withPrivateProtocolFilteredInput((input) =>
       selectThinkingEffort(providerName, model, choices, {
         input: input as ModelSelectorInput,
@@ -1179,9 +1118,7 @@ export class Terminal implements AppInteractionPort {
         ...(this.inlineShellActive
           ? {
               overlay: this.menuOverlay("thinking-picker", "picker"),
-              ...(this.vscodeMenuBridge
-                ? { navigation: this.vscodeMenuBridge }
-                : {}),
+              ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
             }
           : {}),
       }),
@@ -1190,16 +1127,13 @@ export class Terminal implements AppInteractionPort {
 
   async readSecret(prompt: string): Promise<string> {
     if (this.closed) return Promise.reject(new Error("Terminal input is closed."));
-    if (this.rl || this.promptActive || this.guardedInputActive || this.secretInputActive) throw new Error("Secret input must be read before the prompt is opened.");
+    if (this.rl || this.promptActive || this.guardedInputActive || this.secretInputActive)
+      throw new Error("Secret input must be read before the prompt is opened.");
     this.secretInputActive = true;
     if (this.inlineShellActive) this.screen?.clearLive();
     try {
       return await this.withPrivateProtocolFilteredInput((input) =>
-        readSecretInput(
-          input as ModelSelectorInput,
-          this.output,
-          prompt,
-        ),
+        readSecretInput(input as ModelSelectorInput, this.output, prompt),
       );
     } finally {
       this.secretInputActive = false;
@@ -1217,15 +1151,16 @@ export class Terminal implements AppInteractionPort {
     // Background approvals share the parent's UI even when the main agent has
     // returned to its editable prompt. Preserve its draft and transfer stdin.
     while (!this.closed && this.guardedInputActive && !request.signal?.aborted) {
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     if (this.closed || request.signal?.aborted) return "reject";
     const idleSession = request.source && !this.busyPromptSession ? this.activePromptSession : undefined;
     if (idleSession && idleSession.suspendInput()) {
       this.activePromptSession = undefined;
       this.promptActive = false;
-      try { return await this.approve(request); }
-      finally {
+      try {
+        return await this.approve(request);
+      } finally {
         if (!this.closed) {
           this.activePromptSession = idleSession;
           this.promptActive = true;
@@ -1233,15 +1168,10 @@ export class Terminal implements AppInteractionPort {
         }
       }
     }
-    const title = redactSensitiveInformation(sanitizeCommandOutput(request.title))
-      .replace(/\s+/gu, " ")
-      .trim();
-    const description = redactSensitiveInformation(
-      sanitizeCommandOutput(request.description),
-    );
+    const title = redactSensitiveInformation(sanitizeCommandOutput(request.title)).replace(/\s+/gu, " ").trim();
+    const description = redactSensitiveInformation(sanitizeCommandOutput(request.description));
     const preview = request.commandPreview
-      ? redactSensitiveInformation(sanitizeCommandOutput(request.commandPreview))
-        .replace(/[\r\n]+/gu, " ")
+      ? redactSensitiveInformation(sanitizeCommandOutput(request.commandPreview)).replace(/[\r\n]+/gu, " ")
       : undefined;
     // Approval is a security decision. Its complete description and resolved
     // command are durable scrollback; the bounded selector card below is only
@@ -1249,8 +1179,12 @@ export class Terminal implements AppInteractionPort {
     this.write(
       chalk.yellow(`\nApproval required: ${title}\n`) +
         `${description}\n` +
-        (request.network ? `Network effect: ${request.network.effect}; destination: ${sanitizeCommandOutput(request.network.destination ?? "resolved when the command connects")}\n` : "") +
-        (request.network ? `Optional saved grant scope: ${sanitizeCommandOutput(formatCommandApprovalPrefix(request.commandPrefix))}\n` : "") +
+        (request.network
+          ? `Network effect: ${request.network.effect}; destination: ${sanitizeCommandOutput(request.network.destination ?? "resolved when the command connects")}\n`
+          : "") +
+        (request.network
+          ? `Optional saved grant scope: ${sanitizeCommandOutput(formatCommandApprovalPrefix(request.commandPrefix))}\n`
+          : "") +
         (preview ? chalk.gray(`Command: ${preview}\n`) : ""),
     );
 
@@ -1277,14 +1211,8 @@ export class Terminal implements AppInteractionPort {
           color: this.colorEnabled(),
           ...(this.inlineShellActive
             ? {
-                overlay: this.menuOverlay(
-                  request.id,
-                  "approval",
-                  request,
-                ),
-                ...(this.vscodeMenuBridge
-                  ? { navigation: this.vscodeMenuBridge }
-                  : {}),
+                overlay: this.menuOverlay(request.id, "approval", request),
+                ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
               }
             : {}),
         }),
@@ -1302,40 +1230,29 @@ export class Terminal implements AppInteractionPort {
     this.write(`\n${formatPlanProposal(plan)}\n`);
   }
 
-  async reviewPlan(
-    options: Readonly<PlanReviewInputOptions> = {},
-  ): Promise<PlanReviewDecision> {
+  async reviewPlan(options: Readonly<PlanReviewInputOptions> = {}): Promise<PlanReviewDecision> {
     if (!this.isInteractive()) return { action: "defer" };
     const plan = options.plan ?? this.lastPlan;
-    if (plan && this.input.isTTY && (this.output as NodeJS.WriteStream).isTTY &&
-      typeof this.input.setRawMode === "function") {
-      const choices = [
-        "Yes, use Auto mode",
-        "No, reject plan",
-        "Adjust plan with feedback",
-      ];
+    if (
+      plan &&
+      this.input.isTTY &&
+      (this.output as NodeJS.WriteStream).isTTY &&
+      typeof this.input.setRawMode === "function"
+    ) {
+      const choices = ["Yes, use Auto mode", "No, reject plan", "Adjust plan with feedback"];
       const selection = await this.withPrivateProtocolFilteredInput((input) =>
         selectMenuIndex(
           choices.length,
           0,
-          (selectedIndex) => renderMenu(
-            "Review proposed plan",
-            choices,
-            selectedIndex,
-            this.colorEnabled(),
-          ),
+          (selectedIndex) => renderMenu("Review proposed plan", choices, selectedIndex, this.colorEnabled()),
           {
             input,
             output: this.output as ModelSelectorOutput,
             color: this.colorEnabled(),
             idleTimeoutMs: options.idleTimeoutMs ?? DECISION_TIMEOUT_MS,
             idleSelectionIndex: 0,
-            ...(this.inlineShellActive ? { overlay: this.menuOverlay(
-              plan.id, "plan-review", plan,
-            ) } : {}),
-            ...(this.vscodeMenuBridge
-              ? { navigation: this.vscodeMenuBridge }
-              : {}),
+            ...(this.inlineShellActive ? { overlay: this.menuOverlay(plan.id, "plan-review", plan) } : {}),
+            ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
           },
           "No plan review choices are available.",
         ),
@@ -1343,10 +1260,7 @@ export class Terminal implements AppInteractionPort {
       if (selection === undefined) return { action: "defer" };
       if (selection === 0) return { action: "approve" };
       if (selection === 1) return { action: "reject" };
-      const feedback = await this.planTextQuestion(
-        "Plan feedback > ",
-        options.captureText,
-      );
+      const feedback = await this.planTextQuestion("Plan feedback > ", options.captureText);
       if (feedback === null) return { action: "defer" };
       const sanitized = sanitizePlanText(feedback);
       if (!sanitized) return { action: "defer" };
@@ -1358,10 +1272,7 @@ export class Terminal implements AppInteractionPort {
       this.write("1. Yes, use Auto mode\n");
       this.write("2. No, reject plan\n");
       this.write("3. Type feedback and press Enter to adjust the plan\n\n");
-      const response = await this.planTextQuestion(
-        "Choose 1/2, or type feedback to adjust > ",
-        options.captureText,
-      );
+      const response = await this.planTextQuestion("Choose 1/2, or type feedback to adjust > ", options.captureText);
       if (response === null) return { action: "defer" };
       const answer = sanitizePlanText(response);
       if (!answer) continue;
@@ -1373,10 +1284,7 @@ export class Terminal implements AppInteractionPort {
         return { action: "reject" };
       }
       if (normalized === "3") {
-        const feedback = await this.planTextQuestion(
-          "Plan feedback > ",
-          options.captureText,
-        );
+        const feedback = await this.planTextQuestion("Plan feedback > ", options.captureText);
         if (feedback === null) return { action: "defer" };
         const sanitized = sanitizePlanText(feedback);
         if (!sanitized) continue;
@@ -1396,11 +1304,7 @@ export class Terminal implements AppInteractionPort {
     timed?: Readonly<TimedChoiceOptions>,
   ): Promise<string | undefined> {
     if (this.closed || choices.length === 0) return undefined;
-    if (
-      !this.isInteractive() ||
-      (this.promptActive && !this.busyPromptSession) ||
-      this.guardedInputActive
-    ) {
+    if (!this.isInteractive() || (this.promptActive && !this.busyPromptSession) || this.guardedInputActive) {
       return undefined;
     }
     const initialIndex = Math.max(
@@ -1411,29 +1315,29 @@ export class Terminal implements AppInteractionPort {
       selectMenuIndex(
         choices.length,
         initialIndex,
-        (selectedIndex) => renderMenu(
-          title,
-          choices.map((choice) =>
-            `${choice.label}${choice.detail ? `  [${choice.detail}]` : ""}`),
-          selectedIndex,
-          this.colorEnabled(),
-          512,
-        ),
+        (selectedIndex) =>
+          renderMenu(
+            title,
+            choices.map((choice) => `${choice.label}${choice.detail ? `  [${choice.detail}]` : ""}`),
+            selectedIndex,
+            this.colorEnabled(),
+            512,
+          ),
         {
           input,
           output: this.output as ModelSelectorOutput,
           color: this.colorEnabled(),
           ...(timed?.signal ? { signal: timed.signal } : {}),
-          ...(timed ? {
-            idleTimeoutMs: timed.idleTimeoutMs,
-            idleSelectionIndex: choices.findIndex(choice => choice.id === timed.idleChoiceId && !choice.disabled),
-          } : {}),
+          ...(timed
+            ? {
+                idleTimeoutMs: timed.idleTimeoutMs,
+                idleSelectionIndex: choices.findIndex((choice) => choice.id === timed.idleChoiceId && !choice.disabled),
+              }
+            : {}),
           ...(this.inlineShellActive
             ? {
                 overlay: this.menuOverlay(`choice-${Date.now()}`, "picker"),
-                ...(this.vscodeMenuBridge
-                  ? { navigation: this.vscodeMenuBridge }
-                  : {}),
+                ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
               }
             : {}),
         },
@@ -1456,8 +1360,9 @@ export class Terminal implements AppInteractionPort {
       controller.abort(error);
     };
     process.on("SIGINT", onInterrupt);
-    try { return await operation(controller.signal); }
-    finally {
+    try {
+      return await operation(controller.signal);
+    } finally {
       process.removeListener("SIGINT", onInterrupt);
       if (this.externalOperationController === controller) this.externalOperationController = undefined;
     }
@@ -1465,9 +1370,14 @@ export class Terminal implements AppInteractionPort {
 
   compactionProgress(progress: CompactionProgress): void {
     if (compactionRunning(progress)) {
-      if (this.compactionPhase !== progress.phase) {
-        this.stopActivity(this.compactionActivity);
-        this.compactionActivity = this.startActivity(compactionLabel(progress, this.language === "zh_cn"), "model");
+      if (!this.compactionPhase) {
+        if (progress.mode === "automatic") this.resumeAfterCompaction = this.pauseSteeringAdmission()?.resume;
+        this.compactionActivity = this.startActivity(
+          compactionActivityLabel(progress, this.language === "zh_cn"),
+          "model",
+          undefined,
+          progress.startedAt,
+        );
         this.compactionPhase = progress.phase;
         if (!this.isInteractive()) this.info(compactionLabel(progress, this.language === "zh_cn"));
       }
@@ -1476,10 +1386,10 @@ export class Terminal implements AppInteractionPort {
     this.stopActivity(this.compactionActivity);
     this.compactionActivity = undefined;
     this.compactionPhase = undefined;
-    if (progress.afterChars === undefined) return;
-    const width = Math.max(4, Math.min(16, (process.stdout.columns ?? 80) - 64));
-    const bar = progress.phase === "completed" ? `[${"█".repeat(width)}]` : `[${"─".repeat(width)}]`;
-    this.write(`${bar} ${compactionLabel(progress, this.language === "zh_cn")}\n`);
+    const resume = this.resumeAfterCompaction;
+    this.resumeAfterCompaction = undefined;
+    resume?.();
+    this.write(`${compactionLabel(progress, this.language === "zh_cn")}\n`);
   }
 
   write(text: string): void {
@@ -1517,7 +1427,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   stopReview(id?: string): void {
-    if (!this.uiState.live.review || id && this.uiState.live.review.id !== id) return;
+    if (!this.uiState.live.review || (id && this.uiState.live.review.id !== id)) return;
     this.uiState = applyEvent(this.uiState, { type: "review.clear", ...(id ? { id } : {}) });
     this.lastReviewElapsedSecond = -1;
     if (!this.activeActivityId && this.activityTimer) {
@@ -1530,17 +1440,18 @@ export class Terminal implements AppInteractionPort {
   startActivity(
     text: string,
     kind: UIActivityKind = "model",
+    _toolName?: string,
+    startedAt = Date.now(),
   ): string | undefined {
     this.stopActivity();
     if (!this.canAnimateActivity()) return undefined;
 
     const sanitized = this.safeInline(text, 160);
     this.activityText = sanitized || "Waiting for the model response";
-    this.activityStartedAt = Date.now();
+    this.activityStartedAt = startedAt;
     this.activityFrameIndex = 0;
     this.activitySequence += 1;
-    this.activeActivityId =
-      `activity_${this.activityStartedAt}_${this.activitySequence}`;
+    this.activeActivityId = `activity_${this.activityStartedAt}_${this.activitySequence}`;
     if (this.inlineShellActive) {
       this.uiState = applyEvent(this.uiState, {
         type: "activity.start",
@@ -1581,8 +1492,7 @@ export class Terminal implements AppInteractionPort {
           return;
         }
         if (this.activeActivityId) {
-          this.activityFrameIndex =
-            (this.activityFrameIndex + 1) % Terminal.ACTIVITY_FRAMES.length;
+          this.activityFrameIndex = (this.activityFrameIndex + 1) % Terminal.ACTIVITY_FRAMES.length;
           this.renderActivity();
         } else if (this.inlineShellActive && this.uiState.live.review) {
           const elapsed = Math.max(0, Math.floor((Date.now() - this.uiState.live.review.startedAt) / 1_000));
@@ -1691,11 +1601,13 @@ export class Terminal implements AppInteractionPort {
       this.refresh();
       return;
     }
-    this.write(renderSubagents(agents, {
-      color: this.colorEnabled(),
-      ...(taskGraph ? { taskGraph } : {}),
-      ...(concurrencyLimit === undefined ? {} : { concurrencyLimit }),
-    }));
+    this.write(
+      renderSubagents(agents, {
+        color: this.colorEnabled(),
+        ...(taskGraph ? { taskGraph } : {}),
+        ...(concurrencyLimit === undefined ? {} : { concurrencyLimit }),
+      }),
+    );
   }
 
   showSubagentsSnapshot(
@@ -1791,8 +1703,9 @@ export class Terminal implements AppInteractionPort {
   private scheduleModelStreamFlush(): void {
     if (this.streamFlushTimer) return;
     this.streamFlushTimer = setTimeout(() => {
-      try { this.flushModelStreams(); }
-      catch (error) {
+      try {
+        this.flushModelStreams();
+      } catch (error) {
         this.resetModelStreams();
         this.streamedAnswerCandidate = undefined;
         this.streamedReasoningCandidate = undefined;
@@ -1832,16 +1745,13 @@ export class Terminal implements AppInteractionPort {
   private renderStreamToolProgress(state: ActiveModelStream): void {
     state.toolProgressDirty = false;
     const calls = [...state.toolCalls.entries()].sort(([left], [right]) => left - right);
-    if (
-      !calls.length ||
-      !this.activeActivityId ||
-      state.activityId !== this.activeActivityId
-    ) return;
+    if (!calls.length || !this.activeActivityId || state.activityId !== this.activeActivityId) return;
     const parts = calls.slice(0, 2).map(([index, call]) => {
       const name = this.safeInline(call.name || "tool", 48);
-      const size = call.argumentChars < 1024
-        ? `${call.argumentChars} chars`
-        : `${(call.argumentChars / 1024).toFixed(call.argumentChars < 10 * 1024 ? 1 : 0)} KiB`;
+      const size =
+        call.argumentChars < 1024
+          ? `${call.argumentChars} chars`
+          : `${(call.argumentChars / 1024).toFixed(call.argumentChars < 10 * 1024 ? 1 : 0)} KiB`;
       return `${name} #${index + 1} · ${size}`;
     });
     const remaining = calls.length - parts.length;
@@ -1858,17 +1768,17 @@ export class Terminal implements AppInteractionPort {
     this.renderActivity();
   }
 
-  private liveStreamText(
-    value: string,
-    final: boolean,
-    includeLimitNotice = true,
-  ): string {
+  private liveStreamText(value: string, final: boolean, includeLimitNotice = true): string {
     if (final) return this.safeStreamText(value);
     const prefix = value.slice(0, this.streamPreviewMaxChars);
     // Hold the unfinished lexical token (including credentials, data URLs and
     // terminal escape fragments) until a whitespace boundary is available.
-    const boundary = Math.max(prefix.lastIndexOf(" "), prefix.lastIndexOf("\n"), prefix.lastIndexOf("\t"),
-      ...["。", "，", "！", "？", "；"].map((mark) => prefix.lastIndexOf(mark)));
+    const boundary = Math.max(
+      prefix.lastIndexOf(" "),
+      prefix.lastIndexOf("\n"),
+      prefix.lastIndexOf("\t"),
+      ...["。", "，", "！", "？", "；"].map((mark) => prefix.lastIndexOf(mark)),
+    );
     const safe = this.safeStreamText(prefix.slice(0, Math.max(0, boundary + 1)));
     return includeLimitNotice && value.length > this.streamPreviewMaxChars
       ? `${safe}\n[Live preview limited; complete output will appear when the response finishes.]`
@@ -1881,10 +1791,7 @@ export class Terminal implements AppInteractionPort {
    * state for final reconciliation, but is not repeatedly sanitized or
    * projected into the terminal document.
    */
-  private renderLiveReasoningProgress(
-    state: ActiveModelStream,
-    nowMs = Date.now(),
-  ): void {
+  private renderLiveReasoningProgress(state: ActiveModelStream, nowMs = Date.now()): void {
     if (
       state.completed ||
       state.finalDisplay ||
@@ -1892,7 +1799,8 @@ export class Terminal implements AppInteractionPort {
       state.reasoningLastDeltaAtMs === undefined ||
       !state.reasoningId ||
       !state.reasoningEntryId
-    ) return;
+    )
+      return;
     const ageBucket = Math.floor(Math.max(0, nowMs - state.reasoningLastDeltaAtMs) / 100);
     const progressKey = `${state.reasoningSourceChars}:${ageBucket}`;
     if (state.renderedReasoningProgressKey === progressKey) return;
@@ -1977,26 +1885,28 @@ export class Terminal implements AppInteractionPort {
         const entryId = `thinking_${block.id}`;
         state.reasoningId = block.id;
         state.reasoningEntryId = entryId;
-        this.retainCurrentTurnDisclosure({
-          kind: "raw",
-          id: entryId,
-          text: renderReasoningMarker(block, {
-            color: this.colorEnabled(),
-            ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined ? {} : {
-              live: {
-                sourceChars: state.reasoningSourceChars,
-                previewLimitChars: this.streamPreviewMaxChars,
-                lastDeltaAtMs: state.reasoningLastDeltaAtMs,
-              },
+        this.retainCurrentTurnDisclosure(
+          {
+            kind: "raw",
+            id: entryId,
+            text: renderReasoningMarker(block, {
+              color: this.colorEnabled(),
+              ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined
+                ? {}
+                : {
+                    live: {
+                      sourceChars: state.reasoningSourceChars,
+                      previewLimitChars: this.streamPreviewMaxChars,
+                      lastDeltaAtMs: state.reasoningLastDeltaAtMs,
+                    },
+                  }),
             }),
-          }),
-          reasoning: block.text,
-        }, block);
-      } else {
-        const block = this.reasoning.replace(
-          state.reasoningId,
-          safeReasoning,
+            reasoning: block.text,
+          },
+          block,
         );
+      } else {
+        const block = this.reasoning.replace(state.reasoningId, safeReasoning);
         if (block && state.reasoningEntryId) {
           this.retainedReasoningDisclosures.set(state.reasoningEntryId, block);
           this.replaceTranscriptEntry(state.reasoningEntryId, {
@@ -2004,13 +1914,15 @@ export class Terminal implements AppInteractionPort {
             id: state.reasoningEntryId,
             text: renderReasoningMarker(block, {
               color: this.colorEnabled(),
-              ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined ? {} : {
-                live: {
-                  sourceChars: state.reasoningSourceChars,
-                  previewLimitChars: this.streamPreviewMaxChars,
-                  lastDeltaAtMs: state.reasoningLastDeltaAtMs,
-                },
-              }),
+              ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined
+                ? {}
+                : {
+                    live: {
+                      sourceChars: state.reasoningSourceChars,
+                      previewLimitChars: this.streamPreviewMaxChars,
+                      lastDeltaAtMs: state.reasoningLastDeltaAtMs,
+                    },
+                  }),
             }),
             reasoning: block.text,
           });
@@ -2080,23 +1992,27 @@ export class Terminal implements AppInteractionPort {
         ? "[Interrupted model response; streamed tool arguments were incomplete and were not executed.]"
         : "[Interrupted model response; not a completed answer.]";
       if (state.reasoningId && state.reasoningEntryId) {
-        const block = this.reasoning.replace(
-          state.reasoningId,
-          this.safeStreamText(state.reasoningText),
-        );
-        if (block) this.replaceTranscriptEntry(state.reasoningEntryId, {
-          kind: "raw", id: state.reasoningEntryId,
-          text: `${renderReasoningMarker(block, { color: this.colorEnabled() })} [interrupted]`,
-          reasoning: block.text,
-        });
+        const block = this.reasoning.replace(state.reasoningId, this.safeStreamText(state.reasoningText));
+        if (block)
+          this.replaceTranscriptEntry(state.reasoningEntryId, {
+            kind: "raw",
+            id: state.reasoningEntryId,
+            text: `${renderReasoningMarker(block, { color: this.colorEnabled() })} [interrupted]`,
+            reasoning: block.text,
+          });
       }
       if (state.answerEntryId) {
         this.replaceTranscriptEntry(state.answerEntryId, {
-          kind: "assistant", id: state.answerEntryId,
+          kind: "assistant",
+          id: state.answerEntryId,
           text: `\n${state.renderedAnswer ?? ""}\n${interrupted}\n`,
         });
       } else {
-        this.commitTranscript({ kind: "raw", id: `model_stream_${event.streamId}_interrupted`, text: `${interrupted}\n` });
+        this.commitTranscript({
+          kind: "raw",
+          id: `model_stream_${event.streamId}_interrupted`,
+          text: `${interrupted}\n`,
+        });
       }
       state.completed = true;
       this.modelStreams.delete(event.streamId);
@@ -2126,8 +2042,11 @@ export class Terminal implements AppInteractionPort {
   }
 
   peerMessage(senderThreadId: string, text: string, outgoing = false): void {
-    const body = redactSensitiveInformation(sanitizeCommandOutput(
-      `${outgoing ? "To" : "From"} Thread ${senderThreadId} · ${outgoing ? "queued" : "Agent"}\n${text}`));
+    const body = redactSensitiveInformation(
+      sanitizeCommandOutput(
+        `${outgoing ? "To" : "From"} Thread ${senderThreadId} · ${outgoing ? "queued" : "Agent"}\n${text}`,
+      ),
+    );
     if (this.inlineShellActive) {
       this.commitTranscript({ kind: "assistant", id: `peer_${Date.now()}_${Math.random()}`, text: body });
       this.refresh();
@@ -2135,11 +2054,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   /** Retain one durable user adjustment and present it as ordinary user input. */
-  addQueuedAdjustment(
-    id: number,
-    text: string,
-    images: readonly Readonly<ImageAttachment>[] = [],
-  ): number {
+  addQueuedAdjustment(id: number, text: string, images: readonly Readonly<ImageAttachment>[] = []): number {
     const block = this.adjustments.add(id, text, images);
     if (this.isInteractive()) {
       const entry = {
@@ -2266,9 +2181,7 @@ export class Terminal implements AppInteractionPort {
         const rl = readline.createInterface({
           input: inputFilter,
           output: this.output,
-          terminal:
-            Boolean(this.input.isTTY) &&
-            Boolean((this.output as NodeJS.WriteStream).isTTY),
+          terminal: Boolean(this.input.isTTY) && Boolean((this.output as NodeJS.WriteStream).isTTY),
         });
         this.input.pipe(inputFilter);
         this.rl = rl;
@@ -2325,10 +2238,7 @@ export class Terminal implements AppInteractionPort {
       this.uiState = applyEvent(this.uiState, {
         type: "composer.patch",
         patch: {
-          pendingSubmissions: Math.max(
-            0,
-            this.uiState.composer.pendingSubmissions + delta,
-          ),
+          pendingSubmissions: Math.max(0, this.uiState.composer.pendingSubmissions + delta),
         },
       });
       this.refresh();
@@ -2342,9 +2252,7 @@ export class Terminal implements AppInteractionPort {
         return;
       }
       pendingCount(1);
-      const queued = this.steeringDeliveryQueue
-        .catch(() => undefined)
-        .then(() => requestOptions.onSteer?.(submission));
+      const queued = this.steeringDeliveryQueue.catch(() => undefined).then(() => requestOptions.onSteer?.(submission));
       this.steeringDeliveryQueue = queued.then(
         () => pendingCount(-1),
         (error: unknown) => {
@@ -2363,9 +2271,11 @@ export class Terminal implements AppInteractionPort {
       prompt: this.composerPromptPrefix(),
       initialImageCount: requestOptions.initialImageCount ?? 0,
       signal: controller.signal,
-      captureImage: requestOptions.captureImage ?? (async () => {
-        throw new Error("Image steering is unavailable for this request.");
-      }),
+      captureImage:
+        requestOptions.captureImage ??
+        (async () => {
+          throw new Error("Image steering is unavailable for this request.");
+        }),
       captureText: requestOptions.captureText,
       keepOpen: true,
       onSubmit: (submission) => deliver(submission),
@@ -2376,10 +2286,7 @@ export class Terminal implements AppInteractionPort {
       clearOnSubmit: true,
       startSuspended: this.inlineShellActive,
       onDraftChange: (draft) => {
-        if (
-          this.busyPromptGeneration !== generation ||
-          this.currentRequestOptions !== requestOptions
-        ) return;
+        if (this.busyPromptGeneration !== generation || this.currentRequestOptions !== requestOptions) return;
         this.uiState = applyEvent(this.uiState, {
           type: "composer.patch",
           patch: {
@@ -2405,20 +2312,14 @@ export class Terminal implements AppInteractionPort {
           }
           return;
         }
-        if (
-          this.busyPromptGeneration !== generation ||
-          this.currentRequestOptions !== requestOptions
-        ) {
+        if (this.busyPromptGeneration !== generation || this.currentRequestOptions !== requestOptions) {
           throw new Error("The busy Request editor is no longer current.");
         }
         ownedSession = session;
         this.busyPromptSession = session;
         this.activePromptSession = session;
         if (this.inlineShellActive) {
-          if (
-            !this.startPersistentViewer(session) &&
-            this.disclosureViewer
-          ) {
+          if (!this.startPersistentViewer(session) && this.disclosureViewer) {
             throw new Error("The persistent Request editor could not claim terminal input.");
           }
         } else {
@@ -2426,29 +2327,29 @@ export class Terminal implements AppInteractionPort {
         }
       },
       onShowThinking: (id) => {
-        const shown = id === "last"
-          ? this.showLatestReasoning()
-          : this.showReasoning(id);
+        const shown = id === "last" ? this.showLatestReasoning() : this.showReasoning(id);
         if (!shown) this.info("No Thinking content is available in this thread.");
       },
-    }).catch((error: unknown) => {
-      if (this.busyPromptGeneration !== generation || this.closed) return;
-      this.writeStableStatus(
-        `Busy input editor failed: ${error instanceof Error ? error.message : String(error)}`,
-        "error",
-      );
-    }).finally(() => {
-      if (this.busyPromptGeneration !== generation) return;
-      this.busyPromptController = undefined;
-      if (this.busyPromptSession === ownedSession) this.busyPromptSession = undefined;
-      if (this.activePromptSession === ownedSession) this.activePromptSession = undefined;
-      this.promptActive = false;
-      if (this.currentRequestOptions === requestOptions && !this.closed) {
-        // Preserve Ctrl+C/Thinking controls if the richer editor becomes
-        // unavailable on a particular terminal.
-        this.startBusyInputOwner();
-      }
-    });
+    })
+      .catch((error: unknown) => {
+        if (this.busyPromptGeneration !== generation || this.closed) return;
+        this.writeStableStatus(
+          `Busy input editor failed: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+      })
+      .finally(() => {
+        if (this.busyPromptGeneration !== generation) return;
+        this.busyPromptController = undefined;
+        if (this.busyPromptSession === ownedSession) this.busyPromptSession = undefined;
+        if (this.activePromptSession === ownedSession) this.activePromptSession = undefined;
+        this.promptActive = false;
+        if (this.currentRequestOptions === requestOptions && !this.closed) {
+          // Preserve Ctrl+C/Thinking controls if the richer editor becomes
+          // unavailable on a particular terminal.
+          this.startBusyInputOwner();
+        }
+      });
   }
 
   private stopBusyComposer(): void {
@@ -2482,26 +2383,20 @@ export class Terminal implements AppInteractionPort {
     let filter!: PrivateOscInputFilter;
     const onError = (): void => {
       if (this.busyInputOwner?.filter !== filter) return;
-      this.failTerminalUi(
-        "request input owner",
-        new Error("The busy input stream failed."),
-      );
+      this.failTerminalUi("request input owner", new Error("The busy input stream failed."));
     };
-    filter = new PrivateOscInputFilter(
-      this.input,
-      () => {
-        if (
-          this.busyInputOwner?.filter !== filter ||
-          !this.currentRequestOptions ||
-          this.guardedInputActive ||
-          this.promptActive ||
-          this.rl
-        ) {
-          return;
-        }
-        this.signalCurrentRequestInterrupt();
-      },
-    );
+    filter = new PrivateOscInputFilter(this.input, () => {
+      if (
+        this.busyInputOwner?.filter !== filter ||
+        !this.currentRequestOptions ||
+        this.guardedInputActive ||
+        this.promptActive ||
+        this.rl
+      ) {
+        return;
+      }
+      this.signalCurrentRequestInterrupt();
+    });
     this.busyInputOwner = { filter, wasRaw, wasFlowing, onError };
     filter.on("error", onError);
 
@@ -2534,9 +2429,7 @@ export class Terminal implements AppInteractionPort {
     else this.input.pause();
   }
 
-  private async withPrivateProtocolFilteredInput<T>(
-    action: (input: PrivateOscInputFilter) => Promise<T>,
-  ): Promise<T> {
+  private async withPrivateProtocolFilteredInput<T>(action: (input: PrivateOscInputFilter) => Promise<T>): Promise<T> {
     if (this.guardedInputActive) {
       throw new Error("A terminal input operation is already active.");
     }
@@ -2575,11 +2468,7 @@ export class Terminal implements AppInteractionPort {
         if (!inputFilter.destroyed) inputFilter.destroy();
         this.guardedInputActive = false;
 
-        if (
-          this.disclosureViewer === persistentViewer &&
-          !persistentViewer.closing &&
-          !this.closed
-        ) {
+        if (this.disclosureViewer === persistentViewer && !persistentViewer.closing && !this.closed) {
           // Modal escape/control fragments belong to the selector and must
           // never become text in the Request editor after ownership returns.
           persistentViewer.input.decoder.reset();
@@ -2713,10 +2602,7 @@ export class Terminal implements AppInteractionPort {
     }
     if (!this.disclosureAvailable(kind, id)) {
       const label = kind === "thinking" ? "Thinking block" : "Queued adjustment";
-      this.writeStableStatus(
-        `${label} #${id} is historical or unavailable in the current terminal view.`,
-        "info",
-      );
+      this.writeStableStatus(`${label} #${id} is historical or unavailable in the current terminal view.`, "info");
       return false;
     }
 
@@ -2739,41 +2625,32 @@ export class Terminal implements AppInteractionPort {
   ): boolean {
     const existing = this.disclosureViewer;
     if (existing) {
-      const attached = promptSession
-        ? this.attachDisclosurePromptSession(existing, promptSession)
-        : true;
+      const attached = promptSession ? this.attachDisclosurePromptSession(existing, promptSession) : true;
       if (!attached) return false;
       return initialDisclosure
-        ? this.switchDisclosureViewer(
-          existing,
-          initialDisclosure.kind,
-          initialDisclosure.id,
-        )
+        ? this.switchDisclosureViewer(existing, initialDisclosure.kind, initialDisclosure.id)
         : true;
     }
 
     const rows = this.physicalRows();
     if (rows < 9) {
       if (initialDisclosure) {
-        this.writeStableStatus(
-          "The terminal needs at least 9 rows to open the managed conversation view.",
-          "warning",
-        );
+        this.writeStableStatus("The terminal needs at least 9 rows to open the managed conversation view.", "warning");
       }
       return false;
     }
 
     const priorBusyOwner = this.busyInputOwner;
     const wasRaw = priorBusyOwner?.wasRaw ?? Boolean(this.input.isRaw);
-    const wasFlowing = priorBusyOwner?.wasFlowing ??
-      this.input.readableFlowing === true;
+    const wasFlowing = priorBusyOwner?.wasFlowing ?? this.input.readableFlowing === true;
     const suspendedSession = promptSession ?? this.activePromptSession;
-    const sessionSuspended = suspendedSession?.suspendInput({
-      // A completed idle prompt can remain byte-for-byte intact in the hidden
-      // primary buffer. Busy UI is expected to keep changing, so retain its
-      // existing erase/redraw lifecycle.
-      preserveDisplay: !this.uiState.composer.busy,
-    }) ?? false;
+    const sessionSuspended =
+      suspendedSession?.suspendInput({
+        // A completed idle prompt can remain byte-for-byte intact in the hidden
+        // primary buffer. Busy UI is expected to keep changing, so retain its
+        // existing erase/redraw lifecycle.
+        preserveDisplay: !this.uiState.composer.busy,
+      }) ?? false;
     if (suspendedSession && !sessionSuspended) return false;
     if (sessionSuspended) {
       if (this.activePromptSession === suspendedSession) {
@@ -2785,20 +2662,11 @@ export class Terminal implements AppInteractionPort {
     }
 
     const columns = this.physicalColumns();
-    const target = initialDisclosure
-      ? this.disclosureTarget(initialDisclosure.kind, initialDisclosure.id)
-      : undefined;
-    const nodes = this.disclosureDocumentNodes(
-      initialDisclosure?.kind,
-      initialDisclosure?.id,
-    );
+    const target = initialDisclosure ? this.disclosureTarget(initialDisclosure.kind, initialDisclosure.id) : undefined;
+    const nodes = this.disclosureDocumentNodes(initialDisclosure?.kind, initialDisclosure?.id);
     const headerLines = this.disclosureHeaderLines(columns);
     const composerLines = this.disclosureComposerLines(columns, rows);
-    const footerLines = this.disclosureFooterLines(
-      columns,
-      rows,
-      composerLines,
-    );
+    const footerLines = this.disclosureFooterLines(columns, rows, composerLines);
     let state: DisclosureViewState;
     try {
       state = createDisclosureViewState({
@@ -2878,9 +2746,7 @@ export class Terminal implements AppInteractionPort {
             registryId: initialDisclosure.id,
           }
         : {}),
-      ...(sessionSuspended && suspendedSession
-        ? { suspendedSession }
-        : {}),
+      ...(sessionSuspended && suspendedSession ? { suspendedSession } : {}),
       sessionReleased: false,
       wasRaw,
       wasFlowing,
@@ -2927,10 +2793,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   /** Attach a newly-created readline editor to the already-running shell. */
-  private attachDisclosurePromptSession(
-    viewer: ActiveDisclosureViewer,
-    session: PromptInputSession,
-  ): boolean {
+  private attachDisclosurePromptSession(viewer: ActiveDisclosureViewer, session: PromptInputSession): boolean {
     if (this.disclosureViewer !== viewer || viewer.closing) return false;
     if (viewer.suspendedSession === session && !viewer.sessionReleased) {
       return true;
@@ -2951,9 +2814,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   /** Detach a readline lifecycle that completed while the shell stays alive. */
-  private releaseDisclosurePromptSession(
-    session: PromptInputSession | undefined,
-  ): void {
+  private releaseDisclosurePromptSession(session: PromptInputSession | undefined): void {
     if (!session) return;
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.suspendedSession !== session) return;
@@ -3000,11 +2861,11 @@ export class Terminal implements AppInteractionPort {
     // buffer switch would make VS Code follow the cursor to scrollback bottom.
     const preservePrimaryDisplay = Boolean(
       viewer.suspendedSession &&
-        !viewer.sessionReleased &&
-        !this.closed &&
-        !this.uiState.composer.busy &&
-        !viewer.primaryDisplayDirty &&
-        viewer.deferredCommits.length === 0,
+      !viewer.sessionReleased &&
+      !this.closed &&
+      !this.uiState.composer.busy &&
+      !viewer.primaryDisplayDirty &&
+      viewer.deferredCommits.length === 0,
     );
 
     try {
@@ -3060,7 +2921,10 @@ export class Terminal implements AppInteractionPort {
   }
 
   private refreshDisclosureViewer(nodesChanged = false): void {
-    if (this.streamBatchRendering) { this.streamDocumentDirty ||= nodesChanged; return; }
+    if (this.streamBatchRendering) {
+      this.streamDocumentDirty ||= nodesChanged;
+      return;
+    }
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.closing) return;
     if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
@@ -3076,17 +2940,12 @@ export class Terminal implements AppInteractionPort {
           viewer.state.targetExpanded ? viewer.registryId : undefined,
         );
         const selected = viewer.state.target;
-        if (selected && !nodes.some((node) =>
-          node.id === selected.id && node.kind === selected.kind
-        )) {
+        if (selected && !nodes.some((node) => node.id === selected.id && node.kind === selected.kind)) {
           viewer.state = clearDisclosureViewTarget(viewer.state);
           delete viewer.kind;
           delete viewer.registryId;
         }
-        viewer.state = replaceDisclosureViewNodes(
-          viewer.state,
-          nodes,
-        );
+        viewer.state = replaceDisclosureViewNodes(viewer.state, nodes);
       }
       if (this.uiState.overlay) {
         const columns = viewer.state.columns;
@@ -3098,15 +2957,12 @@ export class Terminal implements AppInteractionPort {
           Date.now(),
           { totalRows: 1, detailRows: 0 },
         ).lines;
-        const overlayRows = Math.max(
-          1,
-          rows - headerLines.length - footerLines.length,
-        );
-        const overlayText = renderLiveRegion(
-          this.uiState,
-          Date.now(),
-          { ...this.viewOptions(), columns, rows: overlayRows },
-        );
+        const overlayRows = Math.max(1, rows - headerLines.length - footerLines.length);
+        const overlayText = renderLiveRegion(this.uiState, Date.now(), {
+          ...this.viewOptions(),
+          columns,
+          rows: overlayRows,
+        });
         const overlayState = createDisclosureViewState({
           nodes: [{ id: "overlay", kind: "text", text: overlayText }],
           columns,
@@ -3122,10 +2978,7 @@ export class Terminal implements AppInteractionPort {
       }
       viewer.state = updateDisclosureViewChrome(viewer.state, {
         headerLines: this.disclosureHeaderLines(viewer.state.columns),
-        composerLines: this.disclosureComposerLines(
-          viewer.state.columns,
-          viewer.state.rows,
-        ),
+        composerLines: this.disclosureComposerLines(viewer.state.columns, viewer.state.rows),
       });
       const rendered = this.renderDisclosureFrameWithPosition(viewer.state);
       viewer.state = rendered.state;
@@ -3160,11 +3013,7 @@ export class Terminal implements AppInteractionPort {
       viewer.writer.resize(columns, rows);
       const headerLines = this.disclosureHeaderLines(columns);
       const composerLines = this.disclosureComposerLines(columns, rows);
-      const footerLines = this.disclosureFooterLines(
-        columns,
-        rows,
-        composerLines,
-      );
+      const footerLines = this.disclosureFooterLines(columns, rows, composerLines);
       viewer.state = resizeDisclosureView(viewer.state, columns, rows, {
         headerLines,
         composerLines,
@@ -3193,10 +3042,7 @@ export class Terminal implements AppInteractionPort {
     viewer.repaintTimer.unref();
   }
 
-  private handleDisclosureInput(
-    viewer: ActiveDisclosureViewer,
-    event: Readonly<TuiInputEvent>,
-  ): void {
+  private handleDisclosureInput(viewer: ActiveDisclosureViewer, event: Readonly<TuiInputEvent>): void {
     if (event.type === "input-error") {
       this.writeStableStatus(event.message, "warning");
       return;
@@ -3231,10 +3077,7 @@ export class Terminal implements AppInteractionPort {
       this.scheduleDisclosureRepaint(viewer);
       return;
     }
-    if (
-      event.type === "key" &&
-      (event.key === "up" || event.key === "down")
-    ) {
+    if (event.type === "key" && (event.key === "up" || event.key === "down")) {
       // DEC alternate-scroll mode translates wheel movement into cursor keys
       // without capturing mouse buttons. Treat those keys as viewport motion
       // while the disclosure owns the screen; native drag selection remains
@@ -3283,9 +3126,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   /** Encode one decoded editing event back into the canonical readline path. */
-  private disclosureEditorInput(
-    event: Readonly<TuiInputEvent>,
-  ): Buffer | string | undefined {
+  private disclosureEditorInput(event: Readonly<TuiInputEvent>): Buffer | string | undefined {
     if (event.type === "text") return event.text;
     if (event.type === "paste") {
       return `\u001B[200~${event.text}\u001B[201~`;
@@ -3322,11 +3163,7 @@ export class Terminal implements AppInteractionPort {
     }
   }
 
-  private toggleDisclosureFromViewer(
-    viewer: ActiveDisclosureViewer,
-    kind: DisclosureKind,
-    id: number,
-  ): void {
+  private toggleDisclosureFromViewer(viewer: ActiveDisclosureViewer, kind: DisclosureKind, id: number): void {
     if (this.disclosureViewer !== viewer) return;
     this.openDisclosureViewer(kind, id);
   }
@@ -3356,18 +3193,10 @@ export class Terminal implements AppInteractionPort {
         this.inputOwnerMissingSince = undefined;
         return;
       }
-      const hasOwner = Boolean(
-        this.disclosureViewer ||
-        this.promptActive ||
-        this.busyInputOwner ||
-        this.rl,
-      );
+      const hasOwner = Boolean(this.disclosureViewer || this.promptActive || this.busyInputOwner || this.rl);
       if (hasOwner) {
         this.inputOwnerMissingSince = undefined;
-        if (
-          (this.disclosureViewer || this.busyInputOwner) &&
-          this.input.readableFlowing !== true
-        ) {
+        if ((this.disclosureViewer || this.busyInputOwner) && this.input.readableFlowing !== true) {
           try {
             this.input.resume();
           } catch (error) {
@@ -3379,10 +3208,7 @@ export class Terminal implements AppInteractionPort {
       const now = Date.now();
       this.inputOwnerMissingSince ??= now;
       if (now - this.inputOwnerMissingSince >= Terminal.INPUT_OWNER_GRACE_MS) {
-        this.failTerminalUi(
-          "input ownership",
-          new Error("No terminal input owner remained for the active request."),
-        );
+        this.failTerminalUi("input ownership", new Error("No terminal input owner remained for the active request."));
       }
     }, Terminal.INPUT_OWNER_WATCHDOG_INTERVAL_MS);
     this.inputOwnerWatchdog.unref();
@@ -3394,11 +3220,7 @@ export class Terminal implements AppInteractionPort {
     this.inputOwnerMissingSince = undefined;
   }
 
-  private switchDisclosureViewer(
-    viewer: ActiveDisclosureViewer,
-    kind: DisclosureKind,
-    id: number,
-  ): boolean {
+  private switchDisclosureViewer(viewer: ActiveDisclosureViewer, kind: DisclosureKind, id: number): boolean {
     if (this.disclosureViewer !== viewer || !this.disclosureAvailable(kind, id)) {
       return false;
     }
@@ -3408,22 +3230,13 @@ export class Terminal implements AppInteractionPort {
       const target = this.disclosureTarget(kind, id);
       const sameTarget = viewer.kind === kind && viewer.registryId === id;
       const nextExpanded = sameTarget ? !viewer.state.targetExpanded : true;
-      const nodes = this.disclosureDocumentNodes(
-        nextExpanded ? kind : undefined,
-        nextExpanded ? id : undefined,
-      );
+      const nodes = this.disclosureDocumentNodes(nextExpanded ? kind : undefined, nextExpanded ? id : undefined);
       const selected = viewer.state.target;
-      if (selected && !nodes.some((node) =>
-        node.id === selected.id && node.kind === selected.kind
-      )) {
+      if (selected && !nodes.some((node) => node.id === selected.id && node.kind === selected.kind)) {
         viewer.state = clearDisclosureViewTarget(viewer.state);
       }
       viewer.state = replaceDisclosureViewNodes(viewer.state, nodes);
-      viewer.state = toggleDisclosureView(
-        viewer.state,
-        target,
-        nextExpanded,
-      );
+      viewer.state = toggleDisclosureView(viewer.state, target, nextExpanded);
       viewer.kind = kind;
       viewer.registryId = id;
       if (kind === "thinking" && viewer.state.targetExpanded) {
@@ -3468,9 +3281,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   private disclosureAvailable(kind: DisclosureKind, id: number): boolean {
-    const retained = kind === "thinking"
-      ? this.reasoning.get(id)
-      : this.adjustments.get(id);
+    const retained = kind === "thinking" ? this.reasoning.get(id) : this.adjustments.get(id);
     if (!retained) return false;
     if (kind === "thinking") return this.retainedReasoningDisclosures.has(`thinking_${id}`);
     return this.currentTurnDisclosures.some((segment) => segment.adjustment?.id === id);
@@ -3484,20 +3295,14 @@ export class Terminal implements AppInteractionPort {
     return `${kind}:${id}`;
   }
 
-  private registryIdFromVirtualNode(
-    nodeId: string,
-    kind: DisclosureKind,
-  ): number | undefined {
+  private registryIdFromVirtualNode(nodeId: string, kind: DisclosureKind): number | undefined {
     const match = new RegExp(`^${kind}:([1-9][0-9]{0,15})$`, "u").exec(nodeId);
     if (!match) return undefined;
     const id = Number(match[1]);
     return Number.isSafeInteger(id) ? id : undefined;
   }
 
-  private disclosureDocumentNodes(
-    activeKind?: DisclosureKind,
-    activeId?: number,
-  ): readonly VirtualDocumentNode[] {
+  private disclosureDocumentNodes(activeKind?: DisclosureKind, activeId?: number): readonly VirtualDocumentNode[] {
     const nodes: VirtualDocumentNode[] = [];
     // The alternate buffer is a lossless projection of the complete session.
     // Thinking markers are committed at event time, so walking the transcript
@@ -3510,44 +3315,40 @@ export class Terminal implements AppInteractionPort {
     for (let index = start; index < end; index += 1) {
       const entry = this.uiState.transcript[index];
       if (!entry) continue;
-      const reasoning = entry.id
-        ? reasoningByEntryId.get(entry.id)
-        : undefined;
+      const reasoning = entry.id ? reasoningByEntryId.get(entry.id) : undefined;
       if (reasoning) {
-        nodes.push(this.reasoningDisclosureNode(
-          reasoning,
-          activeKind === "thinking" && activeId === reasoning.id,
-        ));
+        nodes.push(this.reasoningDisclosureNode(reasoning, activeKind === "thinking" && activeId === reasoning.id));
         continue;
       }
       nodes.push({
         id: `transcript:${index}`,
         kind: "text",
-        text: entry.kind === "user"
-          ? this.formatUserTranscriptEntry(entry)
-          : entry.text,
+        text: entry.kind === "user" ? this.formatUserTranscriptEntry(entry) : entry.text,
       });
     }
     return nodes;
   }
 
-  private reasoningDisclosureNode(
-    block: Readonly<ReasoningBlock>,
-    active: boolean,
-  ): VirtualDocumentNode {
-    const activeStream = [...this.modelStreams.values()].find((state) =>
-      !state.completed && state.reasoningId === block.id
+  private reasoningDisclosureNode(block: Readonly<ReasoningBlock>, active: boolean): VirtualDocumentNode {
+    const activeStream = [...this.modelStreams.values()].find(
+      (state) => !state.completed && state.reasoningId === block.id,
     );
-    const marker = stripAnsi(renderReasoningMarker(block, {
-      color: false,
-      ...(activeStream?.reasoningLastDeltaAtMs === undefined ? {} : {
-        live: {
-          sourceChars: activeStream.reasoningSourceChars,
-          previewLimitChars: this.streamPreviewMaxChars,
-          lastDeltaAtMs: activeStream.reasoningLastDeltaAtMs,
-        },
+    const marker = stripAnsi(
+      renderReasoningMarker(block, {
+        color: false,
+        ...(activeStream?.reasoningLastDeltaAtMs === undefined
+          ? {}
+          : {
+              live: {
+                sourceChars: activeStream.reasoningSourceChars,
+                previewLimitChars: this.streamPreviewMaxChars,
+                lastDeltaAtMs: activeStream.reasoningLastDeltaAtMs,
+              },
+            }),
       }),
-    })).trimEnd().split("\n");
+    )
+      .trimEnd()
+      .split("\n");
     return {
       id: this.virtualDisclosureId("thinking", block.id),
       kind: "thinking",
@@ -3565,44 +3366,12 @@ export class Terminal implements AppInteractionPort {
     };
   }
 
-  private adjustmentDisclosureNode(
-    block: Readonly<AdjustmentBlock>,
-    active: boolean,
-  ): VirtualDocumentNode {
-    const marker = stripAnsi(renderAdjustmentMarker(block, {
-      color: false,
-    })).trimEnd().split("\n");
-    const attachmentLabels = block.imageLabels
-      .filter((label) => !block.text.includes(`[${label}]`))
-      .map((label) => `[${label}]`)
-      .join(" ");
-    const completeText = block.text ||
-      "(No text; this adjustment contains attachments only.)";
-    return {
-      id: this.virtualDisclosureId("adjustment", block.id),
-      kind: "adjustment",
-      title: active
-        ? chalk.gray(`↕ Queued adjustment #${block.id} · VS Code Ctrl/Cmd+click to toggle`)
-        : chalk.gray(marker[0] ?? `▶ Queued adjustment #${block.id}`),
-      preview: chalk.gray(marker.slice(1).join("\n")),
-      body: chalk.gray(
-        `${completeText.split("\n").map((line) => `  ${line}`).join("\n")}` +
-        `${attachmentLabels ? `\n  Attachments: ${attachmentLabels}` : ""}`,
-      ),
-      expanded: active,
-    };
-  }
-
-  private formatUserTranscriptEntry(
-    entry: Pick<UITranscriptEntry, "text" | "images">,
-  ): string {
+  private formatUserTranscriptEntry(entry: Pick<UITranscriptEntry, "text" | "images">): string {
     const images = entry.images
       ?.map((image) => `[${image.label}]`)
       .filter((label) => !entry.text.includes(label))
       .join(" ");
-    return formatSubmittedRequest(
-      [entry.text, images].filter(Boolean).join(" "),
-    );
+    return formatSubmittedRequest([entry.text, images].filter(Boolean).join(" "));
   }
 
   private disclosureHeaderLines(columns: number): readonly string[] {
@@ -3616,10 +3385,7 @@ export class Terminal implements AppInteractionPort {
     }).split("\n");
   }
 
-  private disclosureComposerLines(
-    columns: number,
-    rows: number,
-  ): readonly string[] {
+  private disclosureComposerLines(columns: number, rows: number): readonly string[] {
     const label = this.uiState.composer.busy ? "Adjust current task" : "Request";
     const fitted = truncateToWidth(` ${label} `, Math.max(1, columns - 3), {
       preserveAnsi: false,
@@ -3633,17 +3399,15 @@ export class Terminal implements AppInteractionPort {
       .join(" ");
     const before = text.slice(0, cursor);
     const after = text.slice(cursor);
-    const completionSuffix = cursor === text.length
-      ? this.uiState.composer.completionSuffix ?? ""
-      : "";
-    const placeholder = this.uiState.composer.placeholder ||
-      (this.uiState.composer.busy
-        ? "Type an adjustment for the current task…"
-        : "Type your request…");
-    const visibleDraft = text || attachmentSuffix
-      ? `${before}${chalk.inverse(" ")}${chalk.gray(completionSuffix)}${after}` +
-        `${attachmentSuffix ? `${text ? " " : ""}${attachmentSuffix}` : ""}`
-      : `${chalk.inverse(" ")}${chalk.gray(placeholder)}`;
+    const completionSuffix = cursor === text.length ? (this.uiState.composer.completionSuffix ?? "") : "";
+    const placeholder =
+      this.uiState.composer.placeholder ||
+      (this.uiState.composer.busy ? "Type an adjustment for the current task…" : "Type your request…");
+    const visibleDraft =
+      text || attachmentSuffix
+        ? `${before}${chalk.inverse(" ")}${chalk.gray(completionSuffix)}${after}` +
+          `${attachmentSuffix ? `${text ? " " : ""}${attachmentSuffix}` : ""}`
+        : `${chalk.inverse(" ")}${chalk.gray(placeholder)}`;
     const interiorWidth = Math.max(1, columns - 4);
     const allRows = wrapToWidth(`> ${visibleDraft}`, interiorWidth, {
       preserveAnsi: true,
@@ -3655,30 +3419,21 @@ export class Terminal implements AppInteractionPort {
     // conversation plus status/tasks/agents below this card. The complete
     // draft remains in readline; only a small cursor-centred window is shown.
     const maximumDraftRows = Math.max(1, Math.min(3, rows - 8));
-    const cursorRow = Math.max(
-      0,
-      wrapToWidth(`> ${before}`, interiorWidth, { preserveAnsi: false }).length - 1,
-    );
+    const cursorRow = Math.max(0, wrapToWidth(`> ${before}`, interiorWidth, { preserveAnsi: false }).length - 1);
     const start = Math.max(
       0,
-      Math.min(
-        Math.max(0, allRows.length - maximumDraftRows),
-        cursorRow - Math.floor(maximumDraftRows / 2),
-      ),
+      Math.min(Math.max(0, allRows.length - maximumDraftRows), cursorRow - Math.floor(maximumDraftRows / 2)),
     );
     const visibleRows = allRows.slice(start, start + maximumDraftRows);
     if (start > 0 && visibleRows.length > 0) {
       visibleRows[0] = chalk.gray("… ") + (visibleRows[0] ?? "");
     }
     if (start + visibleRows.length < allRows.length && visibleRows.length > 0) {
-      visibleRows[visibleRows.length - 1] =
-        (visibleRows.at(-1) ?? "") + chalk.gray(" …");
+      visibleRows[visibleRows.length - 1] = (visibleRows.at(-1) ?? "") + chalk.gray(" …");
     }
     const framedRows = visibleRows.map((line) => {
       const clipped = truncateToWidth(line, interiorWidth, { preserveAnsi: true });
-      const padding = " ".repeat(
-        Math.max(0, interiorWidth - displayWidth(clipped)),
-      );
+      const padding = " ".repeat(Math.max(0, interiorWidth - displayWidth(clipped)));
       return `${chalk.cyan("│")} ${clipped}${padding} ${chalk.cyan("│")}`;
     });
     const requestLines = [
@@ -3686,65 +3441,57 @@ export class Terminal implements AppInteractionPort {
       ...framedRows,
       chalk.cyan(`╰${"─".repeat(Math.max(0, columns - 2))}╯`),
     ];
-    const progress = renderLiveActivityRegion(
-      this.uiState,
-      Date.now(),
-      { ...this.viewOptions(), columns, rows, maxProgressRows: 2 },
-    ).split("\n").filter(Boolean);
+    const progress = renderLiveActivityRegion(this.uiState, Date.now(), {
+      ...this.viewOptions(),
+      columns,
+      rows,
+      maxProgressRows: 2,
+    })
+      .split("\n")
+      .filter(Boolean);
     const progressBudget = Math.max(0, Math.min(3, rows - 10));
-    const progressLines = progressBudget === 0
-      ? []
-      : progress.length <= progressBudget
-        ? progress
-        : progressBudget >= 2
-          ? [progress[0] ?? "", ...progress.slice(-(progressBudget - 1))]
-          : progress.slice(-progressBudget);
+    const progressLines =
+      progressBudget === 0
+        ? []
+        : progress.length <= progressBudget
+          ? progress
+          : progressBudget >= 2
+            ? [progress[0] ?? "", ...progress.slice(-(progressBudget - 1))]
+            : progress.slice(-progressBudget);
     return [...progressLines, ...requestLines];
   }
 
-  private disclosureFooterLines(
-    columns: number,
-    rows: number,
-    composerLines: readonly string[],
-  ): readonly string[] {
-    const wrappedRows = (lines: readonly string[]): number => lines.reduce(
-      (total, line) => total + wrapToWidth(line, columns, {
-        preserveAnsi: true,
-      }).length,
-      0,
-    );
+  private disclosureFooterLines(columns: number, rows: number, composerLines: readonly string[]): readonly string[] {
+    const wrappedRows = (lines: readonly string[]): number =>
+      lines.reduce(
+        (total, line) =>
+          total +
+          wrapToWidth(line, columns, {
+            preserveAnsi: true,
+          }).length,
+        0,
+      );
     const headerRows = wrappedRows(this.disclosureHeaderLines(columns));
     const composerRows = wrappedRows(composerLines);
     // Conversation history is the primary surface. Detail lists may use the
     // remaining rows, but never squeeze the managed transcript below a useful
     // viewport. The compact status row itself always remains visible.
-    const transcriptReserve = Math.max(
-      1,
-      Math.min(12, Math.floor(rows * 0.35)),
-    );
-    const bottomBudget = Math.max(
-      1,
-      rows - headerRows - composerRows - transcriptReserve,
-    );
-    return renderFixedBottomRegions(
-      this.uiState,
-      { ...this.viewOptions(), columns, rows },
-      Date.now(),
-      { totalRows: bottomBudget, detailRows: Math.max(0, bottomBudget - 1) },
-    ).lines;
+    const transcriptReserve = Math.max(1, Math.min(12, Math.floor(rows * 0.35)));
+    const bottomBudget = Math.max(1, rows - headerRows - composerRows - transcriptReserve);
+    return renderFixedBottomRegions(this.uiState, { ...this.viewOptions(), columns, rows }, Date.now(), {
+      totalRows: bottomBudget,
+      detailRows: Math.max(0, bottomBudget - 1),
+    }).lines;
   }
 
   /** Keep one fixed-height footer synchronized with the continuous viewport. */
-  private renderDisclosureFrameWithPosition(
-    initialState: Readonly<DisclosureViewState>,
-  ): { readonly state: DisclosureViewState; readonly frame: DisclosureViewFrame } {
+  private renderDisclosureFrameWithPosition(initialState: Readonly<DisclosureViewState>): {
+    readonly state: DisclosureViewState;
+    readonly frame: DisclosureViewFrame;
+  } {
     let state = initialState as DisclosureViewState;
     let frame = renderDisclosureView(state);
-    const footerLines = this.disclosureFooterLines(
-      state.columns,
-      state.rows,
-      state.composerLines,
-    );
+    const footerLines = this.disclosureFooterLines(state.columns, state.rows, state.composerLines);
     const footerChanged =
       footerLines.length !== state.footerLines.length ||
       footerLines.some((line, index) => line !== state.footerLines[index]);
@@ -3761,29 +3508,30 @@ export class Terminal implements AppInteractionPort {
    * to the Request card; a long document keeps up to three preceding context
    * rows above the selected Thinking title and remains continuously scrollable.
    */
-  private disclosureAnchorScreenRow(options: Readonly<{
-    nodes: readonly VirtualDocumentNode[];
-    target: Readonly<DisclosureViewTarget>;
-    columns: number;
-    rows: number;
-    headerLines: readonly string[];
-    composerLines: readonly string[];
-    footerLines: readonly string[];
-  }>): number {
+  private disclosureAnchorScreenRow(
+    options: Readonly<{
+      nodes: readonly VirtualDocumentNode[];
+      target: Readonly<DisclosureViewTarget>;
+      columns: number;
+      rows: number;
+      headerLines: readonly string[];
+      composerLines: readonly string[];
+      footerLines: readonly string[];
+    }>,
+  ): number {
     const wrappedRows = (lines: readonly string[]): number =>
       lines.reduce(
-        (total, line) => total + wrapToWidth(line, options.columns, {
-          preserveAnsi: true,
-        }).length,
+        (total, line) =>
+          total +
+          wrapToWidth(line, options.columns, {
+            preserveAnsi: true,
+          }).length,
         0,
       );
     const headerRows = wrappedRows(options.headerLines);
     const composerRows = wrappedRows(options.composerLines);
     const footerRows = wrappedRows(options.footerLines);
-    const viewportRows = Math.max(
-      1,
-      options.rows - headerRows - composerRows - footerRows,
-    );
+    const viewportRows = Math.max(1, options.rows - headerRows - composerRows - footerRows);
     const layout = layoutVirtualDocument(options.nodes, options.columns, {
       preserveAnsi: true,
     });
@@ -3793,16 +3541,9 @@ export class Terminal implements AppInteractionPort {
       // Keep a small amount of stable-answer context above the selected
       // Thinking title. Pinning it to the absolute top made expansion look
       // like every preceding row had disappeared even though it was scrollable.
-      const contextRows = Math.min(
-        titleRow,
-        3,
-        Math.max(0, viewportRows - 1),
-      );
+      const contextRows = Math.min(titleRow, 3, Math.max(0, viewportRows - 1));
       const maximumOffset = Math.max(0, layout.totalRows - viewportRows);
-      const desiredOffset = Math.max(
-        0,
-        Math.min(titleRow - contextRows, maximumOffset),
-      );
+      const desiredOffset = Math.max(0, Math.min(titleRow - contextRows, maximumOffset));
       // Derive the physical anchor from the clamped ordinary viewport. A
       // target near the document tail therefore moves downward instead of
       // forcing overscroll and painting an artificial blank band below it.
@@ -3817,11 +3558,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   private physicalColumns(): number {
-    return Math.max(
-      12,
-      this.screen?.columns ??
-        (Number((this.output as NodeJS.WriteStream).columns) || 80),
-    );
+    return Math.max(12, this.screen?.columns ?? (Number((this.output as NodeJS.WriteStream).columns) || 80));
   }
 
   private physicalRows(): number {
@@ -3836,11 +3573,7 @@ export class Terminal implements AppInteractionPort {
       this.refreshDisclosureViewer();
       return;
     }
-    if (
-      !this.inlineShellActive ||
-      !this.screen ||
-      this.closed
-    ) {
+    if (!this.inlineShellActive || !this.screen || this.closed) {
       return;
     }
     if (this.activePromptSession) {
@@ -3848,11 +3581,7 @@ export class Terminal implements AppInteractionPort {
       return;
     }
     if (this.promptActive) return;
-    const live = renderLiveRegion(
-      this.uiState,
-      Date.now(),
-      this.viewOptions(),
-    );
+    const live = renderLiveRegion(this.uiState, Date.now(), this.viewOptions());
     if (this.uiState.overlay) {
       this.screen.renderLive(live);
       this.syncTerminalCursorVisibility();
@@ -3892,13 +3621,10 @@ export class Terminal implements AppInteractionPort {
     const rows = Number((this.output as NodeJS.WriteStream).rows);
     return {
       language: this.language,
-      columns: this.screen?.columns ??
-        (Number((this.output as NodeJS.WriteStream).columns) || 80),
+      columns: this.screen?.columns ?? (Number((this.output as NodeJS.WriteStream).columns) || 80),
       ...(Number.isFinite(rows) && rows > 0 ? { rows: Math.floor(rows) } : {}),
       color: this.colorEnabled(),
-      ...(this.agentConcurrencyLimit === undefined
-        ? {}
-        : { agentConcurrencyLimit: this.agentConcurrencyLimit }),
+      ...(this.agentConcurrencyLimit === undefined ? {} : { agentConcurrencyLimit: this.agentConcurrencyLimit }),
       spinnerFrame: this.activityFrameIndex,
     };
   }
@@ -3908,9 +3634,7 @@ export class Terminal implements AppInteractionPort {
       type: "transcript.append",
       entry,
     });
-    const renderedText = entry.kind === "user"
-      ? `${this.formatUserTranscriptEntry(entry)}\n\n`
-      : entry.text;
+    const renderedText = entry.kind === "user" ? `${this.formatUserTranscriptEntry(entry)}\n\n` : entry.text;
     const viewer = this.disclosureViewer;
     if (viewer) {
       viewer.deferredCommits.push({
@@ -3930,10 +3654,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   /** Replace a mutable transcript node while preserving its document position. */
-  private replaceTranscriptEntry(
-    id: string,
-    entry: Readonly<UITranscriptEntry>,
-  ): void {
+  private replaceTranscriptEntry(id: string, entry: Readonly<UITranscriptEntry>): void {
     const existing = this.uiState.transcript.find((candidate) => candidate.id === id);
     if (!existing) return;
     this.uiState = applyEvent(this.uiState, {
@@ -3941,9 +3662,7 @@ export class Terminal implements AppInteractionPort {
       id,
       entry,
     });
-    const renderedText = entry.kind === "user"
-      ? `${this.formatUserTranscriptEntry(entry)}\n\n`
-      : entry.text;
+    const renderedText = entry.kind === "user" ? `${this.formatUserTranscriptEntry(entry)}\n\n` : entry.text;
     const viewer = this.disclosureViewer;
     if (viewer) {
       for (let index = viewer.deferredCommits.length - 1; index >= 0; index -= 1) {
@@ -3996,9 +3715,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   private removeRunningProgress(kind: UIProgressItem["kind"]): void {
-    const retained = this.progressItems.filter((item) =>
-      item.kind !== kind || item.status !== "running"
-    );
+    const retained = this.progressItems.filter((item) => item.kind !== kind || item.status !== "running");
     if (retained.length !== this.progressItems.length) {
       this.progressItems = retained;
       this.uiState = applyEvent(this.uiState, {
@@ -4009,13 +3726,14 @@ export class Terminal implements AppInteractionPort {
   }
 
   private writeStableStatus(text: string, kind: StableStatusKind): void {
-    const rendered = kind === "error"
-      ? chalk.red(text)
-      : kind === "warning"
-        ? chalk.yellow(text)
-        : kind === "success"
-          ? chalk.green(text)
-          : chalk.cyan(text);
+    const rendered =
+      kind === "error"
+        ? chalk.red(text)
+        : kind === "warning"
+          ? chalk.yellow(text)
+          : kind === "success"
+            ? chalk.green(text)
+            : chalk.cyan(text);
     const entry = { kind, text: `${rendered}\n` } as const;
     if (this.inlineShellActive) {
       this.commitTranscript(entry);
@@ -4050,8 +3768,7 @@ export class Terminal implements AppInteractionPort {
           title: plain[0]?.trim() || "Select",
           rows,
           selectedIndex,
-          hint: plain[plain.length - 1]?.trim() ||
-            "Use ↑/↓ to move, Enter to confirm, or Esc to cancel",
+          hint: plain[plain.length - 1]?.trim() || "Use ↑/↓ to move, Enter to confirm, or Esc to cancel",
         };
         let overlay: UIOverlayState;
         if (kind === "approval") {
@@ -4091,11 +3808,8 @@ export class Terminal implements AppInteractionPort {
     // not: their cursor is only ScreenWriter's redraw anchor and must stay
     // hidden. Once an idle composer is about to open, make the caret visible
     // again without repainting or changing stdin ownership.
-    const visible = this.promptActive || (
-      !this.uiState.overlay &&
-      !this.uiState.composer.busy &&
-      !this.currentRequestOptions
-    );
+    const visible =
+      this.promptActive || (!this.uiState.overlay && !this.uiState.composer.busy && !this.currentRequestOptions);
     this.setTerminalCursorVisible(visible);
   }
 
@@ -4111,9 +3825,7 @@ export class Terminal implements AppInteractionPort {
 
   private composerPromptPrefix(): string {
     const columns = Math.max(12, this.screen?.columns ?? 80);
-    const label = this.uiState.composer.busy
-      ? " Adjust current task "
-      : " Request ";
+    const label = this.uiState.composer.busy ? " Adjust current task " : " Request ";
     const title = truncateToWidth(label, Math.max(1, columns - 3), {
       preserveAnsi: false,
     });
@@ -4141,15 +3853,11 @@ export class Terminal implements AppInteractionPort {
       .replace(/[\r\n\t]+/gu, " ")
       .replace(/\s+/gu, " ")
       .trim();
-    return safe.length <= maximum
-      ? safe
-      : `${safe.slice(0, Math.max(0, maximum - 1))}…`;
+    return safe.length <= maximum ? safe : `${safe.slice(0, Math.max(0, maximum - 1))}…`;
   }
 
   private safeStreamText(value: string): string {
-    return redactImageDataUrls(
-      redactSensitiveInformation(sanitizeCommandOutput(value)),
-    );
+    return redactImageDataUrls(redactSensitiveInformation(sanitizeCommandOutput(value)));
   }
 
   private canUseInlineShell(): boolean {
@@ -4199,28 +3907,23 @@ export class Terminal implements AppInteractionPort {
       return;
     }
     const frame = Terminal.ACTIVITY_FRAMES[this.activityFrameIndex] ?? "•";
-    const elapsedSeconds = Math.max(
-      0,
-      Math.floor((Date.now() - this.activityStartedAt) / 1_000),
-    );
-    const elapsed = elapsedSeconds < 60
-      ? `${elapsedSeconds}s`
-      : `${Math.floor(elapsedSeconds / 60)}m ${String(elapsedSeconds % 60).padStart(2, "0")}s`;
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - this.activityStartedAt) / 1_000));
+    const elapsed =
+      elapsedSeconds < 60
+        ? `${elapsedSeconds}s`
+        : `${Math.floor(elapsedSeconds / 60)}m ${String(elapsedSeconds % 60).padStart(2, "0")}s`;
     const prefix = `${frame} `;
     const suffix = ` · ${elapsed}`;
     const columns = Number((this.output as NodeJS.WriteStream).columns);
-    const maxWidth = Number.isFinite(columns) && columns > 0
-      ? Math.max(8, Math.floor(columns) - 1)
-      : 120;
+    const maxWidth = Number.isFinite(columns) && columns > 0 ? Math.max(8, Math.floor(columns) - 1) : 120;
     const labelWidth = Math.max(0, maxWidth - prefix.length - suffix.length);
-    const label = this.activityText.length <= labelWidth
-      ? this.activityText
-      : labelWidth >= 4
-        ? `${this.activityText.slice(0, labelWidth - 3)}...`
-        : "";
-    const text = label
-      ? `${prefix}${label}${suffix}`
-      : `${frame} ${elapsed}`.slice(0, maxWidth);
+    const label =
+      this.activityText.length <= labelWidth
+        ? this.activityText
+        : labelWidth >= 4
+          ? `${this.activityText.slice(0, labelWidth - 3)}...`
+          : "";
+    const text = label ? `${prefix}${label}${suffix}` : `${frame} ${elapsed}`.slice(0, maxWidth);
     const rendered = this.colorEnabled() ? chalk.gray(text) : text;
     this.output.write(`\r\u001B[2K${rendered}`);
     this.activityVisible = true;
@@ -4299,8 +4002,10 @@ function countCodePoints(value: string): number {
   return count;
 }
 
-export function printBanner(terminal: Pick<AppInteractionPort, "isInlineShell" | "showSessionHeader" | "info" | "write">,
-  language: Language = DEFAULT_LANGUAGE): void {
+export function printBanner(
+  terminal: Pick<AppInteractionPort, "isInlineShell" | "showSessionHeader" | "info" | "write">,
+  language: Language = DEFAULT_LANGUAGE,
+): void {
   if (terminal.isInlineShell()) {
     terminal.showSessionHeader();
     terminal.info(translate(language, "cli.helpHint"));

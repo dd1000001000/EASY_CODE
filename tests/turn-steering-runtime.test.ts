@@ -50,14 +50,16 @@ function batch(sequence: number, text: string): TurnSteeringBatch {
   };
   return {
     source: "user_adjust",
-    entries: [{
-      source: "user_adjust",
-      id: `steering_${sequence}`,
-      sequence,
-      targetTurnId: "turn_active",
-      message: { role: "user", content: text },
-      queuedAt: new Date().toISOString(),
-    }],
+    entries: [
+      {
+        source: "user_adjust",
+        id: `steering_${sequence}`,
+        sequence,
+        targetTurnId: "turn_active",
+        message: { role: "user", content: text },
+        queuedAt: new Date().toISOString(),
+      },
+    ],
     throughSequence: sequence,
     message,
   };
@@ -85,21 +87,36 @@ describe("AgentRuntime turn steering", () => {
     let calls = 0;
     const state = runtimeState();
     const runtime = new AgentRuntime({
-      provider: { name: "deepseek", model: "mock", complete: async request => {
-        calls++;
-        assert.ok(request.messages.some(message => message.content?.includes("RUNTIME_PEER_MESSAGES")));
-        assert.equal(request.signal?.aborted ?? false, false);
-        return { message: { role: "assistant", content: "Done", tool_calls: [] } };
-      } },
-      toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace",
-      searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
-      takeSteering: async () => { const result = pending; pending = undefined; return result; },
+      provider: {
+        name: "deepseek",
+        model: "mock",
+        complete: async (request) => {
+          calls++;
+          assert.ok(request.messages.some((message) => message.content?.includes("RUNTIME_PEER_MESSAGES")));
+          assert.equal(request.signal?.aborted ?? false, false);
+          return { message: { role: "assistant", content: "Done", tool_calls: [] } };
+        },
+      },
+      toolCatalog: snapshotToolSet([]),
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => {},
+      requestApproval: async () => false,
+      takeSteering: async () => {
+        const result = pending;
+        pending = undefined;
+        return result;
+      },
       sealSteering: async () => undefined,
     });
     const result = await runtime.run(state, "User requirement", options());
-    assert.equal(result.text, "Done"); assert.equal(calls, 1);
-    assert.ok(state.userMessageIndices.every(index => !state.messages[index]!.content?.includes("RUNTIME_PEER_MESSAGES")));
+    assert.equal(result.text, "Done");
+    assert.equal(calls, 1);
+    assert.ok(
+      state.userMessageIndices.every((index) => !state.messages[index]!.content?.includes("RUNTIME_PEER_MESSAGES")),
+    );
   });
 
   it("rejects a partially wired steering lifecycle", () => {
@@ -111,17 +128,18 @@ describe("AgentRuntime turn steering", () => {
       },
     };
     assert.throws(
-      () => new AgentRuntime({
-        provider,
-        toolCatalog: snapshotToolSet([]),
-        contextManager: new ContextManager(),
-        buildSystemPrompt: async () => "system",
-        getWorkspaceSummary: async () => "workspace",
-        searchMemories: async () => [],
-        appendEvent: async () => undefined,
-        requestApproval: async () => false,
-        takeSteering: async () => undefined,
-      }),
+      () =>
+        new AgentRuntime({
+          provider,
+          toolCatalog: snapshotToolSet([]),
+          contextManager: new ContextManager(),
+          buildSystemPrompt: async () => "system",
+          getWorkspaceSummary: async () => "workspace",
+          searchMemories: async () => [],
+          appendEvent: async () => undefined,
+          requestApproval: async () => false,
+          takeSteering: async () => undefined,
+        }),
       /requires both boundary consumption and finalization sealing/u,
     );
   });
@@ -131,7 +149,9 @@ describe("AgentRuntime turn steering", () => {
     const events: Array<Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp">> = [];
     let pending: TurnSteeringBatch | undefined;
     let started!: () => void;
-    const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+    const firstStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
     let calls = 0;
     const provider: ModelProvider = {
       name: "deepseek",
@@ -141,16 +161,12 @@ describe("AgentRuntime turn steering", () => {
         if (calls === 1) {
           started();
           return new Promise((_, reject) => {
-            request.signal?.addEventListener(
-              "abort",
-              () => reject(new Error("attempt canceled")),
-              { once: true },
-            );
+            request.signal?.addEventListener("abort", () => reject(new Error("attempt canceled")), { once: true });
           });
         }
-        assert.ok(request.messages.some(
-          (message) => message.role === "user" && message.content.includes("change direction"),
-        ));
+        assert.ok(
+          request.messages.some((message) => message.role === "user" && message.content.includes("change direction")),
+        );
         return { message: { role: "assistant", content: "updated answer", tool_calls: [] } };
       },
     };
@@ -162,7 +178,9 @@ describe("AgentRuntime turn steering", () => {
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [],
-      appendEvent: async (event) => { events.push(event); },
+      appendEvent: async (event) => {
+        events.push(event);
+      },
       requestApproval: async () => false,
       steeringNotifier: notifier,
       takeSteering: async () => {
@@ -184,7 +202,10 @@ describe("AgentRuntime turn steering", () => {
     assert.equal(calls, 2);
     assert.equal(turnController.signal.aborted, false);
     assert.ok(events.some((event) => event.type === "model.attempt.steering_interrupted"));
-    assert.equal(events.some((event) => event.type === "model.error"), false);
+    assert.equal(
+      events.some((event) => event.type === "model.error"),
+      false,
+    );
   });
 
   it("lets steering win the finalization seal and requests a new answer", async () => {
@@ -226,9 +247,7 @@ describe("AgentRuntime turn steering", () => {
     assert.equal(result.text, "answer with late guidance");
     assert.equal(calls, 2);
     assert.equal(sealCalls, 2);
-    assert.ok(requests[1]?.some(
-      (message) => message.role === "user" && message.content.includes("late but durable"),
-    ));
+    assert.ok(requests[1]?.some((message) => message.role === "user" && message.content.includes("late but durable")));
   });
 
   it("closes a stale batched tool suffix before durably applying steering", async () => {
@@ -299,7 +318,9 @@ describe("AgentRuntime turn steering", () => {
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [],
-      appendEvent: async (event) => { events.push(event); },
+      appendEvent: async (event) => {
+        events.push(event);
+      },
       requestApproval: async () => false,
       hasPendingSteering: async () => Boolean(pending),
       takeSteering: async () => {
@@ -323,8 +344,7 @@ describe("AgentRuntime turn steering", () => {
     assert.equal(result.text, "replanned");
     assert.equal(toolExecutions, 1);
     const staleResultIndex = events.findIndex(
-      (event) => event.type === "tool.result" &&
-        (event.payload as { callId?: string }).callId === "call_stale",
+      (event) => event.type === "tool.result" && (event.payload as { callId?: string }).callId === "call_stale",
     );
     const steeringIndex = events.findIndex((event) => event.type === "turn.steering.applied");
     assert.ok(staleResultIndex >= 0 && steeringIndex > staleResultIndex);

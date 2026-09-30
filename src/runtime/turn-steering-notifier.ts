@@ -55,9 +55,7 @@ export class TurnSteeringAttemptNotifier {
    */
   openAttempt(): TurnSteeringAttempt {
     if (this.activeAttempt) {
-      throw new Error(
-        "Cannot open a steering attempt before disposing the active attempt",
-      );
+      throw new Error("Cannot open a steering attempt before disposing the active attempt");
     }
     const active = {
       controller: new AbortController(),
@@ -119,8 +117,6 @@ export class TurnSteeringAttemptNotifier {
 function assertSteeringSequence(sequence: number, allowZero: boolean): void {
   const minimum = allowZero ? 0 : 1;
   if (!Number.isSafeInteger(sequence) || sequence < minimum) {
-    throw new Error(
-      `Steering sequence must be a safe integer greater than or equal to ${String(minimum)}`,
-    );
+    throw new Error(`Steering sequence must be a safe integer greater than or equal to ${String(minimum)}`);
   }
 }

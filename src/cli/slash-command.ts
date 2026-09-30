@@ -34,7 +34,7 @@ export const SLASH_COMMAND_NAMES = [
   "exit",
 ] as const;
 
-export type SlashCommandName = typeof SLASH_COMMAND_NAMES[number];
+export type SlashCommandName = (typeof SLASH_COMMAND_NAMES)[number];
 
 export interface SlashCommandCompletion {
   readonly replacement: string;
@@ -84,26 +84,22 @@ export function parseSlashCommand(input: string): SlashCommand | null {
   return {
     name,
     rawArgs,
-    args: rawArgs ? rawArgs.split(/\s+/) : []
+    args: rawArgs ? rawArgs.split(/\s+/) : [],
   };
 }
 
 /** Return presentation-only completion for a command-name prefix. */
-export function completeSlashCommandPrefix(
-  text: string,
-  cursor: number,
-): SlashCommandCompletion | undefined {
+export function completeSlashCommandPrefix(text: string, cursor: number): SlashCommandCompletion | undefined {
   if (cursor !== text.length) return undefined;
   const match = /^\/([a-z0-9_-]+)$/iu.exec(text);
   if (!match) return undefined;
   const prefix = match[1]!.toLowerCase();
-  const candidate = SLASH_COMMAND_NAMES
-    .map((name, index) => ({ name, index }))
+  const candidate = SLASH_COMMAND_NAMES.map((name, index) => ({ name, index }))
     .filter(({ name }) => name.startsWith(prefix) && name.length > prefix.length)
-    .sort((left, right) =>
-      (left.name.length - prefix.length) - (right.name.length - prefix.length) ||
-      left.index - right.index
-  )[0];
+    .sort(
+      (left, right) =>
+        left.name.length - prefix.length - (right.name.length - prefix.length) || left.index - right.index,
+    )[0];
   if (!candidate) return undefined;
   const suffix = candidate.name.slice(prefix.length);
   return { replacement: `${text}${suffix}`, suffix };
@@ -125,8 +121,12 @@ export function parseModelCommand(args: readonly string[]): ModelCommandRequest 
     const thinkingEffort = args[2];
     if (thinkingEffort && !(THINKING_EFFORTS as readonly string[]).includes(thinkingEffort))
       throw new Error(modelCommandUsage());
-    return { action: "switch", provider, model,
-      ...(thinkingEffort ? { thinkingEffort: thinkingEffort as ThinkingEffort } : {}) };
+    return {
+      action: "switch",
+      provider,
+      model,
+      ...(thinkingEffort ? { thinkingEffort: thinkingEffort as ThinkingEffort } : {}),
+    };
   }
 
   // A bare provider is intentionally rejected rather than being interpreted
@@ -137,16 +137,13 @@ export function parseModelCommand(args: readonly string[]): ModelCommandRequest 
 }
 
 function isModelId(value: string | undefined): value is string {
-  return Boolean(
-    value &&
-    value.length <= 256 &&
-    !/[\s\u0000-\u001f\u007f]/u.test(value),
-  );
+  return Boolean(value && value.length <= 256 && !/[\s\u0000-\u001f\u007f]/u.test(value));
 }
 
 export function helpText(language: Language = "en_us"): string {
   const providers = providerUsage();
-  if (language === "zh_cn") return `
+  if (language === "zh_cn")
+    return `
 EASY CODE 指令
 
   /mode plan|auto|code       切换工作模式

@@ -86,8 +86,7 @@ describe("config commands", () => {
       PROVIDER_CATALOG.map(({ provider }) => provider),
       defaultRuntimeLimits(),
     );
-    const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests,
-      ...activeLimits } = defaultRuntimeLimits();
+    const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests, ...activeLimits } = defaultRuntimeLimits();
     void legacySteps;
     void legacyMaxModelRequests;
     assert.deepEqual(JSON.parse(JSON.stringify(parsed.limits)), activeLimits);
@@ -121,14 +120,11 @@ describe("config commands", () => {
   it("reads standard input, verifies the write, and never prints the secret", async () => {
     const store = new MemoryCredentialStore();
     const secret = "explicit-super-secret";
-    const command = commandRun(
-      ["config", "set", "qwen.api-key"],
-      {
-        credentialStore: store,
-        env: {},
-        input: Readable.from([`${secret}\n`]),
-      },
-    );
+    const command = commandRun(["config", "set", "qwen.api-key"], {
+      credentialStore: store,
+      env: {},
+      input: Readable.from([`${secret}\n`]),
+    });
     await command.run;
 
     assert.equal(store.values.get("qwen"), secret);
@@ -139,34 +135,25 @@ describe("config commands", () => {
   it("rejects a positional API key instead of silently ignoring it", async () => {
     const store = new MemoryCredentialStore();
     const secret = "must-not-be-accepted-from-argv";
-    const command = commandRun(
-      ["config", "set", "qwen.api-key", secret],
-      {
-        credentialStore: store,
-        env: {},
-        input: Readable.from(["unused-standard-input\n"]),
-      },
-    );
+    const command = commandRun(["config", "set", "qwen.api-key", secret], {
+      credentialStore: store,
+      env: {},
+      input: Readable.from(["unused-standard-input\n"]),
+    });
 
     await assert.rejects(command.run, /too many arguments/u);
     assert.equal(store.values.size, 0);
-    assert.doesNotMatch(
-      command.output.value + command.errorOutput.value,
-      new RegExp(secret, "u"),
-    );
+    assert.doesNotMatch(command.output.value + command.errorOutput.value, new RegExp(secret, "u"));
   });
 
   it("reads an omitted value from standard input without echoing it", async () => {
     const store = new MemoryCredentialStore();
     const secret = "piped-super-secret";
-    const command = commandRun(
-      ["config", "set", "deepseek.api-key"],
-      {
-        credentialStore: store,
-        env: {},
-        input: Readable.from([`${secret}\n`]),
-      },
-    );
+    const command = commandRun(["config", "set", "deepseek.api-key"], {
+      credentialStore: store,
+      env: {},
+      input: Readable.from([`${secret}\n`]),
+    });
     await command.run;
 
     assert.equal(store.values.get("deepseek"), secret);
@@ -185,10 +172,7 @@ describe("config commands", () => {
 
     assert.equal(store.values.get("glm"), secret);
     assert.match(command.output.value, /Stored glm\.api-key/u);
-    assert.doesNotMatch(
-      command.output.value + command.errorOutput.value,
-      new RegExp(secret, "u"),
-    );
+    assert.doesNotMatch(command.output.value + command.errorOutput.value, new RegExp(secret, "u"));
   });
 
   it("stores standard GLM and GLM Coding Plan in separate keyring entries", async () => {
@@ -201,26 +185,17 @@ describe("config commands", () => {
       env: {},
       input: Readable.from([`${standardSecret}\n`]),
     }).run;
-    const codingPlanCommand = commandRun(
-      ["config", "set", "glm-coding-plan.api-key"],
-      {
-        credentialStore: store,
-        env: {},
-        input: Readable.from([`${codingPlanSecret}\n`]),
-      },
-    );
+    const codingPlanCommand = commandRun(["config", "set", "glm-coding-plan.api-key"], {
+      credentialStore: store,
+      env: {},
+      input: Readable.from([`${codingPlanSecret}\n`]),
+    });
     await codingPlanCommand.run;
 
     assert.equal(store.values.get("glm"), standardSecret);
     assert.equal(store.values.get("glm-coding-plan"), codingPlanSecret);
-    assert.notEqual(
-      store.values.get("glm"),
-      store.values.get("glm-coding-plan"),
-    );
-    assert.match(
-      codingPlanCommand.output.value,
-      /Stored glm-coding-plan\.api-key/u,
-    );
+    assert.notEqual(store.values.get("glm"), store.values.get("glm-coding-plan"));
+    assert.match(codingPlanCommand.output.value, /Stored glm-coding-plan\.api-key/u);
     assert.doesNotMatch(
       codingPlanCommand.output.value + codingPlanCommand.errorOutput.value,
       new RegExp(codingPlanSecret, "u"),
@@ -230,19 +205,13 @@ describe("config commands", () => {
   it("fails a set whose operating-system read-back cannot be verified", async () => {
     const store = new MemoryCredentialStore();
     store.failReads = true;
-    const command = commandRun(
-      ["config", "set", "qwen.api-key"],
-      {
-        credentialStore: store,
-        env: {},
-        input: Readable.from(["never-output-this\n"]),
-      },
-    );
+    const command = commandRun(["config", "set", "qwen.api-key"], {
+      credentialStore: store,
+      env: {},
+      input: Readable.from(["never-output-this\n"]),
+    });
     await assert.rejects(command.run, /did not verify/u);
-    assert.doesNotMatch(
-      command.output.value + command.errorOutput.value,
-      /never-output-this/u,
-    );
+    assert.doesNotMatch(command.output.value + command.errorOutput.value, /never-output-this/u);
     assert.doesNotMatch(command.output.value, /Stored/u);
   });
 
@@ -276,7 +245,10 @@ describe("config commands", () => {
     class TestTerminal extends PassThrough {
       readonly isTTY = true;
       isRaw = false;
-      setRawMode(mode: boolean): this { this.isRaw = mode; return this; }
+      setRawMode(mode: boolean): this {
+        this.isRaw = mode;
+        return this;
+      }
     }
     const terminal = new TestTerminal();
     const output = new StringOutput();
@@ -316,11 +288,7 @@ describe("config commands", () => {
     const secrets = ["environment-secret", "keyring-secret", "coding-plan-environment-secret"];
     try {
       await mkdir(configDir, { recursive: true });
-      await writeFile(
-        userConfigPath,
-        `[providers.qwen]\nmodel = "qwen3.7-max"\n`,
-        "utf8",
-      );
+      await writeFile(userConfigPath, `[providers.qwen]\nmodel = "qwen3.7-max"\n`, "utf8");
       store.values.set("qwen", "shadowed-keyring-secret");
       store.values.set("deepseek", secrets[1]!);
 
@@ -412,35 +380,55 @@ describe("credential configuration loading", () => {
     try {
       await mkdir(path.join(root, ".easycode"), { recursive: true });
       await mkdir(configDir, { recursive: true });
-      await writeFile(path.join(root, ".easycode", "config.toml"),
-        "[limits]\nmemory_project_expiry_days = 7\n", "utf8");
-      await assert.rejects(loadEasyCodeConfig({ workspaceRoot: root, configDir,
-        credentialStore: false, env: {} }), /limits\.memory_project_expiry_days/u);
+      await writeFile(
+        path.join(root, ".easycode", "config.toml"),
+        "[limits]\nmemory_project_expiry_days = 7\n",
+        "utf8",
+      );
+      await assert.rejects(
+        loadEasyCodeConfig({ workspaceRoot: root, configDir, credentialStore: false, env: {} }),
+        /limits\.memory_project_expiry_days/u,
+      );
       await writeFile(path.join(root, ".easycode", "config.toml"), "", "utf8");
-      await writeFile(path.join(configDir, "config.toml"),
-        "[limits]\nmemory_project_expiry_days = 120\nmemory_global_expiry_days = 240\n", "utf8");
-      const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir,
-        credentialStore: false, env: {} });
+      await writeFile(
+        path.join(configDir, "config.toml"),
+        "[limits]\nmemory_project_expiry_days = 120\nmemory_global_expiry_days = 240\n",
+        "utf8",
+      );
+      const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir, credentialStore: false, env: {} });
       assert.equal(config.limits.memoryProjectExpiryDays, 120);
       assert.equal(config.limits.memoryGlobalExpiryDays, 240);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
   it("rejects a user TOML API key without exposing its value", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "easy-code-no-plaintext-key-"));
     const configDir = path.join(root, "config");
     try {
       await mkdir(configDir, { recursive: true });
-      await writeFile(path.join(configDir, "config.toml"),
-        `[providers.qwen]\napi_key = "private-plaintext-secret"\n`, "utf8");
-      await assert.rejects(loadEasyCodeConfig({
-        workspaceRoot: root, configDir, credentialStore: false, env: {},
-      }), error => {
-        assert.ok(error instanceof Error);
-        assert.match(error.message, /API keys in TOML are no longer supported/u);
-        assert.doesNotMatch(error.message, /private-plaintext-secret/u);
-        return true;
-      });
-    } finally { await rm(root, { recursive: true, force: true }); }
+      await writeFile(
+        path.join(configDir, "config.toml"),
+        `[providers.qwen]\napi_key = "private-plaintext-secret"\n`,
+        "utf8",
+      );
+      await assert.rejects(
+        loadEasyCodeConfig({
+          workspaceRoot: root,
+          configDir,
+          credentialStore: false,
+          env: {},
+        }),
+        (error) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /API keys in TOML are no longer supported/u);
+          assert.doesNotMatch(error.message, /private-plaintext-secret/u);
+          return true;
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("loads only system credentials and ignores API-key environment variables", async () => {
@@ -470,14 +458,8 @@ describe("credential configuration loading", () => {
       assert.equal(withEnvironment.providers.qwen!.apiKey, "keyring-qwen");
       assert.equal(withEnvironment.providers.deepseek!.apiKey, "keyring-deepseek");
       assert.equal(withEnvironment.providers.glm!.apiKey, "keyring-glm");
-      assert.equal(
-        withEnvironment.providers["glm-coding-plan"]!.apiKey,
-        "keyring-glm-coding-plan",
-      );
-      assert.notEqual(
-        withEnvironment.providers.glm!.apiKey,
-        withEnvironment.providers["glm-coding-plan"]!.apiKey,
-      );
+      assert.equal(withEnvironment.providers["glm-coding-plan"]!.apiKey, "keyring-glm-coding-plan");
+      assert.notEqual(withEnvironment.providers.glm!.apiKey, withEnvironment.providers["glm-coding-plan"]!.apiKey);
 
       const withoutEnvironment = await loadEasyCodeConfig({
         workspaceRoot: temporary,
@@ -490,10 +472,7 @@ describe("credential configuration loading", () => {
       assert.equal(withoutEnvironment.providers.qwen!.apiKey, "keyring-qwen");
       assert.equal(withoutEnvironment.providers.deepseek!.apiKey, "keyring-deepseek");
       assert.equal(withoutEnvironment.providers.glm!.apiKey, "keyring-glm");
-      assert.equal(
-        withoutEnvironment.providers["glm-coding-plan"]!.apiKey,
-        "keyring-glm-coding-plan",
-      );
+      assert.equal(withoutEnvironment.providers["glm-coding-plan"]!.apiKey, "keyring-glm-coding-plan");
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
@@ -506,7 +485,10 @@ describe("credential configuration loading", () => {
     const service = `easy-code-agent-test-${process.pid}-${randomUUID()}`;
     const secret = `easy-code-test-${randomUUID()}`;
     const store = new SystemKeyringCredentialStore(service);
-    assert.equal(readOwnedResources().some(item => item.kind === "credential" && item.connection === service), false);
+    assert.equal(
+      readOwnedResources().some((item) => item.kind === "credential" && item.connection === service),
+      false,
+    );
     try {
       await store.set("qwen", secret);
       assert.equal(await store.get("qwen"), secret);
@@ -514,17 +496,29 @@ describe("credential configuration loading", () => {
       assert.equal(await store.get("qwen"), undefined);
     } finally {
       await store.delete("qwen").catch(() => false);
-      assert.equal(readOwnedResources().some(item => item.kind === "credential" && item.connection === service), false);
+      assert.equal(
+        readOwnedResources().some((item) => item.kind === "credential" && item.connection === service),
+        false,
+      );
     }
   });
 
   it("isolates Runtime and Benchmark entries and binds each key to its HTTPS endpoint", async () => {
     const entries = new Map<string, string>();
     class FakeEntry {
-      constructor(private readonly service: string, private readonly account: string) {}
-      async getPassword() { return entries.get(`${this.service}/${this.account}`) ?? null; }
-      async setPassword(value: string) { entries.set(`${this.service}/${this.account}`, value); }
-      async deleteCredential() { return entries.delete(`${this.service}/${this.account}`); }
+      constructor(
+        private readonly service: string,
+        private readonly account: string,
+      ) {}
+      async getPassword() {
+        return entries.get(`${this.service}/${this.account}`) ?? null;
+      }
+      async setPassword(value: string) {
+        entries.set(`${this.service}/${this.account}`, value);
+      }
+      async deleteCredential() {
+        return entries.delete(`${this.service}/${this.account}`);
+      }
     }
     const loader = () => ({ AsyncEntry: FakeEntry }) as never;
     const ordinary = new SystemKeyringCredentialStore(EASY_CODE_KEYRING_SERVICE, loader);
@@ -540,9 +534,6 @@ describe("credential configuration loading", () => {
     assert.equal(await benchmark.get("glm-coding-plan", endpoint), "benchmark-key");
     entries.set(`${EASY_CODE_BENCHMARK_KEYRING_SERVICE}/glm-coding-plan.api-key`, "obsolete-plain-key");
     await assert.rejects(benchmark.get("glm-coding-plan", endpoint), /Unable to read/u);
-    await assert.rejects(
-      benchmark.set("glm-coding-plan", "x".repeat(1500), endpoint),
-      /2560-byte limit/u,
-    );
+    await assert.rejects(benchmark.set("glm-coding-plan", "x".repeat(1500), endpoint), /2560-byte limit/u);
   });
 });

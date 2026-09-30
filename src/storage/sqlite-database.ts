@@ -19,10 +19,7 @@ import { createRequire } from "node:module";
 import { hostname } from "node:os";
 import path from "node:path";
 
-import type {
-  BindValues,
-  Database as WasmDatabase,
-} from "node-sqlite3-wasm";
+import type { BindValues, Database as WasmDatabase } from "node-sqlite3-wasm";
 
 const require = createRequire(import.meta.url);
 const { Database: WasmDatabaseConstructor } = require("node-sqlite3-wasm") as {
@@ -34,10 +31,7 @@ export interface SqliteRunResult {
   lastInsertRowid: number | bigint;
 }
 
-export interface SqliteStatement<
-  Parameters extends unknown[] = unknown[],
-  Result = Record<string, unknown>,
-> {
+export interface SqliteStatement<Parameters extends unknown[] = unknown[], Result = Record<string, unknown>> {
   run(...parameters: Parameters): SqliteRunResult;
   all(...parameters: Parameters): Result[];
   get(...parameters: Parameters): Result | undefined;
@@ -71,12 +65,8 @@ export class SqliteDatabase {
 
   constructor(filename: string, options: SqliteDatabaseOptions = {}) {
     this.lockTimeoutMs = normalizeLockTimeout(options.lockTimeoutMs);
-    this.advisoryLock = filename === ":memory:"
-      ? undefined
-      : advisoryLockFor(filename);
-    this.database = this.withDatabaseLock(
-      () => new WasmDatabaseConstructor(filename),
-    );
+    this.advisoryLock = filename === ":memory:" ? undefined : advisoryLockFor(filename);
+    this.database = this.withDatabaseLock(() => new WasmDatabaseConstructor(filename));
   }
 
   exec(sql: string): void {
@@ -84,30 +74,23 @@ export class SqliteDatabase {
     this.withDatabaseLock(() => this.database.exec(sql));
   }
 
-  prepare<
-    Parameters extends unknown[] = unknown[],
-    Result = Record<string, unknown>,
-  >(sql: string): SqliteStatement<Parameters, Result> {
+  prepare<Parameters extends unknown[] = unknown[], Result = Record<string, unknown>>(
+    sql: string,
+  ): SqliteStatement<Parameters, Result> {
     this.assertOpen();
     return {
       run: (...parameters: Parameters): SqliteRunResult => {
         this.assertOpen();
-        return this.withDatabaseLock(() =>
-          this.database.run(sql, bindings(parameters)),
-        );
+        return this.withDatabaseLock(() => this.database.run(sql, bindings(parameters)));
       },
       all: (...parameters: Parameters): Result[] => {
         this.assertOpen();
-        return this.withDatabaseLock(() =>
-          this.database.all(sql, bindings(parameters)) as Result[],
-        );
+        return this.withDatabaseLock(() => this.database.all(sql, bindings(parameters)) as Result[]);
       },
       get: (...parameters: Parameters): Result | undefined => {
         this.assertOpen();
         return this.withDatabaseLock(
-          () => (this.database.get(sql, bindings(parameters)) ?? undefined) as
-            | Result
-            | undefined,
+          () => (this.database.get(sql, bindings(parameters)) ?? undefined) as Result | undefined,
         );
       },
     };
@@ -118,11 +101,7 @@ export class SqliteDatabase {
     if (!source.trim() || /[;\u0000\r\n]/u.test(source)) {
       throw new Error("PRAGMA source must be one statement");
     }
-    const rows = this.withDatabaseLock(
-      () => this.database.all(`PRAGMA ${source}`) as Array<
-        Record<string, unknown>
-      >,
-    );
+    const rows = this.withDatabaseLock(() => this.database.all(`PRAGMA ${source}`) as Array<Record<string, unknown>>);
     if (!options.simple) return rows;
     const first = rows[0];
     return first ? Object.values(first)[0] : undefined;
@@ -140,10 +119,7 @@ export class SqliteDatabase {
         this.database.exec("BEGIN IMMEDIATE");
         const token: TransactionToken = { active: true };
         try {
-          const result = this.transactionScope.run(
-            token,
-            () => callback(...parameters),
-          );
+          const result = this.transactionScope.run(token, () => callback(...parameters));
           if (isPromiseLike(result)) {
             token.active = false;
             void Promise.resolve(result).catch(() => undefined);
@@ -159,10 +135,7 @@ export class SqliteDatabase {
               this.database.exec("ROLLBACK");
             }
           } catch (rollbackError) {
-            throw new AggregateError(
-              [error, rollbackError],
-              "SQLite transaction failed and rollback also failed",
-            );
+            throw new AggregateError([error, rollbackError], "SQLite transaction failed and rollback also failed");
           }
           throw error;
         }
@@ -191,9 +164,7 @@ export class SqliteDatabase {
   }
 
   private withDatabaseLock<Result>(callback: () => Result): Result {
-    return this.advisoryLock
-      ? this.advisoryLock.runExclusive(callback, this.lockTimeoutMs)
-      : callback();
+    return this.advisoryLock ? this.advisoryLock.runExclusive(callback, this.lockTimeoutMs) : callback();
   }
 }
 
@@ -218,11 +189,7 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 }
 
 function isNamedBindings(value: unknown): value is Record<string, unknown> {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    value instanceof Uint8Array
-  ) {
+  if (typeof value !== "object" || value === null || value instanceof Uint8Array) {
     return false;
   }
   const prototype = Object.getPrototypeOf(value);
@@ -370,18 +337,11 @@ class DatabaseAdvisoryLock {
     for (const staleDirectory of staleDirectories) {
       const staleOwner = readOwner(staleDirectory);
       if (!staleOwner) {
-        throw new Error(
-          `Refusing SQLite lock recovery because ${staleDirectory} has invalid owner metadata`,
-        );
+        throw new Error(`Refusing SQLite lock recovery because ${staleDirectory} has invalid owner metadata`);
       }
-      const directoryToken = staleDirectoryToken(
-        this.lockDirectory,
-        staleDirectory,
-      );
+      const directoryToken = staleDirectoryToken(this.lockDirectory, staleDirectory);
       if (directoryToken !== staleOwner.token) {
-        throw new Error(
-          `Refusing SQLite lock recovery because ${staleDirectory} does not match its owner token`,
-        );
+        throw new Error(`Refusing SQLite lock recovery because ${staleDirectory} does not match its owner token`);
       }
       if (readRecoveryMarker(staleDirectory, staleOwner.token)) continue;
       if (ownerState(staleOwner) !== "dead") {
@@ -394,9 +354,7 @@ class DatabaseAdvisoryLock {
 
     if (existsSync(this.dependencyLockDirectory)) {
       if (unrecovered.length === 0) {
-        throw new Error(
-          `Refusing to remove unowned SQLite lock ${this.dependencyLockDirectory}`,
-        );
+        throw new Error(`Refusing to remove unowned SQLite lock ${this.dependencyLockDirectory}`);
       }
       removeEmptyDependencyLock(this.dependencyLockDirectory);
     }
@@ -412,12 +370,7 @@ class DatabaseAdvisoryLock {
       throw new Error("SQLite advisory lock ownership changed before release");
     }
     const releaseDirectory = `${this.lockDirectory}.release-${owner.token}`;
-    renameOwnedDirectory(
-      this.lockDirectory,
-      releaseDirectory,
-      owner.token,
-      timeoutMs,
-    );
+    renameOwnedDirectory(this.lockDirectory, releaseDirectory, owner.token, timeoutMs);
     const moved = readOwner(releaseDirectory);
     if (!moved || moved.token !== owner.token) {
       throw new Error("SQLite advisory lock ownership changed during release");
@@ -426,12 +379,7 @@ class DatabaseAdvisoryLock {
   }
 }
 
-function renameOwnedDirectory(
-  source: string,
-  destination: string,
-  expectedToken: string,
-  timeoutMs: number,
-): void {
+function renameOwnedDirectory(source: string, destination: string, expectedToken: string, timeoutMs: number): void {
   const deadline = Date.now() + timeoutMs;
   while (true) {
     const owner = readOwner(source);
@@ -449,11 +397,7 @@ function renameOwnedDirectory(
 }
 
 function isTransientRenameError(error: unknown): boolean {
-  return (
-    isFileSystemError(error, "EPERM") ||
-    isFileSystemError(error, "EACCES") ||
-    isFileSystemError(error, "EBUSY")
-  );
+  return isFileSystemError(error, "EPERM") || isFileSystemError(error, "EACCES") || isFileSystemError(error, "EBUSY");
 }
 
 function advisoryLockFor(filename: string): DatabaseAdvisoryLock {
@@ -462,13 +406,8 @@ function advisoryLockFor(filename: string): DatabaseAdvisoryLock {
   // parent does. Canonicalizing that parent makes directory symlink/junction
   // aliases contend on one advisory lock instead of creating independent
   // locks for the same SQLite file.
-  const canonicalFilename = path.join(
-    realpathSync(path.dirname(resolved)),
-    path.basename(resolved),
-  );
-  const key = process.platform === "win32"
-    ? canonicalFilename.toLowerCase()
-    : canonicalFilename;
+  const canonicalFilename = path.join(realpathSync(path.dirname(resolved)), path.basename(resolved));
+  const key = process.platform === "win32" ? canonicalFilename.toLowerCase() : canonicalFilename;
   const existing = advisoryLocks.get(key);
   if (existing) return existing;
   const created = new DatabaseAdvisoryLock(canonicalFilename);
@@ -490,10 +429,7 @@ function randomToken(): string {
   return randomBytes(16).toString("hex");
 }
 
-function writeOwnerDirectory(
-  directory: string,
-  owner: AdvisoryLockOwner,
-): void {
+function writeOwnerDirectory(directory: string, owner: AdvisoryLockOwner): void {
   mkdirSync(directory, { mode: 0o700 });
   const ownerPath = path.join(directory, OWNER_FILE);
   try {
@@ -512,9 +448,7 @@ function writeOwnerDirectory(
 
 function readOwner(directory: string): AdvisoryLockOwner | undefined {
   try {
-    const value = JSON.parse(
-      readFileSync(path.join(directory, OWNER_FILE), "utf8"),
-    ) as Partial<AdvisoryLockOwner>;
+    const value = JSON.parse(readFileSync(path.join(directory, OWNER_FILE), "utf8")) as Partial<AdvisoryLockOwner>;
     if (
       value.version !== 1 ||
       !Number.isInteger(value.pid) ||
@@ -552,11 +486,7 @@ function findStaleDirectories(lockDirectory: string): string[] {
   const prefix = `${path.basename(lockDirectory)}.stale-`;
   try {
     return readdirSync(parent, { withFileTypes: true })
-      .filter((entry) =>
-        entry.isDirectory() &&
-        !entry.isSymbolicLink() &&
-        startsWithPathName(entry.name, prefix),
-      )
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && startsWithPathName(entry.name, prefix))
       .map((entry) => path.join(parent, entry.name));
   } catch (error) {
     if (isFileSystemError(error, "ENOENT")) return [];
@@ -564,10 +494,7 @@ function findStaleDirectories(lockDirectory: string): string[] {
   }
 }
 
-function staleDirectoryToken(
-  lockDirectory: string,
-  staleDirectory: string,
-): string | undefined {
+function staleDirectoryToken(lockDirectory: string, staleDirectory: string): string | undefined {
   const prefix = `${path.basename(lockDirectory)}.stale-`;
   const name = path.basename(staleDirectory);
   if (!startsWithPathName(name, prefix)) return undefined;
@@ -581,18 +508,14 @@ function startsWithPathName(value: string, prefix: string): boolean {
   return value.startsWith(prefix);
 }
 
-function readRecoveryMarker(
-  directory: string,
-  expectedOwnerToken: string,
-): LockRecoveryMarker | undefined {
+function readRecoveryMarker(directory: string, expectedOwnerToken: string): LockRecoveryMarker | undefined {
   const markerPath = path.join(directory, RECOVERED_FILE);
   try {
     const metadata = lstatSync(markerPath);
     if (metadata.isSymbolicLink() || !metadata.isFile()) {
       throw new Error(`Invalid SQLite recovery marker: ${markerPath}`);
     }
-    const value = JSON.parse(readFileSync(markerPath, "utf8")) as
-      Partial<LockRecoveryMarker>;
+    const value = JSON.parse(readFileSync(markerPath, "utf8")) as Partial<LockRecoveryMarker>;
     if (
       value.version !== 1 ||
       value.ownerToken !== expectedOwnerToken ||
@@ -609,11 +532,7 @@ function readRecoveryMarker(
   }
 }
 
-function writeRecoveryMarker(
-  directory: string,
-  ownerToken: string,
-  recoveredByToken: string,
-): void {
+function writeRecoveryMarker(directory: string, ownerToken: string, recoveredByToken: string): void {
   if (readRecoveryMarker(directory, ownerToken)) return;
   const marker: LockRecoveryMarker = {
     version: 1,
@@ -621,10 +540,7 @@ function writeRecoveryMarker(
     recoveredByToken,
     recoveredAt: new Date().toISOString(),
   };
-  const stagingPath = path.join(
-    directory,
-    `${RECOVERED_FILE}.staging-${recoveredByToken}`,
-  );
+  const stagingPath = path.join(directory, `${RECOVERED_FILE}.staging-${recoveredByToken}`);
   const markerPath = path.join(directory, RECOVERED_FILE);
   let descriptor: number | undefined;
   try {
@@ -655,9 +571,7 @@ function removeEmptyDependencyLock(directory: string): void {
     throw error;
   }
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-    throw new Error(
-      `Refusing to remove SQLite lock that is not a plain directory: ${directory}`,
-    );
+    throw new Error(`Refusing to remove SQLite lock that is not a plain directory: ${directory}`);
   }
   if (readdirSync(directory).length !== 0) {
     throw new Error(`Refusing to remove non-empty SQLite lock: ${directory}`);
@@ -669,34 +583,22 @@ function removeEmptyDependencyLock(directory: string): void {
   }
 }
 
-function removeOwnerDirectoryIfOwned(
-  directory: string,
-  expectedToken: string,
-): void {
+function removeOwnerDirectoryIfOwned(directory: string, expectedToken: string): void {
   const owner = readOwner(directory);
   if (!owner || owner.token !== expectedToken) return;
   const entries = readdirSync(directory, { withFileTypes: true });
-  if (
-    entries.length !== 1 ||
-    entries[0]?.name !== OWNER_FILE ||
-    !entries[0].isFile()
-  ) {
+  if (entries.length !== 1 || entries[0]?.name !== OWNER_FILE || !entries[0].isFile()) {
     throw new Error(`Refusing to remove unexpected advisory lock contents: ${directory}`);
   }
   unlinkSync(path.join(directory, OWNER_FILE));
   rmdirSync(directory);
 }
 
-function lockBusyError(
-  databasePath: string,
-  owner: AdvisoryLockOwner | undefined,
-): Error {
+function lockBusyError(databasePath: string, owner: AdvisoryLockOwner | undefined): Error {
   const ownerDescription = owner
     ? `pid ${owner.pid} on ${owner.hostname}`
     : "an owner whose identity cannot be verified";
-  return new Error(
-    `SQLite database is busy: ${databasePath} is locked by ${ownerDescription}`,
-  );
+  return new Error(`SQLite database is busy: ${databasePath} is locked by ${ownerDescription}`);
 }
 
 function normalizeLockTimeout(value: number | undefined): number {
@@ -713,10 +615,5 @@ function sleepSync(milliseconds: number): void {
 }
 
 function isFileSystemError(error: unknown, code: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === code
-  );
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
 }

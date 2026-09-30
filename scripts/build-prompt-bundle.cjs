@@ -84,19 +84,11 @@ function validateToolMetadata(toolId, value, relativePath) {
     !value.propertyDescriptions ||
     typeof value.propertyDescriptions !== "object" ||
     Array.isArray(value.propertyDescriptions) ||
-    Object.values(value.propertyDescriptions).some(
-      (item) => typeof item !== "string" || item.trim().length === 0,
-    )
+    Object.values(value.propertyDescriptions).some((item) => typeof item !== "string" || item.trim().length === 0)
   ) {
     throw new Error(`${relativePath}.propertyDescriptions must map fields to non-empty text`);
   }
-  const allowed = new Set([
-    "id",
-    "contractVersion",
-    "description",
-    "propertyDescriptions",
-    "guidance",
-  ]);
+  const allowed = new Set(["id", "contractVersion", "description", "propertyDescriptions", "guidance"]);
   const unknown = Object.keys(value).filter((key) => !allowed.has(key));
   if (unknown.length) throw new Error(`${relativePath} contains unsupported fields: ${unknown.join(", ")}`);
 }
@@ -112,9 +104,7 @@ function writeIfChanged(filename, contents) {
 
 function buildPromptBundle(options = {}) {
   const packageRoot = path.resolve(options.packageRoot || path.join(__dirname, ".."));
-  const sourceDirectory = path.resolve(
-    options.sourceDirectory || path.join(packageRoot, "resources", "prompt-bundle"),
-  );
+  const sourceDirectory = path.resolve(options.sourceDirectory || path.join(packageRoot, "resources", "prompt-bundle"));
   const configPath = path.resolve(
     options.configPath || path.join(packageRoot, "resources", "prompt-bundle.config.json"),
   );
@@ -129,9 +119,7 @@ function buildPromptBundle(options = {}) {
   assertSemver(config.runtimeCompatibility.min, "runtimeCompatibility.min");
   assertSemver(config.runtimeCompatibility.maxExclusive, "runtimeCompatibility.maxExclusive");
   assertSemver(packageJson.version, "package.version");
-  if (
-    compareSemver(config.runtimeCompatibility.min, config.runtimeCompatibility.maxExclusive) >= 0
-  ) {
+  if (compareSemver(config.runtimeCompatibility.min, config.runtimeCompatibility.maxExclusive) >= 0) {
     throw new Error("runtimeCompatibility.maxExclusive must be greater than min");
   }
   if (
@@ -207,7 +195,7 @@ if (require.main === module) {
     const result = buildPromptBundle();
     process.stdout.write(
       `EASY CODE: Prompt Bundle ${result.bundleVersion} ready ` +
-      `(${result.fileCount} files, ${result.toolCount} tools).\n`,
+        `(${result.fileCount} files, ${result.toolCount} tools).\n`,
     );
   } catch (error) {
     process.stderr.write(

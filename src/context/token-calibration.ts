@@ -8,7 +8,10 @@ import { requestTokens } from "./token-budget.js";
 export class TokenCalibration {
   private readonly samples = new Map<string, number[]>();
   private readonly scope: string;
-  constructor(identity: string, private readonly storage?: EasyCodeStorage) {
+  constructor(
+    identity: string,
+    private readonly storage?: EasyCodeStorage,
+  ) {
     this.scope = sha256(`request-estimator-v1:${identity}`);
   }
 
@@ -19,8 +22,11 @@ export class TokenCalibration {
   private ratios(key: string): number[] {
     let values = this.samples.get(key);
     if (!values) {
-      const rows = this.storage?.db.prepare<[string], { ratio: number }>(
-        "SELECT ratio FROM context_token_samples WHERE scope = ? ORDER BY sequence DESC LIMIT 32").all(key);
+      const rows = this.storage?.db
+        .prepare<[string], { ratio: number }>(
+          "SELECT ratio FROM context_token_samples WHERE scope = ? ORDER BY sequence DESC LIMIT 32",
+        )
+        .all(key);
       values = (rows ?? []).map((r) => r.ratio).reverse();
       this.samples.set(key, values);
     }
@@ -47,10 +53,13 @@ export class TokenCalibration {
     const values = this.ratios(key);
     values.push(ratio);
     if (values.length > 32) values.shift();
-    if (this.storage) this.storage.db.transaction(() => {
-      this.storage!.db.prepare("INSERT INTO context_token_samples(scope, ratio) VALUES (?, ?)").run(key, ratio);
-      this.storage!.db.prepare(`DELETE FROM context_token_samples WHERE scope = ? AND sequence NOT IN
-        (SELECT sequence FROM context_token_samples WHERE scope = ? ORDER BY sequence DESC LIMIT 32)`).run(key, key);
-    })();
+    if (this.storage)
+      this.storage.db.transaction(() => {
+        this.storage!.db.prepare("INSERT INTO context_token_samples(scope, ratio) VALUES (?, ?)").run(key, ratio);
+        this.storage!.db.prepare(
+          `DELETE FROM context_token_samples WHERE scope = ? AND sequence NOT IN
+        (SELECT sequence FROM context_token_samples WHERE scope = ? ORDER BY sequence DESC LIMIT 32)`,
+        ).run(key, key);
+      })();
   }
 }

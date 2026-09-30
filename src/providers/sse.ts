@@ -15,9 +15,7 @@ export class ServerSentEventDecoder {
   private dataLines: string[] = [];
 
   push(chunk: Buffer | string): ServerSentEvent[] {
-    this.buffer += typeof chunk === "string"
-      ? chunk
-      : this.decode(chunk, false);
+    this.buffer += typeof chunk === "string" ? chunk : this.decode(chunk, false);
     return this.drain(false);
   }
 
@@ -27,8 +25,11 @@ export class ServerSentEventDecoder {
   }
 
   private decode(chunk: Buffer | undefined, final: boolean): string {
-    try { return this.decoder.decode(chunk, { stream: !final }); }
-    catch { throw new SseDecodingError("Provider returned invalid UTF-8 in an SSE response"); }
+    try {
+      return this.decoder.decode(chunk, { stream: !final });
+    } catch {
+      throw new SseDecodingError("Provider returned invalid UTF-8 in an SSE response");
+    }
   }
 
   private drain(final: boolean): ServerSentEvent[] {
@@ -44,15 +45,16 @@ export class ServerSentEventDecoder {
       newline = this.buffer.search(/[\r\n]/u);
     }
     if (final && this.buffer.length > 0) {
-      const line = this.buffer.endsWith("\r")
-        ? this.buffer.slice(0, -1)
-        : this.buffer;
+      const line = this.buffer.endsWith("\r") ? this.buffer.slice(0, -1) : this.buffer;
       this.buffer = "";
       this.consumeLine(line, output);
     }
     // EOF does not dispatch an unterminated SSE event. The protocol owner must
     // reject a response which never supplied its terminal event.
-    if (final) { this.dataLines = []; this.eventName = undefined; }
+    if (final) {
+      this.dataLines = [];
+      this.eventName = undefined;
+    }
     return output;
   }
 
@@ -83,6 +85,6 @@ export class ServerSentEventDecoder {
 }
 
 export function isEventStreamContentType(value: string | string[] | undefined): boolean {
-  const contentType = Array.isArray(value) ? value.join(";") : value ?? "";
+  const contentType = Array.isArray(value) ? value.join(";") : (value ?? "");
   return /(?:^|;)\s*text\/event-stream(?:\s*;|$)/iu.test(contentType);
 }

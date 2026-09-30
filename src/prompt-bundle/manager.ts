@@ -1,29 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
-import {
-  chmod,
-  copyFile,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import {
-  EASY_CODE_RUNTIME_VERSION,
-  PACKAGED_PROMPT_BUNDLE_MANIFEST_HASH,
-} from "./generated.js";
+import { EASY_CODE_RUNTIME_VERSION, PACKAGED_PROMPT_BUNDLE_MANIFEST_HASH } from "./generated.js";
 import { PromptBundleCatalog } from "./catalog.js";
 import { verifyPromptBundleDirectory } from "./manifest.js";
-import {
-  getEasyCodeHome,
-  getPackagedPromptBundleDirectory,
-  promptBundleDirectoryName,
-} from "./paths.js";
+import { getEasyCodeHome, getPackagedPromptBundleDirectory, promptBundleDirectoryName } from "./paths.js";
 import {
   PROMPT_BUNDLE_FORMAT_VERSION,
   type ActivePromptBundleRecord,
@@ -105,10 +87,7 @@ async function readVerifiedBundle(
   return { root, ...verified };
 }
 
-async function copyVerifiedBundle(
-  source: InstalledPromptBundle,
-  target: string,
-): Promise<void> {
+async function copyVerifiedBundle(source: InstalledPromptBundle, target: string): Promise<void> {
   await mkdir(target, { recursive: false, mode: 0o700 });
   for (const relativePath of Object.keys(source.manifest.files)) {
     const sourcePath = path.join(source.root, ...relativePath.split("/"));
@@ -201,9 +180,7 @@ async function createCatalog(bundle: InstalledPromptBundle): Promise<PromptBundl
   return new PromptBundleCatalog(bundle, files);
 }
 
-export async function ensurePromptBundleForTesting(
-  options: PromptBundleEnsureOptions,
-): Promise<PromptBundleCatalog> {
+export async function ensurePromptBundleForTesting(options: PromptBundleEnsureOptions): Promise<PromptBundleCatalog> {
   const source = await readVerifiedBundle(
     options.packagedBundleDirectory,
     options.expectedManifestHash,
@@ -217,19 +194,11 @@ export async function ensurePromptBundleForTesting(
   const release = await acquireInstallLock(lockPath);
   let installed: InstalledPromptBundle;
   try {
-    const destination = path.join(
-      bundlesRoot,
-      promptBundleDirectoryName(source.manifest.bundleVersion),
-    );
+    const destination = path.join(bundlesRoot, promptBundleDirectoryName(source.manifest.bundleVersion));
     try {
       installed = await readVerifiedBundle(destination, source.manifestHash, options.runtimeVersion);
     } catch {
-      installed = await installAtomically(
-        source,
-        bundlesRoot,
-        destination,
-        options.runtimeVersion,
-      );
+      installed = await installAtomically(source, bundlesRoot, destination, options.runtimeVersion);
     }
     await writeActiveRecord(home, installed);
   } finally {
@@ -267,15 +236,16 @@ export function activePromptBundleBinding(): PromptBundleBinding {
   const toolContracts = Object.fromEntries(
     Object.entries(catalog.manifest.tools)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([id, entry]) => [id, {
-        contractVersion: entry.contractVersion,
-        contentHash: entry.contentHash,
-        ...(entry.schemaHash ? { schemaHash: entry.schemaHash } : {}),
-      }]),
+      .map(([id, entry]) => [
+        id,
+        {
+          contractVersion: entry.contractVersion,
+          contentHash: entry.contentHash,
+          ...(entry.schemaHash ? { schemaHash: entry.schemaHash } : {}),
+        },
+      ]),
   );
-  const toolCatalogHash = `sha256:${createHash("sha256")
-    .update(canonicalJson(toolContracts))
-    .digest("hex")}`;
+  const toolCatalogHash = `sha256:${createHash("sha256").update(canonicalJson(toolContracts)).digest("hex")}`;
   return Object.freeze({
     formatVersion: catalog.manifest.formatVersion,
     bundleVersion: catalog.manifest.bundleVersion,

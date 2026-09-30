@@ -41,7 +41,7 @@ export function createSessionState(
     compactionControl: { phaseEnds: [] },
     reviewSessions: [],
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 }
 
@@ -64,9 +64,7 @@ export function cloneSessionState(state: SessionState): SessionState {
       ...entry,
       message: {
         ...entry.message,
-        ...(entry.message.images
-          ? { images: entry.message.images.map((image) => ({ ...image })) }
-          : {}),
+        ...(entry.message.images ? { images: entry.message.images.map((image) => ({ ...image })) } : {}),
       },
     })),
     steeringSequence: state.steeringSequence,
@@ -87,8 +85,6 @@ export function cloneSessionState(state: SessionState): SessionState {
           },
         }
       : {}),
-    ...(state.contextCompactionMetadata
-      ? { contextCompactionMetadata: { ...state.contextCompactionMetadata } }
-      : {}),
+    ...(state.contextCompactionMetadata ? { contextCompactionMetadata: { ...state.contextCompactionMetadata } } : {}),
   };
 }

@@ -29,18 +29,28 @@ function commandOutput(
       reason: "The test framework emitted a terminal summary.",
       evidenceKey: `sha256:${"a".repeat(64)}`,
     },
-    ...(status === "exited" && exitCode !== 0
-      ? { failure: { kind: "exit", code: "nonzero_exit" } }
-      : {}),
+    ...(status === "exited" && exitCode !== 0 ? { failure: { kind: "exit", code: "nonzero_exit" } } : {}),
   };
 }
 
 describe("progress observation", () => {
   it("does not recover stagnation or request code review from unsafe cleanup", () => {
-    const observation = observeToolResult({ sourceEventId: "event_cleanup", sourceCallId: "call_cleanup", scopeKey: "thread:test", responseOrdinal: 1,
-      tool: "run_command", verificationIntent: true, result: { ok: false, summary: "cleanup unknown", data: {
-        ...commandOutput("exited", 0), lifecycle: { execution: "exited", cleanup: "unconfirmed" },
-      } } });
+    const observation = observeToolResult({
+      sourceEventId: "event_cleanup",
+      sourceCallId: "call_cleanup",
+      scopeKey: "thread:test",
+      responseOrdinal: 1,
+      tool: "run_command",
+      verificationIntent: true,
+      result: {
+        ok: false,
+        summary: "cleanup unknown",
+        data: {
+          ...commandOutput("exited", 0),
+          lifecycle: { execution: "exited", cleanup: "unconfirmed" },
+        },
+      },
+    });
     assert.equal(observation.kind, "infrastructure_failure");
     assert.equal(observation.outcomeClass, "unknown");
   });
@@ -132,12 +142,20 @@ describe("progress observation", () => {
 
   it("does not count a known sandbox boundary exit as a failed code verification", () => {
     const observation = observeToolResult({
-      sourceEventId: "event_boundary_failure", sourceCallId: "call_boundary_failure",
-      scopeKey: "thread:test", responseOrdinal: 4, tool: "run_command", verificationIntent: true,
-      result: { ok: false, summary: "sandbox boundary", data: {
-        ...commandOutput("exited", 1),
-        sandboxBoundary: { attempt: 1, action: "adjust_command", hostRetryAuthorized: false },
-      } },
+      sourceEventId: "event_boundary_failure",
+      sourceCallId: "call_boundary_failure",
+      scopeKey: "thread:test",
+      responseOrdinal: 4,
+      tool: "run_command",
+      verificationIntent: true,
+      result: {
+        ok: false,
+        summary: "sandbox boundary",
+        data: {
+          ...commandOutput("exited", 1),
+          sandboxBoundary: { attempt: 1, action: "adjust_command", hostRetryAuthorized: false },
+        },
+      },
     });
     assert.equal(observation.kind, "infrastructure_failure");
     assert.equal(observation.outcomeClass, "unknown");
@@ -207,26 +225,22 @@ describe("progress observation", () => {
       },
     });
 
+    assert.throws(() => parseProgressObservation({ ...valid, injected: "not allowed" }), /shape/u);
+    assert.throws(() => parseProgressObservation({ ...valid, scopeKey: "x".repeat(513) }), /scopeKey/u);
     assert.throws(
-      () => parseProgressObservation({ ...valid, injected: "not allowed" }),
-      /shape/u,
-    );
-    assert.throws(
-      () => parseProgressObservation({ ...valid, scopeKey: "x".repeat(513) }),
-      /scopeKey/u,
-    );
-    assert.throws(
-      () => assertProgressObservationBinding(valid, {
-        sourceEventId: "event_other",
-        sourceCallId: valid.sourceCallId,
-      }),
+      () =>
+        assertProgressObservationBinding(valid, {
+          sourceEventId: "event_other",
+          sourceCallId: valid.sourceCallId,
+        }),
       /sourceEventId/u,
     );
     assert.throws(
-      () => parseProgressObservation(valid, {
-        sourceEventId: valid.sourceEventId,
-        sourceCallId: "call_other",
-      }),
+      () =>
+        parseProgressObservation(valid, {
+          sourceEventId: valid.sourceEventId,
+          sourceCallId: "call_other",
+        }),
       /sourceCallId/u,
     );
   });

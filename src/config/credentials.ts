@@ -2,11 +2,7 @@ import { createRequire } from "node:module";
 import { recordOwnedResource } from "../install/ownership.js";
 
 import type { ProviderName } from "../core/types.js";
-import {
-  PROVIDER_CATALOG,
-  providerCatalogEntry,
-  providerCredentialConfigKey,
-} from "../models/catalog.js";
+import { PROVIDER_CATALOG, providerCatalogEntry, providerCredentialConfigKey } from "../models/catalog.js";
 
 export type ApiKeyConfigKey = `${ProviderName}.api-key`;
 
@@ -62,9 +58,13 @@ function parseStoredApiKey(value: string): StoredApiKey {
   const parsed: unknown = JSON.parse(value);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid credential format");
   const record = parsed as Record<string, unknown>;
-  if (record.version !== 1 || typeof record.endpoint !== "string" ||
-      typeof record.apiKey !== "string" || !record.apiKey ||
-      Object.keys(record).some(key => !["version", "endpoint", "apiKey"].includes(key))) {
+  if (
+    record.version !== 1 ||
+    typeof record.endpoint !== "string" ||
+    typeof record.apiKey !== "string" ||
+    !record.apiKey ||
+    Object.keys(record).some((key) => !["version", "endpoint", "apiKey"].includes(key))
+  ) {
     throw new Error("Invalid credential format");
   }
   return record as unknown as StoredApiKey;
@@ -89,7 +89,9 @@ export class SystemKeyringCredentialStore implements ApiKeyCredentialStore {
 
   async set(provider: ProviderName, value: string, endpoint?: string): Promise<void> {
     const payload = JSON.stringify({
-      version: 1, endpoint: canonicalEndpoint(provider, endpoint), apiKey: value,
+      version: 1,
+      endpoint: canonicalEndpoint(provider, endpoint),
+      apiKey: value,
     } satisfies StoredApiKey);
     // Windows Credential Manager limits the UTF-16 credential blob to 2560 bytes.
     // Use the portable limit on every platform so a key can move between hosts.
@@ -115,10 +117,7 @@ export class SystemKeyringCredentialStore implements ApiKeyCredentialStore {
 
   private entry(provider: ProviderName): InstanceType<KeyringModule["AsyncEntry"]> {
     const { AsyncEntry } = this.moduleLoader();
-    return new AsyncEntry(
-      this.service, apiKeyConfigKey(provider),
-      { linux: { store: "secret-service" } },
-    );
+    return new AsyncEntry(this.service, apiKeyConfigKey(provider), { linux: { store: "secret-service" } });
   }
 }
 
@@ -131,14 +130,10 @@ export function parseApiKeyConfigKey(value: string): {
   provider: ProviderName;
 } {
   const normalized = value.trim();
-  const entry = PROVIDER_CATALOG.find(
-    (candidate) => candidate.configKey === normalized,
-  );
+  const entry = PROVIDER_CATALOG.find((candidate) => candidate.configKey === normalized);
   if (!entry) {
     throw new Error(
-      `Unsupported configuration key. Valid keys: ${PROVIDER_CATALOG.map(
-        ({ configKey }) => configKey,
-      ).join(", ")}.`,
+      `Unsupported configuration key. Valid keys: ${PROVIDER_CATALOG.map(({ configKey }) => configKey).join(", ")}.`,
     );
   }
   return { key: entry.configKey, provider: entry.provider };

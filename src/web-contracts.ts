@@ -6,7 +6,8 @@ import type { InteractionChoice } from "./ui/interaction-port.js";
 import type { ThreadResourceAttachment } from "./resources/types.js";
 import type { CompactionProgress } from "./ui/compaction.js";
 
-export type WebEntryKind = "user" | "assistant" | "thinking" | "tool" | "info" | "success" | "warning" | "error" | "plan";
+export type WebEntryKind =
+  "user" | "assistant" | "thinking" | "tool" | "info" | "success" | "warning" | "error" | "plan";
 export type WebAnswerState = "streaming" | "finalizing" | "confirmed";
 export interface WebEntry {
   compaction?: CompactionProgress;
@@ -29,7 +30,10 @@ export interface WebEntry {
   toolDetails?: readonly ToolDisplayDetail[];
   timestamp: number;
 }
-export interface WebHistoryMarker { id: string; preview: string }
+export interface WebHistoryMarker {
+  id: string;
+  preview: string;
+}
 export interface WebHistoryState {
   epoch: string;
   hasEarlier: boolean;
@@ -66,4 +70,8 @@ export type WebPatch =
   | { kind: "entries.reset"; entries: readonly WebEntry[]; history?: WebHistoryState }
   | { kind: "thread.title"; threadId: string; title: string }
   | { kind: "state"; state: Omit<WebView, "entries"> };
-export interface WebChange { sequence: number; view: WebView; patch?: WebPatch }
+export interface WebChange {
+  sequence: number;
+  view: WebView;
+  patch?: WebPatch;
+}

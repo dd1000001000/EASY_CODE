@@ -6,8 +6,8 @@ const noticeKinds = new Set<WebEntry["kind"]>(["info", "success", "warning", "er
 export function toolRunContinuesAcross(entries: readonly WebEntry[], boundary: number): boolean {
   let left = boundary - 1;
   let right = boundary;
-  while (left >= 0 && noticeKinds.has(entries[left]!.kind)) left -= 1;
-  while (right < entries.length && noticeKinds.has(entries[right]!.kind)) right += 1;
+  while (left >= 0 && !entries[left]!.compaction && noticeKinds.has(entries[left]!.kind)) left -= 1;
+  while (right < entries.length && !entries[right]!.compaction && noticeKinds.has(entries[right]!.kind)) right += 1;
   return entries[left]?.kind === "tool" && entries[right]?.kind === "tool";
 }
 

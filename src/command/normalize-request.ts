@@ -12,8 +12,10 @@ export function normalizeCommandRequest(
 ): RunCommandInput {
   const warnings = [...(request.normalizationWarnings ?? [])].slice(0, 4);
   const supplied = request.verificationKind;
-  const recognized = typeof supplied === "string" && VERIFICATION_KINDS.includes(supplied as VerificationKind)
-    ? supplied as VerificationKind : undefined;
+  const recognized =
+    typeof supplied === "string" && VERIFICATION_KINDS.includes(supplied as VerificationKind)
+      ? (supplied as VerificationKind)
+      : undefined;
   const verification = ["verify", "test", "build"].includes(request.intent);
   if (supplied !== undefined && (!recognized || !verification)) {
     warnings.push("Invalid or inapplicable verificationKind ignored; command execution is unchanged.");
@@ -22,7 +24,10 @@ export function normalizeCommandRequest(
     warnings.push("verificationKind defaulted to custom.");
   }
   const { verificationKind: _supplied, normalizationWarnings: _warnings, ...execution } = request;
-  const kind = commandVerificationKind({ intent: request.intent, ...(recognized ? { verificationKind: recognized } : {}) });
+  const kind = commandVerificationKind({
+    intent: request.intent,
+    ...(recognized ? { verificationKind: recognized } : {}),
+  });
   return {
     ...execution,
     ...(kind ? { verificationKind: kind } : {}),
@@ -31,6 +36,9 @@ export function normalizeCommandRequest(
 }
 
 export function commandRequestMetadata(input: RunCommandInput): CommandRequestMetadata {
-  return { intent: input.intent, ...(input.verificationKind ? { verificationKind: input.verificationKind } : {}),
-    warnings: input.normalizationWarnings ?? [] };
+  return {
+    intent: input.intent,
+    ...(input.verificationKind ? { verificationKind: input.verificationKind } : {}),
+    warnings: input.normalizationWarnings ?? [],
+  };
 }

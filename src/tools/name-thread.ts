@@ -17,7 +17,8 @@ export class NameThreadTool implements AgentTool {
       name: "name_thread",
       strict: true,
       ...documentToolSchema("name_thread", {
-        type: "object", additionalProperties: false,
+        type: "object",
+        additionalProperties: false,
         properties: { title: { type: "string", minLength: 1, maxLength: 120 } },
         required: ["title"],
       }),
@@ -31,8 +32,11 @@ export class NameThreadTool implements AgentTool {
       if (context.agentRole === "subagent") throw new Error("Only the main agent can name a Thread.");
       const { title } = this.inputSchema.parse(input);
       if (!this.titles.claim(context.threadId, title)) {
-        return { ok: false, summary: "Thread already has a title; it cannot be renamed again.",
-          error: "thread_title_already_claimed" };
+        return {
+          ok: false,
+          summary: "Thread already has a title; it cannot be renamed again.",
+          error: "thread_title_already_claimed",
+        };
       }
       return toolSuccess("Named the current Thread.", { title: title.trim() });
     } catch (error) {

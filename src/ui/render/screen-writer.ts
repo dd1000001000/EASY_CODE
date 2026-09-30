@@ -1,11 +1,4 @@
-import {
-  clampVisualColumn,
-  displayWidth,
-  hasAnsi,
-  sanitizeTerminalText,
-  stripAnsi,
-  wrapToWidth,
-} from "./layout.js";
+import { clampVisualColumn, displayWidth, hasAnsi, sanitizeTerminalText, stripAnsi, wrapToWidth } from "./layout.js";
 import { OutputDrainMonitor } from "./output-drain-monitor.js";
 
 const DEFAULT_COLUMNS = 80;
@@ -74,17 +67,13 @@ export class ScreenWriter {
 
   /** Current layout width. An injected source wins, then stdout.columns, then 80. */
   get columns(): number {
-    const injected = typeof this.widthSource === "function"
-      ? safelyReadWidth(this.widthSource)
-      : this.widthSource;
+    const injected = typeof this.widthSource === "function" ? safelyReadWidth(this.widthSource) : this.widthSource;
     const physicalColumns = normalizeColumns(injected ?? this.output.columns);
     // Never paint the last physical cell of a TTY row. Windows ConPTY and
     // several terminal emulators disagree about whether CR after an exact-width
     // row cancels or commits pending autowrap; reserving one cell keeps live-row
     // accounting deterministic and prevents stale Progress blocks in scrollback.
-    return this.tty && physicalColumns > 1
-      ? physicalColumns - 1
-      : physicalColumns;
+    return this.tty && physicalColumns > 1 ? physicalColumns - 1 : physicalColumns;
   }
 
   get isTTY(): boolean {
@@ -98,10 +87,7 @@ export class ScreenWriter {
    */
   commit(stableText: string): void {
     if (this.closed || !stableText) return;
-    const sanitized = containStyles(
-      sanitizeTerminalText(stableText, { allowSgr: this.tty }),
-      this.tty,
-    );
+    const sanitized = containStyles(sanitizeTerminalText(stableText, { allowSgr: this.tty }), this.tty);
     if (!sanitized) return;
 
     if (!this.tty) {
@@ -235,7 +221,7 @@ export class ScreenWriter {
     // Rendering ends at the last row. Return to column zero before moving to
     // the requested visual cell so CR/LF and autowrap modes cannot affect it.
     this.write("\r");
-    const rowsUp = (lines.length - 1) - targetRow;
+    const rowsUp = lines.length - 1 - targetRow;
     this.write(cursorUp(rowsUp));
     if (targetColumn > 0) this.write(cursorRight(targetColumn));
     this.renderedCursorRow = topOffset + targetRow;

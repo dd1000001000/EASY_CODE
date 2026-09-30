@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
 import type { ImageAttachment } from "../src/core/types.js";
-import {
-  readPrompt,
-  type PromptInputSession,
-  VSCODE_IMAGE_PASTE_SEQUENCE,
-} from "../src/cli/prompt-input.js";
+import { readPrompt, type PromptInputSession, VSCODE_IMAGE_PASTE_SEQUENCE } from "../src/cli/prompt-input.js";
 import { Terminal } from "../src/cli/terminal.js";
 import { describe, it } from "./harness.js";
 
@@ -73,11 +69,13 @@ async function submitWithSequence(
     initialImageCount,
     captureImage: async (index) => attachment(index),
   });
-  input.write(Buffer.concat([
-    Buffer.from("inspect"),
-    Buffer.isBuffer(sequence) ? sequence : Buffer.from(sequence),
-    Buffer.from("\r"),
-  ]));
+  input.write(
+    Buffer.concat([
+      Buffer.from("inspect"),
+      Buffer.isBuffer(sequence) ? sequence : Buffer.from(sequence),
+      Buffer.from("\r"),
+    ]),
+  );
   const result = await promise;
   assert.ok(result);
   return {
@@ -99,22 +97,17 @@ describe("image-aware CLI prompt", () => {
       prompt: "> ",
       captureImage: async (index) => attachment(index),
       completionProvider: ({ text, cursor }) =>
-        text === "/approv" && cursor === text.length
-          ? { replacement: "/approval", suffix: "al" }
-          : undefined,
-      onDraftChange: (draft) => drafts.push({
-        text: draft.text,
-        ...(draft.completionSuffix
-          ? { suffix: draft.completionSuffix }
-          : {}),
-      }),
+        text === "/approv" && cursor === text.length ? { replacement: "/approval", suffix: "al" } : undefined,
+      onDraftChange: (draft) =>
+        drafts.push({
+          text: draft.text,
+          ...(draft.completionSuffix ? { suffix: draft.completionSuffix } : {}),
+        }),
     });
 
     input.write("/approv");
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.ok(drafts.some((draft) =>
-      draft.text === "/approv" && draft.suffix === "al"
-    ));
+    assert.ok(drafts.some((draft) => draft.text === "/approv" && draft.suffix === "al"));
     input.write("\t\r");
 
     const result = await prompt;
@@ -155,11 +148,7 @@ describe("image-aware CLI prompt", () => {
 
     input.write("\u001B[200~first\nsecond\u001B[201~\r");
     await new Promise<void>((resolve) => setImmediate(resolve));
-    input.write(Buffer.concat([
-      Buffer.from("image "),
-      Buffer.from([0x16]),
-      Buffer.from("\r"),
-    ]));
+    input.write(Buffer.concat([Buffer.from("image "), Buffer.from([0x16]), Buffer.from("\r")]));
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
     input.write("third\r");
@@ -470,10 +459,7 @@ describe("image-aware CLI prompt", () => {
 
       // A collapsed multiline paste remains one atomic marker when Backspace
       // is injected by the alternate-screen owner.
-      assert.equal(
-        activeSession.feedInput("\u001B[200~discard\nthis\u001B[201~"),
-        true,
-      );
+      assert.equal(activeSession.feedInput("\u001B[200~discard\nthis\u001B[201~"), true);
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(activeSession.feedInput(Buffer.from([0x7f])), true);
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -487,10 +473,7 @@ describe("image-aware CLI prompt", () => {
       assert.equal(activeSession.feedInput(VSCODE_IMAGE_PASTE_SEQUENCE), true);
       await new Promise<void>((resolve) => setImmediate(resolve));
       await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.equal(
-        activeSession.feedInput("\u001B[200~first\nsecond\u001B[201~"),
-        true,
-      );
+      assert.equal(activeSession.feedInput("\u001B[200~first\nsecond\u001B[201~"), true);
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(activeSession.feedInput("\r"), true);
       await activeSession.flushSubmissions();
@@ -569,12 +552,7 @@ describe("image-aware CLI prompt", () => {
 
     releaseFirst();
     await activeSession.flushSubmissions();
-    assert.deepEqual(lifecycle, [
-      "start:first",
-      "end:first",
-      "start:second",
-      "end:second",
-    ]);
+    assert.deepEqual(lifecycle, ["start:first", "end:first", "start:second", "end:second"]);
     assert.equal(transcript.slice(suspendedOutputOffset), "");
 
     controller.abort();
@@ -613,10 +591,7 @@ describe("image-aware CLI prompt", () => {
     input.resume();
     const suspendedOutputOffset = transcript.length;
     const suspendedRawTransitionOffset = input.rawModeTransitions.length;
-    assert.equal(
-      activeSession.feedInput("\u001B[200~line one\nline two\u001B[201~"),
-      true,
-    );
+    assert.equal(activeSession.feedInput("\u001B[200~line one\nline two\u001B[201~"), true);
     assert.equal(activeSession.feedInput("\r"), true);
 
     const result = await prompt;
@@ -625,11 +600,7 @@ describe("image-aware CLI prompt", () => {
     assert.equal(activeSession, undefined);
     assert.equal(retainedSession?.feedInput("after completion"), false);
     const suspendedWrites = transcript.slice(suspendedOutputOffset);
-    assert.equal(
-      suspendedWrites,
-      "",
-      "suspended cleanup must not erase pixels or disable bracketed paste",
-    );
+    assert.equal(suspendedWrites, "", "suspended cleanup must not erase pixels or disable bracketed paste");
     assert.deepEqual(
       input.rawModeTransitions.slice(suspendedRawTransitionOffset),
       [],
@@ -679,7 +650,10 @@ describe("image-aware CLI prompt", () => {
     const result = await promise;
     assert.ok(result);
     assert.match(result.text, /\[Image #1\]/u);
-    assert.deepEqual(result.images.map((image) => image.label), ["Image #1"]);
+    assert.deepEqual(
+      result.images.map((image) => image.label),
+      ["Image #1"],
+    );
   });
 
   it("keeps a bracketed multiline paste intact until an explicit Enter", async () => {
@@ -787,15 +761,13 @@ describe("image-aware CLI prompt", () => {
       prompt: "> ",
       captureImage: async (index) => attachment(index),
     });
-    const oversized = "x".repeat((256 * 1024 * 4) + 65);
+    const oversized = "x".repeat(256 * 1024 * 4 + 65);
 
     input.write(`\u001B[200~${oversized}\u001B[201~\r`);
     const result = await promise;
 
     assert.match(result?.text ?? "", /Text paste failed/u);
-    assert.deepEqual(result?.pasteErrors, [
-      "Pasted text exceeds the 256 KiB input limit.",
-    ]);
+    assert.deepEqual(result?.pasteErrors, ["Pasted text exceeds the 256 KiB input limit."]);
   });
 
   it("deletes one intact multiline-paste marker with a single Backspace", async () => {
@@ -1085,7 +1057,10 @@ describe("image-aware CLI prompt", () => {
     input.write(Buffer.from([0x16, 0x0d]));
     const result = await promise;
     assert.match(result?.text ?? "", /^abcdefghijklmno \[Image #1\] /u);
-    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+    assert.deepEqual(
+      result?.images.map((image) => image.label),
+      ["Image #1"],
+    );
     assert.equal(activeSession, undefined);
     assert.equal(input.rawModeTransitions.at(-1), false);
 
@@ -1239,7 +1214,10 @@ describe("image-aware CLI prompt", () => {
 
     const result = await prompt;
     assert.equal(result?.text, "before: [Image #1] :after");
-    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+    assert.deepEqual(
+      result?.images.map((image) => image.label),
+      ["Image #1"],
+    );
     assert.deepEqual(result?.pasteErrors, []);
   });
 
@@ -1309,7 +1287,10 @@ describe("image-aware CLI prompt", () => {
     const result = await prompt;
 
     assert.match(result?.text ?? "", /\[Image #1\].*\[Image #2\].*typed while pending/u);
-    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1", "Image #2"]);
+    assert.deepEqual(
+      result?.images.map((image) => image.label),
+      ["Image #1", "Image #2"],
+    );
   });
 
   it("accepts a multiline paste and typing while an earlier image capture is pending", async () => {
@@ -1359,7 +1340,10 @@ describe("image-aware CLI prompt", () => {
     finishCapture?.(attachment(1));
     const result = await prompt;
     assert.match(result?.text ?? "", /\[Image #1\].*first line\nsecond linetail/u);
-    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+    assert.deepEqual(
+      result?.images.map((image) => image.label),
+      ["Image #1"],
+    );
   });
 
   it("accepts another paste after a pending clipboard capture times out", async () => {
@@ -1389,10 +1373,11 @@ describe("image-aware CLI prompt", () => {
     const result = await prompt;
     assert.equal(captureCount, 2);
     assert.match(result?.text ?? "", /\[Image paste failed\].*\[Image #1\].*after timeout/u);
-    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
-    assert.deepEqual(result?.pasteErrors, [
-      "Clipboard image capture timed out after 20ms.",
-    ]);
+    assert.deepEqual(
+      result?.images.map((image) => image.label),
+      ["Image #1"],
+    );
+    assert.deepEqual(result?.pasteErrors, ["Clipboard image capture timed out after 20ms."]);
   });
 
   it("does not reattach a pending image marker deleted before capture finishes", async () => {
@@ -1554,10 +1539,10 @@ describe("image-aware CLI prompt", () => {
       finishSecond(attachment(2));
       const result = await prompt;
       assert.equal(result?.text, " [Image #1]  [Image #2] tail");
-      assert.deepEqual(result?.images.map((image) => image.label), [
-        "Image #1",
-        "Image #2",
-      ]);
+      assert.deepEqual(
+        result?.images.map((image) => image.label),
+        ["Image #1", "Image #2"],
+      );
       assert.deepEqual(result?.pasteErrors, []);
     });
   });
@@ -1611,7 +1596,10 @@ describe("image-aware CLI prompt", () => {
       finishCapture(attachment(1));
       const result = await prompt;
       assert.equal(result?.text, " [Image #1] A\nBtail");
-      assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+      assert.deepEqual(
+        result?.images.map((image) => image.label),
+        ["Image #1"],
+      );
       assert.deepEqual(result?.pasteErrors, []);
     });
   });
@@ -1693,9 +1681,7 @@ describe("image-aware CLI prompt", () => {
     const result = await prompt;
     assert.match(result?.text ?? "", /^before: \[Image paste failed\] :after$/u);
     assert.deepEqual(result?.images, []);
-    assert.deepEqual(result?.pasteErrors, [
-      "Clipboard image capture timed out after 20ms.",
-    ]);
+    assert.deepEqual(result?.pasteErrors, ["Clipboard image capture timed out after 20ms."]);
   });
 
   it("allows another paste after a prior clipboard capture times out", async () => {
@@ -1727,17 +1713,12 @@ describe("image-aware CLI prompt", () => {
 
     const result = await prompt;
     assert.equal(captureCount, 3);
-    assert.match(
-      result?.text ?? "",
-      /\[Image #1\].*\[Image paste failed\].*\[Image #2\].*tail/u,
+    assert.match(result?.text ?? "", /\[Image #1\].*\[Image paste failed\].*\[Image #2\].*tail/u);
+    assert.deepEqual(
+      result?.images.map((image) => image.label),
+      ["Image #1", "Image #2"],
     );
-    assert.deepEqual(result?.images.map((image) => image.label), [
-      "Image #1",
-      "Image #2",
-    ]);
-    assert.deepEqual(result?.pasteErrors, [
-      "Clipboard image capture timed out after 20ms.",
-    ]);
+    assert.deepEqual(result?.pasteErrors, ["Clipboard image capture timed out after 20ms."]);
   });
 
   it("recovers when a terminal omits the bracketed-paste closing marker", async () => {
@@ -1899,13 +1880,18 @@ describe("image-aware CLI prompt", () => {
       input,
       output,
       prompt: "> ",
-      captureImage: async (_index, signal) => new Promise<ImageAttachment>((_resolve, reject) => {
-        markCaptureStarted?.();
-        signal?.addEventListener("abort", () => {
-          captureAborted = true;
-          reject(new Error("clipboard capture canceled"));
-        }, { once: true });
-      }),
+      captureImage: async (_index, signal) =>
+        new Promise<ImageAttachment>((_resolve, reject) => {
+          markCaptureStarted?.();
+          signal?.addEventListener(
+            "abort",
+            () => {
+              captureAborted = true;
+              reject(new Error("clipboard capture canceled"));
+            },
+            { once: true },
+          );
+        }),
     });
 
     input.write(Buffer.from([0x16]));

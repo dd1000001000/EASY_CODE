@@ -15,8 +15,7 @@ describe("Thinking terminal presentation", () => {
 
     assert.equal(
       renderReasoningMarker(block),
-      "▶ Thinking #1 · 38 chars · VS Code Ctrl/Cmd+click to toggle\n" +
-        "  Inspect the repository before editing.\n",
+      "▶ Thinking #1 · 38 chars · VS Code Ctrl/Cmd+click to toggle\n" + "  Inspect the repository before editing.\n",
     );
     assert.match(renderReasoningMarker(block, { color: true }), /\u001b\[90m/u);
     assert.equal(
@@ -65,18 +64,12 @@ describe("Thinking terminal presentation", () => {
     ].join("\n");
     const prepared = prepareReasoningText(unsafe);
 
-    assert.doesNotMatch(
-      prepared.text,
-      /\u001B|\u200B|\u202E|super-secret-value|another-secret-value|ghp_/u,
-    );
+    assert.doesNotMatch(prepared.text, /\u001B|\u200B|\u202E|super-secret-value|another-secret-value|ghp_/u);
     assert.match(prepared.text, /\[REDACTED\]/u);
     assert.match(prepared.text, /direction:txt\.exe/u);
 
     const preview = renderReasoningMarker(new ReasoningRegistry().add(unsafe));
-    assert.doesNotMatch(
-      preview,
-      /\u001B\]|\u200B|\u202E|super-secret-value|another-secret-value|ghp_/u,
-    );
+    assert.doesNotMatch(preview, /\u001B\]|\u200B|\u202E|super-secret-value|another-secret-value|ghp_/u);
     assert.match(preview, /\[REDACTED\]/u);
   });
 
@@ -99,10 +92,9 @@ describe("Thinking terminal presentation", () => {
   });
 
   it("retains complete sanitized Thinking by default without a hidden registry cap", () => {
-    const source = Array.from(
-      { length: 300 },
-      (_, index) => `reasoning row ${index + 1}: ${"x".repeat(80)}`,
-    ).join("\n");
+    const source = Array.from({ length: 300 }, (_, index) => `reasoning row ${index + 1}: ${"x".repeat(80)}`).join(
+      "\n",
+    );
     const registry = new ReasoningRegistry();
     const first = registry.add(source);
     assert.equal(first.truncated, false);

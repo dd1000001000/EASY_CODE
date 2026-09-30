@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CommandPolicy, CommandRuntime } from "../src/command/index.js";
@@ -20,22 +19,32 @@ import {
 } from "../src/sandbox/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
-import { nativeSandboxEnvironment, nativeSandboxRuntimeVersion, nativeSandboxTarget } from "../src/sandbox/native-runtime.js";
+import {
+  nativeSandboxEnvironment,
+  nativeSandboxRuntimeVersion,
+  nativeSandboxTarget,
+} from "../src/sandbox/native-runtime.js";
 import { assertProjectSandboxReady } from "../src/sandbox/project-readiness.js";
 
 describe("native sandbox runtime", () => {
   it("refuses Windows commands before project-home setup without dispatching a target", async () => {
     const methods: string[] = [];
-    const service = { request: async (method: string) => {
-      methods.push(method);
-      return { status: "notConfigured" };
-    } };
+    const service = {
+      request: async (method: string) => {
+        methods.push(method);
+        return { status: "notConfigured" };
+      },
+    };
     await assert.rejects(assertProjectSandboxReady(service, 1_000, "win32"), /Project sandbox is not ready/u);
     assert.deepEqual(methods, ["windowsSandbox/readiness"]);
   });
 
   it("does not use Windows setup APIs on Linux", async () => {
-    const service = { request: async () => { throw new Error("Windows API must not run"); } };
+    const service = {
+      request: async () => {
+        throw new Error("Windows API must not run");
+      },
+    };
     await assertProjectSandboxReady(service, 1_000, "linux");
   });
 
@@ -68,8 +77,12 @@ describe("native sandbox runtime", () => {
   });
 
   it("pins only an explicit local proxy into the native sandbox environment", () => {
-    const environment = nativeSandboxEnvironment("C:\\fixture", { PATH: "fixture", HTTP_PROXY: "http://remote.invalid:80" },
-      "http://easy-code:secret@127.0.0.1:43179", [43180, 43179, 43180]);
+    const environment = nativeSandboxEnvironment(
+      "C:\\fixture",
+      { PATH: "fixture", HTTP_PROXY: "http://remote.invalid:80" },
+      "http://easy-code:secret@127.0.0.1:43179",
+      [43180, 43179, 43180],
+    );
     assert.equal(environment.HTTP_PROXY, "http://easy-code:secret@127.0.0.1:43179/");
     assert.equal(environment.HTTPS_PROXY, environment.HTTP_PROXY);
     assert.equal(environment.ALL_PROXY, environment.HTTP_PROXY);
@@ -80,9 +93,7 @@ describe("native sandbox runtime", () => {
   });
 });
 
-async function withWorkspace(
-  run: (root: string, manager: WorkspaceManager) => Promise<void>,
-): Promise<void> {
+async function withWorkspace(run: (root: string, manager: WorkspaceManager) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(process.cwd(), ".easy-code-sandbox-test-"));
   try {
     const manager = await WorkspaceManager.create(root);
@@ -92,10 +103,7 @@ async function withWorkspace(
   }
 }
 
-function toolContext(
-  root: string,
-  options: { audit?: CommandAuditEntry[] } = {},
-): ToolContext {
+function toolContext(root: string, options: { audit?: CommandAuditEntry[] } = {}): ToolContext {
   return {
     workspaceRoot: root,
     mode: "code",
@@ -179,10 +187,7 @@ class NeverReadySandboxBackend implements CommandExecutionBackend {
     });
     return {
       executablePath: process.execPath,
-      args: [
-        "-e",
-        `process.stderr.write(${JSON.stringify(stage)}); setInterval(() => {}, 1000);`,
-      ],
+      args: ["-e", `process.stderr.write(${JSON.stringify(stage)}); setInterval(() => {}, 1000);`],
       cwdAbsolute: request.command.cwdAbsolute,
       environment: { ...process.env },
       metadata: this.describe(),
@@ -295,7 +300,10 @@ describe("sandbox command execution boundary", () => {
       const request = sandboxRequest(root);
       const host = new UnrestrictedHostBackend();
       for (const commandExecutionMode of ["manual", "auto_approve", "unrestricted"] as const) {
-        await assert.rejects(() => host.prepare({ ...request, context: { ...request.context, commandExecutionMode } }), /not authorized/iu);
+        await assert.rejects(
+          () => host.prepare({ ...request, context: { ...request.context, commandExecutionMode } }),
+          /not authorized/iu,
+        );
       }
     });
   });
@@ -321,9 +329,7 @@ describe("sandbox command execution boundary", () => {
       truncated: false,
     });
 
-    assert.deepEqual(extracted.controls, [
-      { type: "ready", backend: "native" },
-    ]);
+    assert.deepEqual(extracted.controls, [{ type: "ready", backend: "native" }]);
     assert.equal(extracted.digest.text, `before\nmiddle\n${foreign}after`);
     assert.equal(extracted.digest.head, "before\nmiddle\n");
     assert.equal(extracted.digest.tail, `${foreign}after`);
@@ -369,10 +375,7 @@ describe("sandbox command execution boundary", () => {
       });
       assert.equal(audit.length, 1);
       assert.equal(audit[0]?.status, "sandbox_unavailable");
-      await assert.rejects(
-        access(markerPath),
-        (error: NodeJS.ErrnoException) => error.code === "ENOENT",
-      );
+      await assert.rejects(access(markerPath), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
     });
   });
 
@@ -399,13 +402,9 @@ describe("sandbox command execution boundary", () => {
 
   it("classifies a timeout before the ready marker as sandbox initialization failure", async () => {
     await withWorkspace(async (root, manager) => {
-      const runtime = new CommandRuntime(
-        manager,
-        new CommandPolicy(),
-        new NeverReadySandboxBackend(),
-        undefined,
-        { sandboxStartupTimeoutMs: 50 },
-      );
+      const runtime = new CommandRuntime(manager, new CommandPolicy(), new NeverReadySandboxBackend(), undefined, {
+        sandboxStartupTimeoutMs: 50,
+      });
 
       const output = await runtime.run(
         {
@@ -428,13 +427,9 @@ describe("sandbox command execution boundary", () => {
 
   it("starts the requested command timeout only after the sandbox ready marker", async () => {
     await withWorkspace(async (root, manager) => {
-      const runtime = new CommandRuntime(
-        manager,
-        new CommandPolicy(),
-        new DelayedReadySandboxBackend(70),
-        undefined,
-        { sandboxStartupTimeoutMs: 500 },
-      );
+      const runtime = new CommandRuntime(manager, new CommandPolicy(), new DelayedReadySandboxBackend(70), undefined, {
+        sandboxStartupTimeoutMs: 500,
+      });
       const startedAt = Date.now();
       const output = await runtime.run(
         {
@@ -463,7 +458,7 @@ describe("sandbox first-interactive startup guide", () => {
     let setupCalls = 0;
     const service: SandboxStartupService = {
       inspect: async () => missing,
-      setup: async before => {
+      setup: async (before) => {
         assert.equal(before, missing);
         setupCalls++;
         return { status: "completed", message: "ready", readiness: ready };
@@ -487,8 +482,12 @@ describe("sandbox first-interactive startup guide", () => {
         return { status: "cancelled", message: "declined", readiness: missing };
       },
     };
-    assert.equal(await runSandboxStartupGuide(service,
-      new ScriptedSandboxTerminal(["continue"]), true, () => { continuedUnready++; }), true);
+    assert.equal(
+      await runSandboxStartupGuide(service, new ScriptedSandboxTerminal(["continue"]), true, () => {
+        continuedUnready++;
+      }),
+      true,
+    );
     assert.equal(setupCalls, 1);
     assert.equal(continuedUnready, 1);
   });
@@ -526,14 +525,17 @@ describe("sandbox first-interactive startup guide", () => {
     let setupCalls = 0;
     const service: SandboxStartupService = {
       inspect: async () => before,
-      setup: async () => { setupCalls++; throw new Error("normal startup must never elevate"); },
+      setup: async () => {
+        setupCalls++;
+        throw new Error("normal startup must never elevate");
+      },
     };
     const terminal = new ScriptedSandboxTerminal(["continue"]);
 
     assert.equal(await runSandboxStartupGuide(service, terminal), true);
     assert.equal(setupCalls, 0);
     assert.equal(terminal.choices.length, 1);
-    assert.ok(terminal.choices[0]?.ids.every(id => id !== "setup"));
+    assert.ok(terminal.choices[0]?.ids.every((id) => id !== "setup"));
     assert.match(terminal.warningMessages.join("\n"), /easy-code sandbox setup/u);
     assert.deepEqual(terminal.activities, ["Checking the command sandbox"]);
     assert.equal(terminal.stopCount, 1);
@@ -545,8 +547,11 @@ describe("sandbox first-interactive startup guide", () => {
     let inspectCalls = 0;
     let setupCalls = 0;
     const service: SandboxStartupService = {
-      inspect: async () => ++inspectCalls === 1 ? before : after,
-      setup: async () => { setupCalls++; throw new Error("normal startup must never elevate"); },
+      inspect: async () => (++inspectCalls === 1 ? before : after),
+      setup: async () => {
+        setupCalls++;
+        throw new Error("normal startup must never elevate");
+      },
     };
     const terminal = new ScriptedSandboxTerminal(["recheck"]);
     assert.equal(await runSandboxStartupGuide(service, terminal), true);
@@ -567,7 +572,10 @@ describe("sandbox first-interactive startup guide", () => {
         if (inspectCalls === 2) throw new Error("probe failed");
         return before;
       },
-      setup: async () => { setupCalls++; throw new Error("normal startup must never elevate"); },
+      setup: async () => {
+        setupCalls++;
+        throw new Error("normal startup must never elevate");
+      },
     };
     assert.equal(await runSandboxStartupGuide(service, terminal), false);
     assert.equal(setupCalls, 0);
@@ -581,7 +589,10 @@ describe("sandbox first-interactive startup guide", () => {
       let setupCalls = 0;
       const service: SandboxStartupService = {
         inspect: async () => readiness(status, { canSetup: true }),
-        setup: async () => { setupCalls++; throw new Error("unexpected setup"); },
+        setup: async () => {
+          setupCalls++;
+          throw new Error("unexpected setup");
+        },
       };
       assert.equal(await runSandboxStartupGuide(service, new ScriptedSandboxTerminal(["exit"])), false);
       assert.equal(setupCalls, 0);
@@ -603,10 +614,7 @@ describe("sandbox first-interactive startup guide", () => {
 
     const continuing = new ScriptedSandboxTerminal(["continue"]);
     assert.equal(await runSandboxStartupGuide(service, continuing), true);
-    assert.match(
-      continuing.warningMessages.at(-1) ?? "",
-      /Workspace-sandbox commands remain fail-closed/iu,
-    );
+    assert.match(continuing.warningMessages.at(-1) ?? "", /Workspace-sandbox commands remain fail-closed/iu);
 
     const exiting = new ScriptedSandboxTerminal(["exit"]);
     assert.equal(await runSandboxStartupGuide(service, exiting), false);

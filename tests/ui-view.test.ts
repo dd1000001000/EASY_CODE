@@ -4,10 +4,7 @@ import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
 import type { UIEvent, UIProgressStatus } from "../src/ui/contracts.js";
 import { displayWidth, stripAnsi } from "../src/ui/render/layout.js";
-import {
-  createDisclosureViewState,
-  renderDisclosureView,
-} from "../src/ui/tui/disclosure-view.js";
+import { createDisclosureViewState, renderDisclosureView } from "../src/ui/tui/disclosure-view.js";
 import {
   renderAgentStatusLines,
   renderComposerStatusRegion,
@@ -38,11 +35,7 @@ function graph(taskCount = 7): TaskGraphView {
       id: `task_${index}`,
       title: index === 1 ? "实现后端认证" : `Task ${index + 1}`,
       description: "A task",
-      status: index === 0
-        ? "completed" as const
-        : index === 1
-          ? "in_progress" as const
-          : "pending" as const,
+      status: index === 0 ? ("completed" as const) : index === 1 ? ("in_progress" as const) : ("pending" as const),
       owner: "main_agent" as const,
       dependencies: [],
       blockedBy: [],
@@ -134,45 +127,55 @@ function populatedState(): ReturnType<typeof createUIState> {
 
 function assertBoundedLines(value: string, columns: number): void {
   for (const line of value.split("\n")) {
-    assert.ok(
-      displayWidth(line) <= columns,
-      `${JSON.stringify(stripAnsi(line))} exceeds ${columns} columns`,
-    );
+    assert.ok(displayWidth(line) <= columns, `${JSON.stringify(stripAnsi(line))} exceeds ${columns} columns`);
   }
 }
 
 describe("pure terminal UI views", () => {
   it("nests active DAG children under their task and omits finished agents from live rows", () => {
     const startedAt = "2026-08-29T00:00:00.000Z";
-    const child: SubagentView = { ...agent(0), assignmentKind: "dag", taskId: "task_1",
-      activity: { kind: "tool", label: "read_file", startedAt } };
+    const child: SubagentView = {
+      ...agent(0),
+      assignmentKind: "dag",
+      taskId: "task_1",
+      activity: { kind: "tool", label: "read_file", startedAt },
+    };
     const terminal: SubagentView = { ...agent(2), finishedAt: startedAt };
     const state = applyEvents(createUIState(), [
       { type: "tasks.set", tasks: graph() },
       { type: "subagents.set", subagents: [child, agent(1), terminal] },
     ]);
     const nowMs = Date.parse(startedAt) + 5_000;
-    const taskRows = renderTaskStatusLines(state.live.tasks, { columns: 100, color: false }, undefined, state.live.subagents, nowMs);
-    assert.ok(taskRows.some(row => row.includes("agent-1") && row.includes("Tool read_file") && row.includes("5s")));
+    const taskRows = renderTaskStatusLines(
+      state.live.tasks,
+      { columns: 100, color: false },
+      undefined,
+      state.live.subagents,
+      nowMs,
+    );
+    assert.ok(taskRows.some((row) => row.includes("agent-1") && row.includes("Tool read_file") && row.includes("5s")));
     const agentRows = renderAgentStatusLines(state, { columns: 100, color: false }, undefined, nowMs);
-    assert.ok(agentRows.some(row => row.includes("agent-2")));
-    assert.ok(!agentRows.some(row => row.includes("agent-1") || row.includes("agent-3")));
+    assert.ok(agentRows.some((row) => row.includes("agent-2")));
+    assert.ok(!agentRows.some((row) => row.includes("agent-1") || row.includes("agent-3")));
   });
   it("renders review stages and real elapsed time in the fixed footer without replacing model activity", () => {
-    const review = { id: "review_ui", startedAt: 1_000,
-      phase: "independent_review" as const };
+    const review = { id: "review_ui", startedAt: 1_000, phase: "independent_review" as const };
     const state = applyEvents(createUIState(), [
       { type: "review.set", review },
       { type: "activity.start", activity: { id: "model", label: "requesting model", startedAt: 60_000 } },
     ]);
-    const footer = renderFixedBottomRegions(state, { columns: 100, color: false }, 65_000,
-      { totalRows: 2, detailRows: 0 });
+    const footer = renderFixedBottomRegions(state, { columns: 100, color: false }, 65_000, {
+      totalRows: 2,
+      detailRows: 0,
+    });
     assert.equal(footer.status.length, 2);
     assert.match(stripAnsi(footer.status[0] ?? ""), /Review · Reviewer independently investigating · 1m/u);
     assert.doesNotMatch(stripAnsi(footer.status[0] ?? ""), /[█▣░]/u);
     const preparing = applyEvent(state, { type: "review.set", review: { ...review, phase: "main_brief" } });
-    const preparingFooter = renderFixedBottomRegions(preparing, { columns: 100, color: false }, 65_000,
-      { totalRows: 2, detailRows: 0 });
+    const preparingFooter = renderFixedBottomRegions(preparing, { columns: 100, color: false }, 65_000, {
+      totalRows: 2,
+      detailRows: 0,
+    });
     assert.match(stripAnsi(preparingFooter.status[0] ?? ""), /Main agent preparing review handoff · 1m/u);
     assert.equal(state.live.activity?.id, "model");
     const stopped = applyEvent(state, { type: "activity.stop", id: "model" });
@@ -183,19 +186,21 @@ describe("pure terminal UI views", () => {
     const initial = createUIState({
       header: { title: "EASY\u001B[2J CODE" },
     });
-    const state = applyEvents(initial, [{
-      type: "session.set",
-      session: {
-        threadId: "8f72a1",
-        workspaceRoot: "F:\\projects\\课程系统 password=hunter22",
-        mode: "auto",
-        provider: "deepseek",
-        model: "deepseek-v4-pro",
-        thinkingEffort: "medium",
-        contextTokens: 82_400,
-        contextLimitTokens: 128_000,
+    const state = applyEvents(initial, [
+      {
+        type: "session.set",
+        session: {
+          threadId: "8f72a1",
+          workspaceRoot: "F:\\projects\\课程系统 password=hunter22",
+          mode: "auto",
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+          thinkingEffort: "medium",
+          contextTokens: 82_400,
+          contextLimitTokens: 128_000,
+        },
       },
-    }]);
+    ]);
 
     const rendered = renderSessionHeader(state, { columns: 80, color: false });
 
@@ -210,11 +215,22 @@ describe("pure terminal UI views", () => {
 
   it("shows the orchestration switch in the live footer without crowding header context", () => {
     for (const enabled of [false, true]) {
-      const state = applyEvents(createUIState(), [{ type: "session.set", session: {
-        threadId: "toggle-thread", workspaceRoot: "F:\\project", mode: "code", provider: "deepseek",
-        model: "deepseek-v4-pro", thinkingEffort: "medium", orchestrationEnabled: enabled,
-        contextTokens: 82_400, contextLimitTokens: 128_000,
-      } }]);
+      const state = applyEvents(createUIState(), [
+        {
+          type: "session.set",
+          session: {
+            threadId: "toggle-thread",
+            workspaceRoot: "F:\\project",
+            mode: "code",
+            provider: "deepseek",
+            model: "deepseek-v4-pro",
+            thinkingEffort: "medium",
+            orchestrationEnabled: enabled,
+            contextTokens: 82_400,
+            contextLimitTokens: 128_000,
+          },
+        },
+      ]);
       const footer = renderComposerFooter(state, { columns: 80, color: false });
       assert.ok(footer.includes(`DAG/agents ${enabled ? "on" : "off"}`));
       assert.match(renderSessionHeader(state, { columns: 80, color: false }), /context:82\.4k\/128k/u);
@@ -223,18 +239,20 @@ describe("pure terminal UI views", () => {
   });
 
   it("keeps one stable session title and renders unrestricted mode in the live footer", () => {
-    const state = applyEvents(createUIState(), [{
-      type: "session.set",
-      session: {
-        threadId: "danger-thread",
-        workspaceRoot: "F:\\projects\\danger",
-        mode: "code",
-        provider: "deepseek",
-        model: "deepseek-v4-pro",
-        thinkingEffort: "high",
-        commandExecutionMode: "unrestricted",
+    const state = applyEvents(createUIState(), [
+      {
+        type: "session.set",
+        session: {
+          threadId: "danger-thread",
+          workspaceRoot: "F:\\projects\\danger",
+          mode: "code",
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+          thinkingEffort: "high",
+          commandExecutionMode: "unrestricted",
+        },
       },
-    }]);
+    ]);
 
     const header = renderSessionHeader(state, { columns: 80, color: true });
     const footer = renderComposerFooter(state, { columns: 80, color: true });
@@ -246,18 +264,20 @@ describe("pure terminal UI views", () => {
   });
 
   it("keeps the red full-access warning visible while a modal overlay is open", () => {
-    let state = applyEvents(createUIState(), [{
-      type: "session.set",
-      session: {
-        threadId: "danger-overlay-thread",
-        workspaceRoot: "F:\\projects\\danger",
-        mode: "code",
-        provider: "deepseek",
-        model: "deepseek-v4-pro",
-        thinkingEffort: "high",
-        commandExecutionMode: "unrestricted",
+    let state = applyEvents(createUIState(), [
+      {
+        type: "session.set",
+        session: {
+          threadId: "danger-overlay-thread",
+          workspaceRoot: "F:\\projects\\danger",
+          mode: "code",
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+          thinkingEffort: "high",
+          commandExecutionMode: "unrestricted",
+        },
       },
-    }]);
+    ]);
     state = applyEvent(state, {
       type: "overlay.show",
       overlay: {
@@ -309,14 +329,8 @@ describe("pure terminal UI views", () => {
     assert.doesNotMatch(blocks[0] ?? "", /Tasks/u);
     assert.doesNotMatch(blocks[3] ?? "", /Reading workspace/u);
 
-    assert.equal(
-      renderLiveActivityRegion(state, 15_000, options),
-      blocks[0],
-    );
-    assert.equal(
-      renderComposerStatusRegion(state, options, 15_000),
-      blocks.slice(2).join("\n\n"),
-    );
+    assert.equal(renderLiveActivityRegion(state, 15_000, options), blocks[0]);
+    assert.equal(renderComposerStatusRegion(state, options, 15_000), blocks.slice(2).join("\n\n"));
     assertBoundedLines(rendered, 72);
   });
 
@@ -347,11 +361,7 @@ describe("pure terminal UI views", () => {
     assert.equal(regions.status.length, 1);
     assert.equal(regions.tasks.length, 3);
     assert.equal(regions.agents.length, 3);
-    assert.deepEqual(regions.lines, [
-      ...regions.status,
-      ...regions.tasks,
-      ...regions.agents,
-    ]);
+    assert.deepEqual(regions.lines, [...regions.status, ...regions.tasks, ...regions.agents]);
     assert.match(regions.lines[0] ?? "", /^auto  deepseek\/v4-pro/u);
     assert.match(regions.lines[1] ?? "", /^Tasks 2\/7/u);
     assert.match(regions.lines[4] ?? "", /^Agents 2\/4/u);
@@ -361,11 +371,7 @@ describe("pure terminal UI views", () => {
     });
     assert.deepEqual(
       headingsOnly.lines.map((line) => stripAnsi(line)),
-      [
-        stripAnsi(renderComposerFooter(state, options, 15_000)),
-        "Tasks 2/7",
-        "Agents 2/4",
-      ],
+      [stripAnsi(renderComposerFooter(state, options, 15_000)), "Tasks 2/7", "Agents 2/4"],
     );
     const detailCapped = renderFixedBottomRegions(state, options, 15_000, {
       totalRows: 20,
@@ -376,17 +382,14 @@ describe("pure terminal UI views", () => {
       detailCapped.lines.slice(1).map((line) => stripAnsi(line)),
       ["Tasks 2/7", "Agents 2/4"],
     );
-    assert.deepEqual(
-      renderFixedBottomRegions(state, options, 15_000, { totalRows: 0 }),
-      { status: [], tasks: [], agents: [], lines: [] },
-    );
+    assert.deepEqual(renderFixedBottomRegions(state, options, 15_000, { totalRows: 0 }), {
+      status: [],
+      tasks: [],
+      agents: [],
+      lines: [],
+    });
 
-    const narrow = renderFixedBottomRegions(
-      state,
-      { ...options, columns: 8 },
-      15_000,
-      { totalRows: 3 },
-    );
+    const narrow = renderFixedBottomRegions(state, { ...options, columns: 8 }, 15_000, { totalRows: 3 });
     assert.equal(narrow.lines.length, 3);
     assertBoundedLines(narrow.lines.join("\n"), 8);
   });
@@ -399,36 +402,41 @@ describe("pure terminal UI views", () => {
     const bottom = renderFixedBottomRegions(state, options, 15_000, {
       totalRows: 7,
     });
-    const frame = renderDisclosureView(createDisclosureViewState({
-      columns: 72,
-      rows: 24,
-      nodes: [
-        { id: "user", kind: "text", text: "> Add authentication" },
-        { id: "assistant", kind: "text", text: "Authentication is ready." },
-      ],
-      headerLines,
-      composerLines,
-      footerLines: bottom.lines,
-      preserveAnsi: false,
-    }));
+    const frame = renderDisclosureView(
+      createDisclosureViewState({
+        columns: 72,
+        rows: 24,
+        nodes: [
+          { id: "user", kind: "text", text: "> Add authentication" },
+          { id: "assistant", kind: "text", text: "Authentication is ready." },
+        ],
+        headerLines,
+        composerLines,
+        footerLines: bottom.lines,
+        preserveAnsi: false,
+      }),
+    );
 
     assert.equal(frame.rows.length, 24);
     assert.deepEqual(
-      frame.visibleRows.filter((row) => row.region === "header")
-        .map((row) => row.text),
+      frame.visibleRows.filter((row) => row.region === "header").map((row) => row.text),
       headerLines,
     );
-    const transcriptRows = frame.visibleRows.filter((row) =>
-      row.region === "transcript" && row.part !== "blank"
-    );
+    const transcriptRows = frame.visibleRows.filter((row) => row.region === "transcript" && row.part !== "blank");
     const composerRows = frame.visibleRows.filter((row) => row.region === "composer");
     const footerRows = frame.visibleRows.filter((row) => row.region === "footer");
     assert.deepEqual(
       transcriptRows.map((row) => row.text),
       ["> Add authentication", "Authentication is ready."],
     );
-    assert.deepEqual(composerRows.map((row) => row.text), composerLines);
-    assert.deepEqual(footerRows.map((row) => row.text), bottom.lines);
+    assert.deepEqual(
+      composerRows.map((row) => row.text),
+      composerLines,
+    );
+    assert.deepEqual(
+      footerRows.map((row) => row.text),
+      bottom.lines,
+    );
 
     const statusRow = footerRows.find((row) => /auto  deepseek\/v4-pro/u.test(row.text));
     const tasksRow = footerRows.find((row) => /^Tasks 2\/7/u.test(row.text));
@@ -457,16 +465,24 @@ describe("pure terminal UI views", () => {
       color: false,
       spinnerFrame: "⠴",
     });
-    const footer = renderComposerFooter(state, {
-      columns: 72,
-      color: false,
-      spinnerFrame: "⠴",
-    }, 65_000);
-    const narrowFooter = renderComposerFooter(state, {
-      columns: 32,
-      color: false,
-      spinnerFrame: "⠴",
-    }, 65_000);
+    const footer = renderComposerFooter(
+      state,
+      {
+        columns: 72,
+        color: false,
+        spinnerFrame: "⠴",
+      },
+      65_000,
+    );
+    const narrowFooter = renderComposerFooter(
+      state,
+      {
+        columns: 32,
+        color: false,
+        spinnerFrame: "⠴",
+      },
+      65_000,
+    );
 
     assert.match(upper, /⠴ Running Tool: run_command · 1m 04s/u);
     assert.match(footer, /^auto  deepseek\/v4-pro/u);
@@ -476,22 +492,24 @@ describe("pure terminal UI views", () => {
   });
 
   it("gives a safe boxed overlay exclusive priority over live status", () => {
-    const state = applyEvents(populatedState(), [{
-      type: "overlay.show",
-      overlay: {
-        id: "picker",
-        kind: "picker",
-        title: "Select\u001B[2J model",
-        detail: "api_key=abcdefghijklmnop",
-        rows: [
-          { id: "a", label: "deepseek-v4-flash" },
-          { id: "b", label: "deepseek-v4-pro", detail: "Recommended" },
-          { id: "c", label: "bad\u001B]52;c;payload\u0007safe" },
-        ],
-        selectedIndex: 1,
-        hint: "↑/↓ select · Enter confirm",
+    const state = applyEvents(populatedState(), [
+      {
+        type: "overlay.show",
+        overlay: {
+          id: "picker",
+          kind: "picker",
+          title: "Select\u001B[2J model",
+          detail: "api_key=abcdefghijklmnop",
+          rows: [
+            { id: "a", label: "deepseek-v4-flash" },
+            { id: "b", label: "deepseek-v4-pro", detail: "Recommended" },
+            { id: "c", label: "bad\u001B]52;c;payload\u0007safe" },
+          ],
+          selectedIndex: 1,
+          hint: "↑/↓ select · Enter confirm",
+        },
       },
-    }]);
+    ]);
 
     const rendered = renderLiveRegion(state, 15_000, {
       columns: 54,
@@ -544,16 +562,20 @@ describe("pure terminal UI views", () => {
       overlay: { ...base, selectedIndex: 1 },
     });
 
-    const firstRendered = stripAnsi(renderLiveRegion(first, 0, {
-      columns: 100,
-      rows: 5,
-      color: false,
-    }));
-    const secondRendered = stripAnsi(renderLiveRegion(second, 0, {
-      columns: 100,
-      rows: 5,
-      color: false,
-    }));
+    const firstRendered = stripAnsi(
+      renderLiveRegion(first, 0, {
+        columns: 100,
+        rows: 5,
+        color: false,
+      }),
+    );
+    const secondRendered = stripAnsi(
+      renderLiveRegion(second, 0, {
+        columns: 100,
+        rows: 5,
+        color: false,
+      }),
+    );
 
     assert.equal(firstRendered.split("\n").length, 5);
     assert.equal(secondRendered.split("\n").length, 5);
@@ -561,36 +583,42 @@ describe("pure terminal UI views", () => {
     assert.match(secondRendered, /› Yes, don't ask me again/u);
     assert.notEqual(firstRendered, secondRendered);
 
-    const fourRows = stripAnsi(renderLiveRegion(first, 0, {
-      columns: 100,
-      rows: 4,
-      color: false,
-    }));
+    const fourRows = stripAnsi(
+      renderLiveRegion(first, 0, {
+        columns: 100,
+        rows: 4,
+        color: false,
+      }),
+    );
     assert.match(fourRows, /Command: node --check src\/app\.js/u);
     assert.match(fourRows, /› Yes, allow execute one time/u);
 
-    const threeRows = stripAnsi(renderLiveRegion(first, 0, {
-      columns: 100,
-      rows: 3,
-      color: false,
-    }));
+    const threeRows = stripAnsi(
+      renderLiveRegion(first, 0, {
+        columns: 100,
+        rows: 3,
+        color: false,
+      }),
+    );
     assert.match(threeRows, /Approval disabled: enlarge the terminal/u);
     assert.doesNotMatch(threeRows, /Yes, allow execute/u);
   });
 
   it("renders a gray inline Thinking item while keeping generic live views separate", () => {
     const secret = "abcdefghijklmnopqrstuvwxyz";
-    const state = applyEvents(populatedState(), [{
-      type: "thinking.toggle",
-      panel: {
-        id: 4,
-        body:
-          "Inspect the repository before editing.\n" +
-          `api_key=abcde\u001B[31mfghijklmnopqrstuvwxyz\n` +
-          "Reuse the existing task types.\n" +
-          Array.from({ length: 8 }, (_, index) => `reasoning line ${index}`).join("\n"),
+    const state = applyEvents(populatedState(), [
+      {
+        type: "thinking.toggle",
+        panel: {
+          id: 4,
+          body:
+            "Inspect the repository before editing.\n" +
+            `api_key=abcde\u001B[31mfghijklmnopqrstuvwxyz\n` +
+            "Reuse the existing task types.\n" +
+            Array.from({ length: 8 }, (_, index) => `reasoning line ${index}`).join("\n"),
+        },
       },
-    }]);
+    ]);
     const rendered = renderLiveRegion(state, 15_000, {
       columns: 72,
       color: false,
@@ -606,10 +634,12 @@ describe("pure terminal UI views", () => {
     assert.ok(rendered.indexOf("Tasks 2/7") < rendered.indexOf("Agents 2/4"));
     assertBoundedLines(rendered, 72);
 
-    const activeComposerState = applyEvents(state, [{
-      type: "composer.patch",
-      patch: { busy: false },
-    }]);
+    const activeComposerState = applyEvents(state, [
+      {
+        type: "composer.patch",
+        patch: { busy: false },
+      },
+    ]);
     const activeUpper = renderLiveActivityRegion(activeComposerState, 15_000, {
       columns: 72,
       color: false,
@@ -642,17 +672,19 @@ describe("pure terminal UI views", () => {
     assert.doesNotMatch(coloredPanel, /\u001B\[36m/u);
     assert.equal(stripAnsi(coloredPanel), plainPanel);
 
-    const withOverlay = applyEvents(state, [{
-      type: "overlay.show",
-      overlay: {
-        id: "thinking-priority",
-        kind: "picker",
-        title: "Choose another block",
-        rows: [{ id: "one", label: "Thinking #1" }],
-        selectedIndex: 0,
-        hint: "Enter confirm",
+    const withOverlay = applyEvents(state, [
+      {
+        type: "overlay.show",
+        overlay: {
+          id: "thinking-priority",
+          kind: "picker",
+          title: "Choose another block",
+          rows: [{ id: "one", label: "Thinking #1" }],
+          selectedIndex: 0,
+          hint: "Enter confirm",
+        },
       },
-    }]);
+    ]);
     const modal = renderLiveRegion(withOverlay, 15_000, {
       columns: 72,
       color: false,
@@ -670,16 +702,18 @@ describe("pure terminal UI views", () => {
         patch: {
           busy: false,
           text: "添加登录\nsecond line\u001B[2J",
-          images: [{
-            id: "image",
-            label: "Image #1 token=ghp_abcdefghijklmnopqrstuvwxyz",
-            mediaType: "image/png",
-            storageKey: "image.png",
-            sha256: "0".repeat(64),
-            byteSize: 1,
-            width: 1,
-            height: 1,
-          }],
+          images: [
+            {
+              id: "image",
+              label: "Image #1 token=ghp_abcdefghijklmnopqrstuvwxyz",
+              mediaType: "image/png",
+              storageKey: "image.png",
+              sha256: "0".repeat(64),
+              byteSize: 1,
+              width: 1,
+              height: 1,
+            },
+          ],
         },
       },
     ]);
@@ -705,9 +739,6 @@ describe("pure terminal UI views", () => {
       },
     });
     assert.equal(state.composer.text, "/approv");
-    assert.match(
-      renderComposerPrompt(state, { columns: 40, color: false }),
-      /> \/approval/u,
-    );
+    assert.match(renderComposerPrompt(state, { columns: 40, color: false }), /> \/approval/u);
   });
 });

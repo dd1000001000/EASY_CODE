@@ -8,7 +8,6 @@ import { autoRouteToolDefinitions } from "../src/runtime/auto-router.js";
 import type { MemoryManager } from "../src/memory/memory-manager.js";
 import type { SubagentControl } from "../src/subagents/types.js";
 import {
-  CompactContextTool,
   CancelCommandTool,
   CreateFileTool,
   DeleteFileTool,
@@ -52,7 +51,13 @@ import { McpConfigStore } from "../src/mcp/config.js";
 import { SkillStore } from "../src/skills/store.js";
 import { ThreadTitleStore } from "../src/threads/thread-title.js";
 import type { EasyCodeStorage } from "../src/storage/database.js";
-import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "../src/tools/skill-tools.js";
+import {
+  CreateSkillTool,
+  DeleteSkillTool,
+  ListSkillsTool,
+  ModifySkillTool,
+  ReadSkillTool,
+} from "../src/tools/skill-tools.js";
 import { WebSearchTool } from "../src/tools/web-search.js";
 import { FetchWebpageTool } from "../src/tools/fetch-webpage.js";
 import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
@@ -72,14 +77,13 @@ function actualDefinitions() {
   return [
     new FindFileEditorsTool(workspace, {} as CoordinationStore).definition,
     new SendThreadMessageTool({} as CoordinationStore).definition,
-    new CompactContextTool().definition,
     new CreateFileTool(workspace).definition,
     new CreateSkillTool(workspace, skills).definition,
     new DeleteFileTool(workspace).definition,
     new DeleteSkillTool(workspace, skills).definition,
     new FetchArtifactTool({} as DownloadBroker).definition,
-    new FetchWebpageTool(workspace,
-      new ThreadDocumentService(new DocumentConverter(process.cwd()), resourceStore)).definition,
+    new FetchWebpageTool(workspace, new ThreadDocumentService(new DocumentConverter(process.cwd()), resourceStore))
+      .definition,
     new ReadMemoryTool(workspace, memorySession).definition,
     new WriteMemoryTool({ limits: DEFAULT_RUNTIME_LIMITS } as MemoryManager, workspace, memorySession).definition,
     new ManageSubagentsTool({} as SubagentControl).definition,
@@ -94,8 +98,8 @@ function actualDefinitions() {
     new NameThreadTool(new ThreadTitleStore({} as EasyCodeStorage)).definition,
     new ProposePlanTool().definition,
     new ReadFileTool(workspace).definition,
-    new ReadDocumentTool(workspace,
-      new ThreadDocumentService(new DocumentConverter(process.cwd()), resourceStore)).definition,
+    new ReadDocumentTool(workspace, new ThreadDocumentService(new DocumentConverter(process.cwd()), resourceStore))
+      .definition,
     new ReadSkillTool(workspace, skills).definition,
     new ReadImageTool(workspace).definition,
     new RecallContextTool().definition,
@@ -106,10 +110,18 @@ function actualDefinitions() {
     new PollCommandTool(workspace, {} as CommandRuntime).definition,
     new CancelCommandTool(workspace, {} as CommandRuntime).definition,
     new SubmitTaskResultTool(task).definition,
-    new SendParentMessageTool({ agentId: "child", childThreadId: "child_thread", parentThreadId: "parent_thread",
-      taskId: "bound_task", taskTitle: "Bound task" }, () => {
-      throw new Error("unused");
-    }).definition,
+    new SendParentMessageTool(
+      {
+        agentId: "child",
+        childThreadId: "child_thread",
+        parentThreadId: "parent_thread",
+        taskId: "bound_task",
+        taskTitle: "Bound task",
+      },
+      () => {
+        throw new Error("unused");
+      },
+    ).definition,
     new UpdateFileTool(workspace).definition,
     new WebSearchTool(workspace).definition,
     ...autoRouteToolDefinitions(),
@@ -122,7 +134,6 @@ describe("Prompt Bundle tool metadata", () => {
     const names = definitions.map((definition) => definition.function.name).sort();
     assert.deepEqual(names, [
       "cancel_command",
-      "compact_context",
       "create_file",
       "create_skill",
       "delete_file",
@@ -178,17 +189,19 @@ describe("Prompt Bundle tool metadata", () => {
 
   it("rejects missing descriptions and descriptions for unknown schema keys", () => {
     assert.throws(
-      () => documentToolSchema("read_file", {
-        type: "object",
-        properties: { path: { type: "string" }, rogue: { type: "string" } },
-      }),
+      () =>
+        documentToolSchema("read_file", {
+          type: "object",
+          properties: { path: { type: "string" }, rogue: { type: "string" } },
+        }),
       /no description for schema property rogue/u,
     );
     assert.throws(
-      () => documentToolSchema("read_file", {
-        type: "object",
-        properties: { path: { type: "string" } },
-      }),
+      () =>
+        documentToolSchema("read_file", {
+          type: "object",
+          properties: { path: { type: "string" } },
+        }),
       /unknown schema properties: endLine, startLine/u,
     );
   });
@@ -231,18 +244,9 @@ describe("Prompt Bundle tool metadata", () => {
       }>;
     };
 
-    assert.equal(
-      typeof parameters.allOf[0]?.oneOf?.[0]?.properties.path?.description,
-      "string",
-    );
-    assert.equal(
-      typeof parameters.allOf[0]?.oneOf?.[1]?.properties.startLine?.description,
-      "string",
-    );
-    assert.equal(
-      typeof parameters.allOf[1]?.anyOf?.[0]?.properties.endLine?.description,
-      "string",
-    );
+    assert.equal(typeof parameters.allOf[0]?.oneOf?.[0]?.properties.path?.description, "string");
+    assert.equal(typeof parameters.allOf[0]?.oneOf?.[1]?.properties.startLine?.description, "string");
+    assert.equal(typeof parameters.allOf[1]?.anyOf?.[0]?.properties.endLine?.description, "string");
     assertDocumentedToolSchema("read_file", documented);
   });
 
@@ -276,12 +280,10 @@ describe("Prompt Bundle tool metadata", () => {
       }
       assertDocumentedToolSchema(functionDefinition.name, functionDefinition);
     }
-    assert.deepEqual(functions.map((item) => item.name), [
-      "run_command",
-      "start_command",
-      "poll_command",
-      "cancel_command",
-    ]);
+    assert.deepEqual(
+      functions.map((item) => item.name),
+      ["run_command", "start_command", "poll_command", "cancel_command"],
+    );
     assert.deepEqual(
       [...Object.keys((functions[0]?.parameters as { properties: object }).properties), "backgroundKind"],
       Object.keys((functions[1]?.parameters as { properties: object }).properties),
@@ -294,42 +296,56 @@ describe("Prompt Bundle tool metadata", () => {
       (functions[0]?.parameters as { required: string[] }).required,
       (functions[1]?.parameters as { required: string[] }).required,
     );
-    assert.deepEqual(
-      Object.keys((functions[2]?.parameters as { properties: object }).properties).sort(),
-      ["commandId", "waitMs"],
-    );
-    assert.deepEqual(
-      Object.keys((functions[3]?.parameters as { properties: object }).properties),
-      ["commandId"],
-    );
+    assert.deepEqual(Object.keys((functions[2]?.parameters as { properties: object }).properties).sort(), [
+      "commandId",
+      "waitMs",
+    ]);
+    assert.deepEqual(Object.keys((functions[3]?.parameters as { properties: object }).properties), ["commandId"]);
 
     const commandId = "command_00000000-0000-4000-8000-000000000000";
-    assert.equal(runCommandInputSchema.safeParse({
-      program: "node",
-      args: ["--version"],
-      intent: "inspect",
-    }).success, true);
-    assert.equal(startCommandInputSchema.safeParse({
-      program: "node",
-      intent: "test",
-    }).success, true);
-    assert.equal(runCommandInputSchema.safeParse({
-      program: "npm",
-      args: ["run", "lint"],
-      intent: "verify",
-      verificationKind: "lint",
-    }).success, true);
-    assert.equal(runCommandInputSchema.safeParse({
-      program: "npm",
-      args: ["test"],
-      intent: "verify",
-    }).success, true, "verify defaults to custom without a correction call");
-    assert.equal(runCommandInputSchema.safeParse({
-      program: "node",
-      args: ["--version"],
-      intent: "inspect",
-      verificationKind: "smoke_test",
-    }).success, true, "inapplicable verification metadata is ignored, not an execution error");
+    assert.equal(
+      runCommandInputSchema.safeParse({
+        program: "node",
+        args: ["--version"],
+        intent: "inspect",
+      }).success,
+      true,
+    );
+    assert.equal(
+      startCommandInputSchema.safeParse({
+        program: "node",
+        intent: "test",
+      }).success,
+      true,
+    );
+    assert.equal(
+      runCommandInputSchema.safeParse({
+        program: "npm",
+        args: ["run", "lint"],
+        intent: "verify",
+        verificationKind: "lint",
+      }).success,
+      true,
+    );
+    assert.equal(
+      runCommandInputSchema.safeParse({
+        program: "npm",
+        args: ["test"],
+        intent: "verify",
+      }).success,
+      true,
+      "verify defaults to custom without a correction call",
+    );
+    assert.equal(
+      runCommandInputSchema.safeParse({
+        program: "node",
+        args: ["--version"],
+        intent: "inspect",
+        verificationKind: "smoke_test",
+      }).success,
+      true,
+      "inapplicable verification metadata is ignored, not an execution error",
+    );
     const runParameters = functions[0]?.parameters as {
       properties: Record<string, { enum?: string[] }>;
     };

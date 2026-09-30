@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
-import {
-  ScreenWriter,
-  type ScreenOutput,
-} from "../src/ui/render/screen-writer.js";
+import { ScreenWriter, type ScreenOutput } from "../src/ui/render/screen-writer.js";
 import { describe, it } from "./harness.js";
 
 class CapturedOutput extends PassThrough implements ScreenOutput {
@@ -76,10 +73,7 @@ describe("ScreenWriter", () => {
     writer.renderLive("new");
     writer.clearLive();
 
-    assert.equal(
-      transcript.read(),
-      "old\r\u001B[0Jnew\r\u001B[0J",
-    );
+    assert.equal(transcript.read(), "old\r\u001B[0Jnew\r\u001B[0J");
     writer.close();
   });
 
@@ -91,11 +85,7 @@ describe("ScreenWriter", () => {
     writer.renderLive("中ab\nxy", { row: 1, column: 1 });
     writer.renderLive("next");
 
-    assert.equal(
-      transcript.read(),
-      "\r\n\u001B[1A中ab\r\nxy\r\u001B[1C" +
-        "\r\u001B[1A\u001B[0J\u001B[1Bnext",
-    );
+    assert.equal(transcript.read(), "\r\n\u001B[1A中ab\r\nxy\r\u001B[1C" + "\r\u001B[1A\u001B[0J\u001B[1Bnext");
     writer.close();
   });
 
@@ -118,10 +108,7 @@ describe("ScreenWriter", () => {
     writer.renderLive("busy");
     writer.commit("done");
 
-    assert.equal(
-      transcript.read(),
-      "busy\r\u001B[0Jdone\r\nbusy",
-    );
+    assert.equal(transcript.read(), "busy\r\u001B[0Jdone\r\nbusy");
     writer.close();
   });
 
@@ -135,10 +122,7 @@ describe("ScreenWriter", () => {
     columns = 7;
     writer.renderLive("A中国B");
 
-    assert.equal(
-      transcript.read(),
-      "\r\n\u001B[1AA中\r\n国B\r\u001B[1A\r\u001B[0J\u001B[1BA中国B",
-    );
+    assert.equal(transcript.read(), "\r\n\u001B[1AA中\r\n国B\r\u001B[1A\r\u001B[0J\u001B[1BA中国B");
     writer.close();
   });
 
@@ -169,10 +153,7 @@ describe("ScreenWriter", () => {
     writer.commit("ignored");
     writer.renderLive("ignored");
 
-    assert.equal(
-      closedTranscript,
-      "temporary\r\u001B[0J",
-    );
+    assert.equal(closedTranscript, "temporary\r\u001B[0J");
     assert.equal(transcript.read(), closedTranscript);
     assert.equal(output.destroyed, false);
   });
@@ -228,13 +209,7 @@ describe("ScreenWriter", () => {
     const firstOverlay = transcript.read().slice(beforeOverlay, beforeSelectionMove);
     const selectionMove = transcript.read().slice(beforeSelectionMove);
 
-    assert.equal(
-      firstOverlay,
-      "\r\u001B[0J" +
-        "\u001B[2B" +
-        "approval\r\nchoice 1\r\nchoice 2" +
-        "\r\u001B[2A",
-    );
+    assert.equal(firstOverlay, "\r\u001B[0J" + "\u001B[2B" + "approval\r\nchoice 1\r\nchoice 2" + "\r\u001B[2A");
     assert.equal(
       selectionMove,
       "\r\u001B[2A\u001B[0J" +
@@ -260,10 +235,7 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read().slice(beforeComposer),
-      "\r\u001B[0J" +
-        "\u001B[2Binput\r\nstatus\r\u001B[1A\u001B[2C" +
-        "\r\u001B[2A\u001B[0J" +
-        "\u001B[3Bnext",
+      "\r\u001B[0J" + "\u001B[2Binput\r\nstatus\r\u001B[1A\u001B[2C" + "\r\u001B[2A\u001B[0J" + "\u001B[3Bnext",
     );
     writer.close();
   });
@@ -275,10 +247,7 @@ describe("ScreenWriter", () => {
 
     writer.renderLive("one\ntwo\nthree\nfour\nfive");
 
-    assert.equal(
-      transcript.read(),
-      "\r\n\r\n\u001B[2Aone\r\ntwo\r\nthree\r\u001B[2A",
-    );
+    assert.equal(transcript.read(), "\r\n\r\n\u001B[2Aone\r\ntwo\r\nthree\r\u001B[2A");
     assert.equal(transcript.read().includes("four"), false);
     writer.close();
   });
@@ -292,5 +261,4 @@ describe("ScreenWriter", () => {
     tty.close();
     plain.close();
   });
-
 });

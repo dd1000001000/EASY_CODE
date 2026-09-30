@@ -1,11 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
@@ -75,7 +70,10 @@ export class ReadFileTool implements AgentTool {
     },
   };
 
-  constructor(private readonly workspace: WorkspaceManager, private readonly resources?: ThreadResourceStore) {}
+  constructor(
+    private readonly workspace: WorkspaceManager,
+    private readonly resources?: ThreadResourceStore,
+  ) {}
 
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     try {
@@ -87,13 +85,17 @@ export class ReadFileTool implements AgentTool {
         const record = await this.resources.get(context.threadId, parsed.path);
         const totalLines = record.totalLines;
         const startLine = parsed.startLine ?? 1;
-        if (startLine > totalLines) throw new Error(`startLine ${startLine} is beyond the resource's ${totalLines} lines`);
+        if (startLine > totalLines)
+          throw new Error(`startLine ${startLine} is beyond the resource's ${totalLines} lines`);
         const limits = context.limits ?? DEFAULT_RUNTIME_LIMITS;
         const requestedEnd = parsed.endLine ?? Math.min(totalLines, startLine + limits.defaultReadLines - 1);
         if (requestedEnd < startLine) throw new Error("endLine must be greater than or equal to startLine");
         const rangeEnd = Math.min(requestedEnd, totalLines, startLine + limits.maxReadLines - 1);
         const selected = await this.resources.readLines(context.threadId, parsed.path, startLine, rangeEnd);
-        const tokenLimit = Math.min(limits.maxReadResultTokens, context.resultTokenBudget ?? limits.maxReadResultTokens);
+        const tokenLimit = Math.min(
+          limits.maxReadResultTokens,
+          context.resultTokenBudget ?? limits.maxReadResultTokens,
+        );
         const metadata = JSON.stringify({ path: parsed.path, startLine, endLine: rangeEnd, totalLines });
         let used = estimatedTokens(metadata) + 256;
         let usedChars = metadata.length + 1024;
@@ -101,15 +103,25 @@ export class ReadFileTool implements AgentTool {
         for (const line of selected.lines) {
           const encoded = JSON.stringify(line);
           const cost = estimatedTokens(encoded) + 2;
-          if (used + cost > tokenLimit || usedChars + encoded.length + 2 > (context.resultCharBudget ?? Infinity)) break;
-          used += cost; usedChars += encoded.length + 2; count += 1;
+          if (used + cost > tokenLimit || usedChars + encoded.length + 2 > (context.resultCharBudget ?? Infinity))
+            break;
+          used += cost;
+          usedChars += encoded.length + 2;
+          count += 1;
         }
-        if (!count) throw new Error("The first requested line cannot fit the read result budget. Narrow the request or increase limits.maxReadResultTokens; no partial line was returned.");
+        if (!count)
+          throw new Error(
+            "The first requested line cannot fit the read result budget. Narrow the request or increase limits.maxReadResultTokens; no partial line was returned.",
+          );
         const endLine = startLine + count - 1;
         return toolSuccess(`Read ${record.filename} lines ${startLine}-${endLine}`, {
           path: parsed.path,
           content: selected.lines.slice(0, count).join("\n"),
-          startLine, endLine, totalLines, encoding: "utf-8", newline: "lf",
+          startLine,
+          endLine,
+          totalLines,
+          encoding: "utf-8",
+          newline: "lf",
           contentHash: record.contentSha256,
           truncated: endLine < requestedEnd || endLine < totalLines,
           nextStartLine: endLine < totalLines ? endLine + 1 : null,
@@ -166,7 +178,10 @@ export class ReadFileTool implements AgentTool {
         usedChars += encoded.length + 2;
         endLine = index + 1;
       }
-      if (endLine < startLine) throw new Error("The first requested line cannot fit the read result budget. Narrow the request or increase limits.maxReadResultTokens; no partial line was returned.");
+      if (endLine < startLine)
+        throw new Error(
+          "The first requested line cannot fit the read result budget. Narrow the request or increase limits.maxReadResultTokens; no partial line was returned.",
+        );
       const contentHash = sha256(buffer);
       recordFileToolRead(this.workspace, target, contentHash, context);
 

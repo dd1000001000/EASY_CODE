@@ -1,17 +1,8 @@
 import { z } from "zod";
 
-import type {
-  AgentTool,
-  LongTermMemory,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, LongTermMemory, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import { MAX_MEMORY_SEARCH_CHARS } from "../memory/memory-manager.js";
-import {
-  containsSensitiveInformation,
-  redactSensitiveInformation,
-} from "../memory/sensitive.js";
+import { containsSensitiveInformation, redactSensitiveInformation } from "../memory/sensitive.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
@@ -30,12 +21,14 @@ function memoryForModel(memory: Readonly<LongTermMemory>): object {
   };
 }
 
-export const readMemoryInputSchema = z.object({
-  query: z.string().trim().min(1).max(MAX_MEMORY_SEARCH_CHARS),
-  limit: z.number().int().min(1).max(MAX_MEMORY_RESULTS).default(6),
-  scope: z.enum(["all", "global", "project"]).default("all"),
-  includeInactive: z.boolean().default(false),
-}).strict();
+export const readMemoryInputSchema = z
+  .object({
+    query: z.string().trim().min(1).max(MAX_MEMORY_SEARCH_CHARS),
+    limit: z.number().int().min(1).max(MAX_MEMORY_RESULTS).default(6),
+    scope: z.enum(["all", "global", "project"]).default("all"),
+    includeInactive: z.boolean().default(false),
+  })
+  .strict();
 
 export type ReadMemoryInput = z.infer<typeof readMemoryInputSchema>;
 
@@ -76,23 +69,28 @@ export class ReadMemoryTool implements AgentTool {
     try {
       await assertMatchingWorkspace(this.workspace, context);
       const parsed = this.inputSchema.parse(input);
-      if (
-        containsSensitiveInformation(parsed.query) ||
-        redactSensitiveInformation(parsed.query) !== parsed.query
-      ) {
+      if (containsSensitiveInformation(parsed.query) || redactSensitiveInformation(parsed.query) !== parsed.query) {
         throw new Error("Memory search queries must not contain sensitive information");
       }
       if (!context.searchProjectMemory) {
         throw new Error("Project memory is unavailable in this Runtime profile");
       }
-      const memories = (await context.searchProjectMemory(parsed.query, {
-        limit: parsed.limit,
-        scope: parsed.scope,
-        includeInactive: parsed.includeInactive,
-      })).slice(0, parsed.limit);
-      this.session.record(context.turnId, memories.map((memory) => memory.id));
-      context.recordMemoryRecall?.(memories.filter((memory) =>
-        memory.status === "active" || memory.status === "needs_verification").map((memory) => memory.id));
+      const memories = (
+        await context.searchProjectMemory(parsed.query, {
+          limit: parsed.limit,
+          scope: parsed.scope,
+          includeInactive: parsed.includeInactive,
+        })
+      ).slice(0, parsed.limit);
+      this.session.record(
+        context.turnId,
+        memories.map((memory) => memory.id),
+      );
+      context.recordMemoryRecall?.(
+        memories
+          .filter((memory) => memory.status === "active" || memory.status === "needs_verification")
+          .map((memory) => memory.id),
+      );
       return toolSuccess(`Found ${memories.length} long-term memories.`, {
         memories: memories.map(memoryForModel),
         count: memories.length,

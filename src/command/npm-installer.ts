@@ -50,9 +50,7 @@ function splitPackageSpec(spec: string): { name: string; version: string } | und
 function hasForbiddenOption(args: readonly string[]): string | undefined {
   for (const argument of args) {
     const lower = argument.toLowerCase();
-    const forbidden = FORBIDDEN_NPM_OPTIONS.find(
-      (option) => lower === option || lower.startsWith(`${option}=`),
-    );
+    const forbidden = FORBIDDEN_NPM_OPTIONS.find((option) => lower === option || lower.startsWith(`${option}=`));
     if (forbidden) return argument;
   }
   return undefined;

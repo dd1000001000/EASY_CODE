@@ -2,17 +2,10 @@ import { z } from "zod";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { THINKING_EFFORTS } from "../core/types.js";
 
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import {
   DEFAULT_SUBAGENT_WAIT_MS,
   MAX_SUBAGENT_AGENT_IDS_PER_CALL,
-  MAX_SUBAGENT_FOLLOW_UP_CHARS,
-  MAX_SUBAGENT_INSTRUCTIONS_CHARS,
   MAX_SUBAGENT_STOP_REASON_CHARS,
   MAX_SUBAGENT_WAIT_MS,
   sanitizeSubagentText,
@@ -20,16 +13,12 @@ import {
   type ManageSubagentsInput,
   type SubagentControl,
 } from "../subagents/types.js";
-import {
-  MAX_TASK_LIST_ITEMS,
-  MAX_TASK_TEXT_CHARS,
-} from "../tasks/task-graph.js";
+import { MAX_TASK_LIST_ITEMS, MAX_TASK_TEXT_CHARS } from "../tasks/task-graph.js";
 import { toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 
 const TASK_ID_PATTERN = "^[A-Za-z][A-Za-z0-9_-]{0,39}$";
-const SUBAGENT_ID_PATTERN =
-  "^subagent_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
+const SUBAGENT_ID_PATTERN = "^subagent_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 
 const taskIdSchema = z.string().trim().regex(new RegExp(TASK_ID_PATTERN, "u"));
 const subagentIdSchema = z.string().trim().regex(new RegExp(SUBAGENT_ID_PATTERN, "u"));
@@ -42,19 +31,14 @@ const branchNameSchema = z
   .max(160)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/u);
 
-function boundedAgentText(maximum: number): z.ZodPipeline<
-  z.ZodEffects<z.ZodString, string, string>,
-  z.ZodString
-> {
-  return z
-    .string()
-    .max(maximum)
-    .transform(sanitizeSubagentText)
-    .pipe(z.string().min(1).max(maximum));
+function boundedAgentText(maximum: number): z.ZodPipeline<z.ZodEffects<z.ZodString, string, string>, z.ZodString> {
+  return z.string().max(maximum).transform(sanitizeSubagentText).pipe(z.string().min(1).max(maximum));
 }
 
 function truncatedAgentMessage(maximum: number) {
-  return z.string().transform((value) => truncateSubagentMessage(value, maximum))
+  return z
+    .string()
+    .transform((value) => truncateSubagentMessage(value, maximum))
     .pipe(z.string().min(1).max(maximum));
 }
 
@@ -70,77 +54,70 @@ const standaloneTaskSchema = z
   .object({
     title: boundedAgentText(MAX_TASK_TEXT_CHARS),
     description: boundedAgentText(MAX_TASK_TEXT_CHARS),
-    completionChecks: z
-      .array(boundedAgentText(MAX_TASK_TEXT_CHARS))
-      .min(1)
-      .max(MAX_TASK_LIST_ITEMS),
+    completionChecks: z.array(boundedAgentText(MAX_TASK_TEXT_CHARS)).min(1).max(MAX_TASK_LIST_ITEMS),
   })
   .strict();
 
-export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS) { return z.union([
-  z
-    .object({
-      action: z.literal("spawn"),
-      taskId: taskIdSchema,
-      instructions: truncatedAgentMessage(limits.subagentInstructionsMaxChars),
-      isolation: isolationSchema.optional(),
-      thinkingEffort: thinkingEffortSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("spawn"),
-      task: standaloneTaskSchema,
-      instructions: truncatedAgentMessage(limits.subagentInstructionsMaxChars),
-      isolation: isolationSchema.optional(),
-      thinkingEffort: thinkingEffortSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("status"),
-      agentIds: agentIdsSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("wait"),
-      agentIds: agentIdsSchema,
-      timeoutMs: z
-        .number()
-        .int()
-        .min(0)
-        .max(MAX_SUBAGENT_WAIT_MS)
-        .default(DEFAULT_SUBAGENT_WAIT_MS),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("follow_up"),
-      agentId: subagentIdSchema,
-      message: truncatedAgentMessage(limits.subagentFollowUpMaxChars),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("stop"),
-      agentId: subagentIdSchema,
-      reason: boundedAgentText(MAX_SUBAGENT_STOP_REASON_CHARS),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("handoff"),
-      agentId: subagentIdSchema,
-      destination: z.enum(["local", "branch"]),
-      branchName: branchNameSchema.optional(),
-    })
-    .strict()
-    .refine((value) => value.destination === "branch" || value.branchName === undefined, {
-      message: "branchName is valid only for branch handoff",
-    }),
-]); }
-export const manageSubagentsInputSchema = createManageSubagentsInputSchema();
+export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS) {
+  return z.union([
+    z
+      .object({
+        action: z.literal("spawn"),
+        taskId: taskIdSchema,
+        instructions: truncatedAgentMessage(limits.subagentInstructionsMaxChars),
+        isolation: isolationSchema.optional(),
+        thinkingEffort: thinkingEffortSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("spawn"),
+        task: standaloneTaskSchema,
+        instructions: truncatedAgentMessage(limits.subagentInstructionsMaxChars),
+        isolation: isolationSchema.optional(),
+        thinkingEffort: thinkingEffortSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("status"),
+        agentIds: agentIdsSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("wait"),
+        agentIds: agentIdsSchema,
+        timeoutMs: z.number().int().min(0).max(MAX_SUBAGENT_WAIT_MS).default(DEFAULT_SUBAGENT_WAIT_MS),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("follow_up"),
+        agentId: subagentIdSchema,
+        message: truncatedAgentMessage(limits.subagentFollowUpMaxChars),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("stop"),
+        agentId: subagentIdSchema,
+        reason: boundedAgentText(MAX_SUBAGENT_STOP_REASON_CHARS),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("handoff"),
+        agentId: subagentIdSchema,
+        destination: z.enum(["local", "branch"]),
+        branchName: branchNameSchema.optional(),
+      })
+      .strict()
+      .refine((value) => value.destination === "branch" || value.branchName === undefined, {
+        message: "branchName is valid only for branch handoff",
+      }),
+  ]);
+}
 
 /**
  * Main-agent control surface. The injected controller is the authority for
@@ -150,103 +127,110 @@ export const manageSubagentsInputSchema = createManageSubagentsInputSchema();
 export class ManageSubagentsTool implements AgentTool {
   readonly name = "manage_subagents" as const;
   readonly mutating = true;
-  get inputSchema() { return createManageSubagentsInputSchema(this.limits); }
-  get definition(): ToolDefinition { return {
-    type: "function",
-    function: {
-      name: this.name,
-      strict: true,
-      ...documentToolSchema(this.name, {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          action: {
-            type: "string",
-            enum: ["spawn", "status", "wait", "follow_up", "stop", "handoff"],
-          },
-          taskId: {
-            type: "string",
-            pattern: TASK_ID_PATTERN,
-          },
-          task: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              title: {
-                type: "string",
-                minLength: 1,
-                maxLength: MAX_TASK_TEXT_CHARS,
-              },
-              description: {
-                type: "string",
-                minLength: 1,
-                maxLength: MAX_TASK_TEXT_CHARS,
-              },
-              completionChecks: {
-                type: "array",
-                minItems: 1,
-                maxItems: MAX_TASK_LIST_ITEMS,
-                items: {
+  get inputSchema() {
+    return createManageSubagentsInputSchema(this.limits);
+  }
+  get definition(): ToolDefinition {
+    return {
+      type: "function",
+      function: {
+        name: this.name,
+        strict: true,
+        ...documentToolSchema(this.name, {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            action: {
+              type: "string",
+              enum: ["spawn", "status", "wait", "follow_up", "stop", "handoff"],
+            },
+            taskId: {
+              type: "string",
+              pattern: TASK_ID_PATTERN,
+            },
+            task: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                title: {
                   type: "string",
                   minLength: 1,
                   maxLength: MAX_TASK_TEXT_CHARS,
                 },
+                description: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: MAX_TASK_TEXT_CHARS,
+                },
+                completionChecks: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: MAX_TASK_LIST_ITEMS,
+                  items: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: MAX_TASK_TEXT_CHARS,
+                  },
+                },
               },
+              required: ["title", "description", "completionChecks"],
             },
-            required: ["title", "description", "completionChecks"],
+            instructions: {
+              type: "string",
+              minLength: 1,
+            },
+            isolation: {
+              type: "string",
+              enum: ["auto", "shared", "worktree"],
+            },
+            thinkingEffort: {
+              type: "string",
+              enum: [...THINKING_EFFORTS],
+            },
+            agentId: {
+              type: "string",
+              pattern: SUBAGENT_ID_PATTERN,
+            },
+            agentIds: {
+              type: "array",
+              minItems: 1,
+              maxItems: MAX_SUBAGENT_AGENT_IDS_PER_CALL,
+              uniqueItems: true,
+              items: { type: "string", pattern: SUBAGENT_ID_PATTERN },
+            },
+            timeoutMs: {
+              type: "integer",
+              minimum: 0,
+              maximum: MAX_SUBAGENT_WAIT_MS,
+            },
+            message: {
+              type: "string",
+              minLength: 1,
+            },
+            reason: {
+              type: "string",
+              minLength: 1,
+              maxLength: MAX_SUBAGENT_STOP_REASON_CHARS,
+            },
+            destination: {
+              type: "string",
+              enum: ["local", "branch"],
+            },
+            branchName: {
+              type: "string",
+              maxLength: 160,
+            },
           },
-          instructions: {
-            type: "string",
-            minLength: 1,
-          },
-          isolation: {
-            type: "string",
-            enum: ["auto", "shared", "worktree"],
-          },
-          thinkingEffort: {
-            type: "string",
-            enum: [...THINKING_EFFORTS],
-          },
-          agentId: {
-            type: "string",
-            pattern: SUBAGENT_ID_PATTERN,
-          },
-          agentIds: {
-            type: "array",
-            minItems: 1,
-            maxItems: MAX_SUBAGENT_AGENT_IDS_PER_CALL,
-            uniqueItems: true,
-            items: { type: "string", pattern: SUBAGENT_ID_PATTERN },
-          },
-          timeoutMs: {
-            type: "integer",
-            minimum: 0,
-            maximum: MAX_SUBAGENT_WAIT_MS,
-          },
-          message: {
-            type: "string",
-            minLength: 1,
-          },
-          reason: {
-            type: "string",
-            minLength: 1,
-            maxLength: MAX_SUBAGENT_STOP_REASON_CHARS,
-          },
-          destination: {
-            type: "string",
-            enum: ["local", "branch"],
-          },
-          branchName: {
-            type: "string",
-            maxLength: 160,
-          },
-        },
-        required: ["action"],
-      }),
-    },
-  }; }
+          required: ["action"],
+        }),
+      },
+    };
+  }
 
-  constructor(private readonly control: SubagentControl, private readonly limits = DEFAULT_RUNTIME_LIMITS) {}
+  constructor(
+    private readonly control: SubagentControl,
+    private readonly limits = DEFAULT_RUNTIME_LIMITS,
+  ) {}
 
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     try {

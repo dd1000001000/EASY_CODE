@@ -1,6 +1,15 @@
 {
   "coordinationEnabled": true,
-  "coordinationExcludeDirectories": ["node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next", ".cache"],
+  "coordinationExcludeDirectories": [
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "dist",
+    "build",
+    ".next",
+    ".cache"
+  ],
   "coordinationScanMaxFiles": 100000,
   "coordinationScanTimeoutMs": 5000,
   "coordinationMessageMaxChars": 4000,

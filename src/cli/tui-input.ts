@@ -33,14 +33,7 @@ export type TuiKey =
   | "page-down";
 
 export type TuiMouseButton = "left" | "middle" | "right" | "none";
-export type TuiMouseAction =
-  | "press"
-  | "release"
-  | "move"
-  | "wheel-up"
-  | "wheel-down"
-  | "wheel-left"
-  | "wheel-right";
+export type TuiMouseAction = "press" | "release" | "move" | "wheel-up" | "wheel-down" | "wheel-left" | "wheel-right";
 
 export interface TuiMouseEvent {
   readonly type: "mouse";
@@ -54,10 +47,7 @@ export interface TuiMouseEvent {
   readonly ctrl: boolean;
 }
 
-export type TuiInputErrorCode =
-  | "paste-too-large"
-  | "incomplete-paste"
-  | "malformed-control";
+export type TuiInputErrorCode = "paste-too-large" | "incomplete-paste" | "malformed-control";
 
 export type TuiInputEvent =
   | { readonly type: "text"; readonly text: string }
@@ -108,13 +98,10 @@ export class TuiInputDecoder {
   }
 
   feed(chunk: Buffer | Uint8Array | string): TuiInputEvent[] {
-    const input = typeof chunk === "string"
-      ? Buffer.from(chunk)
-      : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    const input =
+      typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
     if (input.length > 0) {
-      this.pending = this.pending.length > 0
-        ? Buffer.concat([this.pending, input])
-        : Buffer.from(input);
+      this.pending = this.pending.length > 0 ? Buffer.concat([this.pending, input]) : Buffer.from(input);
     }
 
     const events: TuiInputEvent[] = [];
@@ -167,22 +154,26 @@ export class TuiInputDecoder {
     if (this.pasteActive) {
       const byteLength = this.pasteBytesDiscarded + this.pending.length;
       this.reset();
-      return [{
-        type: "input-error",
-        code: "incomplete-paste",
-        message: "Bracketed paste ended without a closing marker; the paste was discarded.",
-        byteLength,
-      }];
+      return [
+        {
+          type: "input-error",
+          code: "incomplete-paste",
+          message: "Bracketed paste ended without a closing marker; the paste was discarded.",
+          byteLength,
+        },
+      ];
     }
     if (this.pending.length === 0) return [];
     const byteLength = this.pending.length;
     this.pending = Buffer.alloc(0);
-    return [{
-      type: "input-error",
-      code: "malformed-control",
-      message: "An incomplete terminal control sequence was discarded.",
-      byteLength,
-    }];
+    return [
+      {
+        type: "input-error",
+        code: "malformed-control",
+        message: "An incomplete terminal control sequence was discarded.",
+        byteLength,
+      },
+    ];
   }
 
   reset(): void {
@@ -222,9 +213,7 @@ export class TuiInputDecoder {
       const retained = longestSuffixPrefixLength(this.pending, BRACKETED_PASTE_END);
       const discarded = this.pending.length - retained;
       this.pasteBytesDiscarded += discarded;
-      this.pending = retained > 0
-        ? Buffer.from(this.pending.subarray(discarded))
-        : Buffer.alloc(0);
+      this.pending = retained > 0 ? Buffer.from(this.pending.subarray(discarded)) : Buffer.alloc(0);
     }
     return false;
   }
@@ -285,9 +274,7 @@ export class TuiInputDecoder {
     if (!startsWith(this.pending, PRIVATE_OSC_PREFIX)) {
       return { status: "complete", length };
     }
-    const payload = this.pending
-      .subarray(PRIVATE_OSC_PREFIX.length, terminator.index)
-      .toString("utf8");
+    const payload = this.pending.subarray(PRIVATE_OSC_PREFIX.length, terminator.index).toString("utf8");
     return { status: "complete", length, event: parsePrivateAction(payload) };
   }
 
@@ -329,9 +316,7 @@ export class TuiInputDecoder {
   }
 
   private consumeBytes(length: number): void {
-    this.pending = length >= this.pending.length
-      ? Buffer.alloc(0)
-      : Buffer.from(this.pending.subarray(length));
+    this.pending = length >= this.pending.length ? Buffer.alloc(0) : Buffer.from(this.pending.subarray(length));
   }
 }
 
@@ -482,14 +467,17 @@ export class TuiInputCore {
   private readonly clearOnSubmit: boolean;
   private readonly mouseWheelLines: number;
 
-  constructor(options: TuiInputDecoderOptions & TuiEditorOptions & {
-    readonly initialText?: string;
-    readonly initialCursor?: number;
-  } = {}) {
+  constructor(
+    options: TuiInputDecoderOptions &
+      TuiEditorOptions & {
+        readonly initialText?: string;
+        readonly initialCursor?: number;
+      } = {},
+  ) {
     this.decoder = new TuiInputDecoder(options);
     this.editorState = createTuiEditorState(
       options.initialText ?? "",
-      options.initialCursor ?? (options.initialText?.length ?? 0),
+      options.initialCursor ?? options.initialText?.length ?? 0,
     );
     this.focus = options.focus ?? "composer";
     this.clearOnSubmit = options.clearOnSubmit ?? true;
@@ -563,8 +551,10 @@ function parseCsiEvent(sequence: string): TuiInputEvent | undefined {
     if (first === 3) return keyEvent("delete");
     if (first === 5) return keyEvent("page-up");
     if (first === 6) return keyEvent("page-down");
-    if ((first === 13 && (params[1] ?? 0) === 2) ||
-        (first === 27 && (params[1] ?? 0) === 2 && (params[2] ?? 0) === 13)) {
+    if (
+      (first === 13 && (params[1] ?? 0) === 2) ||
+      (first === 27 && (params[1] ?? 0) === 2 && (params[2] ?? 0) === 13)
+    ) {
       return keyEvent("newline");
     }
     if (first === 27 && (params[1] ?? 0) >= 5 && (params[2] ?? 0) === 99) {
@@ -582,8 +572,13 @@ function parseKittyKey(payload: string): TuiInputEvent | undefined {
   const codePoint = keyCodes[0] ?? 0;
   const modifier = modifierParts[0] ?? 1;
   const eventType = modifierParts[1] ?? 1;
-  if (!Number.isSafeInteger(codePoint) || !Number.isSafeInteger(modifier) ||
-      !Number.isSafeInteger(eventType) || modifier < 1 || eventType === 3) {
+  if (
+    !Number.isSafeInteger(codePoint) ||
+    !Number.isSafeInteger(modifier) ||
+    !Number.isSafeInteger(eventType) ||
+    modifier < 1 ||
+    eventType === 3
+  ) {
     return undefined;
   }
 
@@ -598,11 +593,7 @@ function parseKittyKey(payload: string): TuiInputEvent | undefined {
   if (codePoint === 13) return keyEvent(shift ? "newline" : "enter");
   if (codePoint === 10 || (ctrl && codePoint === 106)) return keyEvent("newline");
   if (ctrl && codePoint === 99) return keyEvent("interrupt");
-  if (
-    codePoint === 118 &&
-    ((ctrl && !alt && !superKey) ||
-      (superKey && !ctrl && !alt && !shift))
-  ) {
+  if (codePoint === 118 && ((ctrl && !alt && !superKey) || (superKey && !ctrl && !alt && !shift))) {
     return { type: "paste-image" };
   }
   if (codePoint === 127) return keyEvent("backspace");
@@ -612,10 +603,8 @@ function parseKittyKey(payload: string): TuiInputEvent | undefined {
     return { type: "text", text: associatedText };
   }
   const shiftedCodePoint = keyCodes[1];
-  const printableCodePoint = shift && shiftedCodePoint !== undefined &&
-      Number.isSafeInteger(shiftedCodePoint)
-    ? shiftedCodePoint
-    : codePoint;
+  const printableCodePoint =
+    shift && shiftedCodePoint !== undefined && Number.isSafeInteger(shiftedCodePoint) ? shiftedCodePoint : codePoint;
   if (!ctrl && !alt && !superKey && isPrintableUnicodeScalar(printableCodePoint)) {
     return { type: "text", text: sanitizeInputText(String.fromCodePoint(printableCodePoint)) };
   }
@@ -649,8 +638,12 @@ function decodeKittyAssociatedText(field: string | undefined): string {
 }
 
 function isPrintableUnicodeScalar(codePoint: number): boolean {
-  return Number.isSafeInteger(codePoint) && codePoint >= 0x20 &&
-    codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff);
+  return (
+    Number.isSafeInteger(codePoint) &&
+    codePoint >= 0x20 &&
+    codePoint <= 0x10ffff &&
+    !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+  );
 }
 
 function parsePrivateAction(payload: string): TuiInputEvent | undefined {
@@ -669,22 +662,10 @@ function decodeSgrMouse(match: RegExpExecArray): TuiMouseEvent | undefined {
   const wheel = (code & 64) !== 0;
   const motion = (code & 32) !== 0;
   const base = code & 3;
-  const button: TuiMouseButton = base === 0
-    ? "left"
-    : base === 1
-      ? "middle"
-      : base === 2
-        ? "right"
-        : "none";
+  const button: TuiMouseButton = base === 0 ? "left" : base === 1 ? "middle" : base === 2 ? "right" : "none";
   let action: TuiMouseAction;
   if (wheel) {
-    action = base === 0
-      ? "wheel-up"
-      : base === 1
-        ? "wheel-down"
-        : base === 2
-          ? "wheel-left"
-          : "wheel-right";
+    action = base === 0 ? "wheel-up" : base === 1 ? "wheel-down" : base === 2 ? "wheel-left" : "wheel-right";
   } else if (final === "m" || base === 3) action = "release";
   else if (motion) action = "move";
   else action = "press";
@@ -746,18 +727,14 @@ function normalizeEditorState(state: Readonly<TuiEditorState>): TuiEditorState {
   return {
     text,
     cursor: nearestGraphemeBoundary(text, state.cursor),
-    preferredColumn: state.preferredColumn === null || !Number.isFinite(state.preferredColumn)
-      ? null
-      : Math.max(0, Math.floor(state.preferredColumn)),
+    preferredColumn:
+      state.preferredColumn === null || !Number.isFinite(state.preferredColumn)
+        ? null
+        : Math.max(0, Math.floor(state.preferredColumn)),
   };
 }
 
-function replaceRange(
-  state: TuiEditorState,
-  start: number,
-  end: number,
-  replacement: string,
-): TuiEditorState {
+function replaceRange(state: TuiEditorState, start: number, end: number, replacement: string): TuiEditorState {
   const safeStart = nearestGraphemeBoundary(state.text, start);
   const safeEnd = nearestGraphemeBoundary(state.text, end);
   const text = state.text.slice(0, safeStart) + replacement + state.text.slice(safeEnd);
@@ -769,17 +746,14 @@ function replaceRange(
 }
 
 function moveHorizontal(state: TuiEditorState, direction: -1 | 1): TuiEditorState {
-  const cursor = direction < 0
-    ? previousGraphemeBoundary(state.text, state.cursor)
-    : nextGraphemeBoundary(state.text, state.cursor);
+  const cursor =
+    direction < 0 ? previousGraphemeBoundary(state.text, state.cursor) : nextGraphemeBoundary(state.text, state.cursor);
   return withCursor(state, cursor, null);
 }
 
 function moveVertical(state: TuiEditorState, direction: -1 | 1): TuiEditorState {
   const currentStart = lineStart(state.text, state.cursor);
-  const currentColumn = state.preferredColumn ?? displayWidth(
-    state.text.slice(currentStart, state.cursor),
-  );
+  const currentColumn = state.preferredColumn ?? displayWidth(state.text.slice(currentStart, state.cursor));
   let targetStart: number;
   let targetEnd: number;
   if (direction < 0) {
@@ -796,11 +770,7 @@ function moveVertical(state: TuiEditorState, direction: -1 | 1): TuiEditorState 
   return withCursor(state, cursor, currentColumn);
 }
 
-function withCursor(
-  state: TuiEditorState,
-  cursor: number,
-  preferredColumn: number | null,
-): TuiEditorState {
+function withCursor(state: TuiEditorState, cursor: number, preferredColumn: number | null): TuiEditorState {
   return {
     text: state.text,
     cursor: nearestGraphemeBoundary(state.text, cursor),
@@ -817,12 +787,7 @@ function lineEnd(text: string, cursor: number): number {
   return end < 0 ? text.length : end;
 }
 
-function offsetAtVisualColumn(
-  text: string,
-  start: number,
-  end: number,
-  requestedColumn: number,
-): number {
+function offsetAtVisualColumn(text: string, start: number, end: number, requestedColumn: number): number {
   let offset = start;
   let column = 0;
   for (const segment of graphemeSegments(text.slice(start, end))) {
@@ -853,9 +818,7 @@ function nextGraphemeBoundary(text: string, cursor: number): number {
 }
 
 function nearestGraphemeBoundary(text: string, requested: number): number {
-  const safe = Number.isFinite(requested)
-    ? Math.max(0, Math.min(text.length, Math.floor(requested)))
-    : text.length;
+  const safe = Number.isFinite(requested) ? Math.max(0, Math.min(text.length, Math.floor(requested))) : text.length;
   let previous = 0;
   for (const boundary of graphemeBoundaries(text)) {
     if (boundary > safe) break;
@@ -894,11 +857,7 @@ function graphemeSegments(text: string): Array<{ readonly segment: string; reado
 }
 
 function sanitizeInputText(value: string): string {
-  const normalized = stripAnsi(
-    value
-      .replace(/\r\n?/gu, "\n")
-      .replace(/[\u2028\u2029]/gu, "\n"),
-  );
+  const normalized = stripAnsi(value.replace(/\r\n?/gu, "\n").replace(/[\u2028\u2029]/gu, "\n"));
   let result = "";
   for (const character of normalized) {
     const codePoint = character.codePointAt(0) ?? 0;
@@ -909,9 +868,15 @@ function sanitizeInputText(value: string): string {
     if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) continue;
     // Keep ZWNJ/ZWJ because they are semantic grapheme components (notably in
     // joined emoji), but remove bidi overrides and other invisible controls.
-    if (codePoint === 0x061c || codePoint === 0x200b || codePoint === 0x200e ||
-        codePoint === 0x200f || (codePoint >= 0x202a && codePoint <= 0x202e) ||
-        (codePoint >= 0x2060 && codePoint <= 0x2069) || codePoint === 0xfeff) {
+    if (
+      codePoint === 0x061c ||
+      codePoint === 0x200b ||
+      codePoint === 0x200e ||
+      codePoint === 0x200f ||
+      (codePoint >= 0x202a && codePoint <= 0x202e) ||
+      (codePoint >= 0x2060 && codePoint <= 0x2069) ||
+      codePoint === 0xfeff
+    ) {
       continue;
     }
     result += character;
@@ -935,15 +900,8 @@ function completeUtf8PrefixLength(input: Buffer): number {
   while (lead >= 0 && ((input[lead] ?? 0) & 0xc0) === 0x80) lead -= 1;
   if (lead < 0) return input.length;
   const first = input[lead] ?? 0;
-  const expected = first < 0x80
-    ? 1
-    : (first & 0xe0) === 0xc0
-      ? 2
-      : (first & 0xf0) === 0xe0
-        ? 3
-        : (first & 0xf8) === 0xf0
-          ? 4
-          : 1;
+  const expected =
+    first < 0x80 ? 1 : (first & 0xe0) === 0xc0 ? 2 : (first & 0xf0) === 0xe0 ? 3 : (first & 0xf8) === 0xf0 ? 4 : 1;
   return input.length - lead < expected ? lead : input.length;
 }
 

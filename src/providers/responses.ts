@@ -15,28 +15,54 @@ import type {
 } from "../core/types.js";
 import { projectModelInputMessages } from "../context/micro-compaction.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
-import { providerImageCompatibilityIssue, resolveCatalogModel, validateProviderImageAttachments } from "../models/catalog.js";
+import {
+  providerImageCompatibilityIssue,
+  resolveCatalogModel,
+  validateProviderImageAttachments,
+} from "../models/catalog.js";
 import { thinkingEffortBufferedTimeoutMs, thinkingEffortStreamIdleTimeoutMs } from "../models/thinking.js";
-import { ProviderError, redactImageDataUrls, redactSensitiveText, streamProviderError, type ProviderProgress } from "./errors.js";
-import { describeTransportTimeout, HttpTransportError, postJsonWithNode, type JsonPostResponse } from "./http-transport.js";
+import {
+  ProviderError,
+  redactImageDataUrls,
+  redactSensitiveText,
+  streamProviderError,
+  type ProviderProgress,
+} from "./errors.js";
+import {
+  describeTransportTimeout,
+  HttpTransportError,
+  postJsonWithNode,
+  type JsonPostResponse,
+} from "./http-transport.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
 import { ServerSentEventDecoder, SseDecodingError, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS = 600;
 
-const responseSchema = z.object({
-  status: z.string().optional(),
-  incomplete_details: z.object({ reason: z.string().optional() }).passthrough().nullable().optional(),
-  output: z.array(z.object({ type: z.string() }).passthrough()).default([]),
-  usage: z.object({
-    input_tokens: z.number().int().nonnegative().optional(),
-    output_tokens: z.number().int().nonnegative().optional(),
-    total_tokens: z.number().int().nonnegative().optional(),
-    input_tokens_details: z.object({ cached_tokens: z.number().int().nonnegative().optional() }).passthrough().optional(),
-    output_tokens_details: z.object({ reasoning_tokens: z.number().int().nonnegative().optional() }).passthrough().optional(),
-  }).passthrough().optional(),
-}).passthrough();
+const responseSchema = z
+  .object({
+    status: z.string().optional(),
+    incomplete_details: z.object({ reason: z.string().optional() }).passthrough().nullable().optional(),
+    output: z.array(z.object({ type: z.string() }).passthrough()).default([]),
+    usage: z
+      .object({
+        input_tokens: z.number().int().nonnegative().optional(),
+        output_tokens: z.number().int().nonnegative().optional(),
+        total_tokens: z.number().int().nonnegative().optional(),
+        input_tokens_details: z
+          .object({ cached_tokens: z.number().int().nonnegative().optional() })
+          .passthrough()
+          .optional(),
+        output_tokens_details: z
+          .object({ reasoning_tokens: z.number().int().nonnegative().optional() })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
 
 type ResponseInput = Record<string, unknown>;
 
@@ -81,7 +107,8 @@ export class ResponsesProvider implements ModelProvider {
   }
 
   async complete(request: ModelRequest): Promise<ProviderResponse> {
-    if (!this.config.apiKey) throw this.error(`Missing API key for ${this.name}. Configure the provider before use.`, "missing_api_key");
+    if (!this.config.apiKey)
+      throw this.error(`Missing API key for ${this.name}. Configure the provider before use.`, "missing_api_key");
     const streamResponse = request.responseMode === "stream" && this.supportsStreaming;
     const body: Record<string, unknown> = {
       model: this.model,
@@ -98,7 +125,8 @@ export class ResponsesProvider implements ModelProvider {
       }));
       body.parallel_tool_calls = true;
     }
-    if (request.temperature !== undefined && this.runtime.supportsTemperature !== false) body.temperature = request.temperature;
+    if (request.temperature !== undefined && this.runtime.supportsTemperature !== false)
+      body.temperature = request.temperature;
     // outputReserveTokens is a local context-accounting reservation. It is not
     // an API generation limit and must never leak onto either wire protocol.
     const model = resolveCatalogModel(this.name, this.model);
@@ -107,17 +135,23 @@ export class ResponsesProvider implements ModelProvider {
     }
 
     let serialized: string;
-    try { serialized = JSON.stringify(body); }
-    catch { throw this.error("Unable to serialize the model request", "invalid_request"); }
+    try {
+      serialized = JSON.stringify(body);
+    } catch {
+      throw this.error("Unable to serialize the model request", "invalid_request");
+    }
     const effort = request.thinkingEffort ?? "none";
-    const streamIdleTimeoutMs = this.runtime.streamIdleTimeoutByEffort?.[effort] ??
-      thinkingEffortStreamIdleTimeoutMs(effort);
-    const bufferedTimeoutMs = this.config.timeoutMs ?? this.runtime.bufferedTimeoutByEffort?.[effort] ??
+    const streamIdleTimeoutMs =
+      this.runtime.streamIdleTimeoutByEffort?.[effort] ?? thinkingEffortStreamIdleTimeoutMs(effort);
+    const bufferedTimeoutMs =
+      this.config.timeoutMs ??
+      this.runtime.bufferedTimeoutByEffort?.[effort] ??
       thinkingEffortBufferedTimeoutMs(effort);
     const timeoutMs = streamResponse ? streamIdleTimeoutMs : bufferedTimeoutMs;
-    const timeoutMode = streamResponse ? "stream_semantic_idle" as const : "buffered_total" as const;
+    const timeoutMode = streamResponse ? ("stream_semantic_idle" as const) : ("buffered_total" as const);
     const requestedRetries = request.maxRetries ?? this.config.maxRetries;
-    if (!Number.isSafeInteger(requestedRetries) || requestedRetries < 0 || requestedRetries > 10) throw this.error("Request maxRetries must be between 0 and 10", "invalid_request");
+    if (!Number.isSafeInteger(requestedRetries) || requestedRetries < 0 || requestedRetries > 10)
+      throw this.error("Request maxRetries must be between 0 and 10", "invalid_request");
     const maxRetries = Math.min(this.config.maxRetries, requestedRetries);
     let lastError: ProviderError | undefined;
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -158,10 +192,10 @@ export class ResponsesProvider implements ModelProvider {
           ...(streamResponse
             ? {
                 onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
-                  streamStarted = statusCode >= 200 && statusCode < 300 &&
-                    isEventStreamContentType(headers["content-type"]);
+                  streamStarted =
+                    statusCode >= 200 && statusCode < 300 && isEventStreamContentType(headers["content-type"]);
                   if (streamStarted) emit({ kind: "started" });
-                  return streamStarted ? "stream" as const : "buffered" as const;
+                  return streamStarted ? ("stream" as const) : ("buffered" as const);
                 },
                 onResponseChunk: (chunk: Buffer) => {
                   if (!streamStarted) return false;
@@ -182,14 +216,19 @@ export class ResponsesProvider implements ModelProvider {
         }
         return this.parse(response);
       } catch (error) {
-        const normalized = this.normalizeError(error, request.signal, this.streamProgress(streamState),
-          { streamIdleTimeoutMs, bufferedTimeoutMs });
+        const normalized = this.normalizeError(error, request.signal, this.streamProgress(streamState), {
+          streamIdleTimeoutMs,
+          bufferedTimeoutMs,
+        });
         lastError = normalized;
         if (streamStarted) {
           emit({ kind: "interrupted" });
         }
         if (!normalized.retryable || attempt >= maxRetries) throw normalized;
-        await (this.runtime.sleep ?? sleep)(normalized.retryAfterMs ?? retryDelay(attempt, this.runtime.random?.() ?? Math.random()), request.signal);
+        await (this.runtime.sleep ?? sleep)(
+          normalized.retryAfterMs ?? retryDelay(attempt, this.runtime.random?.() ?? Math.random()),
+          request.signal,
+        );
       }
     }
     throw lastError ?? this.error("Provider request failed", "request_failed");
@@ -210,8 +249,11 @@ export class ResponsesProvider implements ModelProvider {
       throw this.error("Provider sent data after [DONE]", "invalid_response");
     }
     let value: unknown;
-    try { value = JSON.parse(event.data) as unknown; }
-    catch { throw this.error("Provider returned an invalid Responses SSE event", "invalid_response"); }
+    try {
+      value = JSON.parse(event.data) as unknown;
+    } catch {
+      throw this.error("Provider returned an invalid Responses SSE event", "invalid_response");
+    }
     if (!isRecord(value)) throw this.error("Provider returned an unsupported Responses SSE event", "invalid_response");
     const type = typeof value.type === "string" ? value.type : event.event;
     if (type === "error" || type === "response.failed" || "error" in value) {
@@ -226,8 +268,10 @@ export class ResponsesProvider implements ModelProvider {
       emit({ kind: "text_delta", text: value.delta });
       return true;
     }
-    if ((type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") &&
-        typeof value.delta === "string") {
+    if (
+      (type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") &&
+      typeof value.delta === "string"
+    ) {
       if (!value.delta) return false;
       state.reasoning += value.delta;
       emit({ kind: "reasoning_delta", text: value.delta });
@@ -242,9 +286,12 @@ export class ResponsesProvider implements ModelProvider {
         return true;
       }
       if (isRecord(value.item) && value.item.type === "function_call") {
-        const key = typeof value.output_index === "number"
-          ? String(value.output_index)
-          : typeof value.item.id === "string" ? value.item.id : String(state.toolItems.size);
+        const key =
+          typeof value.output_index === "number"
+            ? String(value.output_index)
+            : typeof value.item.id === "string"
+              ? value.item.id
+              : String(state.toolItems.size);
         const prior = state.toolItems.get(key) ?? { id: "", callId: "", name: "", arguments: "" };
         const next = {
           id: typeof value.item.id === "string" ? value.item.id : prior.id,
@@ -252,17 +299,23 @@ export class ResponsesProvider implements ModelProvider {
           name: typeof value.item.name === "string" ? value.item.name : prior.name,
           arguments: typeof value.item.arguments === "string" ? value.item.arguments : prior.arguments,
         };
-        const changed = next.id !== prior.id || next.callId !== prior.callId ||
-          next.name !== prior.name || next.arguments !== prior.arguments;
+        const changed =
+          next.id !== prior.id ||
+          next.callId !== prior.callId ||
+          next.name !== prior.name ||
+          next.arguments !== prior.arguments;
         state.toolItems.set(key, next);
         if (changed) {
           const argumentDelta = next.arguments.startsWith(prior.arguments)
             ? next.arguments.slice(prior.arguments.length)
             : next.arguments;
-          emit({ kind: "tool_call_delta", index: Number(key) || 0,
+          emit({
+            kind: "tool_call_delta",
+            index: Number(key) || 0,
             ...(next.callId !== prior.callId || next.id !== prior.id ? { id: next.callId || next.id } : {}),
             ...(next.name !== prior.name ? { name: next.name } : {}),
-            ...(argumentDelta ? { arguments: argumentDelta } : {}) });
+            ...(argumentDelta ? { arguments: argumentDelta } : {}),
+          });
         }
         return changed;
       }
@@ -270,18 +323,29 @@ export class ResponsesProvider implements ModelProvider {
     }
     if (type === "response.function_call_arguments.delta" && typeof value.delta === "string") {
       if (!value.delta) return false;
-      const key = typeof value.output_index === "number"
-        ? String(value.output_index)
-        : typeof value.item_id === "string" ? value.item_id : "0";
-      const prior = state.toolItems.get(key) ?? { id: typeof value.item_id === "string" ? value.item_id : "", callId: "", name: "", arguments: "" };
+      const key =
+        typeof value.output_index === "number"
+          ? String(value.output_index)
+          : typeof value.item_id === "string"
+            ? value.item_id
+            : "0";
+      const prior = state.toolItems.get(key) ?? {
+        id: typeof value.item_id === "string" ? value.item_id : "",
+        callId: "",
+        name: "",
+        arguments: "",
+      };
       prior.arguments += value.delta;
       state.toolItems.set(key, prior);
       emit({ kind: "tool_call_delta", index: Number(key) || 0, arguments: value.delta });
       return true;
     }
     if (type === "response.completed" || type === "response.incomplete") {
-      if (!isRecord(value.response) || value.response.status !== type.slice("response.".length) ||
-          !Array.isArray(value.response.output)) {
+      if (
+        !isRecord(value.response) ||
+        value.response.status !== type.slice("response.".length) ||
+        !Array.isArray(value.response.output)
+      ) {
         throw this.error("Provider returned an invalid Responses terminal event", "invalid_response");
       }
       state.completed = value.response;
@@ -295,8 +359,7 @@ export class ResponsesProvider implements ModelProvider {
     return {
       reasoningChars: state.reasoning.length,
       textChars: state.content.length,
-      toolArgumentChars: [...state.toolItems.values()]
-        .reduce((total, call) => total + call.arguments.length, 0),
+      toolArgumentChars: [...state.toolItems.values()].reduce((total, call) => total + call.arguments.length, 0),
     };
   }
 
@@ -305,15 +368,20 @@ export class ResponsesProvider implements ModelProvider {
       return this.parse({ statusCode: 200, headers: {}, body: JSON.stringify(state.completed) });
     }
     throw new ProviderError("Responses stream ended without a terminal event", {
-      provider: this.name, code: "incomplete_stream", retryable: true,
+      provider: this.name,
+      code: "incomplete_stream",
+      retryable: true,
     });
   }
 
-  private async toInput(messages: readonly ChatMessage[], currentTurnImageIds?: readonly string[]): Promise<ResponseInput[]> {
+  private async toInput(
+    messages: readonly ChatMessage[],
+    currentTurnImageIds?: readonly string[],
+  ): Promise<ResponseInput[]> {
     let projected = projectModelInputMessages(messages);
     if (this.runtime.visionSupported) {
       try {
-        const originalImages = messages.flatMap((message) => message.role === "user" ? message.images ?? [] : []);
+        const originalImages = messages.flatMap((message) => (message.role === "user" ? (message.images ?? []) : []));
         for (const image of originalImages) validateImageAttachmentCollection([image]);
         if (currentTurnImageIds !== undefined) {
           const currentIds = new Set(currentTurnImageIds);
@@ -334,7 +402,7 @@ export class ResponsesProvider implements ModelProvider {
             };
           });
         }
-        const requestImages = projected.flatMap((message) => message.role === "user" ? message.images ?? [] : []);
+        const requestImages = projected.flatMap((message) => (message.role === "user" ? (message.images ?? []) : []));
         validateImageAttachmentCollection(requestImages);
         validateProviderImageAttachments(this.name, requestImages);
       } catch (error) {
@@ -344,12 +412,19 @@ export class ResponsesProvider implements ModelProvider {
     const output: ResponseInput[] = [];
     for (const message of projected) {
       if (message.role === "assistant") {
-        if (message.content) output.push({
-          role: "assistant",
-          content: message.content,
-          ...(message.phase ? { phase: message.phase } : {}),
-        });
-        for (const call of message.tool_calls ?? []) output.push({ type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments });
+        if (message.content)
+          output.push({
+            role: "assistant",
+            content: message.content,
+            ...(message.phase ? { phase: message.phase } : {}),
+          });
+        for (const call of message.tool_calls ?? [])
+          output.push({
+            type: "function_call",
+            call_id: call.id,
+            name: call.function.name,
+            arguments: call.function.arguments,
+          });
         continue;
       }
       if (message.role === "tool") {
@@ -366,15 +441,22 @@ export class ResponsesProvider implements ModelProvider {
         continue;
       }
       if (!this.runtime.visionSupported) {
-        output.push({ role: "user", content: `${message.content}\n\n${attachments.map((image) => `[${image.label} omitted: ${this.model} cannot receive images]`).join("\n")}` });
+        output.push({
+          role: "user",
+          content: `${message.content}\n\n${attachments.map((image) => `[${image.label} omitted: ${this.model} cannot receive images]`).join("\n")}`,
+        });
         continue;
       }
       if (!this.runtime.loadImage) throw this.error("No local image loader is configured.", "invalid_config");
       const content: ResponseInput[] = [{ type: "input_text", text: message.content }];
       for (const attachment of attachments) {
         const bytes = await this.runtime.loadImage(attachment);
-        if (bytes.length !== attachment.byteSize) throw this.error(`Stored ${attachment.label} no longer matches its metadata.`, "image_integrity_error");
-        content.push({ type: "input_image", image_url: `data:${attachment.mediaType};base64,${bytes.toString("base64")}` });
+        if (bytes.length !== attachment.byteSize)
+          throw this.error(`Stored ${attachment.label} no longer matches its metadata.`, "image_integrity_error");
+        content.push({
+          type: "input_image",
+          image_url: `data:${attachment.mediaType};base64,${bytes.toString("base64")}`,
+        });
       }
       output.push({ role: "user", content });
     }
@@ -392,8 +474,11 @@ export class ResponsesProvider implements ModelProvider {
       });
     }
     let decoded: unknown;
-    try { decoded = JSON.parse(response.body) as unknown; }
-    catch { throw this.error("Provider returned an invalid JSON response", "invalid_response"); }
+    try {
+      decoded = JSON.parse(response.body) as unknown;
+    } catch {
+      throw this.error("Provider returned an invalid JSON response", "invalid_response");
+    }
     const parsed = responseSchema.safeParse(decoded);
     if (!parsed.success) throw this.error("Provider returned an unsupported Responses response", "invalid_response");
     const text: string[] = [];
@@ -403,12 +488,23 @@ export class ResponsesProvider implements ModelProvider {
     for (const item of parsed.data.output) {
       if (item.type === "message" && Array.isArray(item.content)) {
         phase = assistantPhase(item.phase) ?? phase;
-        for (const part of item.content) if (isRecord(part) && part.type === "output_text" && typeof part.text === "string") text.push(part.text);
+        for (const part of item.content)
+          if (isRecord(part) && part.type === "output_text" && typeof part.text === "string") text.push(part.text);
       } else if (item.type === "function_call") {
-        if (typeof item.call_id !== "string" || !item.call_id || typeof item.name !== "string" || !item.name || typeof item.arguments !== "string") {
+        if (
+          typeof item.call_id !== "string" ||
+          !item.call_id ||
+          typeof item.name !== "string" ||
+          !item.name ||
+          typeof item.arguments !== "string"
+        ) {
           throw this.error("Provider returned an incomplete function call", "invalid_response");
         }
-        toolCalls.push({ id: item.call_id, type: "function", function: { name: item.name, arguments: item.arguments } });
+        toolCalls.push({
+          id: item.call_id,
+          type: "function",
+          function: { name: item.name, arguments: item.arguments },
+        });
       } else if (item.type === "reasoning" && Array.isArray(item.summary)) {
         for (const part of item.summary) if (isRecord(part) && typeof part.text === "string") reasoning.push(part.text);
       }
@@ -421,56 +517,114 @@ export class ResponsesProvider implements ModelProvider {
     if (toolCalls.length) message.tool_calls = toolCalls;
     if (reasoning.length) message.reasoning_content = redactImageDataUrls(reasoning.join("\n"));
     const incompleteReason = parsed.data.incomplete_details?.reason;
-    const finishReason = incompleteReason === "max_output_tokens"
-      ? "length"
-      : parsed.data.status === "incomplete" ? "incomplete"
-      : incompleteReason ?? (parsed.data.status === "completed" ? "stop" : parsed.data.status ?? null);
+    const finishReason =
+      incompleteReason === "max_output_tokens"
+        ? "length"
+        : parsed.data.status === "incomplete"
+          ? "incomplete"
+          : (incompleteReason ?? (parsed.data.status === "completed" ? "stop" : (parsed.data.status ?? null)));
     const result: ProviderResponse = { message, finishReason };
-    if (parsed.data.usage) result.usage = {
-      promptTokens: parsed.data.usage.input_tokens,
-      completionTokens: parsed.data.usage.output_tokens,
-      totalTokens: parsed.data.usage.total_tokens,
-      cachedInputTokens: parsed.data.usage.input_tokens_details?.cached_tokens,
-      reasoningTokens: parsed.data.usage.output_tokens_details?.reasoning_tokens,
-    };
+    if (parsed.data.usage)
+      result.usage = {
+        promptTokens: parsed.data.usage.input_tokens,
+        completionTokens: parsed.data.usage.output_tokens,
+        totalTokens: parsed.data.usage.total_tokens,
+        cachedInputTokens: parsed.data.usage.input_tokens_details?.cached_tokens,
+        reasoningTokens: parsed.data.usage.output_tokens_details?.reasoning_tokens,
+      };
     return result;
   }
 
-  private normalizeError(error: unknown, signal: AbortSignal | undefined, progress?: ProviderProgress,
-    deadlines?: { streamIdleTimeoutMs: number; bufferedTimeoutMs: number }): ProviderError {
+  private normalizeError(
+    error: unknown,
+    signal: AbortSignal | undefined,
+    progress?: ProviderProgress,
+    deadlines?: { streamIdleTimeoutMs: number; bufferedTimeoutMs: number },
+  ): ProviderError {
     if (error instanceof ProviderError) return error;
     if (error instanceof SseDecodingError) return this.error(error.message, "invalid_response");
     if (signal?.aborted) return this.error("Request was canceled", "aborted");
     if (error instanceof HttpTransportError) {
       if (error.kind === "aborted") return this.error("Request was canceled", "aborted");
-      if (error.kind === "stream_header_timeout") return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message,
-        { provider: this.name, code: "stream_header_timeout", retryable: true, progress });
-      if (error.kind === "stream_semantic_idle_timeout") return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message,
-        { provider: this.name, code: "stream_semantic_idle_timeout", retryable: true, progress });
-      if (error.kind === "buffered_total_timeout") return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message,
-        { provider: this.name, code: "buffered_total_timeout", retryable: true, progress });
+      if (error.kind === "stream_header_timeout")
+        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
+          provider: this.name,
+          code: "stream_header_timeout",
+          retryable: true,
+          progress,
+        });
+      if (error.kind === "stream_semantic_idle_timeout")
+        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
+          provider: this.name,
+          code: "stream_semantic_idle_timeout",
+          retryable: true,
+          progress,
+        });
+      if (error.kind === "buffered_total_timeout")
+        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
+          provider: this.name,
+          code: "buffered_total_timeout",
+          retryable: true,
+          progress,
+        });
       if (error.kind === "response_too_large") return this.error(error.message, "response_too_large");
-      return new ProviderError(`Provider network error: ${error.message}`, { provider: this.name, code: "network_error", retryable: true, secrets: [this.config.apiKey] });
+      return new ProviderError(`Provider network error: ${error.message}`, {
+        provider: this.name,
+        code: "network_error",
+        retryable: true,
+        secrets: [this.config.apiKey],
+      });
     }
-    return new ProviderError(`Provider request failed: ${redactSensitiveText(error, [this.config.apiKey])}`, { provider: this.name, code: "request_failed", retryable: true, secrets: [this.config.apiKey] });
+    return new ProviderError(`Provider request failed: ${redactSensitiveText(error, [this.config.apiKey])}`, {
+      provider: this.name,
+      code: "request_failed",
+      retryable: true,
+      secrets: [this.config.apiKey],
+    });
   }
-  private error(message: string, code: string): ProviderError { return new ProviderError(message, { provider: this.name, code, secrets: [this.config.apiKey] }); }
+  private error(message: string, code: string): ProviderError {
+    return new ProviderError(message, { provider: this.name, code, secrets: [this.config.apiKey] });
+  }
 }
 
 function endpoint(baseUrl: string, provider: string): URL {
   let url: URL;
-  try { url = new URL(baseUrl); } catch { throw new ProviderError("Provider base URL is invalid", { provider, code: "invalid_config" }); }
-  if (url.protocol !== "http:" && url.protocol !== "https:") throw new ProviderError("Provider base URL must use HTTP or HTTPS", { provider, code: "invalid_config" });
-  if (url.username || url.password) throw new ProviderError("Provider base URL must not contain credentials", { provider, code: "invalid_config" });
-  url.pathname = `${url.pathname.replace(/\/+$/u, "")}/responses`; url.search = ""; url.hash = ""; return url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new ProviderError("Provider base URL is invalid", { provider, code: "invalid_config" });
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    throw new ProviderError("Provider base URL must use HTTP or HTTPS", { provider, code: "invalid_config" });
+  if (url.username || url.password)
+    throw new ProviderError("Provider base URL must not contain credentials", { provider, code: "invalid_config" });
+  url.pathname = `${url.pathname.replace(/\/+$/u, "")}/responses`;
+  url.search = "";
+  url.hash = "";
+  return url;
 }
-function retryableStatus(code: number): boolean { return code === 408 || code === 409 || code === 425 || code === 429 || code >= 500; }
+function retryableStatus(code: number): boolean {
+  return code === 408 || code === 409 || code === 425 || code === 429 || code >= 500;
+}
 function apiError(body: string): string {
-  try { const value = JSON.parse(body) as unknown; if (isRecord(value)) { if (isRecord(value.error) && typeof value.error.message === "string") return value.error.message; if (typeof value.message === "string") return value.message; } } catch { /* bounded fallback */ }
+  try {
+    const value = JSON.parse(body) as unknown;
+    if (isRecord(value)) {
+      if (isRecord(value.error) && typeof value.error.message === "string") return value.error.message;
+      if (typeof value.message === "string") return value.message;
+    }
+  } catch {
+    /* bounded fallback */
+  }
   return body.trim().slice(0, 1_000) || "No error details were returned";
 }
-function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
-function appendHistoricalImageOmissionNote(content: string, omitted: readonly { image: ImageAttachment; issue: string }[]): string {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function appendHistoricalImageOmissionNote(
+  content: string,
+  omitted: readonly { image: ImageAttachment; issue: string }[],
+): string {
   const details = omitted.map(({ issue }) => issue).join(" ");
   const prefix = "[Historical image attachment(s) omitted from this provider request: ";
   const suffix = " Local thread history is unchanged.]";
@@ -478,11 +632,23 @@ function appendHistoricalImageOmissionNote(content: string, omitted: readonly { 
   const bounded = details.length <= available ? details : `${details.slice(0, Math.max(0, available - 1))}…`;
   return [content, `${prefix}${bounded}${suffix}`].filter(Boolean).join("\n\n");
 }
-function retryDelay(attempt: number, random: number): number { return Math.round(Math.min(500 * 2 ** attempt, 5_000) * (0.8 + random * 0.4)); }
+function retryDelay(attempt: number, random: number): number {
+  return Math.round(Math.min(500 * 2 ** attempt, 5_000) * (0.8 + random * 0.4));
+}
 function sleep(delayMs: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (signal?.aborted) { reject(new HttpTransportError("aborted", "Request was canceled")); return; }
+    if (signal?.aborted) {
+      reject(new HttpTransportError("aborted", "Request was canceled"));
+      return;
+    }
     const timer = setTimeout(resolve, delayMs);
-    signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new HttpTransportError("aborted", "Request was canceled")); }, { once: true });
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new HttpTransportError("aborted", "Request was canceled"));
+      },
+      { once: true },
+    );
   });
 }

@@ -46,7 +46,6 @@ export type BuiltinToolName =
   | "find_file_editors"
   | "send_thread_message"
   | "submit_task_result"
-  | "compact_context"
   | "read_memory"
   | "write_memory"
   | "search_context"
@@ -123,11 +122,7 @@ export interface FunctionToolCall {
 /** Provider-authored semantic phase for assistant output. Absence means unknown. */
 export type AssistantPhase = "commentary" | "final_answer";
 
-export type SupportedImageMediaType =
-  | "image/png"
-  | "image/jpeg"
-  | "image/webp"
-  | "image/gif";
+export type SupportedImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 
 /**
  * Durable metadata for an image copied into EASY CODE's private attachment store.
@@ -180,10 +175,14 @@ export interface ProviderUsage {
 }
 
 export const MODEL_USAGE_PURPOSES = [
-  "auto_route", "agent_step", "context_compaction", "progress_review",
-  "command_approval", "tool_approval",
+  "auto_route",
+  "agent_step",
+  "context_compaction",
+  "progress_review",
+  "command_approval",
+  "tool_approval",
 ] as const;
-export type ModelUsagePurpose = typeof MODEL_USAGE_PURPOSES[number];
+export type ModelUsagePurpose = (typeof MODEL_USAGE_PURPOSES)[number];
 
 /** Durable accounting metadata for one completed provider response. */
 export interface ModelUsageRecord {
@@ -214,7 +213,12 @@ export interface ProviderResponse {
 export type ProviderStreamEvent =
   | { readonly kind: "started"; readonly streamId: string; readonly sequence: number }
   | { readonly kind: "reasoning_delta"; readonly streamId: string; readonly sequence: number; readonly text: string }
-  | { readonly kind: "assistant_phase"; readonly streamId: string; readonly sequence: number; readonly phase: AssistantPhase }
+  | {
+      readonly kind: "assistant_phase";
+      readonly streamId: string;
+      readonly sequence: number;
+      readonly phase: AssistantPhase;
+    }
   | { readonly kind: "text_delta"; readonly streamId: string; readonly sequence: number; readonly text: string }
   | {
       readonly kind: "tool_call_delta";
@@ -226,7 +230,12 @@ export type ProviderStreamEvent =
       readonly arguments?: string;
     }
   | { readonly kind: "usage"; readonly streamId: string; readonly sequence: number; readonly usage: ProviderUsage }
-  | { readonly kind: "completed"; readonly streamId: string; readonly sequence: number; readonly finishReason?: string | null }
+  | {
+      readonly kind: "completed";
+      readonly streamId: string;
+      readonly sequence: number;
+      readonly finishReason?: string | null;
+    }
   | { readonly kind: "interrupted"; readonly streamId: string; readonly sequence: number };
 
 /**
@@ -332,7 +341,6 @@ export interface ToolExecutionResult {
   /** Local-only terminal presentation. AgentRuntime deliberately excludes it from model messages and events. */
   presentation?: ToolPresentation;
   /** Local-only context transition. AgentRuntime deliberately excludes the submitted summary from tool messages. */
-  contextCompaction?: ContextCompactionRequest;
   /** Local-only durable-memory request, staged until the turn completes successfully. */
   memoryMutation?: MemoryMutationRequest;
   /** Runtime-owned task-DAG transition. It is persisted separately from model-visible data. */
@@ -368,11 +376,6 @@ export type ToolContent =
   | { readonly type: "resource"; readonly uri: string; readonly title?: string }
   | { readonly type: "artifact"; readonly evidenceId: string };
 
-export interface ContextCompactionRequest {
-  summary: string;
-  formatVersion: 3;
-}
-
 export interface ContextSourceQuote {
   sourceMessageIndex: number;
   text: string;
@@ -404,18 +407,13 @@ export interface ContextCompactionMetadata {
   targetRatio: number;
 }
 
-export type LongTermMemoryCategory =
-  | "preference"
-  | "convention"
-  | "architecture"
-  | "decision"
-  | "environment";
+export type LongTermMemoryCategory = "preference" | "convention" | "architecture" | "decision" | "environment";
 
 export type LongTermMemoryScope = "global" | "project";
 
 export const MAX_MEMORY_MUTATIONS_PER_TURN = 8;
 
-export type MemoryMutationRequest = (
+export type MemoryMutationRequest =
   | {
       action: "remember";
       scope?: LongTermMemoryScope;
@@ -442,7 +440,7 @@ export type MemoryMutationRequest = (
       memoryId: string;
       scope: LongTermMemoryScope;
       reason: string;
-    });
+    };
 
 export interface FileDiffPresentation {
   type: "file_diff";
@@ -480,7 +478,13 @@ export interface ApprovalRequest {
   /** Ephemeral Runtime callback. Decisions remain authoritative in the app
    * Journal; this only lets the caller report which choice was made. */
   observeDecision?: (decision: ApprovalDecision) => void;
-  command?: { executable: string; args: string[]; cwd: string; scope: "workspace" | "host" | "container"; network: boolean };
+  command?: {
+    executable: string;
+    args: string[];
+    cwd: string;
+    scope: "workspace" | "host" | "container";
+    network: boolean;
+  };
 }
 
 export type ApprovalDecision = "allow_once" | "allow_prefix" | "reject";
@@ -532,22 +536,30 @@ export interface ToolContext {
   /** Read-only authoritative snapshot used by manage_tasks to propose one transition. */
   taskGraph?: Readonly<TaskGraph>;
   /** Runtime-bound, read-only history search; never accepts a model-selected thread. */
-  searchHistory?: (query: string, limit: number) => Promise<ReadonlyArray<{
-    id: string; title: string; preview: string; historical: true;
-  }>>;
+  searchHistory?: (
+    query: string,
+    limit: number,
+  ) => Promise<
+    ReadonlyArray<{
+      id: string;
+      title: string;
+      preview: string;
+      historical: true;
+    }>
+  >;
   recallContext?: (input: { evidenceId: string; offset: number; limit: number }) => Promise<ToolExecutionResult>;
   searchProjectMemory?: (
     query: string,
-    options?: { readonly limit?: number; readonly includeInactive?: boolean;
-      readonly scope?: "all" | LongTermMemoryScope },
+    options?: {
+      readonly limit?: number;
+      readonly includeInactive?: boolean;
+      readonly scope?: "all" | LongTermMemoryScope;
+    },
   ) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
   /** A returned read_memory result counts as one genuine recall per memory and turn. */
   recordMemoryRecall?: (memoryIds: readonly string[]) => void;
   recordCommand?: (entry: CommandAuditEntry) => void;
-  attachImage?: (input: {
-    absolutePath: string;
-    sourceName?: string;
-  }) => Promise<ImageAttachment>;
+  attachImage?: (input: { absolutePath: string; sourceName?: string }) => Promise<ImageAttachment>;
 }
 
 export interface AgentTool {
@@ -555,8 +567,13 @@ export interface AgentTool {
   readonly definition: ToolDefinition;
   readonly mutating: boolean;
   /** Runtime adapter's actual operation when one model-facing tool dispatches multiple operations. */
-  readonly approvalTarget?: (input: unknown) => { name: string; label: string; description?: string;
-    input?: unknown; contractHash?: string };
+  readonly approvalTarget?: (input: unknown) => {
+    name: string;
+    label: string;
+    description?: string;
+    input?: unknown;
+    contractHash?: string;
+  };
   /** Built-ins receive Runtime-owned metadata; every external tool must provide it. */
   readonly metadata?: Readonly<ToolRuntimeMetadata>;
   /** Optional when validation is performed by a built-in or adapter-owned boundary. */
@@ -588,13 +605,7 @@ export interface CommandAuditEntry {
   program: string;
   args: string[];
   cwd: string;
-  status:
-    | "exited"
-    | "timed_out"
-    | "canceled"
-    | "spawn_failed"
-    | "policy_denied"
-    | "sandbox_unavailable";
+  status: "exited" | "timed_out" | "canceled" | "spawn_failed" | "policy_denied" | "sandbox_unavailable";
   exitCode: number | null;
   durationMs: number;
   timestamp: string;
@@ -682,16 +693,9 @@ export interface WorktreeExecutionEnvironmentSnapshot extends ExecutionEnvironme
   pathLayoutVersion: 2;
 }
 
-export type ExecutionEnvironmentSnapshot =
-  | SharedExecutionEnvironmentSnapshot
-  | WorktreeExecutionEnvironmentSnapshot;
+export type ExecutionEnvironmentSnapshot = SharedExecutionEnvironmentSnapshot | WorktreeExecutionEnvironmentSnapshot;
 
-export type ResultArtifactStatus =
-  | "ready"
-  | "integrated"
-  | "conflicted"
-  | "delivered"
-  | "retained";
+export type ResultArtifactStatus = "ready" | "integrated" | "conflicted" | "delivered" | "retained";
 
 /** Runtime-created code result. The model cannot invent or edit these fields. */
 export interface ResultArtifact {
@@ -798,10 +802,7 @@ interface SubagentAssignmentSnapshotBase {
 
 /** Durable, Runtime-issued child binding. It never contains the child's private context. */
 export type SubagentAssignmentSnapshot = SubagentAssignmentSnapshotBase &
-  (
-    | { kind: "dag"; taskGraphId: string }
-    | { kind: "standalone"; taskGraphId?: never }
-  );
+  ({ kind: "dag"; taskGraphId: string } | { kind: "standalone"; taskGraphId?: never });
 
 export type SubagentLifecycleUpdate =
   | { action: "activate"; agentId: string }
@@ -889,11 +890,7 @@ export interface TurnSteeringBatch {
   message: Extract<ChatMessage, { role: "user" }>;
 }
 
-export type TurnSteeringBoundary =
-  | "before_model"
-  | "after_model"
-  | "between_tools"
-  | "before_final";
+export type TurnSteeringBoundary = "before_model" | "after_model" | "between_tools" | "before_final";
 
 export interface SessionState {
   /** Review events are authoritative; never reconstructed from a prose summary. */
@@ -996,7 +993,18 @@ export interface AgentRunResult {
     obligations?: import("../runtime/completion-gate.js").CompletionObligation[];
   };
   /** A recoverable control-plane failure, not evidence that the coding task failed. */
-  failure?: { code: "command_environment_quarantined" | "context_compaction_failed" | "context_capacity_insufficient" | "context_capacity_exhausted" | "tool_protocol_failed" | "task_budget_exhausted"; tool: string; attempts: number; recoverable: true };
+  failure?: {
+    code:
+      | "command_environment_quarantined"
+      | "context_compaction_failed"
+      | "context_capacity_insufficient"
+      | "context_capacity_exhausted"
+      | "tool_protocol_failed"
+      | "task_budget_exhausted";
+    tool: string;
+    attempts: number;
+    recoverable: true;
+  };
   steps: number;
   threadId: string;
   turnId: string;

@@ -1,9 +1,6 @@
 import { z } from "zod";
 
-import {
-  THINKING_EFFORTS,
-  type EasyCodeConfig,
-} from "../core/types.js";
+import { THINKING_EFFORTS, type EasyCodeConfig } from "../core/types.js";
 import { isProviderName } from "../models/catalog.js";
 import { runtimeLimitsSchema } from "./runtime-limits.js";
 

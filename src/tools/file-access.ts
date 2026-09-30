@@ -22,7 +22,10 @@ function comparable(filename: string): string {
 }
 
 export async function resolveExistingFileToolTarget(
-  manager: WorkspaceManager, _context: ToolContext, input: string, options: ResolveExistingOptions = {},
+  manager: WorkspaceManager,
+  _context: ToolContext,
+  input: string,
+  options: ResolveExistingOptions = {},
 ): Promise<FileToolTarget> {
   if (input.startsWith("thread-resource://")) {
     throw new Error("Thread resources are immutable; only read_file may access an authorized resource URI.");
@@ -33,7 +36,9 @@ export async function resolveExistingFileToolTarget(
 }
 
 export async function resolveCreateFileToolTarget(
-  manager: WorkspaceManager, _context: ToolContext, input: string,
+  manager: WorkspaceManager,
+  _context: ToolContext,
+  input: string,
 ): Promise<FileToolTarget> {
   if (input.startsWith("thread-resource://")) {
     throw new Error("Thread resources are immutable and cannot be created, updated, or deleted.");
@@ -55,20 +60,33 @@ export async function prepareCreateFileToolTarget(context: ToolContext, target: 
 }
 
 export function recordFileToolRead(
-  manager: WorkspaceManager, target: FileToolTarget, hash: string, _context: ToolContext,
-): FileVersion { return manager.recordRead(workspacePath(target), hash); }
+  manager: WorkspaceManager,
+  target: FileToolTarget,
+  hash: string,
+  _context: ToolContext,
+): FileVersion {
+  return manager.recordRead(workspacePath(target), hash);
+}
 
 export function getFileToolReadVersion(
-  manager: WorkspaceManager, target: FileToolTarget, _context: ToolContext,
-): FileVersion | undefined { return manager.getReadVersion(workspacePath(target)); }
+  manager: WorkspaceManager,
+  target: FileToolTarget,
+  _context: ToolContext,
+): FileVersion | undefined {
+  return manager.getReadVersion(workspacePath(target));
+}
 
 export function invalidateFileToolReadVersion(manager: WorkspaceManager, target: FileToolTarget): void {
   manager.invalidateReadVersion(workspacePath(target));
 }
 
 export async function refreshWorkspaceForFileToolTarget(
-  manager: WorkspaceManager, target: FileToolTarget, state?: VerifiedWorkspaceFileState,
-): Promise<void> { manager.updateManifestForVerifiedFile(workspacePath(target), state); }
+  manager: WorkspaceManager,
+  target: FileToolTarget,
+  state?: VerifiedWorkspaceFileState,
+): Promise<void> {
+  manager.updateManifestForVerifiedFile(workspacePath(target), state);
+}
 
 /** Workspace mutations are serialized by the shared Runtime workspace lock. */
 export async function acquireHostFileMutationLock(target: FileToolTarget, signal?: AbortSignal): Promise<() => void> {

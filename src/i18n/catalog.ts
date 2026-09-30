@@ -154,7 +154,8 @@ const en_us = {
   "ui.mcpWorking": "Working with the MCP server…",
   "ui.mcpHint": "Choose a configured server to inspect or manage it.",
   "ui.toolsMatch": "{count} matching tools · page {page} / {pages}",
-  "ui.commandHelpHint": "Model, approval, DAG/agents, images, projects and conversations have dedicated controls in the page.",
+  "ui.commandHelpHint":
+    "Model, approval, DAG/agents, images, projects and conversations have dedicated controls in the page.",
   "ui.revokePrompt": "Revoke this Thread grant?\n{prefix}",
   "ui.revokeTitle": "Revoke permission",
   "ui.selectMode": "Select mode",
@@ -188,7 +189,8 @@ const en_us = {
   "ui.filesUnchanged": "Project files will not be changed.",
   "ui.deleteConversationQuestion": "Delete conversation?",
   "ui.keepConversation": "Keep conversation",
-  "ui.removeProjectBody": "This project will be removed from EASY CODE along with its conversations and associated memories.",
+  "ui.removeProjectBody":
+    "This project will be removed from EASY CODE along with its conversations and associated memories.",
   "ui.folderUnchanged": "The folder and its source files will not be deleted.",
   "ui.removeProjectQuestion": "Remove project?",
   "ui.keepProject": "Keep project",
@@ -234,14 +236,16 @@ const en_us = {
   "cli.resumedThread": "Conversation restored.",
   "cli.createdThread": "New conversation created.",
   "cli.childrenPaused": "Some child agents are paused until an approval mode that permits orchestration is selected.",
-  "cli.previousTurnInterrupted": "The previous task was interrupted. Completed work was preserved; send a continuation request to resume.",
+  "cli.previousTurnInterrupted":
+    "The previous task was interrupted. Completed work was preserved; send a continuation request to resume.",
   "cli.planExecuting": "Executing the approved plan.",
   "cli.planApprovedCode": "Plan approved; mode is Code.",
   "cli.planRejected": "Plan rejected.",
   "cli.imagesCleared": "Cleared {count} queued image(s).",
   "cli.imageQueued": "Queued {label} from the clipboard.",
   "cli.selectApproval": "Select command execution mode",
-  "cli.manualApprovalDetail": "Every new command asks you; thread permission prefixes apply. Disables orchestration when idle.",
+  "cli.manualApprovalDetail":
+    "Every new command asks you; thread permission prefixes apply. Disables orchestration when idle.",
   "cli.autoApprove": "Approve for me",
   "cli.autoApproveDetail": "Independent approval agent; rejected or unavailable reviews come to you",
   "cli.fullAccessDetail": "No command sandbox or approval prompts; commands run with your system account permissions",
@@ -278,20 +282,24 @@ const en_us = {
   "cli.providerSwitched": "Provider switched to {provider} / {model} / thinking {effort}{suffix}",
   "cli.modelSwitched": "Model switched to {provider} / {model} / thinking {effort}{suffix}",
   "cli.notAppliedSuffix": " (saved, not applied)",
-  "cli.imagesUnsupported": "{count} queued image(s) remain attached, but this model cannot receive them. Choose an image-capable model before submitting the task.",
+  "cli.imagesUnsupported":
+    "{count} queued image(s) remain attached, but this model cannot receive them. Choose an image-capable model before submitting the task.",
   "cli.missingApiKey": "No API key is configured for {provider}.",
   "cli.enterApiKey": "Enter the {provider} API key (characters shown as dots): ",
   "cli.apiKeyCanceled": "API key input canceled.",
   "cli.apiKeySaved": "Saved {key} to the operating system credential store.",
-  "cli.fullAccessWarning": "FULL ACCESS: commands can read/write host files and use networking with your account privileges, without individual approval. Plan does not make commands read-only.",
+  "cli.fullAccessWarning":
+    "FULL ACCESS: commands can read/write host files and use networking with your account privileges, without individual approval. Plan does not make commands read-only.",
   "cli.fullAccessCanceled": "Full access was not enabled.",
-  "cli.fullAccessEnabled": "FULL ACCESS: host command execution without sandbox or approvals. Plan commands may write files. Use /approval to change this mode.",
+  "cli.fullAccessEnabled":
+    "FULL ACCESS: host command execution without sandbox or approvals. Plan commands may write files. Use /approval to change this mode.",
   "cli.manualRestored": "Manual approval restored; orchestration disabled.",
   "cli.manualEnabled": "Manual approval enabled; orchestration disabled.",
   "cli.autoRestored": "Independent approval agent enabled; default workspace sandbox restored.",
   "cli.autoEnabled": "Independent approval agent enabled; rejected actions will require your decision.",
   "cli.benchmarkPermissions": "Benchmark permissions are fixed: container full access, external networking disabled.",
-  "cli.activeOrchestration": "DAG/subagents have not finished. Manual approval cannot be selected until all work has ended; nothing was changed.",
+  "cli.activeOrchestration":
+    "DAG/subagents have not finished. Manual approval cannot be selected until all work has ended; nothing was changed.",
   "cli.queuedImageFile": "Queued {label}: {width}x{height} {mediaType}.",
 } as const;
 
@@ -577,9 +585,11 @@ const zh_cn: Record<keyof typeof en_us, string> = {
   "cli.enterApiKey": "输入 {provider} 的 API Key（字符会显示为圆点）：",
   "cli.apiKeyCanceled": "已取消输入 API Key。",
   "cli.apiKeySaved": "已将 {key} 保存至操作系统凭据库。",
-  "cli.fullAccessWarning": "完全访问：指令可以使用你的账户权限读写主机文件及访问网络，且不会逐条请求批准。计划模式不保证指令只读。",
+  "cli.fullAccessWarning":
+    "完全访问：指令可以使用你的账户权限读写主机文件及访问网络，且不会逐条请求批准。计划模式不保证指令只读。",
   "cli.fullAccessCanceled": "未启用完全访问。",
-  "cli.fullAccessEnabled": "完全访问已启用：主机指令不受沙箱保护，也不会逐条请求批准。计划模式下指令仍可修改文件。使用 /approval 可切换模式。",
+  "cli.fullAccessEnabled":
+    "完全访问已启用：主机指令不受沙箱保护，也不会逐条请求批准。计划模式下指令仍可修改文件。使用 /approval 可切换模式。",
   "cli.manualRestored": "已恢复手动批准；编排已关闭。",
   "cli.manualEnabled": "已启用手动批准；编排已关闭。",
   "cli.autoRestored": "已启用独立审批智能体，并恢复默认工作区沙箱。",
@@ -590,11 +600,15 @@ const zh_cn: Record<keyof typeof en_us, string> = {
 };
 
 export type MessageKey = keyof typeof en_us;
-export function translate(language: Language, key: MessageKey,
-  params: Readonly<Record<string, string | number>> = {}): string {
+export function translate(
+  language: Language,
+  key: MessageKey,
+  params: Readonly<Record<string, string | number>> = {},
+): string {
   const template = (language === "zh_cn" ? zh_cn : en_us)[key];
   return template.replace(/\{([a-zA-Z]+)\}/gu, (match, name: string) =>
-    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match);
+    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match,
+  );
 }
 
 export function languageName(language: Language): string {

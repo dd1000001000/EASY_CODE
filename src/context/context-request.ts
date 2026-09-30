@@ -4,7 +4,10 @@ import { runtimeContinuityMessage } from "./runtime-state.js";
 import { reconciliationPending } from "./reconciliation.js";
 
 export interface NormalRequestEnvelope {
-  systemPrompt: string; runtimeContext: string; tools: readonly ToolDefinition[]; reservedTokens?: number;
+  systemPrompt: string;
+  runtimeContext: string;
+  tools: readonly ToolDefinition[];
+  reservedTokens?: number;
 }
 
 /** Same unabridged projection used for normal token-managed requests. */
@@ -12,7 +15,8 @@ export function exactContext(state: Readonly<SessionState>, envelope: NormalRequ
   return [
     { role: "system", content: envelope.systemPrompt },
     ...shortTermMessages(state),
-    ...[runtimeContinuityMessage(state), reconciliationPending(state) ? "" : envelope.runtimeContext].filter(Boolean)
+    ...[runtimeContinuityMessage(state), reconciliationPending(state) ? "" : envelope.runtimeContext]
+      .filter(Boolean)
       .map((content): ChatMessage => ({ role: "user", content })),
   ];
 }

@@ -29,22 +29,51 @@ export class UnrestrictedHostBackend implements CommandExecutionBackend {
   }
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
-    if (!request.hostExecutionAuthorized || request.context.signal?.aborted || request.policyDecision.effect !== "allow") throw new Error("Host execution is not authorized");
+    if (
+      !request.hostExecutionAuthorized ||
+      request.context.signal?.aborted ||
+      request.policyDecision.effect !== "allow"
+    )
+      throw new Error("Host execution is not authorized");
     const command = request.command;
     if (process.platform === "win32") {
       const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-host-command-"));
       const payloadPath = path.join(root, "payload.json");
       const limits = request.context.limits ?? DEFAULT_RUNTIME_LIMITS;
       try {
-        await writeFile(payloadPath, JSON.stringify({ commandId: request.commandId,
-          startupMs: limits.sandboxStartupWindowsMs, cleanupMs: limits.sandboxCleanupTimeoutMs,
-          target: command }), { mode: 0o600 });
-      } catch (error) { await rm(root, { recursive: true, force: true }); throw error; }
-      return { executablePath: process.execPath, args: [fileURLToPath(new URL("../command/host-worker.js", import.meta.url)), payloadPath],
-        cwdAbsolute: command.cwdAbsolute, environment: { ...command.environment }, controlPipe: true,
-        metadata: { ...HOST_METADATA }, cleanup: async () => { await rm(root, { recursive: true, force: true }); } };
+        await writeFile(
+          payloadPath,
+          JSON.stringify({
+            commandId: request.commandId,
+            startupMs: limits.sandboxStartupWindowsMs,
+            cleanupMs: limits.sandboxCleanupTimeoutMs,
+            target: command,
+          }),
+          { mode: 0o600 },
+        );
+      } catch (error) {
+        await rm(root, { recursive: true, force: true });
+        throw error;
+      }
+      return {
+        executablePath: process.execPath,
+        args: [fileURLToPath(new URL("../command/host-worker.js", import.meta.url)), payloadPath],
+        cwdAbsolute: command.cwdAbsolute,
+        environment: { ...command.environment },
+        controlPipe: true,
+        metadata: { ...HOST_METADATA },
+        cleanup: async () => {
+          await rm(root, { recursive: true, force: true });
+        },
+      };
     }
-    return { executablePath: command.executablePath, args: [...command.args], cwdAbsolute: command.cwdAbsolute,
-      environment: { ...command.environment }, metadata: { ...HOST_METADATA }, cleanup: async () => undefined };
+    return {
+      executablePath: command.executablePath,
+      args: [...command.args],
+      cwdAbsolute: command.cwdAbsolute,
+      environment: { ...command.environment },
+      metadata: { ...HOST_METADATA },
+      cleanup: async () => undefined,
+    };
   }
 }

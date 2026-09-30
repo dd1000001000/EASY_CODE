@@ -29,9 +29,10 @@ import { describe, it } from "./harness.js";
 
 describe("user model registry", () => {
   it("loads providers, models, capabilities, endpoints and benchmark profile from TOML", () => {
-    assert.deepEqual(PROVIDER_CATALOG.map((entry) => entry.provider), [
-      "qwen", "deepseek", "kimi", "glm", "glm-coding-plan",
-    ]);
+    assert.deepEqual(
+      PROVIDER_CATALOG.map((entry) => entry.provider),
+      ["qwen", "deepseek", "kimi", "glm", "glm-coding-plan"],
+    );
     assert.equal(providerCatalogEntry("kimi").wireApi, "chat_completions");
     assert.equal(providerCatalogEntry("kimi").supportsStreaming, true);
     assert.equal(providerCatalogEntry("kimi").supportsStreamUsage, false);
@@ -90,19 +91,30 @@ reasoning = true
   });
 
   it("rejects unknown fields, unknown providers, insecure endpoints and duplicate wire ids", () => {
-    assert.throws(() => parseModelCatalog(PACKAGED_MODEL_REGISTRY_SOURCE.replace(
-      'wire_api = "chat_completions"',
-      'wire_api = "unknown"',
-    )), /wire_api/u);
-    assert.throws(() => parseModelCatalog(PACKAGED_MODEL_REGISTRY_SOURCE.replace(
-      'base_url = "https://api.deepseek.com"',
-      'base_url = "http://api.deepseek.com"',
-    )), /base_url/u);
-    assert.throws(() => parseModelCatalog(PACKAGED_MODEL_REGISTRY_SOURCE.replace(
-      'provider = "deepseek"',
-      'provider = "missing"',
-    )), /unknown provider/u);
-    assert.throws(() => parseModelCatalog(`schema_version = 1
+    assert.throws(
+      () =>
+        parseModelCatalog(
+          PACKAGED_MODEL_REGISTRY_SOURCE.replace('wire_api = "chat_completions"', 'wire_api = "unknown"'),
+        ),
+      /wire_api/u,
+    );
+    assert.throws(
+      () =>
+        parseModelCatalog(
+          PACKAGED_MODEL_REGISTRY_SOURCE.replace(
+            'base_url = "https://api.deepseek.com"',
+            'base_url = "http://api.deepseek.com"',
+          ),
+        ),
+      /base_url/u,
+    );
+    assert.throws(
+      () => parseModelCatalog(PACKAGED_MODEL_REGISTRY_SOURCE.replace('provider = "deepseek"', 'provider = "missing"')),
+      /unknown provider/u,
+    );
+    assert.throws(
+      () =>
+        parseModelCatalog(`schema_version = 1
 default_model = "custom-default"
 [providers.custom]
 name = "Custom"
@@ -116,7 +128,9 @@ name = "Custom Coder"
 provider = "custom"
 model = "coder-1"
 input_modalities = ["text"]
-`), /tool_stream/u);
+`),
+      /tool_stream/u,
+    );
   });
 
   it("creates the fixed user file once and never overwrites it", async () => {
@@ -151,9 +165,15 @@ input_modalities = ["text"]
       label: "Image #1",
       mediaType: "image/png" as const,
       storageKey: "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000001.png",
-      sha256: "0".repeat(64), byteSize: 128, width: 16, height: 16,
+      sha256: "0".repeat(64),
+      byteSize: 128,
+      width: 16,
+      height: 16,
     };
     assert.doesNotThrow(() => validateProviderImageAttachments("qwen", [image]));
-    assert.throws(() => validateProviderImageAttachments("qwen", [{ ...image, width: 10 }]), /at least 11 pixels wide/u);
+    assert.throws(
+      () => validateProviderImageAttachments("qwen", [{ ...image, width: 10 }]),
+      /at least 11 pixels wide/u,
+    );
   });
 });

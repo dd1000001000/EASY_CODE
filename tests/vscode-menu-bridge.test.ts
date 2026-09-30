@@ -15,11 +15,7 @@ class FakeSocket extends Duplex {
 
   _read(): void {}
 
-  _write(
-    chunk: Buffer | string,
-    _encoding: BufferEncoding,
-    callback: (error?: Error | null) => void,
-  ): void {
+  _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
     this.outgoing += chunk.toString();
     callback();
   }
@@ -219,10 +215,7 @@ describe("VS Code out-of-band menu navigation", () => {
         [VSCODE_BRIDGE_TOKEN_ENV]: "not-a-token",
       },
     ]) {
-      assert.equal(
-        createVsCodeMenuBridge({ environment, connect }),
-        undefined,
-      );
+      assert.equal(createVsCodeMenuBridge({ environment, connect }), undefined);
     }
   });
 });

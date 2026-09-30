@@ -4,15 +4,9 @@ import os from "node:os";
 import path from "node:path";
 
 import type { SessionState } from "../src/core/types.js";
-import {
-  createProgressGuardState,
-  foldProgressObservation,
-} from "../src/progress/guard.js";
+import { createProgressGuardState, foldProgressObservation } from "../src/progress/guard.js";
 import { parseProgressObservation } from "../src/progress/observation.js";
-import type {
-  ProgressGuardState,
-  ProgressObservation,
-} from "../src/progress/types.js";
+import type { ProgressGuardState, ProgressObservation } from "../src/progress/types.js";
 import { createStorage } from "../src/storage/index.js";
 import { ThreadStore } from "../src/threads/index.js";
 import { describe, it } from "./harness.js";
@@ -21,8 +15,7 @@ const THREAD_ID = "thread_progress_recovery";
 const SCOPE_KEY = `thread:${THREAD_ID}/turn:turn_progress_recovery`;
 const TARGET_KEY = "test:progress-recovery";
 const OUTCOME_KEY = "test-failure:assertion";
-const TRUNCATED_TOOL_MESSAGE =
-  '{"ok":false,"summary":"failed","data":{"truncated":true,"originalChars":999999}}';
+const TRUNCATED_TOOL_MESSAGE = '{"ok":false,"summary":"failed","data":{"truncated":true,"originalChars":999999}}';
 
 type SessionWithProgress = SessionState & {
   progressGuard?: ProgressGuardState;
@@ -151,9 +144,7 @@ describe("ProgressGuard journal recovery", () => {
       const recovered = threads.recover(THREAD_ID);
       assert.deepEqual(recoveredProgress(recovered), expectedAfter([observation]));
       assert.equal(
-        recovered.messages.some(
-          (message) => message.role === "tool" && message.content === TRUNCATED_TOOL_MESSAGE,
-        ),
+        recovered.messages.some((message) => message.role === "tool" && message.content === TRUNCATED_TOOL_MESSAGE),
         true,
       );
     } finally {
@@ -229,51 +220,57 @@ describe("ProgressGuard journal recovery", () => {
       const initialEventCount = threads.journal(THREAD_ID).read().length;
 
       assert.throws(
-        () => appendObservation(threads, {
-          eventId,
-          callId,
-          observation: { ...valid, schemaVersion: 2 },
-        }),
+        () =>
+          appendObservation(threads, {
+            eventId,
+            callId,
+            observation: { ...valid, schemaVersion: 2 },
+          }),
         /ProgressObservation/u,
       );
       assert.throws(
-        () => appendObservation(threads, {
-          eventId,
-          callId,
-          observation: { ...valid, sourceEventId: "event_progress_wrong" },
-        }),
+        () =>
+          appendObservation(threads, {
+            eventId,
+            callId,
+            observation: { ...valid, sourceEventId: "event_progress_wrong" },
+          }),
         /sourceEventId/u,
       );
       assert.throws(
-        () => appendObservation(threads, {
-          eventId,
-          callId,
-          observation: { ...valid, sourceCallId: "call_progress_wrong" },
-        }),
+        () =>
+          appendObservation(threads, {
+            eventId,
+            callId,
+            observation: { ...valid, sourceCallId: "call_progress_wrong" },
+          }),
         /sourceCallId/u,
       );
       assert.throws(
-        () => appendObservation(threads, {
-          eventId,
-          callId,
-          observation: { ...valid, tool: "read_file" },
-        }),
+        () =>
+          appendObservation(threads, {
+            eventId,
+            callId,
+            observation: { ...valid, tool: "read_file" },
+          }),
         /tool/u,
       );
       assert.throws(
-        () => appendObservation(threads, {
-          eventId,
-          callId,
-          observation: { ...valid, scopeKey: "thread:other/turn:turn_progress_recovery" },
-        }),
+        () =>
+          appendObservation(threads, {
+            eventId,
+            callId,
+            observation: { ...valid, scopeKey: "thread:other/turn:turn_progress_recovery" },
+          }),
         /scope/u,
       );
       assert.throws(
-        () => parseProgressObservation(valid, {
-          sourceEventId: eventId,
-          sourceCallId: callId,
-          commandId: commandId(4),
-        }),
+        () =>
+          parseProgressObservation(valid, {
+            sourceEventId: eventId,
+            sourceCallId: callId,
+            commandId: commandId(4),
+          }),
         /commandId/u,
       );
       assert.equal(
@@ -317,5 +314,4 @@ describe("ProgressGuard journal recovery", () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
-
 });

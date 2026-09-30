@@ -20,27 +20,16 @@ describe("worktree path policy", () => {
   });
 
   it("does not apply the Windows compatibility limit on other platforms", () => {
-    const assessment = assessWorktreePaths(
-      "/tmp/easy-code/worktree",
-      [`nested/${"x".repeat(300)}.py`],
-      "linux",
-    );
+    const assessment = assessWorktreePaths("/tmp/easy-code/worktree", [`nested/${"x".repeat(300)}.py`], "linux");
     assert.equal(assessment.safe, true);
   });
 
   it("rejects repository paths that escape the checkout root", () => {
-    assert.throws(
-      () => assessWorktreePaths("C:\\ec\\wt", ["../outside.txt"], "win32"),
-      /unsafe Worktree path/u,
-    );
+    assert.throws(() => assessWorktreePaths("C:\\ec\\wt", ["../outside.txt"], "win32"), /unsafe Worktree path/u);
   });
 
   it("provides a structured actionable error", () => {
-    const assessment = assessWorktreePaths(
-      "C:\\ec\\wt",
-      [`nested/${"x".repeat(240)}.py`],
-      "win32",
-    );
+    const assessment = assessWorktreePaths("C:\\ec\\wt", [`nested/${"x".repeat(240)}.py`], "win32");
     const error = new WorktreePathTooLongError(assessment);
     assert.equal(error.name, "WorktreePathTooLongError");
     assert.equal(error.assessment, assessment);

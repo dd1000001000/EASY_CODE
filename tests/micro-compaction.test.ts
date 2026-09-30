@@ -15,11 +15,13 @@ function call(id: string, name: string): ChatMessage {
   return {
     role: "assistant",
     content: null,
-    tool_calls: [{
-      id,
-      type: "function",
-      function: { name, arguments: "{}" },
-    }],
+    tool_calls: [
+      {
+        id,
+        type: "function",
+        function: { name, arguments: "{}" },
+      },
+    ],
   };
 }
 
@@ -99,9 +101,8 @@ describe("MicroCompaction", () => {
     );
     assert.deepEqual(
       projected.flatMap((message) =>
-        message.role === "assistant"
-          ? (message.tool_calls ?? []).map((toolCall) => toolCall.id)
-          : []),
+        message.role === "assistant" ? (message.tool_calls ?? []).map((toolCall) => toolCall.id) : [],
+      ),
       ["call_read"],
     );
   });
@@ -254,11 +255,12 @@ describe("MicroCompaction", () => {
         data: testCase.data,
         padding: "x".repeat(MICRO_COMPACTION_MIN_TOOL_RESULT_CHARS),
       });
-      const reference = microCompactToolResults([
-        call(`call_${index}`, testCase.name),
-        { role: "tool", tool_call_id: `call_${index}`, name: testCase.name, content: payload },
-        { role: "assistant", content: "consumed" },
-      ])[1]?.content ?? "";
+      const reference =
+        microCompactToolResults([
+          call(`call_${index}`, testCase.name),
+          { role: "tool", tool_call_id: `call_${index}`, name: testCase.name, content: payload },
+          { role: "assistant", content: "consumed" },
+        ])[1]?.content ?? "";
       if (["manage_tasks", "manage_subagents", "submit_task_result"].includes(testCase.name)) {
         assert.equal(reference, payload);
       } else {
@@ -270,11 +272,12 @@ describe("MicroCompaction", () => {
 
   it("uses an opaque non-JSON synopsis without echoing malformed tool output", () => {
     const content = `not-json password=super-secret-value ${"x".repeat(MICRO_COMPACTION_MIN_TOOL_RESULT_CHARS)}`;
-    const reference = microCompactToolResults([
-      call("call_bad", "read_file"),
-      { role: "tool", tool_call_id: "call_bad", name: "read_file", content },
-      { role: "assistant", content: "consumed" },
-    ])[1]?.content ?? "";
+    const reference =
+      microCompactToolResults([
+        call("call_bad", "read_file"),
+        { role: "tool", tool_call_id: "call_bad", name: "read_file", content },
+        { role: "assistant", content: "consumed" },
+      ])[1]?.content ?? "";
 
     assert.match(reference, /kind=opaque/u);
     assert.match(reference, /format=non_json/u);
@@ -313,15 +316,10 @@ describe("MicroCompaction", () => {
     const before = structuredClone(messages);
 
     const built = manager.build({ systemPrompt: "system", state, maxContextChars: 50_000 });
-    const projectedResult = built.find(
-      (message) => message.role === "tool" && message.tool_call_id === "call_read",
-    );
+    const projectedResult = built.find((message) => message.role === "tool" && message.tool_call_id === "call_read");
 
     assert.equal(projectedResult?.role, "tool");
-    assert.equal(
-      projectedResult?.content.startsWith(MICRO_COMPACTION_PLACEHOLDER_PREFIX),
-      false,
-    );
+    assert.equal(projectedResult?.content.startsWith(MICRO_COMPACTION_PLACEHOLDER_PREFIX), false);
     assert.equal(projectedResult?.content, oldContent);
     assert.ok(manager.estimateShortTermChars(state) >= oldContent.length);
     assert.deepEqual(state.messages, before);
@@ -351,10 +349,7 @@ describe("MicroCompaction", () => {
       projected[1]?.role === "assistant" ? projected[1].reasoning_content : undefined,
       "old private reasoning",
     );
-    assert.equal(
-      projected[3]?.role === "assistant" ? projected[3].reasoning_content : undefined,
-      "answer reasoning",
-    );
+    assert.equal(projected[3]?.role === "assistant" ? projected[3].reasoning_content : undefined, "answer reasoning");
     assert.equal(
       projected[5]?.role === "assistant" ? projected[5].reasoning_content : undefined,
       "active tool reasoning",
@@ -376,9 +371,7 @@ describe("MicroCompaction", () => {
 
     const projected = projectModelInputMessages(messages);
     assert.equal(
-      projected.some((message) =>
-        message.role === "assistant" && message.reasoning_content !== undefined
-      ),
+      projected.some((message) => message.role === "assistant" && message.reasoning_content !== undefined),
       true,
     );
   });
@@ -397,55 +390,44 @@ describe("MicroCompaction", () => {
     const built = manager.build({ systemPrompt: "system", state, maxContextChars: 100_000 });
     const assistant = built.find((message) => message.role === "assistant");
     assert.equal(assistant?.role, "assistant");
-    assert.equal(
-      assistant?.role === "assistant" ? assistant.reasoning_content : undefined,
-      consumedReasoning,
-    );
-    assert.equal(messages[1]?.role === "assistant" ? messages[1].reasoning_content : undefined,
-      consumedReasoning);
+    assert.equal(assistant?.role === "assistant" ? assistant.reasoning_content : undefined, consumedReasoning);
+    assert.equal(messages[1]?.role === "assistant" ? messages[1].reasoning_content : undefined, consumedReasoning);
   });
 
   it("reports mandatory pressure to Runtime rather than truncating active thinking", () => {
     const activeCall = call("call_active", "run_command");
     if (activeCall.role !== "assistant") throw new Error("expected assistant call");
     activeCall.reasoning_content = "reasoning".repeat(2_000);
-    const state = stateWith([
-      { role: "user", content: "run the verification" },
-      activeCall,
-    ]);
+    const state = stateWith([{ role: "user", content: "run the verification" }, activeCall]);
     const manager = new ContextManager();
     const pressured = manager.build({
       systemPrompt: "system",
       state,
       maxContextChars: 4_096,
     });
-    assert.equal(manager.inspectProviderRequest({ state, messages: pressured,
-      tools: [], maxContextChars: 4_096 }).pressure, "force");
-    assert.ok(pressured.some((message) => message.role === "assistant" &&
-      message.reasoning_content === activeCall.reasoning_content));
+    assert.equal(
+      manager.inspectProviderRequest({ state, messages: pressured, tools: [], maxContextChars: 4_096 }).pressure,
+      "force",
+    );
+    assert.ok(
+      pressured.some(
+        (message) => message.role === "assistant" && message.reasoning_content === activeCall.reasoning_content,
+      ),
+    );
     const built = new ContextManager().build({ systemPrompt: "system", state, maxContextChars: 30_000 });
-    const projectedCall = built.find((message) =>
-      message.role === "assistant" && message.tool_calls?.[0]?.id === "call_active"
+    const projectedCall = built.find(
+      (message) => message.role === "assistant" && message.tool_calls?.[0]?.id === "call_active",
     );
     const requestChars = built.reduce((total, message) => {
-      const toolCalls = message.role === "assistant" && message.tool_calls
-        ? JSON.stringify(message.tool_calls).length
-        : 0;
-      const reasoning = message.role === "assistant"
-        ? message.reasoning_content?.length ?? 0
-        : 0;
+      const toolCalls =
+        message.role === "assistant" && message.tool_calls ? JSON.stringify(message.tool_calls).length : 0;
+      const reasoning = message.role === "assistant" ? (message.reasoning_content?.length ?? 0) : 0;
       return total + (message.content?.length ?? 0) + toolCalls + reasoning + 32;
     }, 0);
 
     assert.equal(projectedCall?.role, "assistant");
-    assert.ok(
-      projectedCall?.role === "assistant" &&
-      (projectedCall.reasoning_content?.length ?? 0) > 0,
-    );
-    assert.ok(
-      projectedCall?.role === "assistant" &&
-      projectedCall.reasoning_content === activeCall.reasoning_content,
-    );
+    assert.ok(projectedCall?.role === "assistant" && (projectedCall.reasoning_content?.length ?? 0) > 0);
+    assert.ok(projectedCall?.role === "assistant" && projectedCall.reasoning_content === activeCall.reasoning_content);
     assert.ok(requestChars <= 30_000);
   });
 });

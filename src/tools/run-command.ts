@@ -1,10 +1,5 @@
 import { z } from "zod";
-import type {
-  AgentTool,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import { CommandRuntime } from "../command/runtime.js";
 import { normalizeCommandRequest } from "../command/normalize-request.js";
 import { formatCommandTimeoutBudget } from "../command/timeout.js";
@@ -14,10 +9,7 @@ import type {
   CommandFailureKind,
   PollCommandInput,
 } from "../command/types.js";
-import {
-  COMMAND_INTENTS,
-  VERIFICATION_KINDS,
-} from "../command/types.js";
+import { COMMAND_INTENTS, VERIFICATION_KINDS } from "../command/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
@@ -41,19 +33,25 @@ const commandInvocationObjectSchema = z
 const commandHandleSchema = z.string().regex(/^command_[0-9a-f-]{36}$/u);
 
 export const runCommandInputSchema = commandInvocationObjectSchema.transform(normalizeCommandRequest);
-export const startCommandInputSchema = commandInvocationObjectSchema.extend({
-  backgroundKind: z.enum(["job", "service"]).optional().default("job"),
-}).transform(({ backgroundKind, ...request }) => ({
-  ...normalizeCommandRequest(request),
-  backgroundKind,
-}));
-export const pollCommandInputSchema = z.object({
-  commandId: commandHandleSchema,
-  waitMs: z.number().int().min(0).max(30_000).optional(),
-}).strict();
-export const cancelCommandInputSchema = z.object({
-  commandId: commandHandleSchema,
-}).strict();
+export const startCommandInputSchema = commandInvocationObjectSchema
+  .extend({
+    backgroundKind: z.enum(["job", "service"]).optional().default("job"),
+  })
+  .transform(({ backgroundKind, ...request }) => ({
+    ...normalizeCommandRequest(request),
+    backgroundKind,
+  }));
+export const pollCommandInputSchema = z
+  .object({
+    commandId: commandHandleSchema,
+    waitMs: z.number().int().min(0).max(30_000).optional(),
+  })
+  .strict();
+export const cancelCommandInputSchema = z
+  .object({
+    commandId: commandHandleSchema,
+  })
+  .strict();
 
 function commandInvocationDefinition(includeBackgroundKind = false): Record<string, unknown> {
   return {
@@ -71,9 +69,29 @@ function commandInvocationDefinition(includeBackgroundKind = false): Record<stri
       verificationKind: { type: "string", enum: [...VERIFICATION_KINDS] },
       timeoutMs: { type: "integer", minimum: 1 },
       reason: { type: "string", maxLength: 2_000 },
-      executionScope: { type: "string", enum: ["workspace", "host"], description: "Default workspace sandbox. Request host only when this exact command needs permissions outside the workspace; approval includes this escalation. Benchmark always stays container-confined." },
-      requiredCapabilities: { type: "array", items: { type: "string", enum: [...EXECUTION_CAPABILITIES] }, maxItems: EXECUTION_CAPABILITIES.length, description: "Compatibility requirements, NOT permissions. Test/verify defaults to requiring loopback TCP for runtime IPC. Set [] only for checks known not to need IPC; otherwise request host scope with normal approval if the sandbox reports missing capabilities. Never rewrite libraries to bypass isolation." },
-      ...(includeBackgroundKind ? { backgroundKind: { type: "string", enum: ["job", "service"], description: "Default job retains the workspace mutation lock until completion. Service reserves the workspace for its agent while allowing that same agent to run dependent tools concurrently with the service; other agents remain blocked." } } : {}),
+      executionScope: {
+        type: "string",
+        enum: ["workspace", "host"],
+        description:
+          "Default workspace sandbox. Request host only when this exact command needs permissions outside the workspace; approval includes this escalation. Benchmark always stays container-confined.",
+      },
+      requiredCapabilities: {
+        type: "array",
+        items: { type: "string", enum: [...EXECUTION_CAPABILITIES] },
+        maxItems: EXECUTION_CAPABILITIES.length,
+        description:
+          "Compatibility requirements, NOT permissions. Test/verify defaults to requiring loopback TCP for runtime IPC. Set [] only for checks known not to need IPC; otherwise request host scope with normal approval if the sandbox reports missing capabilities. Never rewrite libraries to bypass isolation.",
+      },
+      ...(includeBackgroundKind
+        ? {
+            backgroundKind: {
+              type: "string",
+              enum: ["job", "service"],
+              description:
+                "Default job retains the workspace mutation lock until completion. Service reserves the workspace for its agent while allowing that same agent to run dependent tools concurrently with the service; other agents remain blocked.",
+            },
+          }
+        : {}),
     },
     required: ["program", "intent"],
   };
@@ -85,9 +103,7 @@ function commandHandleDefinition(includeWait: boolean): Record<string, unknown> 
     additionalProperties: false,
     properties: {
       commandId: { type: "string", pattern: "^command_[0-9a-f-]{36}$" },
-      ...(includeWait
-        ? { waitMs: { type: "integer", minimum: 0, maximum: 30_000 } }
-        : {}),
+      ...(includeWait ? { waitMs: { type: "integer", minimum: 0, maximum: 30_000 } } : {}),
     },
     required: ["commandId"],
   };
@@ -95,34 +111,29 @@ function commandHandleDefinition(includeWait: boolean): Record<string, unknown> 
 
 type CommandOperation = "run" | "start" | "poll" | "cancel";
 
-function commandResult(
-  output: CommandExecutionOutput,
-  operation: CommandOperation,
-  context: ToolContext,
-): ToolExecutionResult {
-  const cleanupUnsafe = output.status !== "running" && (output.lifecycle?.cleanup === "failed" || output.lifecycle?.cleanup === "unconfirmed");
+function commandResult(output: CommandExecutionOutput, operation: CommandOperation): ToolExecutionResult {
+  const cleanupUnsafe =
+    output.status !== "running" &&
+    (output.lifecycle?.cleanup === "failed" || output.lifecycle?.cleanup === "unconfirmed");
   const outputLimited = output.status !== "running" && output.lifecycle?.outcome === "output_limit";
-  const successful = !cleanupUnsafe && !outputLimited && (operation === "cancel"
-    ? output.status === "canceled" || output.status === "exited" || output.status === "timed_out"
-    : output.status === "running" || (output.status === "exited" && output.exitCode === 0 &&
-        !(output.requestMetadata?.verificationKind && output.validation?.status === "failed")));
-  const retryableSandboxFailure =
-    output.status === "sandbox_unavailable" &&
-    output.sandboxFailure?.retryable === true;
+  const successful =
+    !cleanupUnsafe &&
+    !outputLimited &&
+    (operation === "cancel"
+      ? output.status === "canceled" || output.status === "exited" || output.status === "timed_out"
+      : output.status === "running" ||
+        (output.status === "exited" &&
+          output.exitCode === 0 &&
+          !(output.requestMetadata?.verificationKind && output.validation?.status === "failed")));
+  const retryableSandboxFailure = output.status === "sandbox_unavailable" && output.sandboxFailure?.retryable === true;
   const sandboxRecovery = retryableSandboxFailure
-    ? (
-        "This is a proven-not-started transient sandbox failure. You may resubmit " +
-        `this exact ${operation === "start" ? "start_command" : "run_command"} once now; ` +
-        "Runtime applies the configured startup retry budget; it never repeats the command itself. Do not mark the task permanently " +
-        "blocked after this first failure."
-      )
-    : (
-        "Do not automatically replay this command. Report the sandbox failure and execution uncertainty; " +
-        "other independent work may continue. Child failure is reported to its parent without an automatic rerun."
-      );
-  const timeoutSummary = output.timeout
-    ? `; ${formatCommandTimeoutBudget(output.timeout)}`
-    : "";
+    ? "This is a proven-not-started transient sandbox failure. You may resubmit " +
+      `this exact ${operation === "start" ? "start_command" : "run_command"} once now; ` +
+      "Runtime applies the configured startup retry budget; it never repeats the command itself. Do not mark the task permanently " +
+      "blocked after this first failure."
+    : "Do not automatically replay this command. Report the sandbox failure and execution uncertainty; " +
+      "other independent work may continue. Child failure is reported to its parent without an automatic rerun.";
+  const timeoutSummary = output.timeout ? `; ${formatCommandTimeoutBudget(output.timeout)}` : "";
   const boundary = output.status !== "running" ? output.sandboxBoundary : undefined;
   const boundarySummary = boundary
     ? boundary.action === "adjust_command"
@@ -138,32 +149,37 @@ function commandResult(
   const policyRecovery = output.policyDecision.recommendation
     ? ` Recovery: ${output.policyDecision.recommendation}`
     : "";
-  const baseSummary = boundarySummary ?? (outputLimited ? "Command output exceeded the 32 MiB bridge limit. Cleanup and execution are reported separately; do not automatically rerun it."
-    : output.status === "running"
-    ? `Command ${output.commandId} is running; use poll_command with commandId and optional waitMs`
-    : operation === "cancel" && output.status === "canceled"
-      ? `Command ${output.commandId} canceled and its process tree terminated`
-    : output.status === "policy_denied"
-      ? `Command denied: ${output.policyDecision.reason}${policyRecovery}`
-    : output.status === "sandbox_unavailable"
-      ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}. ` +
-        `${output.lifecycle?.execution === "not_started" ? "The target process did not start." : "Execution may already have occurred; do not rerun automatically."} ${sandboxRecovery} ` +
-        (retryableSandboxFailure
-          ? ""
-          : "Run `easy-code sandbox doctor` outside the agent.")
-    : output.status === "spawn_failed"
-      ? output.lifecycle?.execution === "not_started"
-        ? `Command did not start: ${output.failure?.message ?? output.stderr.text}. Correct the executable or Windows launcher and submit a new command; Runtime did not replay it.`
-        : `Command execution could not be confirmed: ${output.failure?.message ?? output.stderr.text}`
-    : output.status === "timed_out"
-      ? "Command timed out and its process tree was terminated"
-    : output.status === "canceled"
-      ? `Command ${output.commandId} canceled and its process tree terminated`
-    : `Command exited with code ${output.exitCode}` +
-      (output.requestMetadata?.verificationKind && output.validation
-        ? `; validation ${output.validation.status}: ${output.validation.reason}` +
-          (output.validation.standard?.status === "changed" ? "; original tests/configuration changed: this result cannot resolve the original failure" :
-            output.validation.standard?.status === "unknown" ? "; original-test coverage was not established (report only the checks actually run)" : "") : ""));
+  const baseSummary =
+    boundarySummary ??
+    (outputLimited
+      ? "Command output exceeded the 32 MiB bridge limit. Cleanup and execution are reported separately; do not automatically rerun it."
+      : output.status === "running"
+        ? `Command ${output.commandId} is running; use poll_command with commandId and optional waitMs`
+        : operation === "cancel" && output.status === "canceled"
+          ? `Command ${output.commandId} canceled and its process tree terminated`
+          : output.status === "policy_denied"
+            ? `Command denied: ${output.policyDecision.reason}${policyRecovery}`
+            : output.status === "sandbox_unavailable"
+              ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}. ` +
+                `${output.lifecycle?.execution === "not_started" ? "The target process did not start." : "Execution may already have occurred; do not rerun automatically."} ${sandboxRecovery} ` +
+                (retryableSandboxFailure ? "" : "Run `easy-code sandbox doctor` outside the agent.")
+              : output.status === "spawn_failed"
+                ? output.lifecycle?.execution === "not_started"
+                  ? `Command did not start: ${output.failure?.message ?? output.stderr.text}. Correct the executable or Windows launcher and submit a new command; Runtime did not replay it.`
+                  : `Command execution could not be confirmed: ${output.failure?.message ?? output.stderr.text}`
+                : output.status === "timed_out"
+                  ? "Command timed out and its process tree was terminated"
+                  : output.status === "canceled"
+                    ? `Command ${output.commandId} canceled and its process tree terminated`
+                    : `Command exited with code ${output.exitCode}` +
+                      (output.requestMetadata?.verificationKind && output.validation
+                        ? `; validation ${output.validation.status}: ${output.validation.reason}` +
+                          (output.validation.standard?.status === "changed"
+                            ? "; original tests/configuration changed: this result cannot resolve the original failure"
+                            : output.validation.standard?.status === "unknown"
+                              ? "; original-test coverage was not established (report only the checks actually run)"
+                              : "")
+                        : ""));
   const summary = cleanupUnsafe
     ? `${baseSummary}; cleanup is not confirmed. Do not rerun the command. The execution environment is quarantined.${timeoutSummary}`
     : `${baseSummary}${timeoutSummary}`;
@@ -171,25 +187,43 @@ function commandResult(
     ok: successful,
     summary,
     data: output,
-    ...(cleanupUnsafe ? { failure: {
-      version: 1 as const, kind: "execution" as const, code: "command_environment_quarantined",
-      execution: "unknown" as const, recovery: "none" as const, issues: [],
-      instruction: "Pause the task. Execution and cleanup are separate outcomes; repair and verify the environment outside the agent before resuming. Do not retry commands or start review experiments.",
-    } } : boundary ? { failure: {
-      version: 1 as const, kind: "execution" as const, code: "sandbox_boundary_violation",
-      execution: "exited" as const,
-      recovery: boundary.action === "adjust_command" || boundary.action === "benchmark_allow_once" ? "adjust_request" as const
-        : boundary.action === "approved_once" || boundary.action === "approved_prefix" ? "resubmit_exact" as const : "none" as const,
-      issues: [], instruction: boundarySummary!,
-    } } : {}),
+    ...(cleanupUnsafe
+      ? {
+          failure: {
+            version: 1 as const,
+            kind: "execution" as const,
+            code: "command_environment_quarantined",
+            execution: "unknown" as const,
+            recovery: "none" as const,
+            issues: [],
+            instruction:
+              "Pause the task. Execution and cleanup are separate outcomes; repair and verify the environment outside the agent before resuming. Do not retry commands or start review experiments.",
+          },
+        }
+      : boundary
+        ? {
+            failure: {
+              version: 1 as const,
+              kind: "execution" as const,
+              code: "sandbox_boundary_violation",
+              execution: "exited" as const,
+              recovery:
+                boundary.action === "adjust_command" || boundary.action === "benchmark_allow_once"
+                  ? ("adjust_request" as const)
+                  : boundary.action === "approved_once" || boundary.action === "approved_prefix"
+                    ? ("resubmit_exact" as const)
+                    : ("none" as const),
+              issues: [],
+              instruction: boundarySummary!,
+            },
+          }
+        : {}),
     ...(successful ? {} : { error: summary }),
   };
 }
 
 function validationMessage(error: z.ZodError): string {
-  return error.issues
-    .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
-    .join("; ");
+  return error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; ");
 }
 
 function commandToolFailure(
@@ -247,7 +281,10 @@ export class RunCommandTool implements AgentTool {
 
   readonly runtime: CommandRuntime;
 
-  constructor(private readonly workspace: WorkspaceManager, runtime?: CommandRuntime) {
+  constructor(
+    private readonly workspace: WorkspaceManager,
+    runtime?: CommandRuntime,
+  ) {
     this.runtime = runtime ?? new CommandRuntime(workspace);
   }
 
@@ -264,7 +301,7 @@ export class RunCommandTool implements AgentTool {
     const workspaceFailure = await validateWorkspace(this.workspace, context);
     if (workspaceFailure) return workspaceFailure;
     try {
-      return commandResult(await this.runtime.run(parsed.data, context), "run", context);
+      return commandResult(await this.runtime.run(parsed.data, context), "run");
     } catch (error) {
       return commandToolFailure(error, "Unable to run command", "runtime", "runtime_error");
     }
@@ -303,7 +340,7 @@ export class StartCommandTool implements AgentTool {
     if (workspaceFailure) return workspaceFailure;
     try {
       const { backgroundKind, ...request } = parsed.data;
-      return commandResult(await this.runtime.start(request, context, backgroundKind), "start", context);
+      return commandResult(await this.runtime.start(request, context, backgroundKind), "start");
     } catch (error) {
       return commandToolFailure(error, "Unable to start command", "runtime", "runtime_error");
     }
@@ -351,9 +388,18 @@ export class PollCommandTool implements AgentTool {
       const deadline = Date.now() + Math.min(request.waitMs ?? configuredWait, configuredWait);
       let output: CommandExecutionOutput;
       do {
-        output = await this.runtime.status(request.commandId, context, Math.max(0, Math.min(30000, deadline - Date.now())));
-      } while (output.status === "running" && Date.now() < deadline && !context.waitSignal?.aborted && !context.signal?.aborted);
-      return commandResult(output, "poll", context);
+        output = await this.runtime.status(
+          request.commandId,
+          context,
+          Math.max(0, Math.min(30000, deadline - Date.now())),
+        );
+      } while (
+        output.status === "running" &&
+        Date.now() < deadline &&
+        !context.waitSignal?.aborted &&
+        !context.signal?.aborted
+      );
+      return commandResult(output, "poll");
     } catch (error) {
       return commandToolFailure(error, "Unable to poll command", "runtime", "unknown_handle");
     }
@@ -392,11 +438,7 @@ export class CancelCommandTool implements AgentTool {
     if (workspaceFailure) return workspaceFailure;
     const request: CancelCommandInput = parsed.data;
     try {
-      return commandResult(
-        await this.runtime.cancel(request.commandId, context),
-        "cancel",
-        context,
-      );
+      return commandResult(await this.runtime.cancel(request.commandId, context), "cancel");
     } catch (error) {
       return commandToolFailure(error, "Unable to cancel command", "runtime", "unknown_handle");
     }

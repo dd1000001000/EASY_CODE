@@ -4,8 +4,13 @@ import type { EasyCodeStorage } from "../storage/database.js";
 import { sha256 } from "../utils/hash.js";
 import type { ThreadLease, ThreadStore, ThreadSummary } from "./thread-store.js";
 
-interface RevisionRow { memory_id: string; first_sequence: number }
-interface SnapshotRow { snapshot_json: string }
+interface RevisionRow {
+  memory_id: string;
+  first_sequence: number;
+}
+interface SnapshotRow {
+  snapshot_json: string;
+}
 
 function removePrivateDirectory(root: string, ...parts: string[]): void {
   const target = path.resolve(root, ...parts);
@@ -16,13 +21,15 @@ function removePrivateDirectory(root: string, ...parts: string[]): void {
 }
 
 /** Delete journal-owned sessions, their private files, and every memory contribution after its first revision. */
-export function deleteStoredThreads(storage: EasyCodeStorage,
-  threads: readonly { threadId: string; workspaceId: string }[]): void {
+export function deleteStoredThreads(
+  storage: EasyCodeStorage,
+  threads: readonly { threadId: string; workspaceId: string }[],
+): void {
   if (!threads.length) return;
   for (const thread of threads) {
     if (!/^[A-Za-z0-9._-]+$/u.test(thread.threadId)) throw new Error("Invalid conversation ID.");
   }
-  const ids = threads.map(thread => thread.threadId);
+  const ids = threads.map((thread) => thread.threadId);
   storage.db.transaction(() => {
     const firstRevision = storage.db.prepare<[string], RevisionRow>(
       "SELECT memory_id, MIN(sequence) AS first_sequence FROM memory_revisions WHERE thread_id = ? GROUP BY memory_id",
@@ -35,9 +42,10 @@ export function deleteStoredThreads(storage: EasyCodeStorage,
       for (const row of firstRevision.all(id)) {
         memoryIds.set(row.memory_id, Math.min(row.first_sequence, memoryIds.get(row.memory_id) ?? Infinity));
       }
-      for (const row of storage.db.prepare<[string], { id: string }>(
-        "SELECT id FROM memories WHERE source_thread_id = ?",
-      ).all(id)) if (!memoryIds.has(row.id)) memoryIds.set(row.id, 0);
+      for (const row of storage.db
+        .prepare<[string], { id: string }>("SELECT id FROM memories WHERE source_thread_id = ?")
+        .all(id))
+        if (!memoryIds.has(row.id)) memoryIds.set(row.id, 0);
     }
     for (const [memoryId, first] of memoryIds) {
       const prior = first ? priorSnapshot.get(memoryId, first) : undefined;
@@ -46,19 +54,40 @@ export function deleteStoredThreads(storage: EasyCodeStorage,
         try {
           const snapshot = JSON.parse(prior.snapshot_json) as { memory?: Record<string, unknown> };
           const memory = snapshot.memory;
-          if (memory && typeof memory.workspace_id === "string" && typeof memory.scope === "string" &&
-              typeof memory.content === "string" && typeof memory.normalized_content === "string" &&
-              typeof memory.category === "string") {
-            storage.db.prepare(
-              `UPDATE memories SET workspace_id = ?, scope = ?, category = ?, content = ?, normalized_content = ?,
+          if (
+            memory &&
+            typeof memory.workspace_id === "string" &&
+            typeof memory.scope === "string" &&
+            typeof memory.content === "string" &&
+            typeof memory.normalized_content === "string" &&
+            typeof memory.category === "string"
+          ) {
+            storage.db
+              .prepare(
+                `UPDATE memories SET workspace_id = ?, scope = ?, category = ?, content = ?, normalized_content = ?,
                  status = ?, evidence = ?, source_thread_id = ?, source_turn_id = ?, updated_at = ? WHERE id = ?`,
-            ).run(memory.workspace_id, memory.scope, memory.category, memory.content,
-              memory.normalized_content, memory.status, memory.evidence,
-              memory.source_thread_id, memory.source_turn_id, memory.updated_at, memoryId);
-            storage.db.prepare("DELETE FROM memory_revisions WHERE memory_id = ? AND sequence >= ?").run(memoryId, first);
+              )
+              .run(
+                memory.workspace_id,
+                memory.scope,
+                memory.category,
+                memory.content,
+                memory.normalized_content,
+                memory.status,
+                memory.evidence,
+                memory.source_thread_id,
+                memory.source_turn_id,
+                memory.updated_at,
+                memoryId,
+              );
+            storage.db
+              .prepare("DELETE FROM memory_revisions WHERE memory_id = ? AND sequence >= ?")
+              .run(memoryId, first);
             restored = true;
           }
-        } catch { /* A damaged or conflicting prior revision cannot retain deleted-thread content. */ }
+        } catch {
+          /* A damaged or conflicting prior revision cannot retain deleted-thread content. */
+        }
       }
       if (!restored) storage.db.prepare("DELETE FROM memories WHERE id = ?").run(memoryId);
     }
@@ -71,12 +100,15 @@ export function deleteStoredThreads(storage: EasyCodeStorage,
   for (const thread of threads) {
     removePrivateDirectory(storage.threadsDir, thread.threadId);
     removePrivateDirectory(path.join(storage.dataDir, "attachments"), thread.threadId);
-    removePrivateDirectory(path.join(storage.artifactsDir, "command-output", sha256(thread.workspaceId)), sha256(thread.threadId));
+    removePrivateDirectory(
+      path.join(storage.artifactsDir, "command-output", sha256(thread.workspaceId)),
+      sha256(thread.threadId),
+    );
   }
 }
 
 export function deleteThreadTree(storage: EasyCodeStorage, store: ThreadStore, threadId: string): readonly string[] {
-  const known = new Map(store.list({ limit: 100_000 }).map(thread => [thread.threadId, thread]));
+  const known = new Map(store.list({ limit: 100_000 }).map((thread) => [thread.threadId, thread]));
   if (!known.has(threadId)) throw new Error("Conversation not found.");
   const selected = new Map<string, ThreadSummary>();
   const collect = (id: string): void => {
@@ -93,7 +125,11 @@ export function deleteThreadTree(storage: EasyCodeStorage, store: ThreadStore, t
   } catch (error) {
     for (const lease of leases.reverse()) {
       if (store.get(lease.threadId)) {
-        try { store.releaseThreadLease(lease); } catch { /* Preserve the original deletion error. */ }
+        try {
+          store.releaseThreadLease(lease);
+        } catch {
+          /* Preserve the original deletion error. */
+        }
       }
     }
     throw error;

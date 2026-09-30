@@ -35,10 +35,7 @@ export async function canonicalizePotentialPath(input: string): Promise<string> 
  * Returning the resolved path lets callers keep using the exact destination
  * that was checked instead of traversing a mutable symlink again.
  */
-export async function resolveDataDirectoryOutsideWorkspace(
-  dataDir: string,
-  workspaceRoot: string,
-): Promise<string> {
+export async function resolveDataDirectoryOutsideWorkspace(dataDir: string, workspaceRoot: string): Promise<string> {
   const [canonicalDataDir, canonicalWorkspace] = await Promise.all([
     canonicalizePotentialPath(dataDir),
     canonicalizePotentialPath(workspaceRoot),
@@ -54,10 +51,7 @@ export async function resolveDataDirectoryOutsideWorkspace(
 }
 
 /** Reject private EASY CODE state that would be created inside the user workspace. */
-export async function assertDataDirectoryOutsideWorkspace(
-  dataDir: string,
-  workspaceRoot: string,
-): Promise<void> {
+export async function assertDataDirectoryOutsideWorkspace(dataDir: string, workspaceRoot: string): Promise<void> {
   await resolveDataDirectoryOutsideWorkspace(dataDir, workspaceRoot);
 }
 
@@ -66,10 +60,7 @@ export async function assertDataDirectoryOutsideWorkspace(
  * files are written. The second canonical check closes the ordinary
  * missing-path/symlink race as far as Node's path-based filesystem API allows.
  */
-export async function prepareDataDirectoryOutsideWorkspace(
-  dataDir: string,
-  workspaceRoot: string,
-): Promise<string> {
+export async function prepareDataDirectoryOutsideWorkspace(dataDir: string, workspaceRoot: string): Promise<string> {
   const candidate = await resolveDataDirectoryOutsideWorkspace(dataDir, workspaceRoot);
   await mkdir(candidate, { recursive: true, mode: 0o700 });
   const info = await lstat(candidate);
@@ -83,8 +74,7 @@ function isSameOrInside(candidate: string, root: string): boolean {
   const normalize = (value: string): string =>
     process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
   const relative = path.relative(normalize(root), normalize(candidate));
-  return relative === "" ||
-    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
 }
 
 function isFileNotFound(error: unknown): boolean {

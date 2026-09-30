@@ -51,19 +51,14 @@ function normalizeItem(item: unknown, room: number): ToolContent {
   if (item.type === "resource") {
     const uri = boundedText(item.uri, Math.min(room, 2_048), "resource URI");
     if (!uri) throw new Error("Tool resource content has an empty URI");
-    const title = item.title === undefined
-      ? undefined
-      : boundedText(item.title, Math.min(room, 512), "resource title");
+    const title = item.title === undefined ? undefined : boundedText(item.title, Math.min(room, 512), "resource title");
     return { type: "resource", uri, ...(title === undefined ? {} : { title }) };
   }
   throw new Error(`Unsupported tool content type ${item.type}`);
 }
 
 /** Validate, redact, and bound rich content before it crosses Runtime boundaries. */
-export function normalizeToolContentResult(
-  result: ToolExecutionResult,
-  maximumChars: number,
-): ToolExecutionResult {
+export function normalizeToolContentResult(result: ToolExecutionResult, maximumChars: number): ToolExecutionResult {
   if (result.content === undefined) return result;
   if (!Array.isArray(result.content)) throw new Error("Tool result content must be an array");
   const content: ToolContent[] = [];

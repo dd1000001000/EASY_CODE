@@ -14,17 +14,9 @@ import type {
   ProviderUsage,
 } from "../core/types.js";
 import { projectModelInputMessages } from "../context/micro-compaction.js";
-import {
-  validateImageAttachmentCollection,
-} from "../images/image-store.js";
-import {
-  providerImageCompatibilityIssue,
-  validateProviderImageAttachments,
-} from "../models/catalog.js";
-import {
-  thinkingEffortBufferedTimeoutMs,
-  thinkingEffortStreamIdleTimeoutMs,
-} from "../models/thinking.js";
+import { validateImageAttachmentCollection } from "../images/image-store.js";
+import { providerImageCompatibilityIssue, validateProviderImageAttachments } from "../models/catalog.js";
+import { thinkingEffortBufferedTimeoutMs, thinkingEffortStreamIdleTimeoutMs } from "../models/thinking.js";
 import {
   ProviderError,
   redactImageDataUrls,
@@ -39,12 +31,7 @@ import {
   type JsonPostResponse,
   type JsonPostTransport,
 } from "./http-transport.js";
-import {
-  ServerSentEventDecoder,
-  SseDecodingError,
-  isEventStreamContentType,
-  type ServerSentEvent,
-} from "./sse.js";
+import { ServerSentEventDecoder, SseDecodingError, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS = 600;
@@ -101,27 +88,46 @@ const chatCompletionSchema = z.object({
     .optional(),
 });
 
-const chatCompletionChunkSchema = z.object({
-  choices: z.array(z.object({
-    index: z.number().int().nonnegative().optional(),
-    finish_reason: z.string().nullable().optional(),
-    delta: z.object({
-      role: z.string().optional(),
-      content: z.string().nullable().optional(),
-      reasoning_content: z.string().nullable().optional(),
-      tool_calls: z.array(z.object({
-        index: z.number().int().nonnegative(),
-        id: z.string().optional(),
-        type: z.string().optional(),
-        function: z.object({
-          name: z.string().nullable().optional(),
-          arguments: z.string().nullable().optional(),
-        }).passthrough().optional(),
-      }).passthrough()).optional(),
-    }).passthrough(),
-  }).passthrough()).default([]),
-  usage: chatCompletionSchema.shape.usage.nullable(),
-}).passthrough();
+const chatCompletionChunkSchema = z
+  .object({
+    choices: z
+      .array(
+        z
+          .object({
+            index: z.number().int().nonnegative().optional(),
+            finish_reason: z.string().nullable().optional(),
+            delta: z
+              .object({
+                role: z.string().optional(),
+                content: z.string().nullable().optional(),
+                reasoning_content: z.string().nullable().optional(),
+                tool_calls: z
+                  .array(
+                    z
+                      .object({
+                        index: z.number().int().nonnegative(),
+                        id: z.string().optional(),
+                        type: z.string().optional(),
+                        function: z
+                          .object({
+                            name: z.string().nullable().optional(),
+                            arguments: z.string().nullable().optional(),
+                          })
+                          .passthrough()
+                          .optional(),
+                      })
+                      .passthrough(),
+                  )
+                  .optional(),
+              })
+              .passthrough(),
+          })
+          .passthrough(),
+      )
+      .default([]),
+    usage: chatCompletionSchema.shape.usage.nullable(),
+  })
+  .passthrough();
 
 interface PendingToolCall {
   id: string;
@@ -144,25 +150,17 @@ type StreamEventPayload = ProviderStreamEvent extends infer Event
     : never
   : never;
 
-function normalizeChatUsage(
-  value: z.infer<typeof chatCompletionSchema>["usage"],
-): ProviderUsage | undefined {
+function normalizeChatUsage(value: z.infer<typeof chatCompletionSchema>["usage"]): ProviderUsage | undefined {
   if (!value) return undefined;
   const usage: ProviderUsage = {
     promptTokens: value.prompt_tokens,
     completionTokens: value.completion_tokens,
     totalTokens: value.total_tokens,
     cachedInputTokens:
-      value.prompt_tokens_details?.cached_tokens ??
-      value.prompt_cache_hit_tokens ??
-      value.cached_tokens ??
-      undefined,
-    reasoningTokens:
-      value.completion_tokens_details?.reasoning_tokens ?? undefined,
+      value.prompt_tokens_details?.cached_tokens ?? value.prompt_cache_hit_tokens ?? value.cached_tokens ?? undefined,
+    reasoningTokens: value.completion_tokens_details?.reasoning_tokens ?? undefined,
   };
-  return Object.values(usage).some((item) => item !== undefined)
-    ? usage
-    : undefined;
+  return Object.values(usage).some((item) => item !== undefined) ? usage : undefined;
 }
 
 export interface ProviderRuntimeOptions {
@@ -188,9 +186,7 @@ export interface ProviderRuntimeOptions {
   toolStream?: boolean;
 }
 
-type CompletionContentPart =
-  | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+type CompletionContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
 type CompletionMessage =
   | { role: "system"; content: string }
@@ -215,10 +211,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly config: ProviderConfig;
   private readonly endpoint: URL;
   private readonly transport: JsonPostTransport;
-  private readonly sleep: (
-    delayMs: number,
-    signal?: AbortSignal,
-  ) => Promise<void>;
+  private readonly sleep: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   private readonly random: () => number;
   private readonly maxResponseBytes: number;
   private readonly loadImage?: (attachment: ImageAttachment) => Promise<Buffer>;
@@ -232,11 +225,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly supportsStreamUsage: boolean;
   private readonly toolStream: boolean;
 
-  constructor(
-    name: ProviderName,
-    config: ProviderConfig,
-    runtime: ProviderRuntimeOptions = {},
-  ) {
+  constructor(name: ProviderName, config: ProviderConfig, runtime: ProviderRuntimeOptions = {}) {
     validateProviderConfig(name, config);
     this.name = name;
     this.model = config.model;
@@ -245,8 +234,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.transport = runtime.transport ?? postJsonWithNode;
     this.sleep = runtime.sleep ?? abortableSleep;
     this.random = runtime.random ?? Math.random;
-    this.maxResponseBytes =
-      runtime.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    this.maxResponseBytes = runtime.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
     this.loadImage = runtime.loadImage;
     this.visionSupported = runtime.visionSupported ?? false;
     this.streamIdleTimeoutByEffort = runtime.streamIdleTimeoutByEffort;
@@ -261,22 +249,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async complete(request: ModelRequest): Promise<ProviderResponse> {
     if (!this.config.apiKey) {
-      throw new ProviderError(
-        `Missing API key for ${this.name}. Configure the provider before use.`,
-        {
-          provider: this.name,
-          code: "missing_api_key",
-        },
-      );
+      throw new ProviderError(`Missing API key for ${this.name}. Configure the provider before use.`, {
+        provider: this.name,
+        code: "missing_api_key",
+      });
     }
 
     const streamResponse = request.responseMode === "stream" && this.supportsStreaming;
     const body: CompletionBody = {
       model: this.model,
-      messages: await this.toCompletionMessages(
-        request.messages,
-        request.currentTurnImageIds,
-      ),
+      messages: await this.toCompletionMessages(request.messages, request.currentTurnImageIds),
       stream: streamResponse,
       ...(streamResponse && this.supportsStreamUsage ? { stream_options: { include_usage: true as const } } : {}),
     };
@@ -288,23 +270,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body.temperature = request.temperature;
     }
     const effort = request.thinkingEffort ?? "none";
-    const streamIdleTimeoutMs = this.streamIdleTimeoutByEffort?.[effort] ??
-      thinkingEffortStreamIdleTimeoutMs(effort);
-    const bufferedTimeoutMs = this.config.timeoutMs ?? this.bufferedTimeoutByEffort?.[effort] ??
-      thinkingEffortBufferedTimeoutMs(effort);
+    const streamIdleTimeoutMs = this.streamIdleTimeoutByEffort?.[effort] ?? thinkingEffortStreamIdleTimeoutMs(effort);
+    const bufferedTimeoutMs =
+      this.config.timeoutMs ?? this.bufferedTimeoutByEffort?.[effort] ?? thinkingEffortBufferedTimeoutMs(effort);
     const timeoutMs = streamResponse ? streamIdleTimeoutMs : bufferedTimeoutMs;
-    const timeoutMode = streamResponse ? "stream_semantic_idle" as const : "buffered_total" as const;
+    const timeoutMode = streamResponse ? ("stream_semantic_idle" as const) : ("buffered_total" as const);
     if (
       request.maxRetries !== undefined &&
-      (!Number.isSafeInteger(request.maxRetries) ||
-        request.maxRetries < 0 ||
-        request.maxRetries > 10)
+      (!Number.isSafeInteger(request.maxRetries) || request.maxRetries < 0 || request.maxRetries > 10)
     ) {
       throw this.error("Request maxRetries must be between 0 and 10", "invalid_request");
     }
-    const maxRetries = request.maxRetries === undefined
-      ? this.config.maxRetries
-      : Math.min(this.config.maxRetries, request.maxRetries);
+    const maxRetries =
+      request.maxRetries === undefined ? this.config.maxRetries : Math.min(this.config.maxRetries, request.maxRetries);
 
     let serialized: string;
     try {
@@ -351,14 +329,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
           return progressed;
         }
         let decoded: unknown;
-        try { decoded = JSON.parse(event.data) as unknown; }
-        catch { throw this.error("Provider returned an invalid Chat Completions SSE event", "invalid_response"); }
+        try {
+          decoded = JSON.parse(event.data) as unknown;
+        } catch {
+          throw this.error("Provider returned an invalid Chat Completions SSE event", "invalid_response");
+        }
         if (decoded && typeof decoded === "object" && ("error" in decoded || event.event === "error")) {
           throw streamProviderError(this.name, decoded, this.config.apiKey);
         }
         if (streamState.done) throw this.error("Provider sent data after [DONE]", "invalid_response");
         const parsed = chatCompletionChunkSchema.safeParse(decoded);
-        if (!parsed.success) throw this.error("Provider returned an unsupported Chat Completions SSE event", "invalid_response");
+        if (!parsed.success)
+          throw this.error("Provider returned an unsupported Chat Completions SSE event", "invalid_response");
         return this.consumeStreamChunk(streamState, parsed.data, emit);
       };
 
@@ -380,10 +362,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
           ...(streamResponse
             ? {
                 onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
-                  streamStarted = statusCode >= 200 && statusCode < 300 &&
-                    isEventStreamContentType(headers["content-type"]);
+                  streamStarted =
+                    statusCode >= 200 && statusCode < 300 && isEventStreamContentType(headers["content-type"]);
                   if (streamStarted) emit({ kind: "started" });
-                  return streamStarted ? "stream" as const : "buffered" as const;
+                  return streamStarted ? ("stream" as const) : ("buffered" as const);
                 },
                 onResponseChunk: (chunk: Buffer) => {
                   if (!streamStarted) return false;
@@ -404,12 +386,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
         }
         return this.parseResponse(response);
       } catch (error) {
-        const providerError = this.normalizeError(
-          error,
-          request.signal,
-          this.streamProgress(streamState),
-          { streamIdleTimeoutMs, bufferedTimeoutMs },
-        );
+        const providerError = this.normalizeError(error, request.signal, this.streamProgress(streamState), {
+          streamIdleTimeoutMs,
+          bufferedTimeoutMs,
+        });
         lastError = providerError;
         if (streamStarted) {
           emit({ kind: "interrupted" });
@@ -419,8 +399,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         if (!providerError.retryable || attempt >= maxRetries) {
           throw providerError;
         }
-        const delay =
-          providerError.retryAfterMs ?? this.retryDelayMs(attempt);
+        const delay = providerError.retryAfterMs ?? this.retryDelayMs(attempt);
         try {
           await this.sleep(delay, request.signal);
         } catch (sleepError) {
@@ -429,9 +408,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }
     }
 
-    throw (
-      lastError ?? this.error("Provider request failed", "request_failed")
-    );
+    throw lastError ?? this.error("Provider request failed", "request_failed");
   }
 
   private consumeStreamChunk(
@@ -442,9 +419,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
     let progressed = false;
     const choice = chunk.choices.find((candidate) => (candidate.index ?? 0) === 0);
     if (choice) {
-      if (state.finishReason != null &&
-          (choice.delta.content || choice.delta.reasoning_content || choice.delta.tool_calls?.length ||
-           choice.finish_reason != null && choice.finish_reason !== state.finishReason)) {
+      if (
+        state.finishReason != null &&
+        (choice.delta.content ||
+          choice.delta.reasoning_content ||
+          choice.delta.tool_calls?.length ||
+          (choice.finish_reason != null && choice.finish_reason !== state.finishReason))
+      ) {
         throw this.error("Provider changed an already finished choice", "invalid_response");
       }
       const reasoning = choice.delta.reasoning_content ?? "";
@@ -493,15 +474,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return {
       reasoningChars: state.reasoning.length,
       textChars: state.content.length,
-      toolArgumentChars: [...state.toolCalls.values()]
-        .reduce((total, call) => total + call.arguments.length, 0),
+      toolArgumentChars: [...state.toolCalls.values()].reduce((total, call) => total + call.arguments.length, 0),
     };
   }
 
   private finishStream(state: ChatStreamState): ProviderResponse {
     if (!state.done || !state.finishReason) {
       throw new ProviderError("Chat Completions stream ended without finish_reason and [DONE]", {
-        provider: this.name, code: "incomplete_stream", retryable: true,
+        provider: this.name,
+        code: "incomplete_stream",
+        retryable: true,
       });
     }
     const toolCalls: FunctionToolCall[] = [];
@@ -547,9 +529,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     let providerMessages = projectModelInputMessages(messages);
     if (this.visionSupported) {
       try {
-        const originalImages = messages.flatMap((message) =>
-          message.role === "user" ? message.images ?? [] : [],
-        );
+        const originalImages = messages.flatMap((message) => (message.role === "user" ? (message.images ?? []) : []));
         // Validate durable metadata even when a provider-specific constraint
         // causes an older attachment to be omitted. Aggregate limits are
         // checked after filtering because omitted bytes never reach the API.
@@ -577,15 +557,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
           });
         }
         const requestImages = providerMessages.flatMap((message) =>
-          message.role === "user" ? message.images ?? [] : [],
+          message.role === "user" ? (message.images ?? []) : [],
         );
         validateImageAttachmentCollection(requestImages);
         validateProviderImageAttachments(this.name, requestImages);
       } catch (error) {
-        throw this.error(
-          error instanceof Error ? error.message : String(error),
-          "invalid_images",
-        );
+        throw this.error(error instanceof Error ? error.message : String(error), "invalid_images");
       }
     }
 
@@ -620,18 +597,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
         throw this.error("No local image loader is configured.", "invalid_config");
       }
 
-      const hydrated = new Map<string, {
-        readonly attachment: ImageAttachment;
-        readonly image: Extract<CompletionContentPart, { type: "image_url" }>;
-        used: boolean;
-      }>();
+      const hydrated = new Map<
+        string,
+        {
+          readonly attachment: ImageAttachment;
+          readonly image: Extract<CompletionContentPart, { type: "image_url" }>;
+          used: boolean;
+        }
+      >();
       for (const attachment of images) {
         const data = await this.loadImage(attachment);
         if (data.length !== attachment.byteSize) {
-          throw this.error(
-            `Stored ${attachment.label} no longer matches its metadata.`,
-            "image_integrity_error",
-          );
+          throw this.error(`Stored ${attachment.label} no longer matches its metadata.`, "image_integrity_error");
         }
         hydrated.set(`[${attachment.label}]`, {
           attachment,
@@ -682,61 +659,47 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const retryable = retryableStatus(response.statusCode);
       const apiMessage = extractApiErrorMessage(response.body);
-      const requestId = headerValue(
-        response.headers["x-request-id"] ?? response.headers["request-id"],
-      );
+      const requestId = headerValue(response.headers["x-request-id"] ?? response.headers["request-id"]);
       const suffix = requestId ? ` (request ${requestId})` : "";
-      throw new ProviderError(
-        `${this.name} API returned HTTP ${response.statusCode}${suffix}: ${apiMessage}`,
-        {
-          provider: this.name,
-          code: "http_error",
-          statusCode: response.statusCode,
-          retryable,
-          retryAfterMs: parseRetryAfter(response.headers["retry-after"]),
-          secrets: [this.config.apiKey],
-        },
-      );
+      throw new ProviderError(`${this.name} API returned HTTP ${response.statusCode}${suffix}: ${apiMessage}`, {
+        provider: this.name,
+        code: "http_error",
+        statusCode: response.statusCode,
+        retryable,
+        retryAfterMs: parseRetryAfter(response.headers["retry-after"]),
+        secrets: [this.config.apiKey],
+      });
     }
 
     let decoded: unknown;
     try {
       decoded = JSON.parse(response.body) as unknown;
     } catch {
-      throw this.error(
-        "Provider returned an invalid JSON response",
-        "invalid_response",
-      );
+      throw this.error("Provider returned an invalid JSON response", "invalid_response");
     }
 
     const parsed = chatCompletionSchema.safeParse(decoded);
     if (!parsed.success) {
-      throw this.error(
-        "Provider returned an unsupported Chat Completions response",
-        "invalid_response",
-      );
+      throw this.error("Provider returned an unsupported Chat Completions response", "invalid_response");
     }
     const choice = parsed.data.choices[0];
     if (!choice) {
-      throw this.error(
-        "Provider returned no Chat Completions choice",
-        "invalid_response",
-      );
+      throw this.error("Provider returned no Chat Completions choice", "invalid_response");
     }
 
     const message: Extract<ChatMessage, { role: "assistant" }> = {
       role: "assistant",
-      content: choice.message.content === undefined || choice.message.content === null
-        ? null
-        : redactImageDataUrls(choice.message.content),
+      content:
+        choice.message.content === undefined || choice.message.content === null
+          ? null
+          : redactImageDataUrls(choice.message.content),
     };
     if (choice.message.tool_calls) {
       message.tool_calls = choice.message.tool_calls;
     }
     if (choice.message.reasoning_content !== undefined) {
-      message.reasoning_content = choice.message.reasoning_content === null
-        ? null
-        : redactImageDataUrls(choice.message.reasoning_content);
+      message.reasoning_content =
+        choice.message.reasoning_content === null ? null : redactImageDataUrls(choice.message.reasoning_content);
     }
 
     const result: ProviderResponse = {
@@ -762,37 +725,28 @@ export class OpenAICompatibleProvider implements ModelProvider {
         return this.error("Request was canceled", "aborted");
       }
       if (error.kind === "stream_header_timeout") {
-        return new ProviderError(
-          deadlines ? describeTransportTimeout(error, deadlines) : error.message,
-          {
-            provider: this.name,
-            code: "stream_header_timeout",
-            retryable: true,
-            progress,
-          },
-        );
+        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
+          provider: this.name,
+          code: "stream_header_timeout",
+          retryable: true,
+          progress,
+        });
       }
       if (error.kind === "stream_semantic_idle_timeout") {
-        return new ProviderError(
-          deadlines ? describeTransportTimeout(error, deadlines) : error.message,
-          {
-            provider: this.name,
-            code: "stream_semantic_idle_timeout",
-            retryable: true,
-            progress,
-          },
-        );
+        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
+          provider: this.name,
+          code: "stream_semantic_idle_timeout",
+          retryable: true,
+          progress,
+        });
       }
       if (error.kind === "buffered_total_timeout") {
-        return new ProviderError(
-          deadlines ? describeTransportTimeout(error, deadlines) : error.message,
-          {
-            provider: this.name,
-            code: "buffered_total_timeout",
-            retryable: true,
-            progress,
-          },
-        );
+        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
+          provider: this.name,
+          code: "buffered_total_timeout",
+          retryable: true,
+          progress,
+        });
       }
       if (error.kind === "response_too_large") {
         return this.error(error.message, "response_too_large");
@@ -804,15 +758,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
         secrets: [this.config.apiKey],
       });
     }
-    return new ProviderError(
-      `Provider request failed: ${redactSensitiveText(error, [this.config.apiKey])}`,
-      {
-        provider: this.name,
-        code: "request_failed",
-        retryable: true,
-        secrets: [this.config.apiKey],
-      },
-    );
+    return new ProviderError(`Provider request failed: ${redactSensitiveText(error, [this.config.apiKey])}`, {
+      provider: this.name,
+      code: "request_failed",
+      retryable: true,
+      secrets: [this.config.apiKey],
+    });
   }
 
   private error(message: string, code: string): ProviderError {
@@ -833,43 +784,29 @@ function appendHistoricalImageOmissionNote(
   content: string,
   omitted: readonly { image: ImageAttachment; issue: string }[],
 ): string {
-  const details = omitted
-    .map(({ issue }) => issue)
-    .join(" ");
+  const details = omitted.map(({ issue }) => issue).join(" ");
   const prefix = "[Historical image attachment(s) omitted from this provider request: ";
   const suffix = " Local thread history is unchanged.]";
   const available = MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS - prefix.length - suffix.length;
-  const boundedDetails = details.length <= available
-    ? details
-    : `${details.slice(0, Math.max(0, available - 1))}…`;
+  const boundedDetails = details.length <= available ? details : `${details.slice(0, Math.max(0, available - 1))}…`;
   const note = `${prefix}${boundedDetails}${suffix}`;
   return [content, note].filter(Boolean).join("\n\n");
 }
 
-function validateProviderConfig(
-  provider: ProviderName,
-  config: ProviderConfig,
-): void {
+function validateProviderConfig(provider: ProviderName, config: ProviderConfig): void {
   if (!config.model.trim()) {
     throw new ProviderError("Provider model cannot be empty", {
       provider,
       code: "invalid_config",
     });
   }
-  if (
-    config.timeoutMs !== undefined &&
-    (!Number.isInteger(config.timeoutMs) || config.timeoutMs <= 0)
-  ) {
+  if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs <= 0)) {
     throw new ProviderError("Provider timeout must be a positive integer", {
       provider,
       code: "invalid_config",
     });
   }
-  if (
-    !Number.isInteger(config.maxRetries) ||
-    config.maxRetries < 0 ||
-    config.maxRetries > 10
-  ) {
+  if (!Number.isInteger(config.maxRetries) || config.maxRetries < 0 || config.maxRetries > 10) {
     throw new ProviderError("Provider maxRetries must be between 0 and 10", {
       provider,
       code: "invalid_config",
@@ -877,10 +814,7 @@ function validateProviderConfig(
   }
 }
 
-function chatCompletionsEndpoint(
-  baseUrl: string,
-  provider: ProviderName,
-): URL {
+function chatCompletionsEndpoint(baseUrl: string, provider: ProviderName): URL {
   let url: URL;
   try {
     url = new URL(baseUrl);
@@ -909,13 +843,7 @@ function chatCompletionsEndpoint(
 }
 
 function retryableStatus(statusCode: number): boolean {
-  return (
-    statusCode === 408 ||
-    statusCode === 409 ||
-    statusCode === 425 ||
-    statusCode === 429 ||
-    statusCode >= 500
-  );
+  return statusCode === 408 || statusCode === 409 || statusCode === 425 || statusCode === 429 || statusCode >= 500;
 }
 
 function extractApiErrorMessage(body: string): string {
@@ -957,10 +885,7 @@ function parseRetryAfter(value: string | string[] | undefined): number | undefin
   return undefined;
 }
 
-function abortableSleep(
-  delayMs: number,
-  signal?: AbortSignal,
-): Promise<void> {
+function abortableSleep(delayMs: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new HttpTransportError("aborted", "Request was canceled"));

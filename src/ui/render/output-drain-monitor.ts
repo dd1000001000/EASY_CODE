@@ -48,9 +48,7 @@ export class OutputDrainMonitor {
         this.blocked = true;
         this.output.once("drain", this.onDrain);
         this.drainTimer = setTimeout(() => {
-          this.fail(new Error(
-            `Terminal output did not drain within ${OUTPUT_DRAIN_TIMEOUT_MS}ms.`,
-          ));
+          this.fail(new Error(`Terminal output did not drain within ${OUTPUT_DRAIN_TIMEOUT_MS}ms.`));
         }, OUTPUT_DRAIN_TIMEOUT_MS);
         this.drainTimer.unref();
       }

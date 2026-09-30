@@ -18,9 +18,7 @@ export interface ToolExecutionAuthorizationRequest {
   readonly context: ToolContext;
 }
 
-export type ToolExecutionAuthorizer = (
-  request: Readonly<ToolExecutionAuthorizationRequest>,
-) => Promise<boolean>;
+export type ToolExecutionAuthorizer = (request: Readonly<ToolExecutionAuthorizationRequest>) => Promise<boolean>;
 
 /** Name-agnostic lookup, validation, and invocation boundary for Runtime tools. */
 export class ToolExecutionGateway {
@@ -59,8 +57,7 @@ export class ToolExecutionGateway {
     context: ToolContext,
     activity?: (name: ToolName, execute: () => Promise<ToolExecutionResult>) => Promise<ToolExecutionResult>,
   ): Promise<ToolExecutionResult> {
-    const identity = toolApprovalIdentity(invocation.tool, invocation.input,
-      invocation.binding, context.workspaceRoot);
+    const identity = toolApprovalIdentity(invocation.tool, invocation.input, invocation.binding, context.workspaceRoot);
     if (toolRequiresApproval(invocation.tool)) {
       if (!this.authorize) {
         throw new Error(`Tool ${invocation.tool.name} requires a Runtime authorization bridge`);
@@ -75,9 +72,10 @@ export class ToolExecutionGateway {
     }
     const execute = () => invocation.tool.execute(invocation.input, context);
     const result = activity ? await activity(identity.label, execute) : await execute();
-    const maximumChars = invocation.binding?.sourceId === "mcp"
-      ? context.resultCharBudget ?? context.maxOutputChars
-      : context.maxOutputChars;
+    const maximumChars =
+      invocation.binding?.sourceId === "mcp"
+        ? (context.resultCharBudget ?? context.maxOutputChars)
+        : context.maxOutputChars;
     return normalizeToolContentResult(result, maximumChars);
   }
 }

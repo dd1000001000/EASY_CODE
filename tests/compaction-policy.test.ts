@@ -1,19 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
-import type {
-  ContextIntentLedger,
-  SessionState,
-} from "../src/core/types.js";
+import type { ContextIntentLedger, SessionState } from "../src/core/types.js";
 import { ContextManager } from "../src/context/manager.js";
-import {
-  compactionCooldownSatisfied,
-  evaluateCompactionBenefit,
-} from "../src/context/compaction-policy.js";
-import {
-  deserializeSessionState,
-  serializeChatMessages,
-  serializeSessionState,
-} from "../src/threads/serialization.js";
+import { compactionCooldownSatisfied, evaluateCompactionBenefit } from "../src/context/compaction-policy.js";
+import { deserializeSessionState, serializeChatMessages, serializeSessionState } from "../src/threads/serialization.js";
 import { sha256 } from "../src/utils/hash.js";
 import { baseSessionState } from "./session-state.js";
 
@@ -42,17 +32,25 @@ function makeState(messages: SessionState["messages"]): SessionState {
 
 describe("context compaction acceptance policy", () => {
   it("accepts only a material reduction and reports the safe post-compaction waterline", () => {
-    const state = makeState(Array.from({ length: 20 }, (_, index) => ({
-      role: "assistant" as const,
-      content: `history-${index}-${"x".repeat(3_000)}`,
-    })));
+    const state = makeState(
+      Array.from({ length: 20 }, (_, index) => ({
+        role: "assistant" as const,
+        content: `history-${index}-${"x".repeat(3_000)}`,
+      })),
+    );
     const candidateMessages: SessionState["messages"] = [
       ...state.messages,
-      { role: "assistant", content: null, tool_calls: [{
-        id: "compact_call",
-        type: "function",
-        function: { name: "compact_context", arguments: "{}" },
-      }] },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "compact_call",
+            type: "function",
+            function: { name: "compact_context", arguments: "{}" },
+          },
+        ],
+      },
       { role: "tool", name: "compact_context", tool_call_id: "compact_call", content: "ok" },
     ];
 
@@ -79,15 +77,14 @@ describe("context compaction acceptance policy", () => {
       { role: "user", content: "small follow-up" },
     ]);
     state.compactedMessageCount = 2;
-    assert.equal(
-      compactionCooldownSatisfied(state, state.messages.length),
-      false,
-    );
+    assert.equal(compactionCooldownSatisfied(state, state.messages.length), false);
 
-    const largeState = makeState(Array.from({ length: 20 }, (_, index) => ({
-      role: "user" as const,
-      content: `history-${index}-${"x".repeat(1_000)}`,
-    })));
+    const largeState = makeState(
+      Array.from({ length: 20 }, (_, index) => ({
+        role: "user" as const,
+        content: `history-${index}-${"x".repeat(1_000)}`,
+      })),
+    );
     const candidateMessages: SessionState["messages"] = [
       ...largeState.messages,
       { role: "assistant", content: "compact" },
@@ -144,16 +141,10 @@ describe("context compaction acceptance policy", () => {
 
     const restored = deserializeSessionState(serialized);
     assert.deepEqual(restored.contextIntentLedger, intentLedger);
-    assert.deepEqual(
-      restored.contextCompactionMetadata,
-      state.contextCompactionMetadata,
-    );
+    assert.deepEqual(restored.contextCompactionMetadata, state.contextCompactionMetadata);
 
     const tampered = structuredClone(serialized);
     tampered.messages[0] = { role: "user", content: "Changed source text." };
-    assert.throws(
-      () => deserializeSessionState(tampered),
-      /source history hash mismatch/u,
-    );
+    assert.throws(() => deserializeSessionState(tampered), /source history hash mismatch/u);
   });
 });

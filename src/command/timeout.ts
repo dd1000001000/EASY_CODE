@@ -28,7 +28,10 @@ export function resolveBackgroundCommandTimeoutBudget(
   };
 }
 
-export function commandCapabilityTimeoutLimitMs(capability: CommandCapability, limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS): number {
+export function commandCapabilityTimeoutLimitMs(
+  capability: CommandCapability,
+  limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
+): number {
   if (capability === "safe_inspect") return limits.commandInspectTimeoutMaxMs;
   if (capability === "registry_install") return limits.commandInstallTimeoutMaxMs;
   return limits.commandExecuteTimeoutMaxMs;
@@ -44,10 +47,7 @@ export function resolveCommandTimeoutBudget(
   const capabilityLimitMs = commandCapabilityTimeoutLimitMs(capability, limits);
   return {
     requestedMs,
-    effectiveMs: Math.max(
-      1,
-      Math.min(requestedMs, configuredLimitMs, capabilityLimitMs),
-    ),
+    effectiveMs: Math.max(1, Math.min(requestedMs, configuredLimitMs, capabilityLimitMs)),
     configuredLimitMs,
     capabilityLimitMs,
   };

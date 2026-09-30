@@ -1,26 +1,14 @@
 import type { ApprovalDecision } from "../core/types.js";
 import { canGrantCommandPrefix, commandPrefixApprovalLabel } from "../command/approval.js";
 import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
-import {
-  renderMenu,
-  selectMenuIndex,
-  type MenuSelectorOptions,
-} from "./menu-selector.js";
+import { renderMenu, selectMenuIndex, type MenuSelectorOptions } from "./menu-selector.js";
 
-const APPROVAL_DECISIONS = [
-  "allow_once",
-  "allow_prefix",
-  "reject",
-] as const satisfies readonly ApprovalDecision[];
+const APPROVAL_DECISIONS = ["allow_once", "allow_prefix", "reject"] as const satisfies readonly ApprovalDecision[];
 const MIN_SAFE_APPROVAL_ROWS = 4;
 
 export type ApprovalSelectorOptions = MenuSelectorOptions;
 
-export function renderApprovalSelector(
-  commandPrefix: string,
-  selectedIndex: number,
-  color = true,
-): string[] {
+export function renderApprovalSelector(commandPrefix: string, selectedIndex: number, color = true): string[] {
   return renderMenu(
     "Approve command execution",
     [
@@ -40,25 +28,20 @@ export async function selectApproval(
   options: ApprovalSelectorOptions,
 ): Promise<ApprovalDecision> {
   const callerGuard = options.canConfirm;
-  const decisions = canGrantCommandPrefix(commandPrefix) ? APPROVAL_DECISIONS : ["allow_once", "reject"] as const;
+  const decisions = canGrantCommandPrefix(commandPrefix) ? APPROVAL_DECISIONS : (["allow_once", "reject"] as const);
   const index = await selectMenuIndex(
     decisions.length,
     0,
-    (selectedIndex) =>
-      renderApprovalSelector(commandPrefix, selectedIndex, options.color ?? true),
+    (selectedIndex) => renderApprovalSelector(commandPrefix, selectedIndex, options.color ?? true),
     {
       ...options,
       idleTimeoutMs: options.idleTimeoutMs ?? DECISION_TIMEOUT_MS,
       idleSelectionIndex: 0,
-      canConfirm: () =>
-        hasSafeApprovalHeight(options.output.rows) &&
-        (callerGuard?.() ?? true),
+      canConfirm: () => hasSafeApprovalHeight(options.output.rows) && (callerGuard?.() ?? true),
     },
     "No approval choices are available.",
   );
-  return index === undefined
-    ? "reject"
-    : decisions[index] ?? "reject";
+  return index === undefined ? "reject" : (decisions[index] ?? "reject");
 }
 
 function hasSafeApprovalHeight(rows: number | undefined): boolean {

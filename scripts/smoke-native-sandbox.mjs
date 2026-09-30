@@ -12,7 +12,11 @@ import { NativeAppServerClient } from "../dist/sandbox/app-server-client.js";
 import { NativeSandboxBackend } from "../dist/sandbox/native-backend.js";
 import { nativeProjectPermissionProfile } from "../dist/sandbox/native-policy.js";
 import { ensureNativeProjectPermissionHome } from "../dist/sandbox/permission-home.js";
-import { nativeSandboxEntrypoint, nativeSandboxEnvironment, nativeSandboxHome } from "../dist/sandbox/native-runtime.js";
+import {
+  nativeSandboxEntrypoint,
+  nativeSandboxEnvironment,
+  nativeSandboxHome,
+} from "../dist/sandbox/native-runtime.js";
 import { NativeSandboxStartupService } from "../dist/sandbox/native-startup.js";
 import { acquireWindowsProxyPortLease } from "../dist/sandbox/windows-proxy-registry.js";
 import { WorkspaceManager } from "../dist/workspace/manager.js";
@@ -26,23 +30,30 @@ const runtimeDataDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-native-ru
 // registry instead of inventing an unprovisioned registry in a temp folder.
 const nativeDataDir = process.platform === "win32" ? resolveEasyCodePaths().dataDir : runtimeDataDir;
 const outsideSentinel = path.join(outside, "sentinel.txt");
-const sandboxHome = await ensureNativeProjectPermissionHome(
-  nativeSandboxHome(nativeDataDir), [workspace, secondaryWorkspace]);
+const sandboxHome = await ensureNativeProjectPermissionHome(nativeSandboxHome(nativeDataDir), [
+  workspace,
+  secondaryWorkspace,
+]);
 let sandboxProxyURL;
 let sandboxProxyPorts = [];
 await writeFile(outsideSentinel, "must remain private", "utf8");
 
 async function execute(client, command, timeoutMs = 10_000) {
-  return client.request("command/exec", {
-    command,
-    cwd: workspace,
-    ...(sandboxProxyURL ? { env: nativeSandboxEnvironment(sandboxHome, process.env,
-      sandboxProxyURL, sandboxProxyPorts) } : {}),
-    ...nativeProjectPermissionProfile(),
-    timeoutMs,
-  // A fresh Windows elevated profile may spend several seconds applying its
-  // ACL boundary before the target starts. That setup is not target runtime.
-  }, timeoutMs + (process.platform === "win32" ? 30_000 : 5_000));
+  return client.request(
+    "command/exec",
+    {
+      command,
+      cwd: workspace,
+      ...(sandboxProxyURL
+        ? { env: nativeSandboxEnvironment(sandboxHome, process.env, sandboxProxyURL, sandboxProxyPorts) }
+        : {}),
+      ...nativeProjectPermissionProfile(),
+      timeoutMs,
+      // A fresh Windows elevated profile may spend several seconds applying its
+      // ACL boundary before the target starts. That setup is not target runtime.
+    },
+    timeoutMs + (process.platform === "win32" ? 30_000 : 5_000),
+  );
 }
 
 async function denied(client, command, timeoutMs = 10_000) {
@@ -59,83 +70,150 @@ try {
   console.log("readiness: ok");
 
   if (process.platform === "win32") {
-    const lease = await acquireWindowsProxyPortLease({ dataDir: nativeDataDir,
+    const lease = await acquireWindowsProxyPortLease({
+      dataDir: nativeDataDir,
       portStart: DEFAULT_RUNTIME_LIMITS.nativeSandboxProxyPortStart,
       portSlots: DEFAULT_RUNTIME_LIMITS.nativeSandboxProxyPortSlots,
-      bind: ensureSharedCommandNetworkGateServer });
+      bind: ensureSharedCommandNetworkGateServer,
+    });
     sandboxProxyURL = `http://127.0.0.1:${lease.port}`;
-    sandboxProxyPorts = [...await lease.authorizedPorts()];
+    sandboxProxyPorts = [...(await lease.authorizedPorts())];
     assert.ok(sandboxProxyPorts.includes(lease.port), "startup did not authorize this process proxy port");
   }
 
-  const client = new NativeAppServerClient(nativeSandboxEntrypoint(), sandboxHome, process.env,
-    sandboxProxyURL, sandboxProxyPorts);
+  const client = new NativeAppServerClient(
+    nativeSandboxEntrypoint(),
+    sandboxHome,
+    process.env,
+    sandboxProxyURL,
+    sandboxProxyPorts,
+  );
   try {
     await client.initialize();
-    const inside = await execute(client, [process.execPath, "-e",
-      "require('node:fs').writeFileSync('inside.txt','sandboxed')"]);
+    const inside = await execute(client, [
+      process.execPath,
+      "-e",
+      "require('node:fs').writeFileSync('inside.txt','sandboxed')",
+    ]);
     assert.equal(inside.exitCode, 0, inside.stderr);
     assert.equal(await readFile(path.join(workspace, "inside.txt"), "utf8"), "sandboxed");
-    const secondary = await execute(client, [process.execPath, "-e",
-      "require('node:fs').writeFileSync(process.argv[1],'second-root')", path.join(secondaryWorkspace, "inside.txt")]);
+    const secondary = await execute(client, [
+      process.execPath,
+      "-e",
+      "require('node:fs').writeFileSync(process.argv[1],'second-root')",
+      path.join(secondaryWorkspace, "inside.txt"),
+    ]);
     assert.equal(secondary.exitCode, 0, secondary.stderr);
     assert.equal(await readFile(path.join(secondaryWorkspace, "inside.txt"), "utf8"), "second-root");
-    const bufferedOutput = await execute(client, [process.execPath, "-e",
-      "process.stdout.write('BUFFERED_OUTPUT_OK')"]);
+    const bufferedOutput = await execute(client, [
+      process.execPath,
+      "-e",
+      "process.stdout.write('BUFFERED_OUTPUT_OK')",
+    ]);
     assert.equal(bufferedOutput.exitCode, 0, bufferedOutput.stderr);
     assert.match(bufferedOutput.stdout, /BUFFERED_OUTPUT_OK/u);
     console.log("native boundary: workspace output ok");
 
-    assert.equal(await denied(client, [process.execPath, "-e",
-      "require('node:fs').writeFileSync(process.argv[1],'changed')", outsideSentinel]), true,
-    "native sandbox wrote a path outside the workspace");
+    assert.equal(
+      await denied(client, [
+        process.execPath,
+        "-e",
+        "require('node:fs').writeFileSync(process.argv[1],'changed')",
+        outsideSentinel,
+      ]),
+      true,
+      "native sandbox wrote a path outside the workspace",
+    );
     assert.equal(await readFile(outsideSentinel, "utf8"), "must remain private");
     const outsideLink = path.join(workspace, "outside-link");
     await symlink(outside, outsideLink, process.platform === "win32" ? "junction" : "dir");
-    assert.equal(await denied(client, [process.execPath, "-e",
-      "require('node:fs').writeFileSync(process.argv[1],'changed')", path.join(outsideLink, "sentinel.txt")]), true,
-    "native sandbox followed a workspace link to write outside the workspace");
+    assert.equal(
+      await denied(client, [
+        process.execPath,
+        "-e",
+        "require('node:fs').writeFileSync(process.argv[1],'changed')",
+        path.join(outsideLink, "sentinel.txt"),
+      ]),
+      true,
+      "native sandbox followed a workspace link to write outside the workspace",
+    );
     assert.equal(await readFile(outsideSentinel, "utf8"), "must remain private");
     console.log("native boundary: outside write denied");
 
-    const directNetworkDenied = await denied(client, [process.execPath, "-e",
-      "const n=require('node:net').connect({host:'1.1.1.1',port:80});" +
-      "n.on('connect',()=>process.exit(0));n.on('error',()=>process.exit(7));" +
-      "setTimeout(()=>process.exit(8),3000).unref()"], 5_000);
+    const directNetworkDenied = await denied(
+      client,
+      [
+        process.execPath,
+        "-e",
+        "const n=require('node:net').connect({host:'1.1.1.1',port:80});" +
+          "n.on('connect',()=>process.exit(0));n.on('error',()=>process.exit(7));" +
+          "setTimeout(()=>process.exit(8),3000).unref()",
+      ],
+      5_000,
+    );
     assert.equal(directNetworkDenied, true, "native sandbox opened a direct external socket");
     console.log("native boundary: direct network denied");
 
-    const server = createServer(socket => { socket.on("error", () => undefined); socket.end("LOOPBACK_OK"); });
+    const server = createServer((socket) => {
+      socket.on("error", () => undefined);
+      socket.end("LOOPBACK_OK");
+    });
     await new Promise((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
     try {
       const address = server.address();
       assert.ok(address && typeof address === "object");
-      const loopback = await execute(client, [process.execPath, "-e",
+      const loopback = await execute(client, [
+        process.execPath,
+        "-e",
         "const n=require('node:net').connect({host:'127.0.0.1',port:Number(process.argv[1])},()=>{});" +
-        "n.on('data',d=>process.stdout.write(d));n.on('end',()=>process.exit(0));n.on('error',e=>{console.error(e);process.exit(9)})",
-        String(address.port)]);
+          "n.on('data',d=>process.stdout.write(d));n.on('end',()=>process.exit(0));n.on('error',e=>{console.error(e);process.exit(9)})",
+        String(address.port),
+      ]);
       if (process.platform === "linux") {
-        assert.notEqual(loopback.exitCode, 0, "ordinary native command reached host loopback without a service session");
+        assert.notEqual(
+          loopback.exitCode,
+          0,
+          "ordinary native command reached host loopback without a service session",
+        );
       } else {
         assert.equal(loopback.exitCode, 0, loopback.stderr);
         assert.match(loopback.stdout, /LOOPBACK_OK/u);
       }
-    } finally { await new Promise(resolve => server.close(resolve)); }
-    console.log(process.platform === "linux"
-      ? "native boundary: ordinary-command loopback denied"
-      : "native boundary: platform loopback allowed");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    console.log(
+      process.platform === "linux"
+        ? "native boundary: ordinary-command loopback denied"
+        : "native boundary: platform loopback allowed",
+    );
   } finally {
     await client.close();
   }
 
   const manager = await WorkspaceManager.create({
-    projectId: "project_12345678-1234-4123-8123-123456789abc", revision: 1,
+    projectId: "project_12345678-1234-4123-8123-123456789abc",
+    revision: 1,
     primaryFolderId: "folder_primary",
     folders: [
-      { id: "folder_primary", projectId: "project_12345678-1234-4123-8123-123456789abc",
-        key: "primary", path: workspace, active: true, addedRevision: 1, sortOrder: 0 },
-      { id: "folder_secondary", projectId: "project_12345678-1234-4123-8123-123456789abc",
-        key: "secondary", path: secondaryWorkspace, active: true, addedRevision: 1, sortOrder: 1 },
+      {
+        id: "folder_primary",
+        projectId: "project_12345678-1234-4123-8123-123456789abc",
+        key: "primary",
+        path: workspace,
+        active: true,
+        addedRevision: 1,
+        sortOrder: 0,
+      },
+      {
+        id: "folder_secondary",
+        projectId: "project_12345678-1234-4123-8123-123456789abc",
+        key: "secondary",
+        path: secondaryWorkspace,
+        active: true,
+        addedRevision: 1,
+        sortOrder: 1,
+      },
     ],
   });
   const backend = new NativeSandboxBackend(manager, { dataDir: nativeDataDir });
@@ -153,33 +231,78 @@ try {
     commandTimeoutMs: 10_000,
     maxOutputChars: 4_096,
   };
-  const timedOut = await runtime.run({ program: process.execPath,
-    args: ["-e", "setInterval(()=>{},1000)"], intent: "run", timeoutMs: 1_000 }, context);
-  assert.equal(timedOut.status, "timed_out", JSON.stringify({ failure: timedOut.failure,
-    lifecycle: timedOut.lifecycle, stderr: timedOut.stderr.text, exitCode: timedOut.exitCode,
-    durationMs: timedOut.durationMs }));
+  const timedOut = await runtime.run(
+    { program: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], intent: "run", timeoutMs: 1_000 },
+    context,
+  );
+  assert.equal(
+    timedOut.status,
+    "timed_out",
+    JSON.stringify({
+      failure: timedOut.failure,
+      lifecycle: timedOut.lifecycle,
+      stderr: timedOut.stderr.text,
+      exitCode: timedOut.exitCode,
+      durationMs: timedOut.durationMs,
+    }),
+  );
   assert.equal(timedOut.lifecycle?.cleanup, "confirmed", JSON.stringify(timedOut));
   console.log("runtime: timeout cleanup confirmed");
 
-  const followUp = await runtime.run({ program: process.execPath,
-    args: ["-e", "process.stdout.write('FOLLOW_UP_OK')"], intent: "inspect", timeoutMs: 10_000 }, context);
-  assert.equal(followUp.status, "exited", JSON.stringify({ failure: followUp.failure,
-    lifecycle: followUp.lifecycle, stdout: followUp.stdout.text, stderr: followUp.stderr.text,
-    durationMs: followUp.durationMs }));
+  const followUp = await runtime.run(
+    {
+      program: process.execPath,
+      args: ["-e", "process.stdout.write('FOLLOW_UP_OK')"],
+      intent: "inspect",
+      timeoutMs: 10_000,
+    },
+    context,
+  );
+  assert.equal(
+    followUp.status,
+    "exited",
+    JSON.stringify({
+      failure: followUp.failure,
+      lifecycle: followUp.lifecycle,
+      stdout: followUp.stdout.text,
+      stderr: followUp.stderr.text,
+      durationMs: followUp.durationMs,
+    }),
+  );
   assert.equal(followUp.exitCode, 0);
   assert.match(followUp.stdout.text, /FOLLOW_UP_OK/u);
   assert.ok(followUp.durationMs < 15_000, `follow-up command took ${followUp.durationMs}ms`);
-  console.log(`runtime: follow-up completed in ${followUp.durationMs}ms (${JSON.stringify(followUp.lifecycle?.timings)})`);
-  const secondaryFollowUp = await runtime.run({ program: process.execPath,
-    args: ["-e", "require('node:fs').writeFileSync('runtime.txt','MULTI_ROOT_OK')"], cwd: "secondary",
-    intent: "run", timeoutMs: 10_000 }, context);
+  console.log(
+    `runtime: follow-up completed in ${followUp.durationMs}ms (${JSON.stringify(followUp.lifecycle?.timings)})`,
+  );
+  const secondaryFollowUp = await runtime.run(
+    {
+      program: process.execPath,
+      args: ["-e", "require('node:fs').writeFileSync('runtime.txt','MULTI_ROOT_OK')"],
+      cwd: "secondary",
+      intent: "run",
+      timeoutMs: 10_000,
+    },
+    context,
+  );
   assert.equal(secondaryFollowUp.exitCode, 0, JSON.stringify(secondaryFollowUp));
   assert.equal(await readFile(path.join(secondaryWorkspace, "runtime.txt"), "utf8"), "MULTI_ROOT_OK");
   console.log("runtime: second project folder writable");
   if (process.platform === "win32") {
-    const packageShim = await runtime.run({ program: "npm", args: ["--version"], intent: "inspect", timeoutMs: 10_000 }, context);
-    assert.equal(packageShim.status, "exited", JSON.stringify({ failure: packageShim.failure,
-      lifecycle: packageShim.lifecycle, stdout: packageShim.stdout.text, stderr: packageShim.stderr.text }));
+    const packageShim = await runtime.run(
+      { program: "npm", args: ["--version"], intent: "inspect", timeoutMs: 10_000 },
+      context,
+    );
+    assert.equal(
+      packageShim.status,
+      "exited",
+      JSON.stringify({
+        failure: packageShim.failure,
+        lifecycle: packageShim.lifecycle,
+        stdout: packageShim.stdout.text,
+        stderr: packageShim.stderr.text,
+      }),
+    );
     assert.equal(packageShim.exitCode, 0);
     assert.match(packageShim.stdout.text, /\d+\.\d+/u);
     console.log("runtime: Windows package-manager shim launched through structured adapter");

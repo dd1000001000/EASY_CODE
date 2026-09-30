@@ -6,13 +6,7 @@ const path = require("node:path");
 
 const MANIFEST_FILE = "easy-code-vscode.manifest.json";
 const VSIX_FILE = "easy-code-vscode.vsix";
-const BASE_SOURCE_FILES = [
-  ".vscodeignore",
-  "LICENSE",
-  "README.md",
-  "extension.js",
-  "package.json",
-];
+const BASE_SOURCE_FILES = [".vscodeignore", "LICENSE", "README.md", "extension.js", "package.json"];
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -23,7 +17,8 @@ function hashFile(filename) {
 }
 
 function hashTextFile(filename) {
-  const text = fs.readFileSync(filename, "utf8")
+  const text = fs
+    .readFileSync(filename, "utf8")
     .replace(/^\uFEFF/u, "")
     .replace(/\r\n?/gu, "\n");
   return sha256(Buffer.from(text, "utf8"));
@@ -70,18 +65,13 @@ function resolvePaths(options = {}) {
     packageRoot,
     sourceRoot,
     vsixPath: path.resolve(options.vsixPath || path.join(sourceRoot, VSIX_FILE)),
-    manifestPath: path.resolve(
-      options.manifestPath || path.join(sourceRoot, MANIFEST_FILE),
-    ),
+    manifestPath: path.resolve(options.manifestPath || path.join(sourceRoot, MANIFEST_FILE)),
   };
 }
 
 function createManifest(options = {}) {
   const paths = resolvePaths(options);
-  const extensionPackage = readJson(
-    path.join(paths.sourceRoot, "package.json"),
-    "VS Code extension package.json",
-  );
+  const extensionPackage = readJson(path.join(paths.sourceRoot, "package.json"), "VS Code extension package.json");
   if (typeof extensionPackage.version !== "string" || !extensionPackage.version) {
     throw new Error("VS Code extension package.json has no valid version.");
   }
@@ -159,9 +149,7 @@ function verifyBundledVsix(options = {}) {
     const files = collectSourceFiles(paths.sourceRoot);
     const recordedFiles = Object.keys(manifest.sources).sort();
     if (files.join("\n") !== recordedFiles.join("\n")) {
-      throw new Error(
-        "VS Code extension source files changed after packaging. Run `npm run package:vscode`.",
-      );
+      throw new Error("VS Code extension source files changed after packaging. Run `npm run package:vscode`.");
     }
     for (const relative of files) {
       const absolute = path.join(paths.sourceRoot, ...relative.split("/"));
@@ -171,10 +159,7 @@ function verifyBundledVsix(options = {}) {
         );
       }
     }
-    const extensionPackage = readJson(
-      path.join(paths.sourceRoot, "package.json"),
-      "VS Code extension package.json",
-    );
+    const extensionPackage = readJson(path.join(paths.sourceRoot, "package.json"), "VS Code extension package.json");
     if (extensionPackage.version !== manifest.extensionVersion) {
       throw new Error("VS Code extension version does not match the bundled VSIX manifest.");
     }
@@ -199,9 +184,7 @@ if (require.main === module) {
   try {
     if (process.argv.includes("--write")) writeManifest();
     const result = verifyBundledVsix();
-    process.stdout.write(
-      `EASY CODE: bundled VS Code extension ${result.extensionVersion} is current.\n`,
-    );
+    process.stdout.write(`EASY CODE: bundled VS Code extension ${result.extensionVersion} is current.\n`);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     process.stderr.write(`EASY CODE: VS Code extension verification failed: ${detail}\n`);

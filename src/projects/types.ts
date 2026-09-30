@@ -29,13 +29,20 @@ export interface ProjectRecord {
   readonly folders: readonly ProjectFolder[];
 }
 
-export function projectPrimaryFolder(project: Pick<ProjectRecord, "primaryFolderId" | "folders">): ProjectFolder | undefined {
-  return project.folders.find(folder => folder.active && folder.id === project.primaryFolderId)
-    ?? project.folders.find(folder => folder.active);
+export function projectPrimaryFolder(
+  project: Pick<ProjectRecord, "primaryFolderId" | "folders">,
+): ProjectFolder | undefined {
+  return (
+    project.folders.find((folder) => folder.active && folder.id === project.primaryFolderId) ??
+    project.folders.find((folder) => folder.active)
+  );
 }
 
-export function projectWorkspace(project: Pick<ProjectRecord, "id" | "workspaceRevision" | "primaryFolderId" | "folders">): ProjectWorkspace {
-  const active = project.folders.filter(folder => folder.active)
+export function projectWorkspace(
+  project: Pick<ProjectRecord, "id" | "workspaceRevision" | "primaryFolderId" | "folders">,
+): ProjectWorkspace {
+  const active = project.folders
+    .filter((folder) => folder.active)
     .sort((left, right) => left.sortOrder - right.sortOrder || left.id.localeCompare(right.id));
   const primary = projectPrimaryFolder({ ...project, folders: active });
   if (!primary) throw new Error("Attach at least one folder before using this project.");

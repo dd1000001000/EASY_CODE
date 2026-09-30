@@ -29,15 +29,15 @@ export function describeTransportTimeout(
   error: HttpTransportError,
   deadlines: { streamIdleTimeoutMs: number; bufferedTimeoutMs: number },
 ): string {
-  const durationMs = error.kind === "buffered_total_timeout"
-    ? deadlines.bufferedTimeoutMs
-    : deadlines.streamIdleTimeoutMs;
+  const durationMs =
+    error.kind === "buffered_total_timeout" ? deadlines.bufferedTimeoutMs : deadlines.streamIdleTimeoutMs;
   if (error.message.includes(`${durationMs}ms`)) return error.message;
-  const label = error.kind === "stream_header_timeout"
-    ? "response-header timeout"
-    : error.kind === "stream_semantic_idle_timeout"
-      ? "semantic stream idle timeout"
-      : "buffered total timeout";
+  const label =
+    error.kind === "stream_header_timeout"
+      ? "response-header timeout"
+      : error.kind === "stream_semantic_idle_timeout"
+        ? "semantic stream idle timeout"
+        : "buffered total timeout";
   return `${error.message} (effective ${label}: ${durationMs}ms)`;
 }
 
@@ -64,26 +64,17 @@ export interface JsonPostResponse {
   body: string;
 }
 
-export type JsonPostTransport = (
-  request: JsonPostRequest,
-) => Promise<JsonPostResponse>;
+export type JsonPostTransport = (request: JsonPostRequest) => Promise<JsonPostResponse>;
 
 /**
  * Small Node 20-compatible JSON transport. It intentionally supports only HTTP(S),
  * performs no redirects, and keeps framing-specific timeout policy separate
  * from protocol parsing. Raw bytes never renew a semantic stream deadline.
  */
-export const postJsonWithNode: JsonPostTransport = (
-  input,
-): Promise<JsonPostResponse> =>
+export const postJsonWithNode: JsonPostTransport = (input): Promise<JsonPostResponse> =>
   new Promise((resolve, reject) => {
     if (input.url.protocol !== "http:" && input.url.protocol !== "https:") {
-      reject(
-        new HttpTransportError(
-          "network",
-          `Unsupported URL protocol: ${input.url.protocol}`,
-        ),
-      );
+      reject(new HttpTransportError("network", `Unsupported URL protocol: ${input.url.protocol}`));
       return;
     }
     if (input.signal?.aborted) {
@@ -102,8 +93,7 @@ export const postJsonWithNode: JsonPostTransport = (
         "content-length": String(Buffer.byteLength(input.body)),
       },
     };
-    const requestImpl =
-      input.url.protocol === "https:" ? httpsRequest : httpRequest;
+    const requestImpl = input.url.protocol === "https:" ? httpsRequest : httpRequest;
     let settled = false;
     let responseBytes = 0;
     const startedAt = Date.now();
@@ -114,9 +104,14 @@ export const postJsonWithNode: JsonPostTransport = (
       if (timer) clearTimeout(timer);
       timer = undefined;
     };
-    const timeoutError = (kind: Extract<TransportErrorKind,
-      "stream_header_timeout" | "stream_semantic_idle_timeout" | "buffered_total_timeout">,
-      durationMs: number): HttpTransportError => new HttpTransportError(
+    const timeoutError = (
+      kind: Extract<
+        TransportErrorKind,
+        "stream_header_timeout" | "stream_semantic_idle_timeout" | "buffered_total_timeout"
+      >,
+      durationMs: number,
+    ): HttpTransportError =>
+      new HttpTransportError(
         kind,
         kind === "stream_header_timeout"
           ? `Provider response headers did not arrive within ${durationMs}ms`
@@ -124,22 +119,27 @@ export const postJsonWithNode: JsonPostTransport = (
             ? `Provider stream made no semantic progress for ${durationMs}ms`
             : `Buffered provider request exceeded ${durationMs}ms`,
       );
-    const armTimer = (durationMs: number, kind: Extract<TransportErrorKind,
-      "stream_header_timeout" | "stream_semantic_idle_timeout" | "buffered_total_timeout">): void => {
+    const armTimer = (
+      durationMs: number,
+      kind: Extract<
+        TransportErrorKind,
+        "stream_header_timeout" | "stream_semantic_idle_timeout" | "buffered_total_timeout"
+      >,
+    ): void => {
       clearTimer();
       timer = setTimeout(() => {
         request.destroy(timeoutError(kind, durationMs));
       }, durationMs);
     };
     const armBufferedDeadline = (): void => {
-      const totalMs = input.timeoutMode === "buffered_total"
-        ? input.timeoutMs
-        : input.bufferedTimeoutMs;
+      const totalMs = input.timeoutMode === "buffered_total" ? input.timeoutMs : input.bufferedTimeoutMs;
       if (!Number.isSafeInteger(totalMs) || (totalMs ?? 0) <= 0) {
-        request.destroy(new HttpTransportError(
-          "network",
-          "A streamed request that falls back to buffering requires a positive buffered timeout",
-        ));
+        request.destroy(
+          new HttpTransportError(
+            "network",
+            "A streamed request that falls back to buffering requires a positive buffered timeout",
+          ),
+        );
         return;
       }
       const remainingMs = totalMs! - (Date.now() - startedAt);
@@ -150,9 +150,7 @@ export const postJsonWithNode: JsonPostTransport = (
       armTimer(remainingMs, "buffered_total_timeout");
     };
 
-    const finish = (
-      callback: () => void,
-    ): void => {
+    const finish = (callback: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimer();
@@ -161,25 +159,25 @@ export const postJsonWithNode: JsonPostTransport = (
     };
 
     const request = requestImpl(options, (response) => {
-      if (settled) { response.destroy(); return; }
+      if (settled) {
+        response.destroy();
+        return;
+      }
       const chunks: Buffer[] = [];
       try {
-        const selected = input.onResponseStart?.({
-          statusCode: response.statusCode ?? 0,
-          headers: response.headers,
-        }) ?? "buffered";
-        responseFraming = input.timeoutMode === "stream_semantic_idle" && selected === "stream"
-          ? "stream"
-          : "buffered";
+        const selected =
+          input.onResponseStart?.({
+            statusCode: response.statusCode ?? 0,
+            headers: response.headers,
+          }) ?? "buffered";
+        responseFraming = input.timeoutMode === "stream_semantic_idle" && selected === "stream" ? "stream" : "buffered";
         if (responseFraming === "stream") {
           armTimer(input.timeoutMs, "stream_semantic_idle_timeout");
         } else if (input.timeoutMode === "stream_semantic_idle") {
           armBufferedDeadline();
         }
       } catch (error) {
-        const callbackError = error instanceof Error
-          ? error
-          : new HttpTransportError("network", String(error));
+        const callbackError = error instanceof Error ? error : new HttpTransportError("network", String(error));
         finish(() => reject(callbackError));
         response.destroy();
         return;
@@ -203,9 +201,7 @@ export const postJsonWithNode: JsonPostTransport = (
             armTimer(input.timeoutMs, "stream_semantic_idle_timeout");
           }
         } catch (error) {
-          const callbackError = error instanceof Error
-            ? error
-            : new HttpTransportError("network", String(error));
+          const callbackError = error instanceof Error ? error : new HttpTransportError("network", String(error));
           finish(() => reject(callbackError));
           response.destroy();
           return;
@@ -213,32 +209,21 @@ export const postJsonWithNode: JsonPostTransport = (
         chunks.push(buffer);
       });
       response.on("end", () => {
-        finish(
-          () =>
-            resolve({
-              statusCode: response.statusCode ?? 0,
-              headers: response.headers,
-              body: Buffer.concat(chunks).toString("utf8"),
-            }),
+        finish(() =>
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
         );
       });
       response.on("error", (error) => {
         const transportError =
-          error instanceof HttpTransportError
-            ? error
-            : new HttpTransportError("network", error.message);
+          error instanceof HttpTransportError ? error : new HttpTransportError("network", error.message);
         finish(() => reject(transportError));
       });
       response.on("aborted", () => {
-        finish(
-          () =>
-            reject(
-              new HttpTransportError(
-                "network",
-                "Provider closed the response before completion",
-              ),
-            ),
-        );
+        finish(() => reject(new HttpTransportError("network", "Provider closed the response before completion")));
       });
     });
 
@@ -257,9 +242,7 @@ export const postJsonWithNode: JsonPostTransport = (
 
     request.on("error", (error) => {
       const transportError =
-        error instanceof HttpTransportError
-          ? error
-          : new HttpTransportError("network", error.message);
+        error instanceof HttpTransportError ? error : new HttpTransportError("network", error.message);
       finish(() => reject(transportError));
     });
     request.write(input.body);

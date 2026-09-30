@@ -39,18 +39,29 @@ export class ProviderError extends Error {
 /** Errors delivered inside a successful HTTP/SSE response still obey API policy. */
 export function streamProviderError(provider: ProviderName, value: unknown, secret?: string): ProviderError {
   const record = (input: unknown): Record<string, unknown> =>
-    input !== null && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+    input !== null && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
   const event = record(value);
   const response = record(event.response);
   const error = record(event.error ?? response.error ?? event);
   const code = String(error.code ?? error.type ?? "stream_error");
   const message = typeof error.message === "string" ? error.message : "Provider reported a stream error";
   const status = Number(error.status_code ?? error.status ?? event.status_code ?? error.code);
-  const permanent = /auth|api.?key|permission|forbidden|invalid.request|invalid.param|not.found|quota|billing|context|content.filter/iu.test(code);
-  const retryable = !permanent && (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500 ||
-    /server.error|internal.error|rate.limit|overload|temporar|unavailable|timeout/iu.test(code));
+  const permanent =
+    /auth|api.?key|permission|forbidden|invalid.request|invalid.param|not.found|quota|billing|context|content.filter/iu.test(
+      code,
+    );
+  const retryable =
+    !permanent &&
+    (status === 408 ||
+      status === 409 ||
+      status === 425 ||
+      status === 429 ||
+      status >= 500 ||
+      /server.error|internal.error|rate.limit|overload|temporar|unavailable|timeout/iu.test(code));
   return new ProviderError(message, {
-    provider, code, retryable,
+    provider,
+    code,
+    retryable,
     ...(Number.isInteger(status) && status >= 400 && status <= 599 ? { statusCode: status } : {}),
     secrets: [secret],
   });
@@ -58,17 +69,11 @@ export function streamProviderError(provider: ProviderName, value: unknown, secr
 
 /** Remove inline image payloads before provider text can reach logs or durable state. */
 export function redactImageDataUrls(input: string): string {
-  return input.replace(
-    /data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/_=-]+/giu,
-    "[REDACTED_IMAGE_DATA_URL]",
-  );
+  return input.replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/_=-]+/giu, "[REDACTED_IMAGE_DATA_URL]");
 }
 
 /** Redact common credential shapes before an error crosses the provider boundary. */
-export function redactSensitiveText(
-  input: unknown,
-  secrets: readonly (string | undefined)[] = [],
-): string {
+export function redactSensitiveText(input: unknown, secrets: readonly (string | undefined)[] = []): string {
   let value = input instanceof Error ? input.message : String(input);
 
   for (const secret of secrets) {
@@ -81,10 +86,7 @@ export function redactSensitiveText(
       /((?:api[_-]?key|access[_-]?token|token|password|secret)\s*["']?\s*[:=]\s*["']?)[^\s,"'}&]+/gi,
       "$1[REDACTED]",
     )
-    .replace(
-      /([?&](?:api[_-]?key|access[_-]?token|token|key)=)[^&\s]+/gi,
-      "$1[REDACTED]",
-    );
+    .replace(/([?&](?:api[_-]?key|access[_-]?token|token|key)=)[^&\s]+/gi, "$1[REDACTED]");
 
   return value.length > 2_000 ? `${value.slice(0, 2_000)}…` : value;
 }

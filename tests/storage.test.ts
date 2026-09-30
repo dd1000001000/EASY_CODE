@@ -33,11 +33,7 @@ function temporaryDataDir(): string {
   return mkdtempSync(path.join(os.tmpdir(), "easy-code-storage-"));
 }
 
-async function waitForOutput(
-  child: ChildProcess,
-  marker: string,
-  timeoutMs = 10_000,
-): Promise<void> {
+async function waitForOutput(child: ChildProcess, marker: string, timeoutMs = 10_000): Promise<void> {
   const output = child.stdout;
   if (!output) throw new Error("child stdout is not available");
   await new Promise<void>((resolve, reject) => {
@@ -76,19 +72,29 @@ describe("storage", () => {
       const thread = threads.create({
         threadId: "thread_auto_route_durable",
         workspaceRoot: path.join(dataDir, "workspace"),
-        mode: "auto", provider: "deepseek", model: "deepseek-v4-flash",
+        mode: "auto",
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
       });
       const turn = threads.startTurn(thread.threadId, "Investigate the request");
       threads.appendEvent(thread.threadId, {
-        type: "mode.auto_route", turnId: turn.turnId, phase: "completed",
+        type: "mode.auto_route",
+        turnId: turn.turnId,
+        phase: "completed",
         payload: { mode: "plan", reason: "A reviewable plan is needed." },
       });
       assert.equal(threads.recover(thread.threadId).mode, "plan");
-      assert.equal(threads.list().find(item => item.threadId === thread.threadId)?.mode, "plan");
-      assert.throws(() => threads.appendEvent(thread.threadId, {
-        type: "mode.auto_route", turnId: turn.turnId, phase: "completed",
-        payload: { mode: "code", reason: "A second route is not permitted." },
-      }), /Invalid Auto mode selection/u);
+      assert.equal(threads.list().find((item) => item.threadId === thread.threadId)?.mode, "plan");
+      assert.throws(
+        () =>
+          threads.appendEvent(thread.threadId, {
+            type: "mode.auto_route",
+            turnId: turn.turnId,
+            phase: "completed",
+            payload: { mode: "code", reason: "A second route is not permitted." },
+          }),
+        /Invalid Auto mode selection/u,
+      );
       assert.equal(threads.recover(thread.threadId).mode, "plan");
     } finally {
       storage.close();
@@ -117,7 +123,9 @@ describe("storage", () => {
       db.exec("INSERT INTO easy_code_schema VALUES (4, 'easy-code-0.1.0-model-directed-memory')");
       db.pragma("user_version = 4");
       assert.throws(() => initializeCurrentSchema(db), /Unsupported EASY CODE development database/u);
-    } finally { db.close(); }
+    } finally {
+      db.close();
+    }
   });
   it("does not provide compatibility for older database layouts", () => {
     const db = new SqliteDatabase(":memory:");
@@ -137,17 +145,12 @@ describe("storage", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
     try {
-      assert.equal(
-        String(storage.db.pragma("journal_mode", { simple: true })).toLowerCase(),
-        "delete",
-      );
+      assert.equal(String(storage.db.pragma("journal_mode", { simple: true })).toLowerCase(), "delete");
       assert.equal(storage.db.pragma("foreign_keys", { simple: true }), 1);
       assert.equal(storage.db.pragma("busy_timeout", { simple: true }), 5_000);
 
       const tables = storage.db
-        .prepare<[], { name: string }>(
-          "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')",
-        )
+        .prepare<[], { name: string }>("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
         .all()
         .map((row) => row.name);
       for (const required of [
@@ -204,17 +207,11 @@ describe("storage", () => {
     try {
       storage.db.exec("CREATE TABLE transaction_probe(value TEXT NOT NULL)");
       const fail = storage.db.transaction(() => {
-        storage.db
-          .prepare<[string]>("INSERT INTO transaction_probe(value) VALUES (?)")
-          .run("discarded");
+        storage.db.prepare<[string]>("INSERT INTO transaction_probe(value) VALUES (?)").run("discarded");
         throw new Error("rollback probe");
       });
       assert.throws(fail, /rollback probe/u);
-      const row = storage.db
-        .prepare<[], { count: number }>(
-          "SELECT COUNT(*) AS count FROM transaction_probe",
-        )
-        .get();
+      const row = storage.db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM transaction_probe").get();
       assert.equal(row?.count, 0);
     } finally {
       storage.close();
@@ -249,16 +246,9 @@ describe("storage", () => {
       assert.throws(fail, /callbacks must be synchronous/u);
       assert.ok(continuation);
       await continuation;
-      assert.match(
-        continuationError instanceof Error ? continuationError.message : "",
-        /no longer active/u,
-      );
+      assert.match(continuationError instanceof Error ? continuationError.message : "", /no longer active/u);
       assert.equal(
-        storage.db
-          .prepare<[], { count: number }>(
-            "SELECT COUNT(*) AS count FROM async_transaction_probe",
-          )
-          .get()?.count,
+        storage.db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM async_transaction_probe").get()?.count,
         0,
       );
     } finally {
@@ -273,12 +263,8 @@ describe("storage", () => {
     try {
       storage.db.exec("CREATE TABLE blob_probe(value BLOB NOT NULL)");
       const expected = new Uint8Array([0, 1, 127, 255]);
-      storage.db
-        .prepare<[Uint8Array]>("INSERT INTO blob_probe(value) VALUES (?)")
-        .run(expected);
-      const actual = storage.db
-        .prepare<[], { value: Uint8Array }>("SELECT value FROM blob_probe")
-        .get()?.value;
+      storage.db.prepare<[Uint8Array]>("INSERT INTO blob_probe(value) VALUES (?)").run(expected);
+      const actual = storage.db.prepare<[], { value: Uint8Array }>("SELECT value FROM blob_probe").get()?.value;
       assert.ok(actual instanceof Uint8Array);
       assert.deepEqual([...actual], [...expected]);
     } finally {
@@ -304,16 +290,11 @@ describe("storage", () => {
     ].join("\n");
 
     try {
-      const crashed = spawnSync(
-        process.execPath,
-        ["--input-type=module", "-e", childScript, storageModule, dataDir],
-        { encoding: "utf8", timeout: 15_000 },
-      );
-      assert.equal(
-        crashed.status,
-        23,
-        `child did not crash at the lock probe:\n${crashed.stderr}`,
-      );
+      const crashed = spawnSync(process.execPath, ["--input-type=module", "-e", childScript, storageModule, dataDir], {
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      assert.equal(crashed.status, 23, `child did not crash at the lock probe:\n${crashed.stderr}`);
       assert.equal(existsSync(advisoryPath), true, "missing crashed advisory lock");
       assert.equal(existsSync(wasmLockPath), true, "missing crashed WASM VFS lock");
 
@@ -325,29 +306,22 @@ describe("storage", () => {
         "if (row.count !== 0) process.exitCode = 24;",
       ].join("\n");
       const contenders = Array.from({ length: 8 }, () =>
-        spawn(
-          process.execPath,
-          ["--input-type=module", "-e", contenderScript, storageModule, dataDir],
-          { stdio: ["ignore", "ignore", "pipe"] },
-        ),
+        spawn(process.execPath, ["--input-type=module", "-e", contenderScript, storageModule, dataDir], {
+          stdio: ["ignore", "ignore", "pipe"],
+        }),
       );
-      const results = await Promise.all(contenders.map(async (child) => {
-        let stderr = "";
-        child.stderr?.on("data", (chunk: Buffer | string) => {
-          stderr += chunk.toString();
-        });
-        const [code, signal] = await once(child, "exit") as [
-          number | null,
-          NodeJS.Signals | null,
-        ];
-        return { code, signal, stderr };
-      }));
+      const results = await Promise.all(
+        contenders.map(async (child) => {
+          let stderr = "";
+          child.stderr?.on("data", (chunk: Buffer | string) => {
+            stderr += chunk.toString();
+          });
+          const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+          return { code, signal, stderr };
+        }),
+      );
       for (const result of results) {
-        assert.equal(
-          result.code,
-          0,
-          `recovery contender failed (${String(result.signal)}):\n${result.stderr}`,
-        );
+        assert.equal(result.code, 0, `recovery contender failed (${String(result.signal)}):\n${result.stderr}`);
       }
 
       const tombstones = readdirSync(dataDir).filter((name) =>
@@ -365,11 +339,7 @@ describe("storage", () => {
         assert.equal(existsSync(advisoryPath), false);
         assert.equal(existsSync(wasmLockPath), false);
         assert.equal(
-          recovered.db
-            .prepare<[], { count: number }>(
-              "SELECT COUNT(*) AS count FROM crash_probe",
-            )
-            .get()?.count,
+          recovered.db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM crash_probe").get()?.count,
           0,
         );
       } finally {
@@ -398,20 +368,15 @@ describe("storage", () => {
       "})();",
       "storage.close();",
     ].join("\n");
-    const child = spawn(
-      process.execPath,
-      ["--input-type=module", "-e", childScript, storageModule, dataDir],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const child = spawn(process.execPath, ["--input-type=module", "-e", childScript, storageModule, dataDir], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     try {
       await waitForOutput(child, "EASY_CODE_LOCKED\n");
       assert.equal(existsSync(advisoryPath), true);
       assert.equal(existsSync(wasmLockPath), true);
-      assert.throws(
-        () => new SqliteDatabase(databasePath, { lockTimeoutMs: 100 }),
-        /database is busy.*pid/iu,
-      );
+      assert.throws(() => new SqliteDatabase(databasePath, { lockTimeoutMs: 100 }), /database is busy.*pid/iu);
       assert.equal(existsSync(advisoryPath), true);
       assert.equal(existsSync(wasmLockPath), true);
     } finally {
@@ -467,10 +432,7 @@ describe("storage", () => {
     );
 
     try {
-      assert.throws(
-        () => new SqliteDatabase(databasePath, { lockTimeoutMs: 250 }),
-        /does not match its owner token/u,
-      );
+      assert.throws(() => new SqliteDatabase(databasePath, { lockTimeoutMs: 250 }), /does not match its owner token/u);
       assert.equal(existsSync(tombstonePath), true);
       assert.equal(existsSync(advisoryPath), false);
     } finally {
@@ -483,16 +445,9 @@ describe("storage", () => {
     const realDirectory = path.join(dataDir, "real");
     const aliasDirectory = path.join(dataDir, "alias");
     mkdirSync(realDirectory);
-    symlinkSync(
-      realDirectory,
-      aliasDirectory,
-      process.platform === "win32" ? "junction" : "dir",
-    );
+    symlinkSync(realDirectory, aliasDirectory, process.platform === "win32" ? "junction" : "dir");
     const primary = new SqliteDatabase(path.join(realDirectory, "alias.db"));
-    const alias = new SqliteDatabase(
-      path.join(aliasDirectory, "alias.db"),
-      { lockTimeoutMs: 100 },
-    );
+    const alias = new SqliteDatabase(path.join(aliasDirectory, "alias.db"), { lockTimeoutMs: 100 });
 
     try {
       primary.exec("CREATE TABLE alias_probe(value INTEGER NOT NULL)");
@@ -559,10 +514,16 @@ describe("storage", () => {
       assert.equal(journal.append({ type: "message.recorded", payload: { value: 2 } }).sequence, 2);
       appendFileSync(journal.filePath, '{"schemaVersion":1,"broken":', "utf8");
 
-      assert.deepEqual(journal.read().map((event) => event.type), ["reasoning", "message.recorded"]);
+      assert.deepEqual(
+        journal.read().map((event) => event.type),
+        ["reasoning", "message.recorded"],
+      );
       const third = journal.append({ type: "tool.call", payload: null });
       assert.equal(third.sequence, 3);
-      assert.deepEqual(journal.read().map((event) => event.sequence), [1, 2, 3]);
+      assert.deepEqual(
+        journal.read().map((event) => event.sequence),
+        [1, 2, 3],
+      );
       assert.equal(journal.readAfter(1).length, 2);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
@@ -578,42 +539,50 @@ describe("storage", () => {
         eventId: "event_cache_one",
         payload: { value: 1 },
       });
-      assert.deepEqual(journal.read().map((event) => event.sequence), [1]);
+      assert.deepEqual(
+        journal.read().map((event) => event.sequence),
+        [1],
+      );
       const firstCache = (journal as unknown as { cachedScan?: unknown }).cachedScan;
       assert.ok(firstCache);
       journal.read();
-      assert.strictEqual(
-        (journal as unknown as { cachedScan?: unknown }).cachedScan,
-        firstCache,
-      );
+      assert.strictEqual((journal as unknown as { cachedScan?: unknown }).cachedScan, firstCache);
 
-      appendFileSync(journal.filePath, `${JSON.stringify({
-        schemaVersion: 2,
-        eventId: "event_cache_external",
-        threadId: "thread_journal_cache",
-        sequence: 2,
-        timestamp: "2026-09-06T12:00:00.000Z",
-        type: "tool.result",
-        payload: { value: 2 },
-      })}\n`, "utf8");
-      assert.deepEqual(journal.read().map((event) => event.type), ["reasoning", "tool.result"]);
-      assert.notStrictEqual(
-        (journal as unknown as { cachedScan?: unknown }).cachedScan,
-        firstCache,
-      );
-      assert.throws(
-        () => journal.append({
-          type: "tool.call",
+      appendFileSync(
+        journal.filePath,
+        `${JSON.stringify({
+          schemaVersion: 2,
           eventId: "event_cache_external",
-          payload: null,
-        }),
+          threadId: "thread_journal_cache",
+          sequence: 2,
+          timestamp: "2026-09-06T12:00:00.000Z",
+          type: "tool.result",
+          payload: { value: 2 },
+        })}\n`,
+        "utf8",
+      );
+      assert.deepEqual(
+        journal.read().map((event) => event.type),
+        ["reasoning", "tool.result"],
+      );
+      assert.notStrictEqual((journal as unknown as { cachedScan?: unknown }).cachedScan, firstCache);
+      assert.throws(
+        () =>
+          journal.append({
+            type: "tool.call",
+            eventId: "event_cache_external",
+            payload: null,
+          }),
         /Duplicate event id/u,
       );
 
       appendFileSync(journal.filePath, '{"schemaVersion":1,"broken":', "utf8");
       const local = journal.append({ type: "message.recorded", payload: { value: 3 } });
       assert.equal(local.sequence, 3);
-      assert.deepEqual(journal.read().map((event) => event.sequence), [1, 2, 3]);
+      assert.deepEqual(
+        journal.read().map((event) => event.sequence),
+        [1, 2, 3],
+      );
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -671,23 +640,18 @@ describe("storage", () => {
           { stdio: ["ignore", "ignore", "pipe"] },
         ),
       );
-      const results = await Promise.all(workers.map(async (child) => {
-        let stderr = "";
-        child.stderr?.on("data", (chunk: Buffer | string) => {
-          stderr += chunk.toString();
-        });
-        const [code, signal] = await once(child, "exit") as [
-          number | null,
-          NodeJS.Signals | null,
-        ];
-        return { code, signal, stderr };
-      }));
+      const results = await Promise.all(
+        workers.map(async (child) => {
+          let stderr = "";
+          child.stderr?.on("data", (chunk: Buffer | string) => {
+            stderr += chunk.toString();
+          });
+          const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+          return { code, signal, stderr };
+        }),
+      );
       for (const result of results) {
-        assert.equal(
-          result.code,
-          0,
-          `journal worker failed (${String(result.signal)}):\n${result.stderr}`,
-        );
+        assert.equal(result.code, 0, `journal worker failed (${String(result.signal)}):\n${result.stderr}`);
       }
 
       const reopened = createStorage(dataDir);
@@ -701,9 +665,7 @@ describe("storage", () => {
         );
         assert.equal(
           reopened.db
-            .prepare<[string], { count: number }>(
-              "SELECT COUNT(*) AS count FROM item_index WHERE thread_id = ?",
-            )
+            .prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM item_index WHERE thread_id = ?")
             .get(threadId)?.count,
           expectedCount,
         );
@@ -728,20 +690,13 @@ describe("storage", () => {
         model: "qwen-test",
       });
       const first = threads.acquireThreadLease("thread_lease_normal");
-      assert.throws(
-        () => threads.acquireThreadLease("thread_lease_normal"),
-        /already active.*PID/iu,
-      );
+      assert.throws(() => threads.acquireThreadLease("thread_lease_normal"), /already active.*PID/iu);
       threads.releaseThreadLease(first);
       const second = threads.acquireThreadLease("thread_lease_normal");
       assert.notEqual(second.ownerToken, first.ownerToken);
       threads.releaseThreadLease(second);
       assert.equal(
-        storage.db
-          .prepare<[], { count: number }>(
-            "SELECT COUNT(*) AS count FROM thread_leases",
-          )
-          .get()?.count,
+        storage.db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM thread_leases").get()?.count,
         0,
       );
     } finally {
@@ -751,19 +706,30 @@ describe("storage", () => {
   });
 
   it("recovers a reused PID by OS birth identity without accepting its previous release token", () => {
-    const dataDir = temporaryDataDir(), storage = createStorage(dataDir);
+    const dataDir = temporaryDataDir(),
+      storage = createStorage(dataDir);
     try {
       const threads = new ThreadStore(storage);
-      threads.create({ threadId: "thread_reused_pid", workspaceRoot: path.join(dataDir, "workspace"), mode: "auto", provider: "qwen", model: "qwen-test" });
+      threads.create({
+        threadId: "thread_reused_pid",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto",
+        provider: "qwen",
+        model: "qwen-test",
+      });
       const old = threads.acquireThreadLease("thread_reused_pid");
       assert.ok(old.ownerProcessIdentity?.started);
-      storage.db.prepare("UPDATE thread_leases SET owner_process_identity = ? WHERE thread_id = ?")
+      storage.db
+        .prepare("UPDATE thread_leases SET owner_process_identity = ? WHERE thread_id = ?")
         .run(JSON.stringify({ started: "previous-process-incarnation", executable: process.execPath }), old.threadId);
       const current = threads.acquireThreadLease(old.threadId);
       assert.notEqual(current.ownerToken, old.ownerToken);
       assert.throws(() => threads.releaseThreadLease(old), /ownership no longer matches/u);
       threads.releaseThreadLease(current);
-    } finally { storage.close(); rmSync(dataDir, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("blocks a live cross-process thread owner and recovers after that process dies", async () => {
@@ -793,15 +759,7 @@ describe("storage", () => {
     ].join("\n");
     const child = spawn(
       process.execPath,
-      [
-        "--input-type=module",
-        "-e",
-        childScript,
-        storageModule,
-        threadsModule,
-        dataDir,
-        threadId,
-      ],
+      ["--input-type=module", "-e", childScript, storageModule, threadsModule, dataDir, threadId],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     let contender: ReturnType<typeof createStorage> | undefined;
@@ -809,10 +767,7 @@ describe("storage", () => {
       await waitForOutput(child, "EASY_CODE_THREAD_LEASED\n");
       contender = createStorage(dataDir);
       const threads = new ThreadStore(contender);
-      assert.throws(
-        () => threads.acquireThreadLease(threadId),
-        new RegExp(`already active.*PID ${child.pid}`, "iu"),
-      );
+      assert.throws(() => threads.acquireThreadLease(threadId), new RegExp(`already active.*PID ${child.pid}`, "iu"));
 
       const exited = once(child, "exit");
       assert.equal(child.kill(), true);
@@ -856,14 +811,8 @@ describe("storage", () => {
         },
       });
 
-      assert.throws(
-        () => threads.releaseThreadLease(stale),
-        /ownership no longer matches/u,
-      );
-      assert.throws(
-        () => threads.acquireThreadLease("thread_lease_recovery"),
-        /already active/u,
-      );
+      assert.throws(() => threads.releaseThreadLease(stale), /ownership no longer matches/u);
+      assert.throws(() => threads.acquireThreadLease("thread_lease_recovery"), /already active/u);
       threads.releaseThreadLease(replacement);
     } finally {
       storage.close();
@@ -887,9 +836,10 @@ describe("storage", () => {
         ownerHostname: "remote-host.example.invalid",
       });
       assert.throws(
-        () => threads.acquireThreadLease("thread_lease_remote", {
-          isProcessAlive: () => false,
-        }),
+        () =>
+          threads.acquireThreadLease("thread_lease_remote", {
+            isProcessAlive: () => false,
+          }),
         /already active.*remote-host/iu,
       );
       threads.releaseThreadLease(remote);
@@ -914,10 +864,7 @@ describe("storage", () => {
           },
         ],
       };
-      assert.deepEqual(
-        deserializeChatMessage(serializeChatMessage(assistantMessage)),
-        assistantMessage,
-      );
+      assert.deepEqual(deserializeChatMessage(serializeChatMessage(assistantMessage)), assistantMessage);
 
       const threads = new ThreadStore(storage);
       const state = threads.create({
@@ -941,11 +888,7 @@ describe("storage", () => {
       threads.save(state);
 
       const turn = threads.startTurn("thread_restore", "continue");
-      threads.completeTurn(
-        "thread_restore",
-        turn.turnId,
-        { role: "assistant", content: "done" },
-      );
+      threads.completeTurn("thread_restore", turn.turnId, { role: "assistant", content: "done" });
 
       const recovered = threads.recover("thread_restore");
       assert.equal(recovered.provider, "glm-coding-plan");
@@ -957,10 +900,7 @@ describe("storage", () => {
       const unsupportedCheckpoint = serializeSessionState(recovered) as unknown as Record<string, unknown>;
       delete unsupportedCheckpoint.compactedMessageCount;
       delete unsupportedCheckpoint.thinkingEffort;
-      assert.throws(
-        () => deserializeSessionState(unsupportedCheckpoint),
-        /Invalid serialized session state shape/u,
-      );
+      assert.throws(() => deserializeSessionState(unsupportedCheckpoint), /Invalid serialized session state shape/u);
       assert.equal(recovered.filesRead.get("src/a.ts")?.hash, "abc");
       assert.deepEqual(recovered.messages.slice(-2), [
         { role: "user", content: "continue" },
@@ -980,17 +920,12 @@ describe("storage", () => {
       assert.equal(threads.list()[0]?.threadId, "thread_restore");
 
       const indexed = storage.db
-        .prepare<[], { count: number }>(
-          "SELECT COUNT(*) AS count FROM item_index WHERE thread_id = 'thread_restore'",
-        )
+        .prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM item_index WHERE thread_id = 'thread_restore'")
         .get();
       assert.equal(indexed?.count, 4);
       assert.equal(
-        storage.db
-          .prepare<[string], { status: string }>(
-            "SELECT status FROM turns WHERE id = ?",
-          )
-          .get(turn.turnId)?.status,
+        storage.db.prepare<[string], { status: string }>("SELECT status FROM turns WHERE id = ?").get(turn.turnId)
+          ?.status,
         "completed",
       );
     } finally {
@@ -1023,11 +958,11 @@ describe("storage", () => {
         phase: "completed",
         payload: { role: "assistant", content: "done", phase: "final_answer" },
       });
-      threads.completeTurn(
-        "thread_runtime_events",
-        "turn_runtime",
-        { role: "assistant", content: "done", phase: "final_answer" },
-      );
+      threads.completeTurn("thread_runtime_events", "turn_runtime", {
+        role: "assistant",
+        content: "done",
+        phase: "final_answer",
+      });
       threads.recordToolAudit("thread_runtime_events", "turn_runtime", {
         id: "command_1",
         program: "node",
@@ -1046,18 +981,12 @@ describe("storage", () => {
         { role: "assistant", content: "done", phase: "final_answer" },
       ]);
       assert.equal(
-        storage.db
-          .prepare<[], { status: string }>(
-            "SELECT status FROM turns WHERE id = 'turn_runtime'",
-          )
-          .get()?.status,
+        storage.db.prepare<[], { status: string }>("SELECT status FROM turns WHERE id = 'turn_runtime'").get()?.status,
         "completed",
       );
       assert.equal(
         storage.db
-          .prepare<[], { count: number }>(
-            "SELECT COUNT(*) AS count FROM tool_audit WHERE id = 'command_1'",
-          )
+          .prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM tool_audit WHERE id = 'command_1'")
           .get()?.count,
         1,
       );
@@ -1091,11 +1020,13 @@ describe("storage", () => {
         payload: {
           role: "assistant",
           content: null,
-          tool_calls: [{
-            id: "call_bounded",
-            type: "function",
-            function: { name: "read_file", arguments: '{"path":"a.ts"}' },
-          }],
+          tool_calls: [
+            {
+              id: "call_bounded",
+              type: "function",
+              function: { name: "read_file", arguments: '{"path":"a.ts"}' },
+            },
+          ],
         },
       });
       const boundedToolMessage = {
@@ -1130,9 +1061,7 @@ describe("storage", () => {
       assert.equal(recovered.compactedMessageCount, 0);
       assert.equal(recovered.activeTurnId, undefined);
       assert.equal(
-        storage.db
-          .prepare<[string], { status: string }>("SELECT status FROM turns WHERE id = ?")
-          .get(turnId)?.status,
+        storage.db.prepare<[string], { status: string }>("SELECT status FROM turns WHERE id = ?").get(turnId)?.status,
         "completed",
       );
     } finally {
@@ -1211,9 +1140,7 @@ describe("storage", () => {
       const recovered = threads.recover("thread_interrupted_tools");
       assert.equal(recovered.activeTurnId, undefined);
       assert.equal(
-        recovered.messages.some(
-          (message) => message.role === "tool" && message.tool_call_id === "call_missing",
-        ),
+        recovered.messages.some((message) => message.role === "tool" && message.tool_call_id === "call_missing"),
         true,
       );
     } finally {
@@ -1273,17 +1200,15 @@ describe("storage", () => {
       state.workingSummary = "Replacement cumulative summary at the same boundary.";
       threads.save(state);
 
-      const checkpoints = threads.journal(state.threadId).read().filter(
-        (event) => event.type === "thread.checkpoint.updated",
-      );
+      const checkpoints = threads
+        .journal(state.threadId)
+        .read()
+        .filter((event) => event.type === "thread.checkpoint.updated");
       assert.equal(checkpoints.length, 2);
-      assert.deepEqual(
-        (checkpoints[1]?.payload as { compaction?: unknown }).compaction,
-        {
-          workingSummary: "Replacement cumulative summary at the same boundary.",
-          compactedMessageCount: 2,
-        },
-      );
+      assert.deepEqual((checkpoints[1]?.payload as { compaction?: unknown }).compaction, {
+        workingSummary: "Replacement cumulative summary at the same boundary.",
+        compactedMessageCount: 2,
+      });
       assert.equal(
         threads.recover(state.threadId).workingSummary,
         "Replacement cumulative summary at the same boundary.",
@@ -1325,10 +1250,7 @@ describe("storage", () => {
         readAt: "2026-09-06T13:00:00.000Z",
       });
 
-      assert.throws(
-        () => threads.save(stale),
-        /Stale thread checkpoint cannot replace newer checkpoint-owned state/u,
-      );
+      assert.throws(() => threads.save(stale), /Stale thread checkpoint cannot replace newer checkpoint-owned state/u);
       assert.equal(threads.journal(current.threadId).read().length, eventCount);
       const recovered = threads.recover(current.threadId);
       assert.equal(recovered.mode, "code");
@@ -1402,9 +1324,10 @@ describe("storage", () => {
       });
       threads.save(state);
 
-      const checkpoints = threads.journal(state.threadId).read().filter(
-        (event) => event.type === "thread.checkpoint.updated",
-      );
+      const checkpoints = threads
+        .journal(state.threadId)
+        .read()
+        .filter((event) => event.type === "thread.checkpoint.updated");
       assert.equal(checkpoints.length, 2);
       const firstPayload = checkpoints[0]?.payload as Record<string, unknown>;
       const secondPayload = checkpoints[1]?.payload as Record<string, unknown>;
@@ -1412,29 +1335,21 @@ describe("storage", () => {
       assert.equal(JSON.stringify(firstPayload).includes(historicalMarker), false);
       assert.equal(JSON.stringify(secondPayload).includes(historicalMarker), false);
       assert.deepEqual(
-        (firstPayload.messagesAppended as Array<{ content: string }>).map(
-          (message) => message.content,
-        ),
+        (firstPayload.messagesAppended as Array<{ content: string }>).map((message) => message.content),
         ["first incremental message"],
       );
       assert.deepEqual(
-        (secondPayload.messagesAppended as Array<{ content: string }>).map(
-          (message) => message.content,
-        ),
+        (secondPayload.messagesAppended as Array<{ content: string }>).map((message) => message.content),
         ["second incremental message"],
       );
       assert.equal("commandsAppended" in secondPayload, false);
       assert.deepEqual(
-        (secondPayload.changesAppended as Array<{ path: string }>).map(
-          (change) => change.path,
-        ),
+        (secondPayload.changesAppended as Array<{ path: string }>).map((change) => change.path),
         ["src/second.ts"],
       );
       assert.deepEqual(secondPayload.filesReadRemoved, ["src/first.ts"]);
       assert.deepEqual(
-        (secondPayload.filesReadUpserted as Array<[string, unknown]>).map(
-          ([filePath]) => filePath,
-        ),
+        (secondPayload.filesReadUpserted as Array<[string, unknown]>).map(([filePath]) => filePath),
         ["src/second.ts"],
       );
 
@@ -1467,10 +1382,7 @@ describe("storage", () => {
         role: "user",
         content: "x".repeat(MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES),
       });
-      assert.throws(
-        () => threads.save(oversized),
-        /checkpoint delta exceeds/u,
-      );
+      assert.throws(() => threads.save(oversized), /checkpoint delta exceeds/u);
       assert.equal(threads.journal(oversized.threadId).read().length, 1);
 
       const detached = threads.create({
@@ -1484,10 +1396,7 @@ describe("storage", () => {
         type: "thread.checkpoint.updated",
         payload: { formatVersion: 2, baseSequence: 2 },
       });
-      assert.throws(
-        () => threads.recover(detached.threadId),
-        /base sequence 2; expected 1/u,
-      );
+      assert.throws(() => threads.recover(detached.threadId), /base sequence 2; expected 1/u);
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });

@@ -27,9 +27,7 @@ export interface VirtualAdjustmentNode extends VirtualDisclosureNodeFields {
   readonly kind: "adjustment";
 }
 
-export type VirtualDisclosureNode =
-  | VirtualThinkingNode
-  | VirtualAdjustmentNode;
+export type VirtualDisclosureNode = VirtualThinkingNode | VirtualAdjustmentNode;
 
 export type VirtualDocumentNode = VirtualTextNode | VirtualDisclosureNode;
 
@@ -39,16 +37,22 @@ const snapshots = new WeakSet<readonly VirtualDocumentNode[]>();
 const ownedNodes = new WeakSet<VirtualDocumentNode>();
 // Keep only the latest width/style variant; resizing must not grow a global
 // text cache. Weak keys release layouts when their transcript is discarded.
-const documentLayouts = new WeakMap<readonly VirtualDocumentNode[], {
-  columns: number;
-  preserveAnsi: boolean;
-  layout: VirtualDocumentLayout;
-}>();
-const nodeLayouts = new WeakMap<VirtualDocumentNode, {
-  columns: number;
-  preserveAnsi: boolean;
-  parts: Map<VirtualDocumentLinePart, readonly string[]>;
-}>();
+const documentLayouts = new WeakMap<
+  readonly VirtualDocumentNode[],
+  {
+    columns: number;
+    preserveAnsi: boolean;
+    layout: VirtualDocumentLayout;
+  }
+>();
+const nodeLayouts = new WeakMap<
+  VirtualDocumentNode,
+  {
+    columns: number;
+    preserveAnsi: boolean;
+    parts: Map<VirtualDocumentLinePart, readonly string[]>;
+  }
+>();
 
 export function isVirtualDocumentSnapshot(nodes: readonly VirtualDocumentNode[]): boolean {
   return snapshots.has(nodes);
@@ -70,8 +74,12 @@ export function snapshotVirtualDocumentNodes(
     ownedNodes.add(copy);
     return copy;
   });
-  if (snapshots.has(previous) && result.length === previous.length &&
-      result.every((node, index) => node === previous[index])) return previous;
+  if (
+    snapshots.has(previous) &&
+    result.length === previous.length &&
+    result.every((node, index) => node === previous[index])
+  )
+    return previous;
   Object.freeze(result);
   snapshots.add(result);
   return result;
@@ -80,15 +88,16 @@ export function snapshotVirtualDocumentNodes(
 function sameNode(left: VirtualDocumentNode, right: VirtualDocumentNode): boolean {
   if (left.id !== right.id || left.kind !== right.kind) return false;
   if (left.kind === "text") return right.kind === "text" && left.text === right.text;
-  return right.kind !== "text" && left.title === right.title &&
-    left.preview === right.preview && left.body === right.body && left.expanded === right.expanded;
+  return (
+    right.kind !== "text" &&
+    left.title === right.title &&
+    left.preview === right.preview &&
+    left.body === right.body &&
+    left.expanded === right.expanded
+  );
 }
 
-export type VirtualDocumentLinePart =
-  | "text"
-  | "title"
-  | "preview"
-  | "body";
+export type VirtualDocumentLinePart = "text" | "title" | "preview" | "body";
 
 /** One terminal row in the fully laid-out virtual document. */
 export interface VirtualDocumentLine {
@@ -184,10 +193,7 @@ export function layoutVirtualDocument(
     nodeRows.set(node.id, lines.length);
     let nodeRow = 0;
 
-    const appendPart = (
-      part: VirtualDocumentLinePart,
-      value: string,
-    ): void => {
+    const appendPart = (part: VirtualDocumentLinePart, value: string): void => {
       let wrapped = nodeCache.parts.get(part);
       if (!wrapped) {
         wrapped = wrapToWidth(value, normalizedColumns, { preserveAnsi });
@@ -214,9 +220,7 @@ export function layoutVirtualDocument(
 
     titleRows.set(node.id, lines.length);
     appendPart("title", node.title);
-    appendPart(node.expanded ? "body" : "preview", node.expanded
-      ? node.body
-      : node.preview);
+    appendPart(node.expanded ? "body" : "preview", node.expanded ? node.body : node.preview);
   }
 
   const layout: VirtualDocumentLayout = {
@@ -232,9 +236,7 @@ export function layoutVirtualDocument(
   return layout;
 }
 
-export function createVirtualViewportState(
-  options: CreateVirtualViewportOptions,
-): VirtualViewportState {
+export function createVirtualViewportState(options: CreateVirtualViewportOptions): VirtualViewportState {
   const nodes = cloneNodes(options.nodes ?? []);
   const columns = positiveInteger(options.columns, 1);
   const viewportRows = positiveInteger(options.viewportRows, 1);
@@ -255,14 +257,10 @@ export function createVirtualViewportState(
 }
 
 /** Render one continuous window over the full document. */
-export function renderVirtualViewport(
-  state: Readonly<VirtualViewportState>,
-): VirtualViewportSnapshot {
+export function renderVirtualViewport(state: Readonly<VirtualViewportState>): VirtualViewportSnapshot {
   const layout = stateLayout(state);
   const maximum = maxScrollOffset(layout.totalRows, state.viewportRows);
-  const offset = state.followTail
-    ? maximum
-    : clamp(nonNegativeInteger(state.scrollOffset), 0, maximum);
+  const offset = state.followTail ? maximum : clamp(nonNegativeInteger(state.scrollOffset), 0, maximum);
 
   return {
     columns: state.columns,
@@ -293,9 +291,7 @@ export function replaceVirtualDocumentNodes(
   return {
     ...state,
     nodes: nextNodes,
-    scrollOffset: state.followTail
-      ? maximum
-      : clamp(state.scrollOffset, 0, maximum),
+    scrollOffset: state.followTail ? maximum : clamp(state.scrollOffset, 0, maximum),
   };
 }
 
@@ -362,21 +358,16 @@ export function toggleVirtualDisclosure(
 
   const before = stateLayout(state);
   const beforeMaximum = maxScrollOffset(before.totalRows, state.viewportRows);
-  const beforeOffset = state.followTail
-    ? beforeMaximum
-    : clamp(state.scrollOffset, 0, beforeMaximum);
+  const beforeOffset = state.followTail ? beforeMaximum : clamp(state.scrollOffset, 0, beforeMaximum);
   const titleRowBefore = before.titleRows.get(nodeId);
-  const titleScreenRow = titleRowBefore === undefined
-    ? undefined
-    : titleRowBefore - beforeOffset;
-  const titleIsVisible = titleScreenRow !== undefined &&
-    titleScreenRow >= 0 &&
-    titleScreenRow < state.viewportRows;
+  const titleScreenRow = titleRowBefore === undefined ? undefined : titleRowBefore - beforeOffset;
+  const titleIsVisible = titleScreenRow !== undefined && titleScreenRow >= 0 && titleScreenRow < state.viewportRows;
 
   const replacement: VirtualDisclosureNode = { ...current, expanded: nextExpanded };
-  const nodes = snapshotVirtualDocumentNodes(state.nodes.map((node, nodeIndex) =>
-    nodeIndex === index ? replacement : node
-  ), state.nodes);
+  const nodes = snapshotVirtualDocumentNodes(
+    state.nodes.map((node, nodeIndex) => (nodeIndex === index ? replacement : node)),
+    state.nodes,
+  );
   const after = layoutVirtualDocument(nodes, state.columns, {
     preserveAnsi: state.preserveAnsi,
   });
@@ -400,10 +391,7 @@ export function toggleVirtualDisclosure(
   };
 }
 
-export function scrollVirtualViewport(
-  state: Readonly<VirtualViewportState>,
-  lines: number,
-): VirtualViewportState {
+export function scrollVirtualViewport(state: Readonly<VirtualViewportState>, lines: number): VirtualViewportState {
   const layout = stateLayout(state);
   const maximum = maxScrollOffset(layout.totalRows, state.viewportRows);
   const current = state.followTail ? maximum : state.scrollOffset;
@@ -417,28 +405,20 @@ export function scrollVirtualViewport(
 }
 
 /** Page movement retains one context row between adjacent screens. */
-export function pageUpVirtualViewport(
-  state: Readonly<VirtualViewportState>,
-): VirtualViewportState {
+export function pageUpVirtualViewport(state: Readonly<VirtualViewportState>): VirtualViewportState {
   return scrollVirtualViewport(state, -pageStep(state.viewportRows));
 }
 
 /** Page movement retains one context row between adjacent screens. */
-export function pageDownVirtualViewport(
-  state: Readonly<VirtualViewportState>,
-): VirtualViewportState {
+export function pageDownVirtualViewport(state: Readonly<VirtualViewportState>): VirtualViewportState {
   return scrollVirtualViewport(state, pageStep(state.viewportRows));
 }
 
-export function scrollVirtualViewportToStart(
-  state: Readonly<VirtualViewportState>,
-): VirtualViewportState {
+export function scrollVirtualViewportToStart(state: Readonly<VirtualViewportState>): VirtualViewportState {
   return { ...state, scrollOffset: 0, followTail: false };
 }
 
-export function scrollVirtualViewportToEnd(
-  state: Readonly<VirtualViewportState>,
-): VirtualViewportState {
+export function scrollVirtualViewportToEnd(state: Readonly<VirtualViewportState>): VirtualViewportState {
   const layout = stateLayout(state);
   return {
     ...state,
@@ -451,10 +431,12 @@ export function setVirtualViewportFollowTail(
   state: Readonly<VirtualViewportState>,
   enabled: boolean,
 ): VirtualViewportState {
-  return enabled ? scrollVirtualViewportToEnd(state) : {
-    ...state,
-    followTail: false,
-  };
+  return enabled
+    ? scrollVirtualViewportToEnd(state)
+    : {
+        ...state,
+        followTail: false,
+      };
 }
 
 export function applyVirtualViewportCommand(
@@ -483,9 +465,7 @@ function stateLayout(state: Readonly<VirtualViewportState>): VirtualDocumentLayo
   });
 }
 
-function cloneNodes(
-  nodes: readonly VirtualDocumentNode[],
-): readonly VirtualDocumentNode[] {
+function cloneNodes(nodes: readonly VirtualDocumentNode[]): readonly VirtualDocumentNode[] {
   return snapshotVirtualDocumentNodes(nodes);
 }
 

@@ -29,15 +29,12 @@ function addIfExecutable(output, candidate, rejectedRoots, platform) {
   } catch {
     return;
   }
-  if (
-    rejectedRoots.some(
-      (root) => isInside(launchPath, root, platform) || isInside(canonical, root, platform),
-    )
-  ) return;
+  if (rejectedRoots.some((root) => isInside(launchPath, root, platform) || isInside(canonical, root, platform))) return;
   if (
     /[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/iu.test(launchPath) ||
     /[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/iu.test(canonical)
-  ) return;
+  )
+    return;
   if (platform !== "win32") {
     try {
       fs.accessSync(canonical, fs.constants.X_OK);
@@ -55,19 +52,21 @@ function isTrustedWindowsInstallLayout(candidate, environment) {
   const executable = path.win32.basename(candidate).toLowerCase();
   const productDirectory = path.win32.dirname(path.win32.dirname(candidate));
   const product = path.win32.basename(productDirectory).toLowerCase();
-  const expectedProduct = executable === "code.cmd"
-    ? "microsoft vs code"
-    : executable === "code-insiders.cmd"
-      ? "microsoft vs code insiders"
-      : executable === "codium.cmd"
-        ? "vscodium"
-        : undefined;
+  const expectedProduct =
+    executable === "code.cmd"
+      ? "microsoft vs code"
+      : executable === "code-insiders.cmd"
+        ? "microsoft vs code insiders"
+        : executable === "codium.cmd"
+          ? "vscodium"
+          : undefined;
   if (!expectedProduct || product !== expectedProduct) return false;
-  const companionName = executable === "code.cmd"
-    ? "Code.exe"
-    : executable === "code-insiders.cmd"
-      ? "Code - Insiders.exe"
-      : "VSCodium.exe";
+  const companionName =
+    executable === "code.cmd"
+      ? "Code.exe"
+      : executable === "code-insiders.cmd"
+        ? "Code - Insiders.exe"
+        : "VSCodium.exe";
   try {
     if (!fs.statSync(path.win32.join(productDirectory, companionName)).isFile()) return false;
   } catch {
@@ -78,8 +77,7 @@ function isTrustedWindowsInstallLayout(candidate, environment) {
   if (containerName === "program files" || containerName === "program files (x86)") {
     return true;
   }
-  const localPrograms = environment.LOCALAPPDATA &&
-    path.win32.join(environment.LOCALAPPDATA, "Programs");
+  const localPrograms = environment.LOCALAPPDATA && path.win32.join(environment.LOCALAPPDATA, "Programs");
   return Boolean(localPrograms && isInside(productDirectory, localPrograms, "win32"));
 }
 
@@ -92,19 +90,12 @@ function findVsCodeClis(options = {}) {
     // npm prepends workspace shims to PATH. Reject that executable directory,
     // not the whole invocation directory: INIT_CWD is commonly the user's home,
     // which also contains the default per-user VS Code install on Windows/macOS.
-    rejectedRoots.push(
-      path.resolve(environment.INIT_CWD, "node_modules", ".bin"),
-    );
+    rejectedRoots.push(path.resolve(environment.INIT_CWD, "node_modules", ".bin"));
   }
   const candidates = [];
 
   if (environment.EASY_CODE_VSCODE_CLI && path.isAbsolute(environment.EASY_CODE_VSCODE_CLI)) {
-    addIfExecutable(
-      candidates,
-      environment.EASY_CODE_VSCODE_CLI,
-      rejectedRoots,
-      platform,
-    );
+    addIfExecutable(candidates, environment.EASY_CODE_VSCODE_CLI, rejectedRoots, platform);
   }
 
   if (platform === "win32") {
@@ -115,7 +106,12 @@ function findVsCodeClis(options = {}) {
     ].filter(Boolean);
     for (const root of roots) {
       addIfExecutable(candidates, path.join(root, "Microsoft VS Code", "bin", "code.cmd"), rejectedRoots, platform);
-      addIfExecutable(candidates, path.join(root, "Microsoft VS Code Insiders", "bin", "code-insiders.cmd"), rejectedRoots, platform);
+      addIfExecutable(
+        candidates,
+        path.join(root, "Microsoft VS Code Insiders", "bin", "code-insiders.cmd"),
+        rejectedRoots,
+        platform,
+      );
       addIfExecutable(candidates, path.join(root, "VSCodium", "bin", "codium.cmd"), rejectedRoots, platform);
     }
     // VS Code is often installed on a non-system drive. Accept PATH discovery
@@ -136,9 +132,24 @@ function findVsCodeClis(options = {}) {
       applicationRoots.push(path.join(environment.HOME, "Applications"));
     }
     for (const root of applicationRoots) {
-      addIfExecutable(candidates, path.join(root, "Visual Studio Code.app/Contents/Resources/app/bin/code"), rejectedRoots, platform);
-      addIfExecutable(candidates, path.join(root, "Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders"), rejectedRoots, platform);
-      addIfExecutable(candidates, path.join(root, "VSCodium.app/Contents/Resources/app/bin/codium"), rejectedRoots, platform);
+      addIfExecutable(
+        candidates,
+        path.join(root, "Visual Studio Code.app/Contents/Resources/app/bin/code"),
+        rejectedRoots,
+        platform,
+      );
+      addIfExecutable(
+        candidates,
+        path.join(root, "Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders"),
+        rejectedRoots,
+        platform,
+      );
+      addIfExecutable(
+        candidates,
+        path.join(root, "VSCodium.app/Contents/Resources/app/bin/codium"),
+        rejectedRoots,
+        platform,
+      );
     }
     for (const directory of ["/usr/local/bin", "/opt/homebrew/bin"]) {
       for (const name of ["code", "code-insiders", "codium"]) {
@@ -152,12 +163,7 @@ function findVsCodeClis(options = {}) {
       }
     }
     for (const name of ["com.visualstudio.code", "com.visualstudio.code.insiders", "com.vscodium.codium"]) {
-      addIfExecutable(
-        candidates,
-        path.join("/var/lib/flatpak/exports/bin", name),
-        rejectedRoots,
-        platform,
-      );
+      addIfExecutable(candidates, path.join("/var/lib/flatpak/exports/bin", name), rejectedRoots, platform);
     }
   }
 
@@ -171,9 +177,10 @@ function findVsCodeClis(options = {}) {
 }
 
 function safeInstallerEnvironment(source = process.env, platform = process.platform) {
-  const allowed = platform === "win32"
-    ? ["SystemRoot", "WINDIR", "ComSpec", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "LANG"]
-    : ["HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"];
+  const allowed =
+    platform === "win32"
+      ? ["SystemRoot", "WINDIR", "ComSpec", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "LANG"]
+      : ["HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"];
   const output = {};
   for (const name of allowed) {
     if (source[name] !== undefined) output[name] = source[name];
@@ -181,11 +188,12 @@ function safeInstallerEnvironment(source = process.env, platform = process.platf
   for (const [name, value] of Object.entries(source)) {
     if (name.startsWith("VSCODE_") && value !== undefined) output[name] = value;
   }
-  output.PATH = platform === "darwin"
-    ? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    : platform === "win32"
-      ? path.win32.join(source.SystemRoot || source.WINDIR || "C:\\Windows", "System32")
-      : "/usr/local/bin:/usr/bin:/bin:/snap/bin";
+  output.PATH =
+    platform === "darwin"
+      ? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      : platform === "win32"
+        ? path.win32.join(source.SystemRoot || source.WINDIR || "C:\\Windows", "System32")
+        : "/usr/local/bin:/usr/bin:/bin:/snap/bin";
   return output;
 }
 
@@ -221,9 +229,7 @@ function runVsCodeCli(program, args, options = {}) {
 function installBundledVsCodeExtension(options = {}) {
   const environment = options.env || process.env;
   const packageRoot = path.resolve(options.packageRoot || path.join(__dirname, ".."));
-  const vsixPath = path.resolve(
-    options.vsixPath || path.join(packageRoot, "vscode-extension", EXTENSION_FILE),
-  );
+  const vsixPath = path.resolve(options.vsixPath || path.join(packageRoot, "vscode-extension", EXTENSION_FILE));
   if (environment.EASY_CODE_SKIP_VSCODE_EXTENSION === "1") {
     return { skipped: true, reason: "disabled", installed: [], failed: [] };
   }
@@ -235,11 +241,13 @@ function installBundledVsCodeExtension(options = {}) {
     return { skipped: true, reason: "missing-vsix", installed: [], failed: [] };
   }
 
-  const programs = options.programs || findVsCodeClis({
-    env: environment,
-    packageRoot,
-    platform: options.platform,
-  });
+  const programs =
+    options.programs ||
+    findVsCodeClis({
+      env: environment,
+      packageRoot,
+      platform: options.platform,
+    });
   if (!programs.length) {
     return { skipped: true, reason: "missing-vscode", installed: [], failed: [] };
   }
@@ -247,16 +255,12 @@ function installBundledVsCodeExtension(options = {}) {
   const installed = [];
   const failed = [];
   const program = programs[0];
-  const result = runVsCodeCli(
-    program,
-    ["--install-extension", vsixPath],
-    {
-      env: environment,
-      platform: options.platform,
-      spawnSync: options.spawnSync,
-      timeoutMs: options.timeoutMs,
-    },
-  );
+  const result = runVsCodeCli(program, ["--install-extension", vsixPath], {
+    env: environment,
+    platform: options.platform,
+    spawnSync: options.spawnSync,
+    timeoutMs: options.timeoutMs,
+  });
   if (result.status === 0) installed.push(program);
   else {
     const detail = result.error?.message || String(result.stderr || result.stdout || "unknown error").trim();
@@ -278,14 +282,18 @@ module.exports = {
 if (require.main === module) {
   const result = installBundledVsCodeExtension();
   if (result.installed.length) {
-    process.stdout.write(`EASY CODE: installed the VS Code terminal-integration extension into ${result.installed.length} installation(s).\n`);
+    process.stdout.write(
+      `EASY CODE: installed the VS Code terminal-integration extension into ${result.installed.length} installation(s).\n`,
+    );
   } else if (result.reason === "missing-vscode") {
     process.stdout.write("EASY CODE: VS Code CLI was not found; the bundled extension was not installed.\n");
   } else if (result.reason === "missing-vsix") {
     process.stderr.write("EASY CODE: bundled VS Code extension is missing.\n");
   }
   for (const failure of result.failed) {
-    process.stderr.write(`EASY CODE: VS Code extension installation failed via ${failure.program}: ${failure.detail}\n`);
+    process.stderr.write(
+      `EASY CODE: VS Code extension installation failed via ${failure.program}: ${failure.detail}\n`,
+    );
   }
   if (
     !result.installed.length &&

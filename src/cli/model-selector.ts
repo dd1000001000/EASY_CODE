@@ -12,7 +12,11 @@ import {
   type MenuSelectorOutput,
 } from "./menu-selector.js";
 
-export type { ModelSelectorChoice, ProviderSelectorChoice, ThinkingEffortSelectorChoice } from "../ui/interaction-port.js";
+export type {
+  ModelSelectorChoice,
+  ProviderSelectorChoice,
+  ThinkingEffortSelectorChoice,
+} from "../ui/interaction-port.js";
 
 export type ModelSelectorInput = MenuSelectorInput;
 export type ModelSelectorOutput = MenuSelectorOutput;
@@ -56,9 +60,7 @@ export function renderModelSelector(
   return renderMenu(
     `Select a model from ${providerName}`,
     choices.map((choice) => {
-      const name = choice.label === choice.id
-        ? choice.label
-        : `${choice.label}  [${choice.id}]`;
+      const name = choice.label === choice.id ? choice.label : `${choice.label}  [${choice.id}]`;
       if (choice.vision === "supported") return `${name}  [vision]`;
       if (choice.vision === "unknown") return `${name}  [vision unverified]`;
       return name;
@@ -77,10 +79,7 @@ export function renderThinkingEffortSelector(
 ): string[] {
   return renderMenu(
     `Select thinking effort for ${providerName} / ${model}`,
-    choices.map((choice) =>
-      choice.applied
-        ? choice.label
-        : `${choice.label}  [saved but not applied]`),
+    choices.map((choice) => (choice.applied ? choice.label : `${choice.label}  [saved but not applied]`)),
     selectedIndex,
     color,
   );
@@ -97,8 +96,7 @@ export function selectProvider(
   return selectMenuIndex(
     choices.length,
     initialIndex,
-    (selectedIndex) =>
-      renderProviderSelector(choices, selectedIndex, options.color ?? true),
+    (selectedIndex) => renderProviderSelector(choices, selectedIndex, options.color ?? true),
     options,
     "No providers are available.",
   ).then((index) => (index === undefined ? undefined : choices[index]?.provider));
@@ -117,8 +115,7 @@ export function selectModel(
   return selectMenuIndex(
     choices.length,
     initialIndex,
-    (selectedIndex) =>
-      renderModelSelector(providerName, choices, selectedIndex, options.color ?? true),
+    (selectedIndex) => renderModelSelector(providerName, choices, selectedIndex, options.color ?? true),
     options,
     `No models are available for ${providerName}.`,
   ).then((index) => (index === undefined ? undefined : choices[index]?.id));
@@ -137,14 +134,7 @@ export function selectThinkingEffort(
   return selectMenuIndex(
     choices.length,
     initialIndex,
-    (selectedIndex) =>
-      renderThinkingEffortSelector(
-        providerName,
-        model,
-        choices,
-        selectedIndex,
-        options.color ?? true,
-      ),
+    (selectedIndex) => renderThinkingEffortSelector(providerName, model, choices, selectedIndex, options.color ?? true),
     options,
     `No thinking efforts are available for ${providerName} / ${model}.`,
   ).then((index) => (index === undefined ? undefined : choices[index]?.id));

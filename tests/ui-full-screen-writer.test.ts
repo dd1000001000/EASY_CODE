@@ -28,11 +28,12 @@ class BackpressuredOutput extends CapturedOutput {
     encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
     callback?: (error?: Error | null) => void,
   ): boolean {
-    const accepted = typeof encodingOrCallback === "function"
-      ? super.write(chunk, encodingOrCallback)
-      : encodingOrCallback === undefined
-        ? super.write(chunk, callback)
-        : super.write(chunk, encodingOrCallback, callback);
+    const accepted =
+      typeof encodingOrCallback === "function"
+        ? super.write(chunk, encodingOrCallback)
+        : encodingOrCallback === undefined
+          ? super.write(chunk, callback)
+          : super.write(chunk, encodingOrCallback, callback);
     return this.blocked ? false : accepted;
   }
 
@@ -63,10 +64,7 @@ describe("FullScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      FULL_SCREEN_ENTER_SEQUENCE +
-        "\u001B[1;1H\u001B[2Kone" +
-        "\u001B[2;1H\u001B[2Ktwo" +
-        FULL_SCREEN_EXIT_SEQUENCE,
+      FULL_SCREEN_ENTER_SEQUENCE + "\u001B[1;1H\u001B[2Kone" + "\u001B[2;1H\u001B[2Ktwo" + FULL_SCREEN_EXIT_SEQUENCE,
     );
     assert.equal(transcript.read().includes("\n"), false);
     assert.equal(output.destroyed, false);
@@ -146,10 +144,7 @@ describe("FullScreenWriter", () => {
     const beforeChange = transcript.read().length;
     writer.render(["one", "changed", "three"]);
 
-    assert.equal(
-      transcript.read().slice(beforeChange),
-      "\u001B[2;1H\u001B[2Kchanged",
-    );
+    assert.equal(transcript.read().slice(beforeChange), "\u001B[2;1H\u001B[2Kchanged");
     writer.close();
   });
 
@@ -192,10 +187,7 @@ describe("FullScreenWriter", () => {
     assert.deepEqual(writer.size, { columns: 8, rows: 3 });
     assert.equal(
       transcript.read().slice(beforeResize),
-      "\u001B[2J\u001B[H" +
-        "\u001B[1;1H\u001B[2Kabcdefgh" +
-        "\u001B[2;1H\u001B[2Ksecond" +
-        "\u001B[3;1H\u001B[2Kthird",
+      "\u001B[2J\u001B[H" + "\u001B[1;1H\u001B[2Kabcdefgh" + "\u001B[2;1H\u001B[2Ksecond" + "\u001B[3;1H\u001B[2Kthird",
     );
     const afterResize = transcript.read();
     assert.equal(writer.resize(), false);

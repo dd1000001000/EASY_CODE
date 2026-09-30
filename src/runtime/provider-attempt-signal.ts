@@ -29,19 +29,14 @@ export interface ProviderAttemptSignalOptions {
  * usage, and audit events remain the caller's responsibility and are not
  * mutated here.
  */
-export function createProviderAttemptSignal(
-  options: ProviderAttemptSignalOptions = {},
-): ProviderAttemptSignal {
+export function createProviderAttemptSignal(options: ProviderAttemptSignalOptions = {}): ProviderAttemptSignal {
   const controller = new AbortController();
   const { turnSignal, steeringSignal } = options;
   let observedTurnAbort = false;
   let observedSteeringAbort = false;
   let disposed = false;
 
-  const forwardAbort = (
-    source: ProviderAttemptAbortSource,
-    sourceSignal: AbortSignal,
-  ): void => {
+  const forwardAbort = (source: ProviderAttemptAbortSource, sourceSignal: AbortSignal): void => {
     if (source === "turn") observedTurnAbort = true;
     else observedSteeringAbort = true;
     if (!controller.signal.aborted) {

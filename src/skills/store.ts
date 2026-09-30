@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import {
-  cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile,
-} from "node:fs/promises";
+import { cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -70,8 +68,17 @@ function memberPath(value: string): string {
     throw new Error("Skill file path must be relative to the skill directory");
   }
   const segments = value.split(/[\\/]/u);
-  if (segments.some(part => !part || part === "." || part === ".." || /[:\u0000-\u001f\u007f]/u.test(part) ||
-      /[. ]$/u.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(part))) {
+  if (
+    segments.some(
+      (part) =>
+        !part ||
+        part === "." ||
+        part === ".." ||
+        /[:\u0000-\u001f\u007f]/u.test(part) ||
+        /[. ]$/u.test(part) ||
+        /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(part),
+    )
+  ) {
     throw new Error("Skill file path contains an unsafe segment");
   }
   return segments.join("/");
@@ -80,9 +87,11 @@ function memberPath(value: string): string {
 async function assertRealDirectory(directory: string): Promise<boolean> {
   try {
     const info = await lstat(directory);
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Skill path is not a real directory: ${directory}`);
+    if (info.isSymbolicLink() || !info.isDirectory())
+      throw new Error(`Skill path is not a real directory: ${directory}`);
     const expected = path.join(await realpath(path.dirname(directory)), path.basename(directory));
-    if (!samePath(await realpath(directory), expected)) throw new Error(`Skill directory redirects elsewhere: ${directory}`);
+    if (!samePath(await realpath(directory), expected))
+      throw new Error(`Skill directory redirects elsewhere: ${directory}`);
     return true;
   } catch (error) {
     if (isMissing(error)) return false;
@@ -93,13 +102,13 @@ async function assertRealDirectory(directory: string): Promise<boolean> {
 async function ensureRoot(directory: string): Promise<void> {
   if (await assertRealDirectory(directory)) return;
   await mkdir(directory, { recursive: true });
-  if (!await assertRealDirectory(directory)) throw new Error(`Could not create skill directory ${directory}`);
+  if (!(await assertRealDirectory(directory))) throw new Error(`Could not create skill directory ${directory}`);
 }
 
 async function assertNoLinks(directory: string, root: string): Promise<void> {
   if (!inside(root, directory)) throw new Error("Skill path escapes its resource root");
   let current = root;
-  if (!await assertRealDirectory(root)) throw new Error("Skill resource root is missing");
+  if (!(await assertRealDirectory(root))) throw new Error("Skill resource root is missing");
   const relative = path.relative(root, directory);
   for (const segment of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, segment);
@@ -157,12 +166,10 @@ export class SkillStore {
   ) {}
 
   static forProject(workspaceRoot: string, dataDir: string, projectId: string): SkillStore {
-    return new SkillStore(
-      workspaceRoot,
-      os.homedir(),
-      path.join(dataDir, "skill-trash"),
-      { dataDir: path.resolve(dataDir), projectId },
-    );
+    return new SkillStore(workspaceRoot, os.homedir(), path.join(dataDir, "skill-trash"), {
+      dataDir: path.resolve(dataDir),
+      projectId,
+    });
   }
 
   async projectRoot(): Promise<string> {
@@ -192,9 +199,8 @@ export class SkillStore {
         ? path.join(this.projectStorage.dataDir, "projects", this.projectStorage.projectId, "skills")
         : path.join(this.projectStorage.dataDir, "skills", "global");
     }
-    const parent = scope === "project"
-      ? await this.projectRoot()
-      : path.normalize(await realpath(path.resolve(this.userHome)));
+    const parent =
+      scope === "project" ? await this.projectRoot() : path.normalize(await realpath(path.resolve(this.userHome)));
     return path.join(parent, SKILL_DIRECTORY_NAME);
   }
 
@@ -208,12 +214,13 @@ export class SkillStore {
 
   async list(): Promise<SkillListing> {
     const [globalDirectory, projectDirectory] = await Promise.all([
-      this.directory("global"), this.directory("project"),
+      this.directory("global"),
+      this.directory("project"),
     ]);
     const warnings: string[] = [];
     const listScope = async (scope: SkillScope, root: string): Promise<SkillSummary[]> => {
       try {
-        if (!await assertRealDirectory(root)) return [];
+        if (!(await assertRealDirectory(root))) return [];
       } catch (error) {
         warnings.push(`${scope}: ${error instanceof Error ? error.message : String(error)}`);
         return [];
@@ -238,8 +245,13 @@ export class SkillStore {
           if (!files.includes("SKILL.md")) throw new Error("Skill has no SKILL.md");
           const markdown = await readFile(path.join(target, "SKILL.md"), "utf8");
           const metadata = parseSkillMarkdown(markdown, entry.name);
-          summaries.push({ scope, name: entry.name, description: metadata.description,
-            directory: target, contentHash: sha256(Buffer.from(markdown, "utf8")) });
+          summaries.push({
+            scope,
+            name: entry.name,
+            description: metadata.description,
+            directory: target,
+            contentHash: sha256(Buffer.from(markdown, "utf8")),
+          });
         } catch (error) {
           warnings.push(`${scope}/${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -247,7 +259,8 @@ export class SkillStore {
       return summaries.sort((a, b) => a.name.localeCompare(b.name));
     };
     const [global, project] = await Promise.all([
-      listScope("global", globalDirectory), listScope("project", projectDirectory),
+      listScope("global", globalDirectory),
+      listScope("project", projectDirectory),
     ]);
     return { global, project, warnings, globalDirectory, projectDirectory };
   }
@@ -264,12 +277,25 @@ export class SkillStore {
     if (!files.includes(relativePath)) throw new Error(`Skill file does not exist: ${relativePath}`);
     const content = await readFile(path.join(target, ...relativePath.split("/")));
     if (content.includes(0)) throw new Error("Binary skill resources cannot be read as text");
-    return { scope, name, directory: target, relativePath, content: content.toString("utf8"),
-      version: await treeVersion(target, files), files };
+    return {
+      scope,
+      name,
+      directory: target,
+      relativePath,
+      content: content.toString("utf8"),
+      version: await treeVersion(target, files),
+      files,
+    };
   }
 
-  async create(scope: SkillScope, name: string, description: string, instructions: string,
-    files: readonly SkillFile[] = [], signal?: AbortSignal): Promise<SkillRead> {
+  async create(
+    scope: SkillScope,
+    name: string,
+    description: string,
+    instructions: string,
+    files: readonly SkillFile[] = [],
+    signal?: AbortSignal,
+  ): Promise<SkillRead> {
     const { root, target } = await this.skillPath(scope, name);
     await ensureRoot(root);
     await this.recoverMissingSkill(root, target, name);
@@ -278,7 +304,9 @@ export class SkillStore {
       const stage = path.join(root, `.staging-${name}-${randomUUID()}`);
       await mkdir(stage);
       try {
-        await writeFile(path.join(stage, "SKILL.md"), createSkillMarkdown(name, description, instructions), { flag: "wx" });
+        await writeFile(path.join(stage, "SKILL.md"), createSkillMarkdown(name, description, instructions), {
+          flag: "wx",
+        });
         const seen = new Set<string>(["SKILL.md"]);
         for (const file of files) {
           const relative = memberPath(file.path);
@@ -297,9 +325,14 @@ export class SkillStore {
     });
   }
 
-  async modify(scope: SkillScope, name: string, expectedVersion: string,
-    markdown: string | undefined, changes: readonly SkillFileChange[] = [],
-    signal?: AbortSignal): Promise<SkillRead> {
+  async modify(
+    scope: SkillScope,
+    name: string,
+    expectedVersion: string,
+    markdown: string | undefined,
+    changes: readonly SkillFileChange[] = [],
+    signal?: AbortSignal,
+  ): Promise<SkillRead> {
     const { root, target } = await this.skillPath(scope, name);
     if (markdown === undefined && changes.length === 0) throw new Error("No Skill changes were supplied");
     await this.recoverMissingSkill(root, target, name);
@@ -333,10 +366,11 @@ export class SkillStore {
         }
         const stagedFiles = await treeFiles(stage);
         parseSkillMarkdown(await readFile(path.join(stage, "SKILL.md"), "utf8"), name);
-        if (await currentVersion(target) !== expectedVersion) {
+        if ((await currentVersion(target)) !== expectedVersion) {
           throw new Error("Skill changed while the update was prepared; read it again");
         }
-        if (await treeVersion(stage, stagedFiles) === expectedVersion) throw new Error("Skill update made no changes");
+        if ((await treeVersion(stage, stagedFiles)) === expectedVersion)
+          throw new Error("Skill update made no changes");
         signal?.throwIfAborted();
         await rename(target, backup);
         try {
@@ -353,8 +387,12 @@ export class SkillStore {
     });
   }
 
-  async delete(scope: SkillScope, name: string, expectedVersion: string,
-    signal?: AbortSignal): Promise<{ archivedAt: string; version: string }> {
+  async delete(
+    scope: SkillScope,
+    name: string,
+    expectedVersion: string,
+    signal?: AbortSignal,
+  ): Promise<{ archivedAt: string; version: string }> {
     const { root, target } = await this.skillPath(scope, name);
     await this.recoverMissingSkill(root, target, name);
     return this.withLock(root, name, signal, async () => {
@@ -365,7 +403,7 @@ export class SkillStore {
       const trashRoot = await realpath(configuredTrashRoot);
       const archive = path.join(trashRoot, `${scope}-${name}-${randomUUID()}`);
       if (!inside(trashRoot, archive)) throw new Error("Skill archive escapes its trash root");
-      if (await currentVersion(target) !== expectedVersion) {
+      if ((await currentVersion(target)) !== expectedVersion) {
         throw new Error("Skill changed while deletion was prepared; read it again");
       }
       signal?.throwIfAborted();
@@ -374,11 +412,11 @@ export class SkillStore {
       } catch (error) {
         if ((error as NodeJS.ErrnoException)?.code !== "EXDEV") throw error;
         await cp(target, archive, { recursive: true, errorOnExist: true, force: false });
-        if (await treeVersion(archive, await treeFiles(archive)) !== expectedVersion) {
+        if ((await treeVersion(archive, await treeFiles(archive))) !== expectedVersion) {
           throw new Error("Skill archive verification failed; original was retained");
         }
         await assertNoLinks(target, root);
-        if (await currentVersion(target) !== expectedVersion) {
+        if ((await currentVersion(target)) !== expectedVersion) {
           throw new Error("Skill changed before deletion; original was retained");
         }
         await rm(target, { recursive: true });
@@ -387,8 +425,12 @@ export class SkillStore {
     });
   }
 
-  private async withLock<T>(root: string, name: string, signal: AbortSignal | undefined,
-    action: () => Promise<T>): Promise<T> {
+  private async withLock<T>(
+    root: string,
+    name: string,
+    signal: AbortSignal | undefined,
+    action: () => Promise<T>,
+  ): Promise<T> {
     const lockPath = path.join(root, `.lock-${name}`);
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -425,8 +467,11 @@ export class SkillStore {
       const info = await lstat(lockPath);
       if (!info.isFile() || info.isSymbolicLink() || Date.now() - info.mtimeMs < 1_000) return false;
       let owner: { pid?: number };
-      try { owner = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: number }; }
-      catch { owner = {}; }
+      try {
+        owner = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: number };
+      } catch {
+        owner = {};
+      }
       if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
         try {
           process.kill(owner.pid, 0);
@@ -446,13 +491,13 @@ export class SkillStore {
   }
 
   private async recoverMissingSkill(root: string, target: string, name: string): Promise<void> {
-    if (await assertRealDirectory(target) || !await assertRealDirectory(root)) return;
+    if ((await assertRealDirectory(target)) || !(await assertRealDirectory(root))) return;
     const prefix = `.backup-${name}-`;
-    const backups = (await readdir(root)).filter(entry => entry.startsWith(prefix));
+    const backups = (await readdir(root)).filter((entry) => entry.startsWith(prefix));
     if (backups.length === 0) return;
     await this.withLock(root, name, undefined, async () => {
       if (await assertRealDirectory(target)) return;
-      const candidates = (await readdir(root)).filter(entry => entry.startsWith(prefix));
+      const candidates = (await readdir(root)).filter((entry) => entry.startsWith(prefix));
       if (candidates.length !== 1) {
         throw new Error(`Skill ${name} has multiple interrupted updates; restore one backup manually`);
       }

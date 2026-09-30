@@ -7,7 +7,10 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
 import { coordinationPath, type CoordinationStore, type FileObservation } from "./store.js";
 
-interface Snapshot { files: Map<string, string>; incomplete: Set<string>; }
+interface Snapshot {
+  files: Map<string, string>;
+  incomplete: Set<string>;
+}
 const INTERNAL_DIRECTORIES = new Set([".git", ".easy-code-runtime", ".easycode"]);
 function inside(root: string, file: string): boolean {
   return file === root || file.startsWith(root + path.sep);
@@ -16,23 +19,35 @@ function inside(root: string, file: string): boolean {
 /** Metadata observation, not attribution. No source content is stored or sent. */
 export class WorkspaceToolObserver {
   private readonly background = new Set<Promise<void>>();
-  get hasPending(): boolean { return this.background.size > 0; }
-  constructor(private readonly workspace: WorkspaceManager, private readonly store: CoordinationStore,
-    private readonly limits: Readonly<RuntimeLimits>, private readonly warn: (message: string) => void,
+  get hasPending(): boolean {
+    return this.background.size > 0;
+  }
+  constructor(
+    private readonly workspace: WorkspaceManager,
+    private readonly store: CoordinationStore,
+    private readonly limits: Readonly<RuntimeLimits>,
+    private readonly warn: (message: string) => void,
     private readonly settled?: (id: string) => Promise<void> | undefined,
-    private readonly excludedRoots: readonly string[] = []) {}
+    private readonly excludedRoots: readonly string[] = [],
+  ) {}
 
   private async snapshot(): Promise<Snapshot> {
     const snapshot: Snapshot = { files: new Map(), incomplete: new Set() };
-    const excluded = new Set([...INTERNAL_DIRECTORIES, ...this.limits.coordinationExcludeDirectories].map(v => v.toLowerCase()));
+    const excluded = new Set(
+      [...INTERNAL_DIRECTORIES, ...this.limits.coordinationExcludeDirectories].map((v) => v.toLowerCase()),
+    );
     const protectedRoots = [...this.workspace.pathGuard.protectedPaths(), ...this.excludedRoots].map(coordinationPath);
     const started = Date.now();
     let scanned = 0;
     const visit = async (directory: string): Promise<void> => {
       const key = coordinationPath(directory);
-      if (protectedRoots.some(root => inside(root, key))) return;
-      if (scanned >= this.limits.coordinationScanMaxFiles || Date.now() - started > this.limits.coordinationScanTimeoutMs) {
-        snapshot.incomplete.add(key); return;
+      if (protectedRoots.some((root) => inside(root, key))) return;
+      if (
+        scanned >= this.limits.coordinationScanMaxFiles ||
+        Date.now() - started > this.limits.coordinationScanTimeoutMs
+      ) {
+        snapshot.incomplete.add(key);
+        return;
       }
       try {
         const entries = await readdir(directory, { withFileTypes: true });
@@ -40,27 +55,41 @@ export class WorkspaceToolObserver {
           if (entry.isSymbolicLink()) continue;
           const filename = path.join(directory, entry.name);
           const fileKey = coordinationPath(filename);
-          if (protectedRoots.some(root => inside(root, fileKey))) continue;
-          if (scanned >= this.limits.coordinationScanMaxFiles || Date.now() - started > this.limits.coordinationScanTimeoutMs) {
-            snapshot.incomplete.add(key); break;
+          if (protectedRoots.some((root) => inside(root, fileKey))) continue;
+          if (
+            scanned >= this.limits.coordinationScanMaxFiles ||
+            Date.now() - started > this.limits.coordinationScanTimeoutMs
+          ) {
+            snapshot.incomplete.add(key);
+            break;
           }
-          if (entry.isDirectory()) { if (!excluded.has(entry.name.toLowerCase())) await visit(filename); }
-          else if (entry.isFile()) {
+          if (entry.isDirectory()) {
+            if (!excluded.has(entry.name.toLowerCase())) await visit(filename);
+          } else if (entry.isFile()) {
             scanned++;
             try {
               const stat = await lstat(filename, { bigint: true });
-              if (stat.isFile()) snapshot.files.set(fileKey, `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`);
-            } catch { snapshot.incomplete.add(fileKey); }
+              if (stat.isFile())
+                snapshot.files.set(fileKey, `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`);
+            } catch {
+              snapshot.incomplete.add(fileKey);
+            }
           }
         }
-      } catch { snapshot.incomplete.add(key); }
+      } catch {
+        snapshot.incomplete.add(key);
+      }
     };
     for (const root of this.workspace.writableRoots) await visit(root);
     return snapshot;
   }
 
   private report(error: unknown): void {
-    try { this.warn(`Workspace change observation incomplete: ${String(error)}`); } catch { /* UI is not authoritative. */ }
+    try {
+      this.warn(`Workspace change observation incomplete: ${String(error)}`);
+    } catch {
+      /* UI is not authoritative. */
+    }
   }
 
   private async finish(before: Snapshot, context: ToolContext, tool: string, callId: string): Promise<void> {
@@ -69,11 +98,17 @@ export class WorkspaceToolObserver {
       const incomplete = [...before.incomplete, ...after.incomplete];
       const changes: FileObservation[] = [];
       for (const file of new Set([...before.files.keys(), ...after.files.keys()])) {
-        if (incomplete.some(root => inside(root, file))) continue;
+        if (incomplete.some((root) => inside(root, file))) continue;
         if (before.files.get(file) === after.files.get(file)) continue;
-        changes.push({ threadId: context.threadId, turnId: context.turnId, callId,
-          agentId: context.agentId ?? context.threadId, tool, path: file,
-          operation: !before.files.has(file) ? "created" : !after.files.has(file) ? "deleted" : "modified" });
+        changes.push({
+          threadId: context.threadId,
+          turnId: context.turnId,
+          callId,
+          agentId: context.agentId ?? context.threadId,
+          tool,
+          path: file,
+          operation: !before.files.has(file) ? "created" : !after.files.has(file) ? "deleted" : "modified",
+        });
       }
       // Keep bulk changes from monopolizing the UI thread or SQLite's cross-process lock.
       for (let offset = 0; offset < changes.length; offset += 256) {
@@ -81,13 +116,19 @@ export class WorkspaceToolObserver {
         if (offset + 256 < changes.length) await yieldToUI();
       }
       if (incomplete.length) this.report(`${incomplete.length} paths could not be fully scanned`);
-    } catch (error) { this.report(error); }
+    } catch (error) {
+      this.report(error);
+    }
   }
 
   async execute(tool: AgentTool, input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     if (!this.limits.coordinationEnabled) return tool.execute(input, context);
     let before: Snapshot | undefined;
-    try { before = await this.snapshot(); } catch (error) { this.report(error); }
+    try {
+      before = await this.snapshot();
+    } catch (error) {
+      this.report(error);
+    }
     const callId = context.toolCallId ?? `observation_${randomUUID()}`;
     try {
       const result = await tool.execute(input, context);
@@ -108,5 +149,7 @@ export class WorkspaceToolObserver {
     }
   }
 
-  async drain(): Promise<void> { await Promise.all([...this.background]); }
+  async drain(): Promise<void> {
+    await Promise.all([...this.background]);
+  }
 }

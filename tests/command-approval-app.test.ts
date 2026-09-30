@@ -9,12 +9,7 @@ import { TaskBudget } from "../src/runtime/task-budget.js";
 
 import { EasyCodeApp } from "../src/app.js";
 import { Terminal } from "../src/cli/terminal.js";
-import type {
-  ApprovalDecision,
-  ApprovalRequest,
-  SessionState,
-  CommandExecutionMode,
-} from "../src/core/types.js";
+import type { ApprovalDecision, ApprovalRequest, SessionState, CommandExecutionMode } from "../src/core/types.js";
 import { normalizeCommandApprovalPrefix, networkCommandApprovalPrefix } from "../src/command/approval.js";
 import { createStorage, type EasyCodeStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
@@ -94,8 +89,14 @@ function approvalHarness(threadId: string): ApprovalHarness {
     terminal,
     state,
     request: (request) => internal.requestToolApproval(request),
-    setMode: (mode) => { Object.defineProperty(app, "commandExecutionMode", { value: mode }); },
-    setReview: (decision) => { Object.defineProperty(app, "reviewApproval", { value: async () => ({ decision, reason: "Test approval agent" }) }); },
+    setMode: (mode) => {
+      Object.defineProperty(app, "commandExecutionMode", { value: mode });
+    },
+    setReview: (decision) => {
+      Object.defineProperty(app, "reviewApproval", {
+        value: async () => ({ decision, reason: "Test approval agent" }),
+      });
+    },
     close: () => {
       terminal.close();
       storage.close();
@@ -107,32 +108,67 @@ function approvalHarness(threadId: string): ApprovalHarness {
 describe("approval retry journal integration", () => {
   it("records failed API attempts without aborting the configured five retries", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-approval-retry-"));
-    const storage = createStorage(directory); const threads = new ThreadStore(storage);
+    const storage = createStorage(directory);
+    const threads = new ThreadStore(storage);
     let calls = 0;
     const server = createServer((req, res) => {
-      req.resume(); calls++;
+      req.resume();
+      calls++;
       res.setHeader("Content-Type", "application/json");
-      if (calls <= 5) { res.statusCode = 503; res.setHeader("Retry-After", "0"); res.end('{"error":{"message":"temporary mock failure"}}'); }
-      else res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: '{"decision":"allow_once","reason":"local read"}' }, finish_reason: "stop" }], usage: { total_tokens: 2 } }));
+      if (calls <= 5) {
+        res.statusCode = 503;
+        res.setHeader("Retry-After", "0");
+        res.end('{"error":{"message":"temporary mock failure"}}');
+      } else
+        res.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: { role: "assistant", content: '{"decision":"allow_once","reason":"local read"}' },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { total_tokens: 2 },
+          }),
+        );
     });
     try {
-      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-      const address = server.address(); assert.ok(address && typeof address !== "string");
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      assert.ok(address && typeof address !== "string");
       const config = createDefaultEasyCodeConfig(directory);
-      config.providers.deepseek!.apiKey = "mock-key"; config.providers.deepseek!.baseUrl = `http://127.0.0.1:${address.port}/v1`;
-      const state = threads.create({ threadId: "approval-retry", workspaceRoot: directory, mode: "code", provider: "deepseek", model: "mock" });
+      config.providers.deepseek!.apiKey = "mock-key";
+      config.providers.deepseek!.baseUrl = `http://127.0.0.1:${address.port}/v1`;
+      const state = threads.create({
+        threadId: "approval-retry",
+        workspaceRoot: directory,
+        mode: "code",
+        provider: "deepseek",
+        model: "mock",
+      });
       state.activeTurnId = "turn_approval_retry";
       const budget = new TaskBudget(20, 0);
       const app = Object.create(EasyCodeApp.prototype);
-      Object.defineProperties(app, { state: { value: state }, config: { value: config }, threadStore: { value: threads },
-        effectiveConfig: { value: () => config }, sharedTaskBudget: { value: () => budget } });
+      Object.defineProperties(app, {
+        state: { value: state },
+        config: { value: config },
+        threadStore: { value: threads },
+        effectiveConfig: { value: () => config },
+        sharedTaskBudget: { value: () => budget },
+      });
       const result = await app.reviewApproval(approvalRequest());
-      assert.equal(result.decision, "allow_once", result.reason); assert.equal(calls, 6);
+      assert.equal(result.decision, "allow_once", result.reason);
+      assert.equal(calls, 6);
       assert.equal(budget.snapshot().requests, 6);
       const events = threads.journal(state.threadId).read();
-      assert.equal(events.filter(e => e.type === "model.usage" && e.phase === "completed").length, 6);
-      assert.equal(events.filter(e => e.type === "model.api_attempt" && e.phase === "failed").length, 5);
-    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); storage.close(); rmSync(directory, { recursive: true, force: true }); }
+      assert.equal(events.filter((e) => e.type === "model.usage" && e.phase === "completed").length, 6);
+      assert.equal(events.filter((e) => e.type === "model.api_attempt" && e.phase === "failed").length, 5);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      storage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 
@@ -149,7 +185,9 @@ describe("application command approval decisions", () => {
           assert.equal(harness.terminal.requests.length - before, automatic ? 0 : 1);
         }
       }
-    } finally { harness.close(); }
+    } finally {
+      harness.close();
+    }
   });
   it("uses the independent approval outcome for every network effect and bypasses it in full access", async () => {
     const harness = approvalHarness("network_mode_app");
@@ -165,7 +203,9 @@ describe("application command approval decisions", () => {
         }
       }
       assert.equal(await harness.request({ ...approvalRequest(), risk: "destructive" }), true);
-    } finally { harness.close(); }
+    } finally {
+      harness.close();
+    }
   });
 
   it("remembers explicit network prefixes, honors them with prompts disabled, and consumes them for local execution", async () => {
@@ -173,20 +213,29 @@ describe("application command approval decisions", () => {
     try {
       const prefix = networkCommandApprovalPrefix(process.execPath, [], "a".repeat(64));
       const request: ApprovalRequest = { ...approvalRequest(prefix), network: { effect: "download" } };
-      await assert.rejects(() => harness.request({ ...request, allowPrompt: false }), /interactive approval is unavailable/);
+      await assert.rejects(
+        () => harness.request({ ...request, allowPrompt: false }),
+        /interactive approval is unavailable/,
+      );
       assert.equal(harness.terminal.requests.length, 0);
       harness.terminal.decisions.push("allow_prefix");
       assert.equal(await harness.request(request), true);
       assert.equal(await harness.request({ ...request, network: { effect: "upload" }, allowPrompt: false }), true);
-      assert.equal(await harness.request({ ...approvalRequest(process.execPath), existingNetworkCommandPrefix: prefix }), true);
+      assert.equal(
+        await harness.request({ ...approvalRequest(process.execPath), existingNetworkCommandPrefix: prefix }),
+        true,
+      );
       assert.equal(harness.terminal.requests.length, 1);
       assert.deepEqual(harness.threads.recover(harness.state.threadId).commandApprovalPrefixes, [prefix]);
-    } finally { harness.close(); }
+    } finally {
+      harness.close();
+    }
   });
   it("escalates an independent rejection to the user and journals the override", async () => {
     const harness = approvalHarness("agent_reject_override");
     try {
-      harness.setMode("auto_approve"); harness.setReview("reject");
+      harness.setMode("auto_approve");
+      harness.setReview("reject");
       harness.terminal.decisions.push("allow_prefix");
       assert.equal(await harness.request(approvalRequest()), true);
       assert.equal(harness.terminal.requests.length, 1);
@@ -194,25 +243,48 @@ describe("application command approval decisions", () => {
       assert.equal(await harness.request(approvalRequest()), true);
       assert.equal(harness.terminal.requests.length, 1);
       assert.equal(harness.threads.recover(harness.state.threadId).commandApprovalPrefixes.length, 1);
-    } finally { harness.close(); }
+    } finally {
+      harness.close();
+    }
   });
   it("bypasses the approval agent for a required boundary decision and reports the user's choice", async () => {
     const harness = approvalHarness("boundary_user_decision");
     try {
-      harness.setMode("auto_approve"); harness.setReview("allow_once");
+      harness.setMode("auto_approve");
+      harness.setReview("allow_once");
       let observed: ApprovalDecision | undefined;
       harness.terminal.decisions.push("reject");
-      assert.equal(await harness.request({ ...approvalRequest(), requiredReviewer: "user",
-        executionTiming: "future_resubmission", observeDecision: decision => { observed = decision; } }), false);
+      assert.equal(
+        await harness.request({
+          ...approvalRequest(),
+          requiredReviewer: "user",
+          executionTiming: "future_resubmission",
+          observeDecision: (decision) => {
+            observed = decision;
+          },
+        }),
+        false,
+      );
       assert.equal(harness.terminal.requests.length, 1);
       assert.equal(observed, "reject");
 
       harness.terminal.decisions.push("allow_once");
-      assert.equal(await harness.request({ ...approvalRequest(), requiredReviewer: "user",
-        executionTiming: "future_resubmission", observeDecision: decision => { observed = decision; } }), true);
+      assert.equal(
+        await harness.request({
+          ...approvalRequest(),
+          requiredReviewer: "user",
+          executionTiming: "future_resubmission",
+          observeDecision: (decision) => {
+            observed = decision;
+          },
+        }),
+        true,
+      );
       assert.equal(observed, "allow_once");
       assert.match(harness.terminal.messages.at(-1) ?? "", /next exact resubmission/u);
-    } finally { harness.close(); }
+    } finally {
+      harness.close();
+    }
   });
   it("allows once without remembering and asks again next time", async () => {
     const harness = approvalHarness("thread_approval_once");
@@ -220,20 +292,11 @@ describe("application command approval decisions", () => {
       harness.terminal.decisions.push("allow_once", "reject");
       assert.equal(await harness.request(approvalRequest()), true);
       assert.deepEqual(harness.state.commandApprovalPrefixes, []);
-      assert.match(
-        harness.terminal.messages[0] ?? "",
-        /Approved once; starting the command\./u,
-      );
+      assert.match(harness.terminal.messages[0] ?? "", /Approved once; starting the command\./u);
       assert.equal(await harness.request(approvalRequest()), false);
-      assert.match(
-        harness.terminal.messages[1] ?? "",
-        /Command execution rejected\./u,
-      );
+      assert.match(harness.terminal.messages[1] ?? "", /Command execution rejected\./u);
       assert.equal(harness.terminal.requests.length, 2);
-      assert.deepEqual(
-        harness.threads.recover(harness.state.threadId).commandApprovalPrefixes,
-        [],
-      );
+      assert.deepEqual(harness.threads.recover(harness.state.threadId).commandApprovalPrefixes, []);
     } finally {
       harness.close();
     }
@@ -286,10 +349,7 @@ describe("application command approval decisions", () => {
       harness.threads.recordCommandApprovalPrefixGrant = () => {
         throw new Error("simulated journal failure");
       };
-      await assert.rejects(
-        () => harness.request(approvalRequest()),
-        /simulated journal failure/u,
-      );
+      await assert.rejects(() => harness.request(approvalRequest()), /simulated journal failure/u);
       assert.deepEqual(harness.state.commandApprovalPrefixes, []);
       harness.threads.recordCommandApprovalPrefixGrant = original;
     } finally {

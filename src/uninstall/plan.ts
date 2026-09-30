@@ -3,12 +3,7 @@ import { lstat, readdir, rm, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import {
-  assertPlainAncestors,
-  readOwnedResources,
-  type OwnedResource,
-} from "../install/ownership.js";
-import { readJson } from "../install/metadata.js";
+import { assertPlainAncestors, readOwnedResources, type OwnedResource } from "../install/ownership.js";
 
 export { readJson } from "../install/metadata.js";
 
@@ -45,8 +40,7 @@ export function identity(value: string): string {
 
 export function inside(root: string, target: string): boolean {
   const relative = path.relative(identity(root), identity(target));
-  return relative !== "" && relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 export async function children(directory: string): Promise<string[]> {
@@ -137,15 +131,18 @@ interface OwnedRootCandidate {
  * Delete an owned ancestor once instead of scheduling stale descendant actions.
  * Every candidate is identity-checked before this collapse grants authority.
  */
-function minimalDeletionRoots(
-  candidates: readonly OwnedRootCandidate[],
-): OwnedRootCandidate[] {
-  const ordered = [...candidates].sort((left, right) =>
-    left.root.length - right.root.length || identity(left.root).localeCompare(identity(right.root)));
+function minimalDeletionRoots(candidates: readonly OwnedRootCandidate[]): OwnedRootCandidate[] {
+  const ordered = [...candidates].sort(
+    (left, right) => left.root.length - right.root.length || identity(left.root).localeCompare(identity(right.root)),
+  );
   const selected: OwnedRootCandidate[] = [];
   for (const candidate of ordered) {
-    if (selected.some((parent) =>
-      identity(parent.root) === identity(candidate.root) || inside(parent.root, candidate.root))) continue;
+    if (
+      selected.some(
+        (parent) => identity(parent.root) === identity(candidate.root) || inside(parent.root, candidate.root),
+      )
+    )
+      continue;
     selected.push(candidate);
   }
   return selected;
@@ -172,13 +169,12 @@ export async function buildFilePlan(options: PlanOptions = {}): Promise<Uninstal
   const candidates: OwnedRootCandidate[] = [];
   for (const kind of ["data", "config", "cache"] as const) {
     const explicit = options.paths?.[kind];
-    plan.roots[kind] = explicit
-      ? [path.resolve(explicit)]
-      : uniqueAbsoluteRoots(plan.resources, kind);
+    plan.roots[kind] = explicit ? [path.resolve(explicit)] : uniqueAbsoluteRoots(plan.resources, kind);
     for (const root of plan.roots[kind]) {
       try {
-        const receipt = plan.resources.find(resource => resource.kind === kind &&
-          resource.path && identity(resource.path) === identity(root));
+        const receipt = plan.resources.find(
+          (resource) => resource.kind === kind && resource.path && identity(resource.path) === identity(root),
+        );
         if (!options.paths && receipt?.state === "ready") {
           const currentIdentity = filesystemIdentity(root);
           // A previously owned path may already be absent after a partial or

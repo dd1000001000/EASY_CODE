@@ -3,10 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import {
-  EasyCodeApp,
-  releaseOrphanedSubagentTasks,
-} from "../src/app.js";
+import { EasyCodeApp, releaseOrphanedSubagentTasks } from "../src/app.js";
 import { createDefaultEasyCodeConfig } from "../src/config/index.js";
 import type {
   ExecutionEnvironmentSnapshot,
@@ -23,25 +20,16 @@ import {
   type SubagentExecutionRequest,
 } from "../src/subagents/coordinator.js";
 import { WorkspaceMutationLock } from "../src/subagents/workspace-mutation-lock.js";
-import {
-  applySubagentTaskOperation,
-  applyTaskGraphOperation,
-} from "../src/tasks/task-graph.js";
+import { applySubagentTaskOperation, applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { describe, it } from "./harness.js";
 
-type StandaloneAssignment = Extract<
-  SubagentAssignmentSnapshot,
-  { kind: "standalone" }
->;
+type StandaloneAssignment = Extract<SubagentAssignmentSnapshot, { kind: "standalone" }>;
 
-const STANDALONE_AGENT_ID =
-  "subagent_00000000-0000-4000-8000-000000000201";
+const STANDALONE_AGENT_ID = "subagent_00000000-0000-4000-8000-000000000201";
 
-function standaloneAssignment(
-  overrides: Partial<StandaloneAssignment> = {},
-): StandaloneAssignment {
+function standaloneAssignment(overrides: Partial<StandaloneAssignment> = {}): StandaloneAssignment {
   return {
     kind: "standalone",
     agentId: STANDALONE_AGENT_ID,
@@ -104,11 +92,7 @@ function standaloneContext(state: Readonly<SessionState>, turnId: string): ToolC
   };
 }
 
-function restoreStandaloneViaApp(
-  threads: ThreadStore,
-  state: SessionState,
-  coordinator: SubagentCoordinator,
-): number {
+function restoreStandaloneViaApp(threads: ThreadStore, state: SessionState, coordinator: SubagentCoordinator): number {
   const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
   Object.defineProperties(app, {
     taskBudgets: { value: new Map() },
@@ -116,8 +100,7 @@ function restoreStandaloneViaApp(
     state: { value: state },
     subagentCoordinator: { value: coordinator },
   });
-  return (app as unknown as { restoreSubagents(): number })
-    .restoreSubagents();
+  return (app as unknown as { restoreSubagents(): number }).restoreSubagents();
 }
 
 describe("subagent task journal recovery", () => {
@@ -385,10 +368,7 @@ describe("subagent task journal recovery", () => {
           return { descriptor: baseEnvironment, workspace: childWorkspace };
         },
         markRunning: async () => ({ ...baseEnvironment, status: "running" as const }),
-        finalize: async (
-          _environment: unknown,
-          input: { accepted: boolean },
-        ) => {
+        finalize: async (_environment: unknown, input: { accepted: boolean }) => {
           assert.equal(input.accepted, true);
           markFinalizeEntered();
           await finalizeGate;
@@ -419,9 +399,11 @@ describe("subagent task journal recovery", () => {
         },
         dirty: { value: false, writable: true },
       });
-      (AgentRuntime.prototype as unknown as {
-        run: typeof AgentRuntime.prototype.run;
-      }).run = async (state) => ({
+      (
+        AgentRuntime.prototype as unknown as {
+          run: typeof AgentRuntime.prototype.run;
+        }
+      ).run = async (state) => ({
         text: "verified child completion",
         reason: "success",
         steps: 1,
@@ -431,10 +413,12 @@ describe("subagent task journal recovery", () => {
           taskId,
           outcome: "completed",
           summary: "The child completed before finalization began.",
-          completionEvidence: [{
-            check: "The verified result is complete",
-            evidence: "The child Runtime returned its structured completion.",
-          }],
+          completionEvidence: [
+            {
+              check: "The verified result is complete",
+              evidence: "The child Runtime returned its structured completion.",
+            },
+          ],
         },
       });
       const controller = new AbortController();
@@ -488,9 +472,12 @@ describe("subagent task journal recovery", () => {
           runSubagent(input: SubagentExecutionRequest): Promise<SubagentExecutionOutcome>;
         }
       ).runSubagent(request);
-      await Promise.race([finalizeEntered, outcomePromise.then((outcome) => {
-        throw new Error(`Child returned before entering finalization: ${JSON.stringify(outcome)}`);
-      })]);
+      await Promise.race([
+        finalizeEntered,
+        outcomePromise.then((outcome) => {
+          throw new Error(`Child returned before entering finalization: ${JSON.stringify(outcome)}`);
+        }),
+      ]);
       pauseRequested = true;
       controller.abort();
       releaseFinalize();
@@ -498,14 +485,13 @@ describe("subagent task journal recovery", () => {
 
       assert.equal(outcome.reason, "completed");
       assert.equal(outcome.resultArtifact?.status, "ready");
-      assert.equal(
-        threads.latestSubagentResult(parent.threadId, agentId, taskId)?.reason,
-        "completed",
-      );
+      assert.equal(threads.latestSubagentResult(parent.threadId, agentId, taskId)?.reason, "completed");
     } finally {
-      (AgentRuntime.prototype as unknown as {
-        run: typeof AgentRuntime.prototype.run;
-      }).run = originalRun;
+      (
+        AgentRuntime.prototype as unknown as {
+          run: typeof AgentRuntime.prototype.run;
+        }
+      ).run = originalRun;
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -527,16 +513,18 @@ describe("subagent task journal recovery", () => {
       const createOperation = {
         action: "create" as const,
         goal: "Keep DAG children out of standalone recovery",
-        tasks: [{
-          id: "inspect_dag",
-          title: "Inspect the DAG",
-          description: "Inspect only the Runtime-bound DAG task.",
-          dependencies: [],
-          inputs: [],
-          expectedArtifacts: ["A concise inspection result"],
-          completionChecks: ["The DAG inspection is verified"],
-          failureHandling: "Release the DAG task for reassignment.",
-        }],
+        tasks: [
+          {
+            id: "inspect_dag",
+            title: "Inspect the DAG",
+            description: "Inspect only the Runtime-bound DAG task.",
+            dependencies: [],
+            inputs: [],
+            expectedArtifacts: ["A concise inspection result"],
+            completionChecks: ["The DAG inspection is verified"],
+            failureHandling: "Release the DAG task for reassignment.",
+          },
+        ],
       };
       const graph = applyTaskGraphOperation(undefined, createOperation, {
         turnId: "turn_create_dag_binding_scan",
@@ -569,10 +557,7 @@ describe("subagent task journal recovery", () => {
       const claimed = applySubagentTaskOperation(graph, claim, {
         turnId: "turn_claim_dag_binding_scan",
       });
-      const dagAssignment: Extract<
-        SubagentAssignmentSnapshot,
-        { kind: "dag" }
-      > = {
+      const dagAssignment: Extract<SubagentAssignmentSnapshot, { kind: "dag" }> = {
         kind: "dag",
         mode: "code",
         agentId,
@@ -630,13 +615,7 @@ describe("subagent task journal recovery", () => {
         thinkingEffort: "medium",
       });
       const assignment = standaloneAssignment();
-      appendStandaloneLifecycle(
-        threads,
-        state.threadId,
-        "turn_spawn_standalone",
-        assignment,
-        "activate",
-      );
+      appendStandaloneLifecycle(threads, state.threadId, "turn_spawn_standalone", assignment, "activate");
 
       const pending = threads.unobservedStandaloneAssignments(state.threadId);
       assert.equal(pending.length, 1);
@@ -646,13 +625,7 @@ describe("subagent task journal recovery", () => {
         observed: false,
       });
 
-      appendStandaloneLifecycle(
-        threads,
-        state.threadId,
-        "turn_observe_standalone",
-        assignment,
-        "observe",
-      );
+      appendStandaloneLifecycle(threads, state.threadId, "turn_observe_standalone", assignment, "observe");
       assert.deepEqual(threads.unobservedStandaloneAssignments(state.threadId), []);
     } finally {
       storage.close();
@@ -674,28 +647,22 @@ describe("subagent task journal recovery", () => {
         thinkingEffort: "medium",
       });
       const assignment = standaloneAssignment();
-      appendStandaloneLifecycle(
-        threads,
-        state.threadId,
-        "turn_spawn_standalone_result",
-        assignment,
-        "activate",
-      );
-      threads.recordSubagentArtifacts(
-        state.threadId,
-        "turn_spawn_standalone_result",
-        {
-          agentId: assignment.agentId,
-          taskId: assignment.taskId,
-          changes: [{
+      appendStandaloneLifecycle(threads, state.threadId, "turn_spawn_standalone_result", assignment, "activate");
+      threads.recordSubagentArtifacts(state.threadId, "turn_spawn_standalone_result", {
+        agentId: assignment.agentId,
+        taskId: assignment.taskId,
+        changes: [
+          {
             path: "src/standalone-result.ts",
             operation: "create",
             afterHash: "standalone-result-hash",
             source: "file_tool",
             status: "applied",
             timestamp: "2026-08-27T13:01:00.000Z",
-          }],
-          commands: [{
+          },
+        ],
+        commands: [
+          {
             id: "command_standalone_recovery",
             program: "npm",
             args: ["test"],
@@ -708,47 +675,31 @@ describe("subagent task journal recovery", () => {
             sourceAgentRole: "subagent",
             sourceAgentId: assignment.agentId,
             sourceTaskId: assignment.taskId,
-          }],
-        },
-      );
-      threads.recordSubagentResult(
-        state.threadId,
-        "turn_spawn_standalone_result",
-        {
-          agentId: assignment.agentId,
+          },
+        ],
+      });
+      threads.recordSubagentResult(state.threadId, "turn_spawn_standalone_result", {
+        agentId: assignment.agentId,
+        taskId: assignment.taskId,
+        reason: "completed",
+        report: {
           taskId: assignment.taskId,
-          reason: "completed",
-          report: {
-            taskId: assignment.taskId,
-            outcome: "completed",
-            summary: "Recovered standalone work completed.",
-            completionEvidence: [{
+          outcome: "completed",
+          summary: "Recovered standalone work completed.",
+          completionEvidence: [
+            {
               check: "Recovery behavior is verified",
               evidence: "The focused standalone check passed.",
-            }],
-          },
+            },
+          ],
         },
-      );
+      });
 
       const recoveredState = threads.recover(state.threadId);
-      assert.equal(
-        recoveredState.changes.filter(
-          (change) => change.path === "src/standalone-result.ts",
-        ).length,
-        1,
-      );
-      assert.equal(
-        recoveredState.commands.filter(
-          (command) => command.id === "command_standalone_recovery",
-        ).length,
-        1,
-      );
+      assert.equal(recoveredState.changes.filter((change) => change.path === "src/standalone-result.ts").length, 1);
+      assert.equal(recoveredState.commands.filter((command) => command.id === "command_standalone_recovery").length, 1);
       const pending = threads.unobservedStandaloneAssignments(state.threadId);
-      const durable = threads.latestSubagentResult(
-        state.threadId,
-        assignment.agentId,
-        assignment.taskId,
-      );
+      const durable = threads.latestSubagentResult(state.threadId, assignment.agentId, assignment.taskId);
       assert.equal(pending.length, 1);
       assert.equal(durable?.reason, "completed");
 
@@ -774,16 +725,16 @@ describe("subagent task journal recovery", () => {
         finishedAt: durable?.timestamp ?? assignment.createdAt,
       });
 
-      const waited = await coordinator.wait({
-        action: "wait",
-        agentIds: [assignment.agentId],
-        timeoutMs: 0,
-      }, standaloneContext(recoveredState, "turn_collect_standalone_result"));
-      assert.equal(waited.ok, true);
-      assert.equal(
-        (waited.data as { timedOut?: boolean }).timedOut,
-        false,
+      const waited = await coordinator.wait(
+        {
+          action: "wait",
+          agentIds: [assignment.agentId],
+          timeoutMs: 0,
+        },
+        standaloneContext(recoveredState, "turn_collect_standalone_result"),
       );
+      assert.equal(waited.ok, true);
+      assert.equal((waited.data as { timedOut?: boolean }).timedOut, false);
       assert.equal(waited.subagentLifecycle?.action, "observe");
       assert.deepEqual(waited.subagentAssignment, {
         ...assignment,
@@ -794,31 +745,26 @@ describe("subagent task journal recovery", () => {
       assert.equal(waited.taskGraphUpdate, undefined);
       assert.equal(waited.subagentTaskOperation, undefined);
 
-      appendStandaloneLifecycle(
-        threads,
-        state.threadId,
-        "turn_collect_standalone_result",
-        assignment,
-        "observe",
-      );
-      assert.equal(
-        coordinator.commitLifecycle(waited.subagentLifecycle!),
-        undefined,
-      );
+      appendStandaloneLifecycle(threads, state.threadId, "turn_collect_standalone_result", assignment, "observe");
+      assert.equal(coordinator.commitLifecycle(waited.subagentLifecycle!), undefined);
       assert.equal(childRuns, 0);
       assert.equal(coordinator.hasOutstanding(state.threadId), false);
       assert.deepEqual(threads.unobservedStandaloneAssignments(state.threadId), []);
 
-      const observedAgain = await coordinator.wait({
-        action: "wait",
-        agentIds: [assignment.agentId],
-        timeoutMs: 0,
-      }, standaloneContext(recoveredState, "turn_collect_standalone_again"));
+      const observedAgain = await coordinator.wait(
+        {
+          action: "wait",
+          agentIds: [assignment.agentId],
+          timeoutMs: 0,
+        },
+        standaloneContext(recoveredState, "turn_collect_standalone_again"),
+      );
       assert.equal((observedAgain.data as { timedOut?: boolean }).timedOut, true);
       assert.equal(observedAgain.subagentLifecycle, undefined);
-      assert.equal(threads.recover(state.threadId).changes.filter(
-        (change) => change.path === "src/standalone-result.ts",
-      ).length, 1);
+      assert.equal(
+        threads.recover(state.threadId).changes.filter((change) => change.path === "src/standalone-result.ts").length,
+        1,
+      );
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -839,21 +785,8 @@ describe("subagent task journal recovery", () => {
         thinkingEffort: "low",
       });
       const assignment = standaloneAssignment({ thinkingEffort: "low" });
-      appendStandaloneLifecycle(
-        threads,
-        state.threadId,
-        "turn_spawn_interrupted_standalone",
-        assignment,
-        "activate",
-      );
-      assert.equal(
-        threads.latestSubagentResult(
-          state.threadId,
-          assignment.agentId,
-          assignment.taskId,
-        ),
-        undefined,
-      );
+      appendStandaloneLifecycle(threads, state.threadId, "turn_spawn_interrupted_standalone", assignment, "activate");
+      assert.equal(threads.latestSubagentResult(state.threadId, assignment.agentId, assignment.taskId), undefined);
 
       let childRuns = 0;
       const coordinator = new SubagentCoordinator({
@@ -872,18 +805,15 @@ describe("subagent task journal recovery", () => {
         { action: "wait", agentIds: [assignment.agentId], timeoutMs: 1_000 },
         standaloneContext(state, "turn_wait_resumed_standalone"),
       );
-      const durable = threads.latestSubagentResult(
-        state.threadId,
-        assignment.agentId,
-        assignment.taskId,
-      );
+      const durable = threads.latestSubagentResult(state.threadId, assignment.agentId, assignment.taskId);
       assert.equal(durable, undefined);
       assert.equal(coordinator.snapshot(state.threadId)[0]?.status, "failed");
       assert.equal(childRuns, 1);
       assert.equal(
-        threads.journal(state.threadId).read().filter(
-          (event) => event.type === "subagent.result",
-        ).length,
+        threads
+          .journal(state.threadId)
+          .read()
+          .filter((event) => event.type === "subagent.result").length,
         0,
       );
     } finally {
@@ -908,25 +838,28 @@ describe("subagent task journal recovery", () => {
       const createOperation = {
         action: "create" as const,
         goal: "Recover isolated child work",
-        tasks: [{
-          id: "implementation",
-          title: "Implement the feature",
-          description: "Make the scoped implementation change",
-          dependencies: [],
-          inputs: [],
-          expectedArtifacts: ["src/feature.ts"],
-          completionChecks: ["Focused test passes"],
-          failureHandling: "Return the task to the main agent",
-        }, {
-          id: "verification",
-          title: "Verify the feature",
-          description: "Run the isolated verification",
-          dependencies: [],
-          inputs: [],
-          expectedArtifacts: ["verification log"],
-          completionChecks: ["Verification command passes"],
-          failureHandling: "Return verification to the main agent",
-        }],
+        tasks: [
+          {
+            id: "implementation",
+            title: "Implement the feature",
+            description: "Make the scoped implementation change",
+            dependencies: [],
+            inputs: [],
+            expectedArtifacts: ["src/feature.ts"],
+            completionChecks: ["Focused test passes"],
+            failureHandling: "Return the task to the main agent",
+          },
+          {
+            id: "verification",
+            title: "Verify the feature",
+            description: "Run the isolated verification",
+            dependencies: [],
+            inputs: [],
+            expectedArtifacts: ["verification log"],
+            completionChecks: ["Verification command passes"],
+            failureHandling: "Return verification to the main agent",
+          },
+        ],
       };
       const graph = applyTaskGraphOperation(undefined, createOperation, {
         turnId: "turn_create_recovery",
@@ -976,8 +909,7 @@ describe("subagent task journal recovery", () => {
         },
       });
 
-      const verificationAgentId =
-        "subagent_00000000-0000-4000-8000-000000000100";
+      const verificationAgentId = "subagent_00000000-0000-4000-8000-000000000100";
       const verificationClaim = {
         action: "claim" as const,
         taskId: "verification",
@@ -1005,21 +937,21 @@ describe("subagent task journal recovery", () => {
       });
 
       const staleCheckpoint = threads.recover(state.threadId);
-      threads.recordSubagentArtifacts(
-        state.threadId,
-        "turn_claim_verification",
-        {
-          agentId: verificationAgentId,
-          taskId: "verification",
-          changes: [{
+      threads.recordSubagentArtifacts(state.threadId, "turn_claim_verification", {
+        agentId: verificationAgentId,
+        taskId: "verification",
+        changes: [
+          {
             path: "src/verified.ts",
             operation: "create",
             afterHash: "abc123",
             source: "file_tool",
             status: "applied",
             timestamp: "2026-08-27T12:00:00.000Z",
-          }],
-          commands: [{
+          },
+        ],
+        commands: [
+          {
             id: "command_subagent_recovery",
             program: "npm",
             args: ["test"],
@@ -1032,36 +964,37 @@ describe("subagent task journal recovery", () => {
             sourceAgentRole: "subagent",
             sourceAgentId: verificationAgentId,
             sourceTaskId: "verification",
-          }],
-        },
-      );
+          },
+        ],
+      });
       // Simulate a parent checkpoint that was captured before the background
       // artifact event but appended after it.
       threads.save(staleCheckpoint);
-      threads.recordSubagentResult(
-        state.threadId,
-        "turn_claim_verification",
-        {
-          agentId: verificationAgentId,
+      threads.recordSubagentResult(state.threadId, "turn_claim_verification", {
+        agentId: verificationAgentId,
+        taskId: "verification",
+        reason: "completed",
+        report: {
           taskId: "verification",
-          reason: "completed",
-          report: {
-            taskId: "verification",
-            outcome: "completed",
-            summary: "Verification completed.",
-            completionEvidence: [{
+          outcome: "completed",
+          summary: "Verification completed.",
+          completionEvidence: [
+            {
               check: "Verification command passes",
               evidence: "npm test exited with code 0",
-            }],
-          },
+            },
+          ],
         },
-      );
+      });
 
       const recovered = threads.recover(state.threadId);
       assert.equal(recovered.taskGraph?.tasks[0]?.owner, "subagent");
       assert.equal(recovered.taskGraph?.tasks[0]?.status, "in_progress");
       assert.equal(recovered.taskGraph?.tasks[1]?.owner, "subagent");
-      assert.equal(recovered.changes.some((change) => change.path === "src/verified.ts"), true);
+      assert.equal(
+        recovered.changes.some((change) => change.path === "src/verified.ts"),
+        true,
+      );
       assert.equal(recovered.commands[0]?.sourceAgentId, verificationAgentId);
       const messageCount = recovered.messages.length;
       assert.equal(releaseOrphanedSubagentTasks(threads, recovered), 2);
@@ -1069,16 +1002,16 @@ describe("subagent task journal recovery", () => {
       assert.equal(recovered.taskGraph?.tasks[0]?.status, "pending");
       assert.equal(recovered.taskGraph?.tasks[1]?.owner, "subagent");
       assert.equal(recovered.taskGraph?.tasks[1]?.status, "completed");
-      assert.equal(
-        recovered.taskGraph?.tasks[1]?.completionEvidence?.[0]?.evidence,
-        "npm test exited with code 0",
-      );
+      assert.equal(recovered.taskGraph?.tasks[1]?.completionEvidence?.[0]?.evidence, "npm test exited with code 0");
 
       const replayed = threads.recover(state.threadId);
       assert.equal(replayed.taskGraph?.tasks[0]?.owner, "main_agent");
       assert.equal(replayed.taskGraph?.tasks[0]?.assignedAgentId, undefined);
       assert.equal(replayed.taskGraph?.tasks[1]?.status, "completed");
-      assert.equal(replayed.changes.some((change) => change.path === "src/verified.ts"), true);
+      assert.equal(
+        replayed.changes.some((change) => change.path === "src/verified.ts"),
+        true,
+      );
       assert.equal(replayed.commands[0]?.sourceTaskId, "verification");
       assert.equal(replayed.messages.length, messageCount);
       assert.equal(releaseOrphanedSubagentTasks(threads, replayed), 0);
@@ -1104,16 +1037,18 @@ describe("subagent task journal recovery", () => {
       const createOperation = {
         action: "create" as const,
         goal: "Recover a durable cancellation race",
-        tasks: [{
-          id: "cancel_race",
-          title: "Exercise cancellation recovery",
-          description: "Do not complete after a committed stop",
-          dependencies: [],
-          inputs: [],
-          expectedArtifacts: ["result"],
-          completionChecks: ["Focused check passes"],
-          failureHandling: "Release the task",
-        }],
+        tasks: [
+          {
+            id: "cancel_race",
+            title: "Exercise cancellation recovery",
+            description: "Do not complete after a committed stop",
+            dependencies: [],
+            inputs: [],
+            expectedArtifacts: ["result"],
+            completionChecks: ["Focused check passes"],
+            failureHandling: "Release the task",
+          },
+        ],
       };
       const graph = applyTaskGraphOperation(undefined, createOperation, {
         turnId: "turn_create_stop_race",
@@ -1203,24 +1138,22 @@ describe("subagent task journal recovery", () => {
       });
       // The child result lands after the stop intent was already durable but
       // before the old process managed to apply its local abort.
-      threads.recordSubagentResult(
-        state.threadId,
-        "turn_claim_stop_race",
-        {
-          agentId,
+      threads.recordSubagentResult(state.threadId, "turn_claim_stop_race", {
+        agentId,
+        taskId: "cancel_race",
+        reason: "completed",
+        report: {
           taskId: "cancel_race",
-          reason: "completed",
-          report: {
-            taskId: "cancel_race",
-            outcome: "completed",
-            summary: "The child finished during the stop race.",
-            completionEvidence: [{
+          outcome: "completed",
+          summary: "The child finished during the stop race.",
+          completionEvidence: [
+            {
               check: "Focused check passes",
               evidence: "The focused check passed",
-            }],
-          },
+            },
+          ],
         },
-      );
+      });
 
       const recovered = threads.recover(state.threadId);
       assert.equal(threads.hasCommittedSubagentStop(state.threadId, agentId), true);

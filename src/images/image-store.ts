@@ -2,22 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
-import {
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  realpath,
-  rename,
-  rmdir,
-  stat,
-  unlink,
-} from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, rmdir, stat, unlink } from "node:fs/promises";
 
-import type {
-  ImageAttachment,
-  SupportedImageMediaType,
-} from "../core/types.js";
+import type { ImageAttachment, SupportedImageMediaType } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
 import { MAX_THREAD_IMAGE_NUMBER } from "./labels.js";
@@ -72,14 +59,12 @@ export interface ImageAttachmentCollectionSummary {
 
 const STORAGE_KEY_PATTERN =
   /^attachments\/([a-f0-9]{32})\/(image_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})\.(png|jpg|webp|gif)$/u;
-const IMAGE_ID_PATTERN =
-  /^image_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
+const IMAGE_ID_PATTERN = /^image_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const IMAGE_LABEL_PATTERN = /^Image #[1-9][0-9]{0,2}$/u;
 const THREAD_DIRECTORY_PATTERN = /^[a-f0-9]{32}$/u;
 const STORED_IMAGE_FILENAME_PATTERN =
   /^image_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.(?:png|jpg|webp|gif)$/u;
-const LEASE_ID_PATTERN =
-  /^lease_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
+const LEASE_ID_PATTERN = /^lease_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const PENDING_MARKER_SUFFIX = ".pending.json";
 const JOURNAL_STORAGE_KEY_PATTERN =
   /attachments\/[a-f0-9]{32}\/image_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.(?:png|jpg|webp|gif)/gu;
@@ -183,20 +168,11 @@ export class ImageStore {
       assertPathInside(canonical, canonicalAllowedRoot, "Image path escapes the allowed workspace.");
     }
 
-    const data = await readRegularFileBounded(
-      canonical,
-      this.maxImageBytes,
-      canonicalAllowedRoot,
-    );
+    const data = await readRegularFileBounded(canonical, this.maxImageBytes, canonicalAllowedRoot);
     return this.importBuffer(threadId, label, data, sourceName);
   }
 
-  async importBuffer(
-    threadId: string,
-    label: string,
-    data: Buffer,
-    sourceName?: string,
-  ): Promise<ImageAttachment> {
+  async importBuffer(threadId: string, label: string, data: Buffer, sourceName?: string): Promise<ImageAttachment> {
     await this.initialize();
     await this.ensureLease();
     assertThreadId(threadId);
@@ -264,13 +240,7 @@ export class ImageStore {
   async commit(threadId: string, attachment: ImageAttachment): Promise<void> {
     await this.initialize();
     assertThreadId(threadId);
-    assertAttachmentMetadata(
-      attachment,
-      this.maxImageBytes,
-      this.maxImageEdge,
-      this.maxImagePixels,
-      threadId,
-    );
+    assertAttachmentMetadata(attachment, this.maxImageBytes, this.maxImageEdge, this.maxImagePixels, threadId);
     // Verify the exact final file before removing the orphan marker. This also
     // makes commit idempotent for attachments recovered by startup GC.
     await this.load(threadId, attachment);
@@ -284,8 +254,8 @@ export class ImageStore {
     const lock = await this.acquireGarbageCollectionLock(roots.canonicalRoot);
     if (!lock) return;
     try {
-      const marker = this.pendingMarkers.get(attachment.storageKey) ??
-        this.pendingMarkerPath(attachment.storageKey, this.leaseId);
+      const marker =
+        this.pendingMarkers.get(attachment.storageKey) ?? this.pendingMarkerPath(attachment.storageKey, this.leaseId);
       try {
         await this.removePendingMarker(marker, attachment.storageKey);
       } catch (error) {
@@ -300,16 +270,8 @@ export class ImageStore {
 
   async load(threadId: string, attachment: ImageAttachment): Promise<Buffer> {
     await this.initialize();
-    const { target, canonicalThread } = await this.resolveBoundAttachment(
-      threadId,
-      attachment,
-    );
-    const data = await readRegularFileBounded(
-      target,
-      this.maxImageBytes,
-      canonicalThread,
-      attachment.byteSize,
-    );
+    const { target, canonicalThread } = await this.resolveBoundAttachment(threadId, attachment);
+    const data = await readRegularFileBounded(target, this.maxImageBytes, canonicalThread, attachment.byteSize);
     let inspected: InspectedImage;
     try {
       inspected = inspectImageBuffer(data, {
@@ -335,15 +297,9 @@ export class ImageStore {
   async remove(threadId: string, attachment: ImageAttachment): Promise<void> {
     await this.initialize();
     assertThreadId(threadId);
-    assertAttachmentMetadata(
-      attachment,
-      this.maxImageBytes,
-      this.maxImageEdge,
-      this.maxImagePixels,
-      threadId,
-    );
-    const marker = this.pendingMarkers.get(attachment.storageKey) ??
-      this.pendingMarkerPath(attachment.storageKey, this.leaseId);
+    assertAttachmentMetadata(attachment, this.maxImageBytes, this.maxImageEdge, this.maxImagePixels, threadId);
+    const marker =
+      this.pendingMarkers.get(attachment.storageKey) ?? this.pendingMarkerPath(attachment.storageKey, this.leaseId);
     if (!(await pathExistsAsRegularFile(marker))) return;
     await this.validatePendingMarker(marker, attachment.storageKey, this.leaseId);
     const resolved = await this.resolveBoundAttachment(threadId, attachment);
@@ -400,10 +356,7 @@ export class ImageStore {
     canonicalLeases: string;
   }> {
     await mkdir(this.attachmentsRoot, { recursive: true, mode: 0o700 });
-    const canonicalRoot = await verifyPrivateDirectory(
-      this.attachmentsRoot,
-      "Image attachment root",
-    );
+    const canonicalRoot = await verifyPrivateDirectory(this.attachmentsRoot, "Image attachment root");
     for (const directory of [this.pendingRoot, this.leasesRoot]) {
       try {
         await mkdir(directory, { mode: 0o700 });
@@ -411,24 +364,14 @@ export class ImageStore {
         if (!isAlreadyExists(error)) throw error;
       }
     }
-    const canonicalPending = await verifyPrivateDirectory(
-      this.pendingRoot,
-      "Image pending-marker directory",
-    );
-    const canonicalLeases = await verifyPrivateDirectory(
-      this.leasesRoot,
-      "Image lease directory",
-    );
+    const canonicalPending = await verifyPrivateDirectory(this.pendingRoot, "Image pending-marker directory");
+    const canonicalLeases = await verifyPrivateDirectory(this.leasesRoot, "Image lease directory");
     assertPathInside(
       canonicalPending,
       canonicalRoot,
       "Image pending-marker directory escapes the private attachment store.",
     );
-    assertPathInside(
-      canonicalLeases,
-      canonicalRoot,
-      "Image lease directory escapes the private attachment store.",
-    );
+    assertPathInside(canonicalLeases, canonicalRoot, "Image lease directory escapes the private attachment store.");
     return { canonicalRoot, canonicalPending, canonicalLeases };
   }
 
@@ -447,9 +390,7 @@ export class ImageStore {
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
       const existing = await readJsonBounded(leasePath, roots.canonicalLeases);
-      if (!isLeaseRecord(existing) ||
-          existing.leaseId !== this.leaseId ||
-          existing.pid !== this.processId) {
+      if (!isLeaseRecord(existing) || existing.leaseId !== this.leaseId || existing.pid !== this.processId) {
         throw new Error("Image lease already exists with different ownership.");
       }
     }
@@ -468,15 +409,8 @@ export class ImageStore {
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
       }
-      const canonical = await verifyPrivateDirectory(
-        directory,
-        "Image pending-marker subdirectory",
-      );
-      assertPathInside(
-        canonical,
-        roots.canonicalPending,
-        "Image pending marker escapes the private attachment store.",
-      );
+      const canonical = await verifyPrivateDirectory(directory, "Image pending-marker subdirectory");
+      assertPathInside(canonical, roots.canonicalPending, "Image pending marker escapes the private attachment store.");
     }
     const marker: PendingImageMarker = {
       version: 1,
@@ -495,17 +429,8 @@ export class ImageStore {
     if (!match?.[1] || !match[2] || !match[3]) {
       throw new Error("Image attachment storage key is invalid.");
     }
-    const marker = path.resolve(
-      this.pendingRoot,
-      leaseId,
-      match[1],
-      `${match[2]}.${match[3]}${PENDING_MARKER_SUFFIX}`,
-    );
-    assertPathInside(
-      marker,
-      this.pendingRoot,
-      "Image pending marker escapes the private attachment store.",
-    );
+    const marker = path.resolve(this.pendingRoot, leaseId, match[1], `${match[2]}.${match[3]}${PENDING_MARKER_SUFFIX}`);
+    assertPathInside(marker, this.pendingRoot, "Image pending marker escapes the private attachment store.");
     return marker;
   }
 
@@ -526,33 +451,21 @@ export class ImageStore {
       path.dirname(path.dirname(markerPath)),
       "Image pending lease directory",
     );
-    const canonicalThread = await verifyPrivateDirectory(
-      path.dirname(markerPath),
-      "Image pending thread directory",
-    );
+    const canonicalThread = await verifyPrivateDirectory(path.dirname(markerPath), "Image pending thread directory");
     assertPathInside(
       canonicalLease,
       roots.canonicalPending,
       "Image pending lease directory escapes the private attachment store.",
     );
-    assertPathInside(
-      canonicalThread,
-      canonicalLease,
-      "Image pending thread directory escapes its lease.",
-    );
+    assertPathInside(canonicalThread, canonicalLease, "Image pending thread directory escapes its lease.");
     const value = await readJsonBounded(markerPath, roots.canonicalPending);
-    if (!isPendingImageMarker(value) ||
-        value.storageKey !== storageKey ||
-        value.leaseId !== leaseId) {
+    if (!isPendingImageMarker(value) || value.storageKey !== storageKey || value.leaseId !== leaseId) {
       throw new Error("Image pending marker has invalid ownership or contents.");
     }
     return value;
   }
 
-  private async removePendingMarker(
-    markerPath: string,
-    storageKey: string,
-  ): Promise<void> {
+  private async removePendingMarker(markerPath: string, storageKey: string): Promise<void> {
     const leaseId = path.basename(path.dirname(path.dirname(markerPath)));
     await this.validatePendingMarker(markerPath, storageKey, leaseId);
     await unlink(markerPath);
@@ -563,9 +476,7 @@ export class ImageStore {
     await removeDirectoryIfEmpty(path.dirname(path.dirname(markerPath)));
   }
 
-  private async runGarbageCollection(
-    cleanCurrentLease: boolean,
-  ): Promise<ImageGarbageCollectionResult> {
+  private async runGarbageCollection(cleanCurrentLease: boolean): Promise<ImageGarbageCollectionResult> {
     const roots = await this.prepareLifecycleRoots();
     const lock = await this.acquireGarbageCollectionLock(roots.canonicalRoot);
     if (!lock) return emptyGarbageCollectionResult(false);
@@ -582,10 +493,7 @@ export class ImageStore {
           throw new Error("Image pending lease entry must be a real directory.");
         }
         const leaseDirectory = path.join(this.pendingRoot, leaseEntry.name);
-        const canonicalLeaseDirectory = await verifyPrivateDirectory(
-          leaseDirectory,
-          "Image pending lease directory",
-        );
+        const canonicalLeaseDirectory = await verifyPrivateDirectory(leaseDirectory, "Image pending lease directory");
         assertPathInside(
           canonicalLeaseDirectory,
           roots.canonicalPending,
@@ -614,18 +522,16 @@ export class ImageStore {
               throw new Error("Image pending marker must be a regular file.");
             }
             const markerPath = path.join(markerDirectory, markerEntry.name);
-            const inferredStorageKey = storageKeyFromPendingMarkerName(
-              threadEntry.name,
-              markerEntry.name,
-            );
+            const inferredStorageKey = storageKeyFromPendingMarkerName(threadEntry.name, markerEntry.name);
             let marker: PendingImageMarker;
             try {
               const parsed = await readJsonBounded(markerPath, canonicalMarkerDirectory);
-              if (!isPendingImageMarker(parsed) ||
-                  parsed.leaseId !== leaseEntry.name ||
-                  !parsed.storageKey.startsWith(`attachments/${threadEntry.name}/`) ||
-                  markerEntry.name !==
-                    `${path.posix.basename(parsed.storageKey)}${PENDING_MARKER_SUFFIX}`) {
+              if (
+                !isPendingImageMarker(parsed) ||
+                parsed.leaseId !== leaseEntry.name ||
+                !parsed.storageKey.startsWith(`attachments/${threadEntry.name}/`) ||
+                markerEntry.name !== `${path.posix.basename(parsed.storageKey)}${PENDING_MARKER_SUFFIX}`
+              ) {
                 if (inferredStorageKey) preservedPending.add(inferredStorageKey);
                 pendingImagesPreserved += 1;
                 continue;
@@ -655,10 +561,8 @@ export class ImageStore {
 
             const markerInfo = await lstat(markerPath);
             const active = this.isProcessAlive(marker.pid);
-            const stale = this.now() - Math.max(marker.createdAt, markerInfo.mtimeMs) >=
-              this.orphanGraceMs;
-            if ((cleanCurrentLease && marker.leaseId === this.leaseId) ||
-                (!active && stale)) {
+            const stale = this.now() - Math.max(marker.createdAt, markerInfo.mtimeMs) >= this.orphanGraceMs;
+            if ((cleanCurrentLease && marker.leaseId === this.leaseId) || (!active && stale)) {
               if (finalExists) await this.safeDeleteFinalFile(marker.storageKey);
               await unlink(markerPath);
               this.pendingMarkers.delete(marker.storageKey);
@@ -680,18 +584,15 @@ export class ImageStore {
           throw new Error("Image attachment thread entry must be a real directory.");
         }
         const threadDirectory = path.join(this.attachmentsRoot, threadEntry.name);
-        const canonicalThread = await verifyPrivateDirectory(
-          threadDirectory,
-          "Image attachment thread directory",
-        );
-        assertPathInside(
-          canonicalThread,
-          roots.canonicalRoot,
-          "Image attachment thread directory escapes its store.",
-        );
+        const canonicalThread = await verifyPrivateDirectory(threadDirectory, "Image attachment thread directory");
+        assertPathInside(canonicalThread, roots.canonicalRoot, "Image attachment thread directory escapes its store.");
         for (const imageEntry of await safeDirectoryEntries(threadDirectory)) {
-          if (!imageEntry.isFile() || imageEntry.isSymbolicLink() ||
-              !STORED_IMAGE_FILENAME_PATTERN.test(imageEntry.name)) continue;
+          if (
+            !imageEntry.isFile() ||
+            imageEntry.isSymbolicLink() ||
+            !STORED_IMAGE_FILENAME_PATTERN.test(imageEntry.name)
+          )
+            continue;
           const storageKey = `attachments/${threadEntry.name}/${imageEntry.name}`;
           if (referenced.has(storageKey) || preservedPending.has(storageKey)) continue;
           const imagePath = path.join(threadDirectory, imageEntry.name);
@@ -745,11 +646,7 @@ export class ImageStore {
       }
       if (journalInfo.isSymbolicLink() || !journalInfo.isFile()) continue;
       const canonicalJournal = await realpath(journalPath);
-      assertPathInside(
-        canonicalJournal,
-        canonicalThreads,
-        "Thread journal escapes the private data directory.",
-      );
+      assertPathInside(canonicalJournal, canonicalThreads, "Thread journal escapes the private data directory.");
       await scanStorageKeys(journalPath, referenced);
     }
     return referenced;
@@ -760,25 +657,15 @@ export class ImageStore {
     try {
       const info = await lstat(target);
       if (info.isSymbolicLink() || !info.isFile()) return false;
-      const canonicalRoot = await verifyPrivateDirectory(
-        this.attachmentsRoot,
-        "Image attachment root",
-      );
-      const canonicalThread = await verifyPrivateDirectory(
-        path.dirname(target),
-        "Image attachment thread directory",
-      );
+      const canonicalRoot = await verifyPrivateDirectory(this.attachmentsRoot, "Image attachment root");
+      const canonicalThread = await verifyPrivateDirectory(path.dirname(target), "Image attachment thread directory");
       assertPathInside(
         canonicalThread,
         canonicalRoot,
         "Image attachment thread directory escapes the private attachment store.",
       );
       const canonical = await realpath(target);
-      assertPathInside(
-        canonical,
-        canonicalThread,
-        "Image attachment path escapes its private thread directory.",
-      );
+      assertPathInside(canonical, canonicalThread, "Image attachment path escapes its private thread directory.");
       return true;
     } catch (error) {
       if (isFileNotFound(error)) return false;
@@ -792,36 +679,22 @@ export class ImageStore {
     if (info.isSymbolicLink() || !info.isFile()) {
       throw new Error("Refusing to remove a non-regular image attachment.");
     }
-    const canonicalRoot = await verifyPrivateDirectory(
-      this.attachmentsRoot,
-      "Image attachment root",
-    );
-    const canonicalThread = await verifyPrivateDirectory(
-      path.dirname(target),
-      "Image attachment thread directory",
-    );
+    const canonicalRoot = await verifyPrivateDirectory(this.attachmentsRoot, "Image attachment root");
+    const canonicalThread = await verifyPrivateDirectory(path.dirname(target), "Image attachment thread directory");
     assertPathInside(
       canonicalThread,
       canonicalRoot,
       "Image attachment thread directory escapes the private attachment store.",
     );
     const canonical = await realpath(target);
-    assertPathInside(
-      canonical,
-      canonicalThread,
-      "Image attachment path escapes its private thread directory.",
-    );
+    assertPathInside(canonical, canonicalThread, "Image attachment path escapes its private thread directory.");
     await unlink(target);
   }
 
   private async cleanUnusedLeaseRecords(cleanCurrentLease: boolean): Promise<void> {
-    const canonicalLeases = await verifyPrivateDirectory(
-      this.leasesRoot,
-      "Image lease directory",
-    );
+    const canonicalLeases = await verifyPrivateDirectory(this.leasesRoot, "Image lease directory");
     for (const entry of await safeDirectoryEntries(this.leasesRoot)) {
-      if (!entry.isFile() || entry.isSymbolicLink() ||
-          !entry.name.endsWith(".json")) continue;
+      if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.endsWith(".json")) continue;
       const leaseId = entry.name.slice(0, -5);
       if (!LEASE_ID_PATTERN.test(leaseId)) continue;
       const leasePath = path.join(this.leasesRoot, entry.name);
@@ -836,8 +709,7 @@ export class ImageStore {
       const pendingLeaseDirectory = path.join(this.pendingRoot, leaseId);
       if (await pathExists(pendingLeaseDirectory)) continue;
       const stale = this.now() - record.createdAt >= this.orphanGraceMs;
-      if ((cleanCurrentLease && leaseId === this.leaseId) ||
-          (!this.isProcessAlive(record.pid) && stale)) {
+      if ((cleanCurrentLease && leaseId === this.leaseId) || (!this.isProcessAlive(record.pid) && stale)) {
         await unlink(leasePath);
         if (leaseId === this.leaseId) this.leaseReady = false;
       }
@@ -850,13 +722,9 @@ export class ImageStore {
     if (await pathExists(pendingLeaseDirectory)) return;
     const leasePath = this.leaseRecordPath(this.leaseId);
     try {
-      const canonicalLeases = await verifyPrivateDirectory(
-        this.leasesRoot,
-        "Image lease directory",
-      );
+      const canonicalLeases = await verifyPrivateDirectory(this.leasesRoot, "Image lease directory");
       const parsed = await readJsonBounded(leasePath, canonicalLeases);
-      if (isLeaseRecord(parsed) && parsed.leaseId === this.leaseId &&
-          parsed.pid === this.processId) {
+      if (isLeaseRecord(parsed) && parsed.leaseId === this.leaseId && parsed.pid === this.processId) {
         await unlink(leasePath);
       }
     } catch (error) {
@@ -893,18 +761,11 @@ export class ImageStore {
       } catch {
         return undefined;
       }
-      const ownerAlive = isGarbageCollectionLock(existing) &&
-        this.isProcessAlive(existing.pid);
-      const createdAt = isGarbageCollectionLock(existing)
-        ? existing.createdAt
-        : lockInfo.mtimeMs;
-      if (ownerAlive || this.now() - Math.max(createdAt, lockInfo.mtimeMs) <
-          this.orphanGraceMs) return undefined;
+      const ownerAlive = isGarbageCollectionLock(existing) && this.isProcessAlive(existing.pid);
+      const createdAt = isGarbageCollectionLock(existing) ? existing.createdAt : lockInfo.mtimeMs;
+      if (ownerAlive || this.now() - Math.max(createdAt, lockInfo.mtimeMs) < this.orphanGraceMs) return undefined;
 
-      const tombstone = path.join(
-        this.attachmentsRoot,
-        `.gc-lock-stale-${randomUUID()}`,
-      );
+      const tombstone = path.join(this.attachmentsRoot, `.gc-lock-stale-${randomUUID()}`);
       try {
         await rename(lockPath, tombstone);
         await unlink(tombstone);
@@ -916,16 +777,10 @@ export class ImageStore {
     return undefined;
   }
 
-  private async releaseGarbageCollectionLock(
-    lock: { path: string; token: string },
-  ): Promise<void> {
-    const canonicalRoot = await verifyPrivateDirectory(
-      this.attachmentsRoot,
-      "Image attachment root",
-    );
+  private async releaseGarbageCollectionLock(lock: { path: string; token: string }): Promise<void> {
+    const canonicalRoot = await verifyPrivateDirectory(this.attachmentsRoot, "Image attachment root");
     const value = await readJsonBounded(lock.path, canonicalRoot);
-    if (!isGarbageCollectionLock(value) || value.token !== lock.token ||
-        value.pid !== this.processId) {
+    if (!isGarbageCollectionLock(value) || value.token !== lock.token || value.pid !== this.processId) {
       throw new Error("Refusing to release an image GC lock owned by another process.");
     }
     await unlink(lock.path);
@@ -936,13 +791,7 @@ export class ImageStore {
     attachment: ImageAttachment,
   ): Promise<{ target: string; canonicalThread: string }> {
     assertThreadId(threadId);
-    assertAttachmentMetadata(
-      attachment,
-      this.maxImageBytes,
-      this.maxImageEdge,
-      this.maxImagePixels,
-      threadId,
-    );
+    assertAttachmentMetadata(attachment, this.maxImageBytes, this.maxImageEdge, this.maxImagePixels, threadId);
     const target = this.resolveStorageKey(attachment.storageKey);
     const directories = await this.getExistingThreadDirectory(threadDirectoryFor(threadId));
     return { target, canonicalThread: directories.canonicalThread };
@@ -952,20 +801,14 @@ export class ImageStore {
     threadDirectory: string,
   ): Promise<{ canonicalRoot: string; canonicalThread: string }> {
     await mkdir(this.attachmentsRoot, { recursive: true, mode: 0o700 });
-    const canonicalRoot = await verifyPrivateDirectory(
-      this.attachmentsRoot,
-      "Image attachment root",
-    );
+    const canonicalRoot = await verifyPrivateDirectory(this.attachmentsRoot, "Image attachment root");
     const threadPath = path.join(this.attachmentsRoot, threadDirectory);
     try {
       await mkdir(threadPath, { mode: 0o700 });
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
     }
-    const canonicalThread = await verifyPrivateDirectory(
-      threadPath,
-      "Image attachment thread directory",
-    );
+    const canonicalThread = await verifyPrivateDirectory(threadPath, "Image attachment thread directory");
     assertPathInside(
       canonicalThread,
       canonicalRoot,
@@ -977,10 +820,7 @@ export class ImageStore {
   private async getExistingThreadDirectory(
     threadDirectory: string,
   ): Promise<{ canonicalRoot: string; canonicalThread: string }> {
-    const canonicalRoot = await verifyPrivateDirectory(
-      this.attachmentsRoot,
-      "Image attachment root",
-    );
+    const canonicalRoot = await verifyPrivateDirectory(this.attachmentsRoot, "Image attachment root");
     const canonicalThread = await verifyPrivateDirectory(
       path.join(this.attachmentsRoot, threadDirectory),
       "Image attachment thread directory",
@@ -998,11 +838,7 @@ export class ImageStore {
       throw new Error("Image attachment storage key is invalid.");
     }
     const target = path.resolve(this.dataDir, ...storageKey.split("/"));
-    assertPathInside(
-      target,
-      this.attachmentsRoot,
-      "Image attachment path escapes the private attachment store.",
-    );
+    assertPathInside(target, this.attachmentsRoot, "Image attachment path escapes the private attachment store.");
     return target;
   }
 }
@@ -1020,18 +856,9 @@ export function validateImageAttachmentCollection(
   let totalBytes = 0;
   let totalPixels = 0;
   for (const attachment of images) {
-    assertAttachmentMetadata(
-      attachment,
-      MAX_IMAGE_BYTES,
-      MAX_IMAGE_EDGE,
-      MAX_IMAGE_PIXELS,
-    );
+    assertAttachmentMetadata(attachment, MAX_IMAGE_BYTES, MAX_IMAGE_EDGE, MAX_IMAGE_PIXELS);
     totalBytes = safeSum(totalBytes, attachment.byteSize, "combined image byte size");
-    totalPixels = safeSum(
-      totalPixels,
-      attachment.width * attachment.height,
-      "combined image pixel count",
-    );
+    totalPixels = safeSum(totalPixels, attachment.width * attachment.height, "combined image pixel count");
   }
   if (totalBytes > maxTotalBytes) {
     throw new Error(`Images exceed the ${formatBytes(maxTotalBytes)} combined size limit.`);
@@ -1042,10 +869,7 @@ export function validateImageAttachmentCollection(
   return { imageCount: images.length, totalBytes, totalPixels };
 }
 
-export function inspectImageBuffer(
-  data: Buffer,
-  options: ImageStoreOptions = {},
-): InspectedImage {
+export function inspectImageBuffer(data: Buffer, options: ImageStoreOptions = {}): InspectedImage {
   const maxImageBytes = options.maxImageBytes ?? MAX_IMAGE_BYTES;
   const maxImageEdge = options.maxImageEdge ?? MAX_IMAGE_EDGE;
   const maxImagePixels = options.maxImagePixels ?? MAX_IMAGE_PIXELS;
@@ -1069,9 +893,7 @@ export function inspectImageBuffer(
     !Number.isSafeInteger(pixels) ||
     pixels > maxImagePixels
   ) {
-    throw new Error(
-      `Image dimensions ${parsed.width}x${parsed.height} exceed the configured safety limit.`,
-    );
+    throw new Error(`Image dimensions ${parsed.width}x${parsed.height} exceed the configured safety limit.`);
   }
   return {
     ...parsed,
@@ -1209,10 +1031,7 @@ function skipGifSubBlocks(data: Buffer, initialOffset: number): number {
 }
 
 function parseJpeg(data: Buffer): { width: number; height: number } {
-  const startOfFrameMarkers = new Set([
-    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
-    0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
-  ]);
+  const startOfFrameMarkers = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
   let offset = 2;
   let dimensions: { width: number; height: number } | undefined;
   let sawScan = false;
@@ -1343,8 +1162,7 @@ function parseWebp(data: Buffer): ParsedImage {
 }
 
 function readUInt24LE(data: Buffer, offset: number): number {
-  return (data[offset] ?? 0) | ((data[offset + 1] ?? 0) << 8) |
-    ((data[offset + 2] ?? 0) << 16);
+  return (data[offset] ?? 0) | ((data[offset + 1] ?? 0) << 8) | ((data[offset + 2] ?? 0) << 16);
 }
 
 async function readRegularFileBounded(
@@ -1441,10 +1259,7 @@ function sameCanonicalPath(left: string, right: string): boolean {
   return normalize(left) === normalize(right);
 }
 
-function sameFileIdentity(
-  left: { dev: number; ino: number },
-  right: { dev: number; ino: number },
-): boolean {
+function sameFileIdentity(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean {
   if (left.ino !== 0 || right.ino !== 0) return left.dev === right.dev && left.ino === right.ino;
   return true;
 }
@@ -1453,10 +1268,12 @@ function sameStableFile(
   before: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number },
   after: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number },
 ): boolean {
-  return sameFileIdentity(before, after) &&
+  return (
+    sameFileIdentity(before, after) &&
     before.size === after.size &&
     before.mtimeMs === after.mtimeMs &&
-    before.ctimeMs === after.ctimeMs;
+    before.ctimeMs === after.ctimeMs
+  );
 }
 
 function extensionForMediaType(mediaType: SupportedImageMediaType): string {
@@ -1470,12 +1287,8 @@ function threadDirectoryFor(threadId: string): string {
   return sha256(threadId).slice(0, 32);
 }
 
-function storageKeyFromPendingMarkerName(
-  threadDirectory: string,
-  markerName: string,
-): string | undefined {
-  if (!THREAD_DIRECTORY_PATTERN.test(threadDirectory) ||
-      !markerName.endsWith(PENDING_MARKER_SUFFIX)) return undefined;
+function storageKeyFromPendingMarkerName(threadDirectory: string, markerName: string): string | undefined {
+  if (!THREAD_DIRECTORY_PATTERN.test(threadDirectory) || !markerName.endsWith(PENDING_MARKER_SUFFIX)) return undefined;
   const filename = markerName.slice(0, -PENDING_MARKER_SUFFIX.length);
   if (!STORED_IMAGE_FILENAME_PATTERN.test(filename)) return undefined;
   const storageKey = `attachments/${threadDirectory}/${filename}`;
@@ -1546,8 +1359,7 @@ function assertAttachmentMetadata(
 }
 
 function isSupportedMediaType(value: unknown): value is SupportedImageMediaType {
-  return value === "image/png" || value === "image/jpeg" ||
-    value === "image/webp" || value === "image/gif";
+  return value === "image/png" || value === "image/jpeg" || value === "image/webp" || value === "image/gif";
 }
 
 function safeSum(current: number, value: number, label: string): number {
@@ -1565,13 +1377,14 @@ function isFileNotFound(error: unknown): boolean {
 }
 
 function isDirectoryNotEmpty(error: unknown): boolean {
-  return error instanceof Error && "code" in error &&
-    (error.code === "ENOTEMPTY" || error.code === "EEXIST" || error.code === "ENOENT");
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOTEMPTY" || error.code === "EEXIST" || error.code === "ENOENT")
+  );
 }
 
-function emptyGarbageCollectionResult(
-  acquiredLock: boolean,
-): ImageGarbageCollectionResult {
+function emptyGarbageCollectionResult(acquiredLock: boolean): ImageGarbageCollectionResult {
   return {
     acquiredLock,
     referencedImages: 0,
@@ -1583,47 +1396,56 @@ function emptyGarbageCollectionResult(
 
 function isPendingImageMarker(value: unknown): value is PendingImageMarker {
   if (!isPlainRecord(value)) return false;
-  return Object.keys(value).every((key) =>
-    ["version", "leaseId", "pid", "storageKey", "createdAt"].includes(key)) &&
+  return (
+    Object.keys(value).every((key) => ["version", "leaseId", "pid", "storageKey", "createdAt"].includes(key)) &&
     value.version === 1 &&
-    typeof value.leaseId === "string" && LEASE_ID_PATTERN.test(value.leaseId) &&
-    Number.isInteger(value.pid) && Number(value.pid) > 0 &&
-    typeof value.storageKey === "string" && STORAGE_KEY_PATTERN.test(value.storageKey) &&
-    typeof value.createdAt === "number" && Number.isFinite(value.createdAt) &&
-    value.createdAt >= 0;
+    typeof value.leaseId === "string" &&
+    LEASE_ID_PATTERN.test(value.leaseId) &&
+    Number.isInteger(value.pid) &&
+    Number(value.pid) > 0 &&
+    typeof value.storageKey === "string" &&
+    STORAGE_KEY_PATTERN.test(value.storageKey) &&
+    typeof value.createdAt === "number" &&
+    Number.isFinite(value.createdAt) &&
+    value.createdAt >= 0
+  );
 }
 
 function isLeaseRecord(value: unknown): value is LeaseRecord {
   if (!isPlainRecord(value)) return false;
-  return Object.keys(value).every((key) =>
-    ["version", "leaseId", "pid", "createdAt"].includes(key)) &&
+  return (
+    Object.keys(value).every((key) => ["version", "leaseId", "pid", "createdAt"].includes(key)) &&
     value.version === 1 &&
-    typeof value.leaseId === "string" && LEASE_ID_PATTERN.test(value.leaseId) &&
-    Number.isInteger(value.pid) && Number(value.pid) > 0 &&
-    typeof value.createdAt === "number" && Number.isFinite(value.createdAt) &&
-    value.createdAt >= 0;
+    typeof value.leaseId === "string" &&
+    LEASE_ID_PATTERN.test(value.leaseId) &&
+    Number.isInteger(value.pid) &&
+    Number(value.pid) > 0 &&
+    typeof value.createdAt === "number" &&
+    Number.isFinite(value.createdAt) &&
+    value.createdAt >= 0
+  );
 }
 
 function isGarbageCollectionLock(value: unknown): value is GarbageCollectionLock {
   if (!isPlainRecord(value)) return false;
-  return Object.keys(value).every((key) =>
-    ["version", "token", "pid", "createdAt"].includes(key)) &&
+  return (
+    Object.keys(value).every((key) => ["version", "token", "pid", "createdAt"].includes(key)) &&
     value.version === 1 &&
-    typeof value.token === "string" && /^gc_[a-f0-9-]{36}$/u.test(value.token) &&
-    Number.isInteger(value.pid) && Number(value.pid) > 0 &&
-    typeof value.createdAt === "number" && Number.isFinite(value.createdAt) &&
-    value.createdAt >= 0;
+    typeof value.token === "string" &&
+    /^gc_[a-f0-9-]{36}$/u.test(value.token) &&
+    Number.isInteger(value.pid) &&
+    Number(value.pid) > 0 &&
+    typeof value.createdAt === "number" &&
+    Number.isFinite(value.createdAt) &&
+    value.createdAt >= 0
+  );
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-async function writeJsonExclusive(
-  filePath: string,
-  value: unknown,
-  allowedRoot: string,
-): Promise<void> {
+async function writeJsonExclusive(filePath: string, value: unknown, allowedRoot: string): Promise<void> {
   const handle = await open(filePath, "wx", 0o600);
   try {
     const serialized = `${JSON.stringify(value)}\n`;
@@ -1645,10 +1467,7 @@ async function writeJsonExclusive(
   await handle.close();
 }
 
-async function readJsonBounded(
-  filePath: string,
-  allowedRoot: string,
-): Promise<unknown> {
+async function readJsonBounded(filePath: string, allowedRoot: string): Promise<unknown> {
   const data = await readRegularFileBounded(filePath, 8 * 1024, allowedRoot);
   try {
     return JSON.parse(data.toString("utf8")) as unknown;
@@ -1657,9 +1476,7 @@ async function readJsonBounded(
   }
 }
 
-async function safeDirectoryEntries(
-  directory: string,
-): Promise<Dirent[]> {
+async function safeDirectoryEntries(directory: string): Promise<Dirent[]> {
   try {
     return await readdir(directory, { withFileTypes: true });
   } catch (error) {
@@ -1698,10 +1515,7 @@ async function pathExistsAsRegularFile(filePath: string): Promise<boolean> {
   }
 }
 
-async function scanStorageKeys(
-  journalPath: string,
-  destination: Set<string>,
-): Promise<void> {
+async function scanStorageKeys(journalPath: string, destination: Set<string>): Promise<void> {
   const handle = await open(journalPath, "r");
   try {
     const info = await handle.stat();

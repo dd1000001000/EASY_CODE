@@ -7,12 +7,7 @@ import { describe, it } from "./harness.js";
 
 const CREATED_AT = "2026-08-27T10:00:00.000Z";
 
-function agent(
-  id: string,
-  taskId: string,
-  taskTitle: string,
-  status: SubagentStatus,
-): SubagentView {
+function agent(id: string, taskId: string, taskTitle: string, status: SubagentStatus): SubagentView {
   return {
     id,
     childThreadId: `thread_${id}`,
@@ -63,20 +58,17 @@ function graph(): TaskGraphView {
 
 describe("child-agent terminal UI", () => {
   it("shows stable agent numbers, statuses, task numbers, IDs, and names", () => {
-    const rendered = renderSubagents([
-      agent("subagent_backend", "backend", "Implement backend", "running"),
-      agent("subagent_frontend", "frontend", "Implement frontend", "completed"),
-    ], { color: false, taskGraph: graph() });
+    const rendered = renderSubagents(
+      [
+        agent("subagent_backend", "backend", "Implement backend", "running"),
+        agent("subagent_frontend", "frontend", "Implement frontend", "completed"),
+      ],
+      { color: false, taskGraph: graph() },
+    );
 
     assert.match(rendered, /Child agents · 1 active · 2 total/u);
-    assert.match(
-      rendered,
-      /▶ 1\. subagent_backend · Task 1 \[backend\] Implement backend \(running\)/u,
-    );
-    assert.match(
-      rendered,
-      /✓ 2\. subagent_frontend · Task 2 \[frontend\] Implement frontend \(completed\)/u,
-    );
+    assert.match(rendered, /▶ 1\. subagent_backend · Task 1 \[backend\] Implement backend \(running\)/u);
+    assert.match(rendered, /✓ 2\. subagent_frontend · Task 2 \[frontend\] Implement frontend \(completed\)/u);
     assert.match(
       rendered,
       /thread thread_subagent_backend · isolation auto → pending · environment environment_subagent_backend \(pending\)/u,
@@ -162,8 +154,7 @@ describe("child-agent terminal UI", () => {
       "interrupted",
     ];
     const rendered = renderSubagents(
-      statuses.map((status, index) =>
-        agent(`subagent_${index + 1}`, "backend", "Implement backend", status)),
+      statuses.map((status, index) => agent(`subagent_${index + 1}`, "backend", "Implement backend", status)),
       { color: false, taskGraph: graph() },
     );
 
@@ -186,20 +177,12 @@ describe("child-agent terminal UI", () => {
     });
 
     assert.match(rendered, /Child agents · 1\/4 active · 1 total/u);
-    assert.match(
-      rendered,
-      /▶ 1\. subagent_standalone · Standalone \[child_abc\] Audit authentication \(running\)/u,
-    );
+    assert.match(rendered, /▶ 1\. subagent_standalone · Standalone \[child_abc\] Audit authentication \(running\)/u);
     assert.doesNotMatch(rendered, /Task 1 \[child_abc\]/u);
   });
 
   it("sanitizes task names, supports color, and handles an empty runtime", () => {
-    const unsafe = agent(
-      "subagent_safe",
-      "backend",
-      "Inspect\u001B[31m api_key=abcdefghijklmnopqrstuvwxyz",
-      "failed",
-    );
+    const unsafe = agent("subagent_safe", "backend", "Inspect\u001B[31m api_key=abcdefghijklmnopqrstuvwxyz", "failed");
     const plain = renderSubagents([unsafe], { color: false, taskGraph: graph() });
     const colored = renderSubagents([unsafe], { color: true, taskGraph: graph() });
     const empty = renderSubagents([], { color: false });

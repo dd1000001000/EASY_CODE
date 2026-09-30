@@ -1,26 +1,12 @@
 import assert from "node:assert/strict";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import type { EasyCodePaths } from "../src/config/defaults.js";
-import {
-  EASY_CODE_DATA_ROOT_MARKER,
-  ensureEasyCodeDataRootMarker,
-} from "../src/storage/data-root.js";
+import { EASY_CODE_DATA_ROOT_MARKER, ensureEasyCodeDataRootMarker } from "../src/storage/data-root.js";
 import { createStorage } from "../src/storage/database.js";
-import {
-  cleanupEasyCodeUserData,
-  resolveNpmRemovalInvocation,
-} from "../src/uninstall/index.js";
+import { cleanupEasyCodeUserData, resolveNpmRemovalInvocation } from "../src/uninstall/index.js";
 import { describe, it } from "./harness.js";
 
 function fixture(): {
@@ -54,20 +40,24 @@ function put(target: string, content = "private\n"): void {
 describe("EASY CODE uninstall cleanup", () => {
   it("marks every Runtime-created data root for safe future cleanup", () => {
     const test = fixture();
-    const previousHome = process.env.HOME, previousProfile = process.env.USERPROFILE;
+    const previousHome = process.env.HOME,
+      previousProfile = process.env.USERPROFILE;
     try {
       // The storage lifecycle checks the user's uninstall lock. Keep this test
       // independent of an actual uninstall running on the developer's machine.
-      process.env.HOME = test.home; process.env.USERPROFILE = test.home;
+      process.env.HOME = test.home;
+      process.env.USERPROFILE = test.home;
       const storage = createStorage(test.data);
       storage.close();
-      assert.deepEqual(
-        JSON.parse(readFileSync(path.join(test.data, EASY_CODE_DATA_ROOT_MARKER), "utf8")),
-        { product: "easy-code-agent", formatVersion: 1 },
-      );
+      assert.deepEqual(JSON.parse(readFileSync(path.join(test.data, EASY_CODE_DATA_ROOT_MARKER), "utf8")), {
+        product: "easy-code-agent",
+        formatVersion: 1,
+      });
     } finally {
-      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
-      if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousProfile;
       rmSync(test.root, { recursive: true, force: true });
     }
   });
@@ -199,10 +189,7 @@ describe("EASY CODE uninstall cleanup", () => {
     try {
       put(path.join(test.home, ".easy_code", "active.json"));
       put(path.join(test.data, "easy-code.db"));
-      put(
-        path.join(test.data, "easy-code.db.easy-code-advisory-lock", "owner.json"),
-        "{}\n",
-      );
+      put(path.join(test.data, "easy-code.db.easy-code-advisory-lock", "owner.json"), "{}\n");
       await assert.rejects(
         cleanupEasyCodeUserData({
           homeDirectory: test.home,
@@ -246,14 +233,11 @@ describe("EASY CODE uninstall cleanup", () => {
     try {
       const npmCli = path.join(test.root, "npm-cli.js");
       put(npmCli, "// fixture\n");
-      assert.deepEqual(
-        resolveNpmRemovalInvocation({ npm_execpath: npmCli }, "C:\\Node\\node.exe", "win32"),
-        {
-          command: "C:\\Node\\node.exe",
-          args: [npmCli, "uninstall", "--global", "easy-code-agent"],
-          shell: false,
-        },
-      );
+      assert.deepEqual(resolveNpmRemovalInvocation({ npm_execpath: npmCli }, "C:\\Node\\node.exe", "win32"), {
+        command: "C:\\Node\\node.exe",
+        args: [npmCli, "uninstall", "--global", "easy-code-agent"],
+        shell: false,
+      });
     } finally {
       rmSync(test.root, { recursive: true, force: true });
     }

@@ -210,14 +210,28 @@ describe("menu selector overlay renderer", () => {
     const output = new TtyOutput();
     const overlay = new RecordingOverlay();
     let acknowledge: ((ready: boolean) => void) | undefined;
-    const ready = new Promise<boolean>(resolve => { acknowledge = resolve; });
-    const selection = selectMenuIndex(2, 1,
-      index => renderMenu("Choose", ["Allow once", "Reject"], index, false),
-      { input, output, overlay, navigation: { activate: () => ({ ready, release: () => undefined }) },
-        idleTimeoutMs: 15, idleSelectionIndex: 0 }, "No choices.");
+    const ready = new Promise<boolean>((resolve) => {
+      acknowledge = resolve;
+    });
+    const selection = selectMenuIndex(
+      2,
+      1,
+      (index) => renderMenu("Choose", ["Allow once", "Reject"], index, false),
+      {
+        input,
+        output,
+        overlay,
+        navigation: { activate: () => ({ ready, release: () => undefined }) },
+        idleTimeoutMs: 15,
+        idleSelectionIndex: 0,
+      },
+      "No choices.",
+    );
     let settled = false;
-    void selection.then(() => { settled = true; });
-    await new Promise(resolve => setTimeout(resolve, 25));
+    void selection.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(settled, false);
     assert.equal(overlay.frames.length, 0);
     acknowledge?.(true);

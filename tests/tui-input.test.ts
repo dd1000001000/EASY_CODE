@@ -23,8 +23,9 @@ describe("raw TUI input decoder", () => {
     const events: TuiInputEvent[] = [];
     for (const byte of source) events.push(...decoder.feed(Buffer.from([byte])));
     assert.equal(
-      events.filter((candidate) => candidate.type === "text")
-        .map((candidate) => candidate.type === "text" ? candidate.text : "")
+      events
+        .filter((candidate) => candidate.type === "text")
+        .map((candidate) => (candidate.type === "text" ? candidate.text : ""))
         .join(""),
       "A中文👨‍👩‍👧‍👦B",
     );
@@ -43,15 +44,16 @@ describe("raw TUI input decoder", () => {
     const events: TuiInputEvent[] = [];
     events.push(...decoder.feed(`${PASTE_START}A\nB${PASTE_END}`));
     events.push(...decoder.feed(Buffer.from(PASTE_START).subarray(0, 3)));
-    events.push(...decoder.feed(Buffer.concat([
-      Buffer.from(PASTE_START).subarray(3),
-      Buffer.from("C\nD"),
-      Buffer.from(PASTE_END).subarray(0, 4),
-    ])));
-    events.push(...decoder.feed(Buffer.concat([
-      Buffer.from(PASTE_END).subarray(4),
-      Buffer.from("tail"),
-    ])));
+    events.push(
+      ...decoder.feed(
+        Buffer.concat([
+          Buffer.from(PASTE_START).subarray(3),
+          Buffer.from("C\nD"),
+          Buffer.from(PASTE_END).subarray(0, 4),
+        ]),
+      ),
+    );
+    events.push(...decoder.feed(Buffer.concat([Buffer.from(PASTE_END).subarray(4), Buffer.from("tail")])));
 
     assert.deepEqual(events, [
       { type: "paste", text: "A\nB" },
@@ -63,14 +65,11 @@ describe("raw TUI input decoder", () => {
 
   it("decodes two paste packets and Enter from one input chunk in order", () => {
     const decoder = new TuiInputDecoder();
-    assert.deepEqual(
-      decoder.feed(`${PASTE_START}one${PASTE_END}${PASTE_START}two\n2${PASTE_END}\r`),
-      [
-        { type: "paste", text: "one" },
-        { type: "paste", text: "two\n2" },
-        { type: "key", key: "enter" },
-      ],
-    );
+    assert.deepEqual(decoder.feed(`${PASTE_START}one${PASTE_END}${PASTE_START}two\n2${PASTE_END}\r`), [
+      { type: "paste", text: "one" },
+      { type: "paste", text: "two\n2" },
+      { type: "key", key: "enter" },
+    ]);
   });
 
   it("reports an explicit paste limit error, consumes its terminator, and recovers", () => {
@@ -142,11 +141,11 @@ describe("raw TUI input decoder", () => {
     assert.deepEqual(
       decoder.feed(
         "\u001B[20013u" + // 中
-        "\u001B[97:65;2u" + // shifted A
-        "\u001B[57354u" + // PageUp
-        "\u001B[57357u" + // End
-        "\u001B[99;5u" + // Ctrl+C
-        "\u001B[13;1:3u", // released Enter (ignored)
+          "\u001B[97:65;2u" + // shifted A
+          "\u001B[57354u" + // PageUp
+          "\u001B[57357u" + // End
+          "\u001B[99;5u" + // Ctrl+C
+          "\u001B[13;1:3u", // released Enter (ignored)
       ),
       [
         { type: "text", text: "中" },
@@ -163,24 +162,18 @@ describe("raw TUI input decoder", () => {
     assert.deepEqual(
       decoder.feed(
         "\u0016" + // classic terminal Ctrl+V
-        "\u001B[118;5u" + // CSI-u Ctrl+V
-        "\u001B[118;9u" + // CSI-u Super/Command+V
-        "\u001B[118;5:3u", // released Ctrl+V (ignored)
+          "\u001B[118;5u" + // CSI-u Ctrl+V
+          "\u001B[118;9u" + // CSI-u Super/Command+V
+          "\u001B[118;5:3u", // released Ctrl+V (ignored)
       ),
-      [
-        { type: "paste-image" },
-        { type: "paste-image" },
-        { type: "paste-image" },
-      ],
+      [{ type: "paste-image" }, { type: "paste-image" }, { type: "paste-image" }],
     );
     assert.equal(decoder.awaitingInput, false);
   });
 
   it("decodes SGR mouse click, release, modifiers, and wheel", () => {
     const decoder = new TuiInputDecoder();
-    const events = decoder.feed(
-      "\u001B[<20;12;7M\u001B[<0;12;7m\u001B[<64;9;3M\u001B[<65;9;3M",
-    );
+    const events = decoder.feed("\u001B[<20;12;7M\u001B[<0;12;7m\u001B[<64;9;3M\u001B[<65;9;3M");
     assert.deepEqual(events, [
       {
         type: "mouse",
@@ -228,8 +221,7 @@ describe("raw TUI input decoder", () => {
   it("decodes the current image-paste OSC and ignores unknown host actions", () => {
     const decoder = new TuiInputDecoder();
     const source = Buffer.from(
-      "\u001B]6973;easy-code;paste-image\u0007" +
-      "\u001B]6973;easy-code;unknown-host-action\u001B\\",
+      "\u001B]6973;easy-code;paste-image\u0007" + "\u001B]6973;easy-code;unknown-host-action\u001B\\",
     );
     const events: TuiInputEvent[] = [];
     for (let index = 0; index < source.length; index += 2) {
@@ -274,9 +266,7 @@ describe("pure TUI editor core", () => {
 
   it("routes viewer keys and mouse wheel to scroll without mutating the draft", () => {
     const core = new TuiInputCore({ initialText: "preserve", focus: "viewer" });
-    const transition = core.feed(
-      "\u001B[A\u001B[B\u001B[5~\u001B[6~\u001B[H\u001B[F\u001B[<64;2;2M",
-    );
+    const transition = core.feed("\u001B[A\u001B[B\u001B[5~\u001B[6~\u001B[H\u001B[F\u001B[<64;2;2M");
     assert.equal(transition.state.text, "preserve");
     assert.deepEqual(transition.effects, [
       { type: "scroll", direction: "up", unit: "line", amount: 1 },

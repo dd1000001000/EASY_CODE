@@ -22,10 +22,7 @@ export interface UserSubmission {
 }
 
 export type PlanReviewDecision =
-  | { action: "approve" }
-  | { action: "reject" }
-  | { action: "adjust"; feedback: string }
-  | { action: "defer" };
+  { action: "approve" } | { action: "reject" } | { action: "adjust"; feedback: string } | { action: "defer" };
 
 export interface PlanReviewInputOptions {
   readonly captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
@@ -94,15 +91,28 @@ export interface AgentPresentationPort {
   warning(text: string): void;
   error(text: string): void;
   status(text: string): void;
-  toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string,
-    details?: readonly import("../core/types.js").ToolDisplayDetail[]): void;
+  toolCompleted(
+    toolName: string,
+    ok: boolean,
+    summary?: string,
+    error?: string,
+    details?: readonly import("../core/types.js").ToolDisplayDetail[],
+  ): void;
   threadTitleChanged?(title: string): void;
   fileDiff(presentation: FileDiffPresentation): void;
   taskGraph(graph: Readonly<TaskGraphView>): void;
   showTaskGraphSnapshot(graph: Readonly<TaskGraphView>): void;
   clearTaskGraph(): void;
-  subagents(agents: readonly Readonly<SubagentView>[], taskGraph?: Readonly<TaskGraphView>, concurrencyLimit?: number): void;
-  showSubagentsSnapshot(agents: readonly Readonly<SubagentView>[], taskGraph?: Readonly<TaskGraphView>, concurrencyLimit?: number): void;
+  subagents(
+    agents: readonly Readonly<SubagentView>[],
+    taskGraph?: Readonly<TaskGraphView>,
+    concurrencyLimit?: number,
+  ): void;
+  showSubagentsSnapshot(
+    agents: readonly Readonly<SubagentView>[],
+    taskGraph?: Readonly<TaskGraphView>,
+    concurrencyLimit?: number,
+  ): void;
   modelStream(event: Readonly<ProviderStreamEvent>): void;
   addReasoning(text: string): number;
   restoreReasoning(texts: readonly string[]): number;
@@ -121,11 +131,27 @@ export interface AgentPresentationPort {
 /** Explicit decisions remain owned by the current interactive host. */
 export interface AgentDecisionPort {
   approve(request: ApprovalRequest): Promise<ApprovalDecision>;
-  selectChoice(title: string, choices: readonly InteractionChoice[], initialId?: string,
-    timed?: Readonly<TimedChoiceOptions>): Promise<string | undefined>;
-  selectProvider(choices: readonly ProviderSelectorChoice[], initialProvider: ProviderSelectorChoice["provider"]): Promise<ProviderSelectorChoice["provider"] | undefined>;
-  selectModel(providerName: string, choices: readonly ModelSelectorChoice[], initialModel?: string): Promise<string | undefined>;
-  selectThinkingEffort(providerName: string, model: string, choices: readonly ThinkingEffortSelectorChoice[], initialEffort: ThinkingEffort): Promise<ThinkingEffort | undefined>;
+  selectChoice(
+    title: string,
+    choices: readonly InteractionChoice[],
+    initialId?: string,
+    timed?: Readonly<TimedChoiceOptions>,
+  ): Promise<string | undefined>;
+  selectProvider(
+    choices: readonly ProviderSelectorChoice[],
+    initialProvider: ProviderSelectorChoice["provider"],
+  ): Promise<ProviderSelectorChoice["provider"] | undefined>;
+  selectModel(
+    providerName: string,
+    choices: readonly ModelSelectorChoice[],
+    initialModel?: string,
+  ): Promise<string | undefined>;
+  selectThinkingEffort(
+    providerName: string,
+    model: string,
+    choices: readonly ThinkingEffortSelectorChoice[],
+    initialEffort: ThinkingEffort,
+  ): Promise<ThinkingEffort | undefined>;
   readSecret(prompt: string): Promise<string>;
   showPlan(plan: Readonly<PlanProposal>): void;
   reviewPlan(options?: Readonly<PlanReviewInputOptions>): Promise<PlanReviewDecision>;
@@ -143,7 +169,11 @@ export interface SessionInteractionPort {
   setSessionInfo(session: Readonly<UISessionInfo>, announce?: boolean): void;
   showSessionHeader(): void;
   readPrompt(prompt: string, options: RequestInputOptions): Promise<UserSubmission | null>;
-  setCurrentRequest(text: string, images?: readonly Readonly<ImageAttachment>[], options?: Readonly<CurrentRequestOptions>): void;
+  setCurrentRequest(
+    text: string,
+    images?: readonly Readonly<ImageAttachment>[],
+    options?: Readonly<CurrentRequestOptions>,
+  ): void;
   clearCurrentRequest(): void;
   sealCurrentRequestSteering<T>(seal: () => T | undefined | Promise<T | undefined>): Promise<T | undefined>;
   resetForNewThread(session: Readonly<UISessionInfo>): void;

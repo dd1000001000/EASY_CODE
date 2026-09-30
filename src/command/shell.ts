@@ -35,21 +35,7 @@ const SHELL_OPERATORS = [
   ">",
 ] as const;
 
-const COMMAND_SEPARATORS = new Set([
-  ";",
-  ";;",
-  ";&",
-  ";;&",
-  "|",
-  "|&",
-  "&&",
-  "||",
-  "&",
-  "(",
-  ")",
-  "{",
-  "}",
-]);
+const COMMAND_SEPARATORS = new Set([";", ";;", ";&", ";;&", "|", "|&", "&&", "||", "&", "(", ")", "{", "}"]);
 const REDIRECTION_OPERATORS = new Set(["<", ">", ">>", "<&", ">&", ">|", "&>", "&>>"]);
 const HEREDOC_OPERATORS = new Set(["<<", "<<-", "<<<"]);
 
@@ -181,10 +167,7 @@ function commandSegments(lexemes: readonly ShellLexeme[]): ShellLexeme[][] {
     current = [];
   };
   for (const lexeme of lexemes) {
-    if (
-      lexeme.kind === "newline" ||
-      (lexeme.kind === "operator" && COMMAND_SEPARATORS.has(lexeme.value))
-    ) {
+    if (lexeme.kind === "newline" || (lexeme.kind === "operator" && COMMAND_SEPARATORS.has(lexeme.value))) {
       flush();
     } else {
       current.push(lexeme);
@@ -260,8 +243,13 @@ export function normalizeExplicitShellArgs(programName: string, args: readonly s
   }
   if (kind === "powershell") {
     const lowerArgs = args.map((argument) => argument.toLowerCase());
-    const commandIndex = lowerArgs.findIndex((argument) =>
-      argument === "-command" || argument === "--command" || argument === "-c" || argument === "-file" || argument === "-f"
+    const commandIndex = lowerArgs.findIndex(
+      (argument) =>
+        argument === "-command" ||
+        argument === "--command" ||
+        argument === "-c" ||
+        argument === "-file" ||
+        argument === "-f",
     );
     if (commandIndex < 0) return [...args];
     const prefix = lowerArgs.slice(0, commandIndex);
@@ -270,8 +258,12 @@ export function normalizeExplicitShellArgs(programName: string, args: readonly s
     );
     // Match the already-authorized -Command capability for local script files.
     // This affects this child process only; never mutate user/machine policy.
-    if (["-file", "-f"].includes(lowerArgs[commandIndex]!) &&
-        !prefix.includes("-executionpolicy") && !prefix.includes("-ep")) required.push("-ExecutionPolicy", "Bypass");
+    if (
+      ["-file", "-f"].includes(lowerArgs[commandIndex]!) &&
+      !prefix.includes("-executionpolicy") &&
+      !prefix.includes("-ep")
+    )
+      required.push("-ExecutionPolicy", "Bypass");
     return [...required, ...args];
   }
   return [...args];
@@ -281,11 +273,13 @@ export function normalizeExplicitShellArgs(programName: string, args: readonly s
 export function shellCommandWords(program: string, args: readonly string[]): string[][] {
   const kind = explicitShellKind(executableBasename(program));
   if (!kind) return [];
-  const index = args.findIndex(arg => ["-c", "-command", "--command", "/c"].includes(arg.toLowerCase()));
+  const index = args.findIndex((arg) => ["-c", "-command", "--command", "/c"].includes(arg.toLowerCase()));
   if (index < 0 || !args[index + 1]) return [];
   const lexemes = lexShellCommand(args[index + 1]!, kind);
-  if (lexemes.some(token => token.kind === "operator" && HEREDOC_OPERATORS.has(token.value))) return [];
-  return commandSegments(lexemes).map(commandWords).map(words => kind === "posix" ? words.slice(posixCommandIndex(words)) : words);
+  if (lexemes.some((token) => token.kind === "operator" && HEREDOC_OPERATORS.has(token.value))) return [];
+  return commandSegments(lexemes)
+    .map(commandWords)
+    .map((words) => (kind === "posix" ? words.slice(posixCommandIndex(words)) : words));
 }
 
 /** Identity extraction only: reject expansion/control flow rather than pretending
@@ -293,7 +287,7 @@ export function shellCommandWords(program: string, args: readonly string[]): str
 export function literalPipelineCommands(program: string, args: readonly string[]): string[][] | undefined {
   const kind = explicitShellKind(executableBasename(program));
   if (!kind) return undefined;
-  const index = args.findIndex(arg => ["-c", "-command", "--command", "/c"].includes(arg.toLowerCase()));
+  const index = args.findIndex((arg) => ["-c", "-command", "--command", "/c"].includes(arg.toLowerCase()));
   const script = index >= 0 ? args[index + 1] : undefined;
   if (!script || /[\r\n$`%!*?{}()]/u.test(script)) return undefined;
   // Only a literal stdout pipeline and stderr-to-stdout redirection are known.
@@ -301,10 +295,20 @@ export function literalPipelineCommands(program: string, args: readonly string[]
   const tokens: ShellLexeme[] = [];
   for (let i = 0; i < lexemes.length; i++) {
     const item = lexemes[i]!;
-    if (item.kind === "word" && item.value === "2" && lexemes[i + 1]?.kind === "operator" &&
-        lexemes[i + 1]?.value === ">&" && lexemes[i + 2]?.kind === "word" && lexemes[i + 2]?.value === "1") { i += 2; continue; }
+    if (
+      item.kind === "word" &&
+      item.value === "2" &&
+      lexemes[i + 1]?.kind === "operator" &&
+      lexemes[i + 1]?.value === ">&" &&
+      lexemes[i + 2]?.kind === "word" &&
+      lexemes[i + 2]?.value === "1"
+    ) {
+      i += 2;
+      continue;
+    }
     tokens.push(item);
   }
-  if (tokens.some(token => token.kind !== "word" && !(token.kind === "operator" && token.value === "|"))) return undefined;
+  if (tokens.some((token) => token.kind !== "word" && !(token.kind === "operator" && token.value === "|")))
+    return undefined;
   return commandSegments(tokens).map(commandWords);
 }

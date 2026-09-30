@@ -50,9 +50,7 @@ export interface FilesystemCommandChangeBaseline {
   readonly snapshot: WorkspaceSnapshot;
 }
 
-export type WorkspaceCommandChangeBaseline =
-  | FilesystemCommandChangeBaseline
-  | GitCommandChangeBaseline;
+export type WorkspaceCommandChangeBaseline = FilesystemCommandChangeBaseline | GitCommandChangeBaseline;
 
 export interface VerifiedWorkspaceFileState {
   readonly hash: string;
@@ -81,12 +79,16 @@ export class WorkspaceManager {
       this.folders = [{ key: "workspace", path: guard.root }];
       this.revision = 1;
     } else {
-      const active = workspace.folders.filter(folder => folder.active);
-      const primary = active.find(folder => folder.id === workspace.primaryFolderId);
+      const active = workspace.folders.filter((folder) => folder.active);
+      const primary = active.find((folder) => folder.id === workspace.primaryFolderId);
       if (!primary) throw new Error("The project's primary workspace folder is unavailable");
-      const guards = active.map(folder => ({ key: folder.key, guard: new WorkspacePathGuard(folder.path), id: folder.id }));
+      const guards = active.map((folder) => ({
+        key: folder.key,
+        guard: new WorkspacePathGuard(folder.path),
+        id: folder.id,
+      }));
       this.pathGuard = new MultiRootPathGuard(
-        guards.map(item => ({ key: item.key, path: item.guard.root })),
+        guards.map((item) => ({ key: item.key, path: item.guard.root })),
         primary.key,
       );
       this.rootGuards = guards.map(({ key, guard }) => ({ key, guard }));
@@ -102,9 +104,8 @@ export class WorkspaceManager {
     options: WorkspaceManagerOptions = {},
   ): Promise<WorkspaceManager> {
     const manager = new WorkspaceManager(workspaceRoot, options);
-    manager.gitWorkspace = manager.rootGuards.length === 1
-      ? await discoverGitWorkspace(manager.rootGuards[0]!.guard)
-      : undefined;
+    manager.gitWorkspace =
+      manager.rootGuards.length === 1 ? await discoverGitWorkspace(manager.rootGuards[0]!.guard) : undefined;
     await manager.refreshManifest();
     return manager;
   }
@@ -113,7 +114,9 @@ export class WorkspaceManager {
     return this.pathGuard.root;
   }
 
-  get writableRoots(): readonly string[] { return this.folders.map(folder => folder.path); }
+  get writableRoots(): readonly string[] {
+    return this.folders.map((folder) => folder.path);
+  }
 
   rootForPath(candidate: string): string {
     return this.pathGuard.rootForPath?.(candidate) ?? this.root;
@@ -165,12 +168,7 @@ export class WorkspaceManager {
         const relative = this.pathGuard.normalizeRelative(savedPath);
         const versionPath = this.pathGuard.normalizeRelative(savedVersion.path);
         const current = manifestFiles.get(relative);
-        if (
-          relative !== versionPath ||
-          !current ||
-          current.kind !== "file" ||
-          current.hash !== savedVersion.hash
-        ) {
+        if (relative !== versionPath || !current || current.kind !== "file" || current.hash !== savedVersion.hash) {
           staleReadVersions += 1;
           continue;
         }
@@ -244,9 +242,7 @@ export class WorkspaceManager {
    * Capture only the Git paths that may already differ before a command.
    * Non-Git workspaces retain the original full-snapshot implementation.
    */
-  async beginCommandChangeTracking(
-    signal?: AbortSignal,
-  ): Promise<WorkspaceCommandChangeBaseline> {
+  async beginCommandChangeTracking(signal?: AbortSignal): Promise<WorkspaceCommandChangeBaseline> {
     if (this.gitWorkspace) {
       try {
         return await captureGitCommandBaseline(
@@ -326,10 +322,7 @@ export class WorkspaceManager {
   }
 
   /** Update the manifest from a file tool's already-verified target bytes. */
-  updateManifestForVerifiedFile(
-    filename: string,
-    state?: VerifiedWorkspaceFileState,
-  ): void {
+  updateManifestForVerifiedFile(filename: string, state?: VerifiedWorkspaceFileState): void {
     const relative = this.pathGuard.normalizeRelative(filename);
     const files = new Map(this.manifest?.files ?? []);
     if (state) {
@@ -370,9 +363,7 @@ export class WorkspaceManager {
       files: new Map(),
       truncated: false,
     };
-    const entries = [...snapshot.files.values()].sort((left, right) =>
-      left.path.localeCompare(right.path),
-    );
+    const entries = [...snapshot.files.values()].sort((left, right) => left.path.localeCompare(right.path));
     return {
       workspaceRoot: this.root,
       ...(this.projectId ? { projectId: this.projectId, workspaceRevision: this.revision } : {}),
@@ -407,13 +398,15 @@ export class WorkspaceManager {
         ...(signal ? { signal } : {}),
       });
     }
-    const snapshots = await Promise.all(this.rootGuards.map(async ({ key, guard }) => ({
-      key,
-      snapshot: await captureWorkspaceSnapshot(guard, {
-        ...this.options,
-        ...(signal ? { signal } : {}),
-      }),
-    })));
+    const snapshots = await Promise.all(
+      this.rootGuards.map(async ({ key, guard }) => ({
+        key,
+        snapshot: await captureWorkspaceSnapshot(guard, {
+          ...this.options,
+          ...(signal ? { signal } : {}),
+        }),
+      })),
+    );
     const files = new Map<string, WorkspaceSnapshotEntry>();
     for (const { key, snapshot } of snapshots) {
       for (const entry of snapshot.files.values()) {
@@ -424,14 +417,11 @@ export class WorkspaceManager {
     return {
       capturedAt: new Date().toISOString(),
       files,
-      truncated: snapshots.some(item => item.snapshot.truncated),
+      truncated: snapshots.some((item) => item.snapshot.truncated),
     };
   }
 
-  private recordDelta(
-    delta: WorkspaceDelta,
-    deletionStatus: "verified" | "policy_violation",
-  ): void {
+  private recordDelta(delta: WorkspaceDelta, deletionStatus: "verified" | "policy_violation"): void {
     const timestamp = new Date().toISOString();
     for (const entry of delta.created) {
       this.readVersions.delete(entry.path);
@@ -483,8 +473,7 @@ export class WorkspaceManager {
 }
 
 function isAbortError(error: unknown, signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true ||
-    (error instanceof Error && error.name === "AbortError");
+  return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
 }
 
 function fileChangeIdentity(change: Readonly<FileChangeRecord>): string {

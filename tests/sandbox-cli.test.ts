@@ -20,10 +20,7 @@ class StringOutput {
   }
 }
 
-function readiness(
-  status: SandboxReadiness["status"],
-  canSetup = false,
-): SandboxReadiness {
+function readiness(status: SandboxReadiness["status"], canSetup = false): SandboxReadiness {
   return {
     status,
     platform: "linux",
@@ -62,24 +59,23 @@ describe("sandbox CLI commands", () => {
     const sandbox = program.command("sandbox");
     const recover = sandbox.command("recover").option("--workspace <path>").option("--apply");
     let options: ReturnType<typeof sandboxRecoveryOptions> | undefined;
-    recover.action(() => { options = sandboxRecoveryOptions(recover, "fallback"); });
+    recover.action(() => {
+      options = sandboxRecoveryOptions(recover, "fallback");
+    });
     await program.parseAsync(["node", "easy-code", "sandbox", "recover", "--workspace", "F:\\project", "--apply"]);
     assert.deepEqual(options, { workspace: "F:\\project", apply: true });
   });
 
   it("prints a successful doctor report without setting a failure code", async () => {
     const ready = readiness("ready");
-    const result = await runSandboxCommand(
-      ["sandbox", "doctor"],
-      {
-        inspect: async () => ready,
-        setup: async () => ({
-          status: "already_ready",
-          message: "already ready",
-          readiness: ready,
-        }),
-      },
-    );
+    const result = await runSandboxCommand(["sandbox", "doctor"], {
+      inspect: async () => ready,
+      setup: async () => ({
+        status: "already_ready",
+        message: "already ready",
+        readiness: ready,
+      }),
+    });
 
     assert.match(result.output, /Sandbox backend: Sandbox CLI fixture/u);
     assert.match(result.output, /Filesystem and network sandbox checks passed/u);
@@ -88,17 +84,14 @@ describe("sandbox CLI commands", () => {
 
   it("prints a failed doctor report and sets exit code 2", async () => {
     const missing = readiness("dependencies_missing", true);
-    const result = await runSandboxCommand(
-      ["sandbox", "doctor"],
-      {
-        inspect: async () => missing,
-        setup: async () => ({
-          status: "unavailable",
-          message: "not used",
-          readiness: missing,
-        }),
-      },
-    );
+    const result = await runSandboxCommand(["sandbox", "doctor"], {
+      inspect: async () => missing,
+      setup: async () => ({
+        status: "unavailable",
+        message: "not used",
+        readiness: missing,
+      }),
+    });
 
     assert.match(result.output, /Required operating-system sandbox dependencies are missing/u);
     assert.match(result.output, /Detail: fixture dependency is missing/u);
@@ -114,16 +107,13 @@ describe("sandbox CLI commands", () => {
       message: "Dependencies installed and verified.",
       readiness: ready,
     };
-    const result = await runSandboxCommand(
-      ["sandbox", "setup"],
-      {
-        inspect: async () => missing,
-        setup: async (input) => {
-          setupInput = input;
-          return setupResult;
-        },
+    const result = await runSandboxCommand(["sandbox", "setup"], {
+      inspect: async () => missing,
+      setup: async (input) => {
+        setupInput = input;
+        return setupResult;
       },
-    );
+    });
 
     assert.equal(setupInput, missing);
     assert.match(result.output, /^Checking the command sandbox before setup/mu);
@@ -134,21 +124,17 @@ describe("sandbox CLI commands", () => {
 
   it("reports canceled setup and sets exit code 2 while readiness stays unready", async () => {
     const missing = readiness("setup_required", true);
-    const result = await runSandboxCommand(
-      ["sandbox", "setup"],
-      {
-        inspect: async () => missing,
-        setup: async () => ({
-          status: "cancelled",
-          message: "Sandbox setup was canceled.",
-          readiness: missing,
-        }),
-      },
-    );
+    const result = await runSandboxCommand(["sandbox", "setup"], {
+      inspect: async () => missing,
+      setup: async () => ({
+        status: "cancelled",
+        message: "Sandbox setup was canceled.",
+        readiness: missing,
+      }),
+    });
 
     assert.match(result.output, /Sandbox setup was canceled/u);
     assert.match(result.output, /One-time operating-system sandbox setup is required/u);
     assert.deepEqual(result.exitCodes, [2]);
   });
-
 });

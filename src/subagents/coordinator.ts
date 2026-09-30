@@ -17,11 +17,7 @@ import type {
   ToolPresentation,
   ThinkingEffort,
 } from "../core/types.js";
-import {
-  applySubagentTaskOperation,
-  cloneTaskGraph,
-  type SubagentTaskOperation,
-} from "../tasks/task-graph.js";
+import { applySubagentTaskOperation, cloneTaskGraph, type SubagentTaskOperation } from "../tasks/task-graph.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { createId } from "../utils/ids.js";
 import { sanitizeSubagentText } from "./types.js";
@@ -40,8 +36,6 @@ import type {
   WaitForSubagentsRequest,
 } from "./types.js";
 
-export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents.none;
-
 function agentPromptText(path: string): string {
   return loadPromptBundleCatalog().readText(path).trimEnd();
 }
@@ -51,7 +45,10 @@ export function maxConcurrentSubagents(thinkingEffort: ThinkingEffort): number {
   return DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents[thinkingEffort];
 }
 
-function childThinkingEffort(requested: ThinkingEffort | undefined, parent: ThinkingEffort | undefined): ThinkingEffort {
+function childThinkingEffort(
+  requested: ThinkingEffort | undefined,
+  parent: ThinkingEffort | undefined,
+): ThinkingEffort {
   if (parent === undefined) throw new Error("The parent thinking effort is unavailable");
   const parentRank = THINKING_EFFORTS.indexOf(parent);
   if (parentRank < 0) throw new Error("The parent thinking effort is unavailable");
@@ -233,15 +230,23 @@ export class SubagentCoordinator implements SubagentControl {
     }
   }
 
-  async spawn(
-    request: SpawnSubagentRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult> {
-    if (context.mode !== "plan" && context.mode !== "code") throw new Error("Subagent dispatch requires Plan or Code mode");
+  async spawn(request: SpawnSubagentRequest, context: ToolContext): Promise<ToolExecutionResult> {
+    if (context.mode !== "plan" && context.mode !== "code")
+      throw new Error("Subagent dispatch requires Plan or Code mode");
     const thinkingEffort = childThinkingEffort(request.thinkingEffort, context.thinkingEffort);
     if (context.selectedMode === "auto") throw new Error("Auto mode cannot dispatch subagents");
-    if (context.commandExecutionMode === "manual" || (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false) throw new Error("Subagent creation requires orchestration and at least independent approval. Enable with /orchestration.");
-    if (context.limits && this.recordsForThread(context.threadId).filter((record) => record.createdByTurnId === context.turnId).length >= context.limits.maxSubagentsPerTurn) {
+    if (
+      context.commandExecutionMode === "manual" ||
+      (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false
+    )
+      throw new Error(
+        "Subagent creation requires orchestration and at least independent approval. Enable with /orchestration.",
+      );
+    if (
+      context.limits &&
+      this.recordsForThread(context.threadId).filter((record) => record.createdByTurnId === context.turnId).length >=
+        context.limits.maxSubagentsPerTurn
+    ) {
       throw new Error(`The ${context.limits.maxSubagentsPerTurn}-subagent turn budget is exhausted`);
     }
     const active = this.recordsForThread(context.threadId).filter(
@@ -287,8 +292,7 @@ export class SubagentCoordinator implements SubagentControl {
       }
       if (
         context.taskGraph &&
-        (context.taskGraph.status !== "completed" ||
-          context.taskGraph.updatedByTurnId === context.turnId)
+        (context.taskGraph.status !== "completed" || context.taskGraph.updatedByTurnId === context.turnId)
       ) {
         throw new Error(
           "Standalone child assignments are unavailable while a task DAG is unfinished or was completed in this turn; assign a DAG taskId instead.",
@@ -312,7 +316,7 @@ export class SubagentCoordinator implements SubagentControl {
       provider: context.provider as NonNullable<ToolContext["provider"]>,
       model: context.model as string,
       thinkingEffort,
-      requestedIsolation: this.forceSharedIsolation ? "shared" : request.isolation ?? this.defaultIsolation,
+      requestedIsolation: this.forceSharedIsolation ? "shared" : (request.isolation ?? this.defaultIsolation),
       status: "running",
       revision: 1,
       instructions: sanitizeSubagentText(request.instructions),
@@ -338,9 +342,10 @@ export class SubagentCoordinator implements SubagentControl {
     });
     return {
       ok: true,
-      summary: assignmentKind === "dag"
-        ? `Assigned DAG task ${task.id} to child ${agentId}.`
-        : `Created standalone task ${task.id} for child ${agentId}.`,
+      summary:
+        assignmentKind === "dag"
+          ? `Assigned DAG task ${task.id} to child ${agentId}.`
+          : `Created standalone task ${task.id} for child ${agentId}.`,
       data: {
         agent: publicRecord(record),
         concurrency: { active: active + 1, limit: concurrencyLimit },
@@ -352,10 +357,7 @@ export class SubagentCoordinator implements SubagentControl {
     };
   }
 
-  async status(
-    request: SubagentStatusRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult> {
+  async status(request: SubagentStatusRequest, context: ToolContext): Promise<ToolExecutionResult> {
     const records = this.selectRecords(request.agentIds, context.threadId);
     const active = this.recordsForThread(context.threadId).filter(
       (record) => !TERMINAL_STATUSES.has(record.status),
@@ -373,10 +375,7 @@ export class SubagentCoordinator implements SubagentControl {
     };
   }
 
-  async wait(
-    request: WaitForSubagentsRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult> {
+  async wait(request: WaitForSubagentsRequest, context: ToolContext): Promise<ToolExecutionResult> {
     const jobs = this.selectJobs(request.agentIds, context.threadId);
     let mergeable = jobs.find((job) => isTerminal(job.record.status) && !job.graphObserved);
     let message = this.pendingMessages(context.threadId, request.agentIds)[0];
@@ -419,9 +418,7 @@ export class SubagentCoordinator implements SubagentControl {
     }
     const records = jobs.map((job) => publicRecord(job.record));
     const concurrency = {
-      active: this.recordsForThread(context.threadId).filter(
-        (record) => !TERMINAL_STATUSES.has(record.status),
-      ).length,
+      active: this.recordsForThread(context.threadId).filter((record) => !TERMINAL_STATUSES.has(record.status)).length,
       limit: this.concurrencyLimit(context),
     };
     if (message) {
@@ -444,8 +441,7 @@ export class SubagentCoordinator implements SubagentControl {
     if (mergeable.record.assignmentKind === "standalone") {
       return {
         ok: true,
-        summary:
-          `Collected ${mergeable.record.id}'s standalone result for ${mergeable.record.taskId}.`,
+        summary: `Collected ${mergeable.record.id}'s standalone result for ${mergeable.record.taskId}.`,
         data: {
           timedOut: false,
           observedAgentId: mergeable.record.id,
@@ -467,9 +463,10 @@ export class SubagentCoordinator implements SubagentControl {
     });
     return {
       ok: true,
-      summary: operation.action === "complete"
-        ? `Merged ${mergeable.record.id}'s verified result and completed task ${mergeable.record.taskId}.`
-        : `Received ${mergeable.record.id}'s terminal result and released task ${mergeable.record.taskId} for reassignment.`,
+      summary:
+        operation.action === "complete"
+          ? `Merged ${mergeable.record.id}'s verified result and completed task ${mergeable.record.taskId}.`
+          : `Received ${mergeable.record.id}'s terminal result and released task ${mergeable.record.taskId} for reassignment.`,
       data: {
         timedOut: false,
         observedAgentId: mergeable.record.id,
@@ -485,10 +482,7 @@ export class SubagentCoordinator implements SubagentControl {
     };
   }
 
-  async followUp(
-    request: FollowUpSubagentRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult> {
+  async followUp(request: FollowUpSubagentRequest, context: ToolContext): Promise<ToolExecutionResult> {
     const job = this.requireOwnedJob(request.agentId, context.threadId);
     if (isTerminal(job.record.status) || job.record.status === "stopping") {
       throw new Error(`Subagent ${request.agentId} is no longer accepting follow-up guidance`);
@@ -511,10 +505,7 @@ export class SubagentCoordinator implements SubagentControl {
     };
   }
 
-  async stop(
-    request: StopSubagentRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult> {
+  async stop(request: StopSubagentRequest, context: ToolContext): Promise<ToolExecutionResult> {
     const job = this.requireOwnedJob(request.agentId, context.threadId);
     if (isTerminal(job.record.status)) {
       return {
@@ -536,10 +527,7 @@ export class SubagentCoordinator implements SubagentControl {
     };
   }
 
-  async handoff(
-    request: HandoffSubagentRequest,
-    context: ToolContext,
-  ): Promise<ToolExecutionResult> {
+  async handoff(request: HandoffSubagentRequest, context: ToolContext): Promise<ToolExecutionResult> {
     const job = this.requireOwnedJob(request.agentId, context.threadId);
     if (job.record.status !== "completed" || !job.record.resultArtifact) {
       throw new Error(`Subagent ${request.agentId} has no completed result artifact to hand off`);
@@ -552,21 +540,13 @@ export class SubagentCoordinator implements SubagentControl {
       if (graph.status !== "completed") {
         throw new Error("A DAG result can be handed off only after the complete task graph finishes");
       }
-      const dependencyIds = new Set(
-        graph.tasks.flatMap((task) => task.dependencies),
-      );
-      const terminalLeaves = graph.tasks.filter(
-        (task) => task.status === "completed" && !dependencyIds.has(task.id),
-      );
+      const dependencyIds = new Set(graph.tasks.flatMap((task) => task.dependencies));
+      const terminalLeaves = graph.tasks.filter((task) => task.status === "completed" && !dependencyIds.has(task.id));
       if (terminalLeaves.length !== 1) {
-        throw new Error(
-          "A DAG result can be handed off only when the graph has exactly one terminal leaf task",
-        );
+        throw new Error("A DAG result can be handed off only when the graph has exactly one terminal leaf task");
       }
       if (terminalLeaves[0]?.id !== job.record.taskId) {
-        throw new Error(
-          `Subagent ${request.agentId} does not own the DAG's terminal result task`,
-        );
+        throw new Error(`Subagent ${request.agentId} does not own the DAG's terminal result task`);
       }
     }
     if (!this.handoffResult) throw new Error("Result handoff is unavailable in this runtime");
@@ -587,9 +567,10 @@ export class SubagentCoordinator implements SubagentControl {
     touch(job.record, this.now);
     return {
       ok: artifact.status === "delivered",
-      summary: artifact.status === "delivered"
-        ? `Handed off ${artifact.id} to ${artifact.delivery ?? request.destination}.`
-        : `Artifact ${artifact.id} requires conflict resolution before handoff.`,
+      summary:
+        artifact.status === "delivered"
+          ? `Handed off ${artifact.id} to ${artifact.delivery ?? request.destination}.`
+          : `Artifact ${artifact.id} requires conflict resolution before handoff.`,
       data: {
         agentId: job.record.id,
         taskId: job.record.taskId,
@@ -600,9 +581,7 @@ export class SubagentCoordinator implements SubagentControl {
         branchName: artifact.branchName,
         changedFileCount: artifact.changedFiles.length,
       },
-      ...(artifact.status === "delivered"
-        ? {}
-        : { error: "Result handoff is conflicted" }),
+      ...(artifact.status === "delivered" ? {} : { error: "Result handoff is conflicted" }),
     };
   }
 
@@ -652,12 +631,8 @@ export class SubagentCoordinator implements SubagentControl {
       changes: [...(job.outcome?.changes ?? [])],
       commands: [...(job.outcome?.commands ?? [])],
       presentations: [...(job.outcome?.presentations ?? [])],
-      ...(job.outcome?.environment
-        ? { environment: { ...job.outcome.environment } }
-        : {}),
-      ...(job.outcome?.resultArtifact
-        ? { resultArtifact: cloneArtifact(job.outcome.resultArtifact) }
-        : {}),
+      ...(job.outcome?.environment ? { environment: { ...job.outcome.environment } } : {}),
+      ...(job.outcome?.resultArtifact ? { resultArtifact: cloneArtifact(job.outcome.resultArtifact) } : {}),
     };
   }
 
@@ -674,24 +649,15 @@ export class SubagentCoordinator implements SubagentControl {
   /** Return terminal artifact batches that still need an idempotent parent merge. */
   pendingArtifactMerges(threadId: string): ReadonlyArray<ObservedSubagentArtifacts> {
     return [...this.jobs.values()]
-      .filter(
-        (job) =>
-          job.record.parentThreadId === threadId &&
-          isTerminal(job.record.status) &&
-          !job.artifactsMerged,
-      )
+      .filter((job) => job.record.parentThreadId === threadId && isTerminal(job.record.status) && !job.artifactsMerged)
       .map((job) => ({
         agentId: job.record.id,
         taskId: job.record.taskId,
         changes: [...(job.outcome?.changes ?? [])],
         commands: [...(job.outcome?.commands ?? [])],
         presentations: [...(job.outcome?.presentations ?? [])],
-        ...(job.outcome?.environment
-          ? { environment: { ...job.outcome.environment } }
-          : {}),
-        ...(job.outcome?.resultArtifact
-          ? { resultArtifact: cloneArtifact(job.outcome.resultArtifact) }
-          : {}),
+        ...(job.outcome?.environment ? { environment: { ...job.outcome.environment } } : {}),
+        ...(job.outcome?.resultArtifact ? { resultArtifact: cloneArtifact(job.outcome.resultArtifact) } : {}),
       }));
   }
 
@@ -700,58 +666,42 @@ export class SubagentCoordinator implements SubagentControl {
     if (update.action !== "activate") return;
     const job = this.jobs.get(update.agentId);
     if (!job || job.activated) return;
-    this.finishUnstarted(
-      job,
-      "interrupted",
-      "The parent child-assignment transition did not commit.",
-    );
+    this.finishUnstarted(job, "interrupted", "The parent child-assignment transition did not commit.");
     this.jobs.delete(update.agentId);
   }
 
   hasUnfinished(threadId?: string): boolean {
     return [...this.jobs.values()].some(
-      (job) =>
-        (!threadId || job.record.parentThreadId === threadId) &&
-        !isTerminal(job.record.status),
+      (job) => (!threadId || job.record.parentThreadId === threadId) && !isTerminal(job.record.status),
     );
   }
 
   hasOutstanding(threadId?: string): boolean {
     return [...this.jobs.values()].some(
-      (job) =>
-        (!threadId || job.record.parentThreadId === threadId) &&
-        (!job.graphObserved || !job.artifactsMerged),
+      (job) => (!threadId || job.record.parentThreadId === threadId) && (!job.graphObserved || !job.artifactsMerged),
     );
   }
 
   snapshot(threadId: string): ReadonlyArray<SubagentView> {
-    return this.recordsForThread(threadId).map(record => ({ ...publicRecord(record),
-      ...(this.liveActivity.get(record.id) ? { activity: this.liveActivity.get(record.id) } : {}) }));
+    return this.recordsForThread(threadId).map((record) => ({
+      ...publicRecord(record),
+      ...(this.liveActivity.get(record.id) ? { activity: this.liveActivity.get(record.id) } : {}),
+    }));
   }
 
   outstanding(threadId: string): ReadonlyArray<SubagentView> {
     return [...this.jobs.values()]
-      .filter(
-        (job) =>
-          job.record.parentThreadId === threadId &&
-          (!job.graphObserved || !job.artifactsMerged),
-      )
+      .filter((job) => job.record.parentThreadId === threadId && (!job.graphObserved || !job.artifactsMerged))
       .map((job) => publicRecord(job.record));
   }
 
   /** Restore a terminal standalone result without restarting its old process. */
-  restoreStandalone(
-    input: RecoveredStandaloneSubagent,
-    options: RestoreSubagentOptions = {},
-  ): void {
+  restoreStandalone(input: RecoveredStandaloneSubagent, options: RestoreSubagentOptions = {}): void {
     this.restore(input, options);
   }
 
   /** Restore a durable DAG or standalone binding, resuming non-terminal children. */
-  restore(
-    input: RecoveredSubagent,
-    options: RestoreSubagentOptions = {},
-  ): void {
+  restore(input: RecoveredSubagent, options: RestoreSubagentOptions = {}): void {
     const { assignment } = input;
     if (this.jobs.has(assignment.agentId)) {
       throw new Error(`Duplicate recovered subagent ID: ${assignment.agentId}`);
@@ -772,11 +722,7 @@ export class SubagentCoordinator implements SubagentControl {
           status: "in_progress",
           startedAt: assignment.createdAt,
         };
-    if (
-      task.id !== assignment.taskId ||
-      task.assignedAgentId !== assignment.agentId ||
-      task.owner !== "subagent"
-    ) {
+    if (task.id !== assignment.taskId || task.assignedAgentId !== assignment.agentId || task.owner !== "subagent") {
       throw new Error(`Recovered child ${assignment.agentId} does not match its bound task`);
     }
     const terminal = input.reason !== undefined;
@@ -802,14 +748,10 @@ export class SubagentCoordinator implements SubagentControl {
       revision: terminal ? 2 : 1,
       instructions: agentPromptText("agents/child-restored-instruction.md"),
       followUpCount: 0,
-      ...(input.report && status !== "stopped"
-        ? { result: validateAndCloneReport(task, input.report) }
-        : {}),
+      ...(input.report && status !== "stopped" ? { result: validateAndCloneReport(task, input.report) } : {}),
       ...(input.error ? { error: sanitizeSubagentText(input.error).slice(0, 2_000) } : {}),
       ...(input.environment ? { environment: { ...input.environment } } : {}),
-      ...(input.resultArtifact
-        ? { resultArtifact: cloneArtifact(input.resultArtifact) }
-        : {}),
+      ...(input.resultArtifact ? { resultArtifact: cloneArtifact(input.resultArtifact) } : {}),
       createdAt: assignment.createdAt,
       startedAt: assignment.createdAt,
       updatedAt: input.finishedAt ?? this.now().toISOString(),
@@ -842,9 +784,7 @@ export class SubagentCoordinator implements SubagentControl {
               commands: [],
               presentations: [],
               ...(input.environment ? { environment: { ...input.environment } } : {}),
-              ...(input.resultArtifact
-                ? { resultArtifact: cloneArtifact(input.resultArtifact) }
-                : {}),
+              ...(input.resultArtifact ? { resultArtifact: cloneArtifact(input.resultArtifact) } : {}),
             },
           }
         : {}),
@@ -859,7 +799,11 @@ export class SubagentCoordinator implements SubagentControl {
 
   /** Start a fully validated batch of durable restores as one control-plane commit. */
   activatePrepared(threadId: string): void {
-    this.activateRestored([...this.jobs.values()].filter(job => job.preparedRestore && job.record.parentThreadId === threadId).map(job => job.record.id));
+    this.activateRestored(
+      [...this.jobs.values()]
+        .filter((job) => job.preparedRestore && job.record.parentThreadId === threadId)
+        .map((job) => job.record.id),
+    );
   }
 
   activateRestored(agentIds: readonly string[]): void {
@@ -895,15 +839,11 @@ export class SubagentCoordinator implements SubagentControl {
 
   hasAgent(agentId: string, parentThreadId?: string): boolean {
     const job = this.jobs.get(agentId);
-    return Boolean(
-      job && (!parentThreadId || job.record.parentThreadId === parentThreadId),
-    );
+    return Boolean(job && (!parentThreadId || job.record.parentThreadId === parentThreadId));
   }
 
   async shutdown(threadId?: string): Promise<void> {
-    const jobs = [...this.jobs.values()].filter(
-      (job) => !threadId || job.record.parentThreadId === threadId,
-    );
+    const jobs = [...this.jobs.values()].filter((job) => !threadId || job.record.parentThreadId === threadId);
     for (const job of jobs) {
       if (isTerminal(job.record.status)) continue;
       job.stopReason = "The parent runtime is shutting down.";
@@ -921,19 +861,13 @@ export class SubagentCoordinator implements SubagentControl {
   /** Abort process-local execution while preserving the durable claim/session. */
   async pause(threadId?: string): Promise<void> {
     const jobs = [...this.jobs.values()].filter(
-      (job) =>
-        (!threadId || job.record.parentThreadId === threadId) &&
-        !isTerminal(job.record.status),
+      (job) => (!threadId || job.record.parentThreadId === threadId) && !isTerminal(job.record.status),
     );
     for (const job of jobs) {
       job.pauseRequested = true;
       job.controller.abort();
       if (!job.activated) {
-        this.finishUnstarted(
-          job,
-          "interrupted",
-          "The prepared child restore was paused before execution started.",
-        );
+        this.finishUnstarted(job, "interrupted", "The prepared child restore was paused before execution started.");
       }
     }
     await Promise.all(jobs.map((job) => job.settled));
@@ -954,18 +888,12 @@ export class SubagentCoordinator implements SubagentControl {
 
   /** Forget only jobs that were deliberately paused and remain durable elsewhere. */
   discardPausedThread(threadId: string): void {
-    const jobs = [...this.jobs.values()].filter(
-      (job) => job.record.parentThreadId === threadId,
-    );
+    const jobs = [...this.jobs.values()].filter((job) => job.record.parentThreadId === threadId);
     const unsafe = jobs.find(
-      (job) =>
-        !isTerminal(job.record.status) ||
-        (!job.pauseRequested && (!job.graphObserved || !job.artifactsMerged)),
+      (job) => !isTerminal(job.record.status) || (!job.pauseRequested && (!job.graphObserved || !job.artifactsMerged)),
     );
     if (unsafe) {
-      throw new Error(
-        `Cannot forget child ${unsafe.record.id}; it was not durably paused`,
-      );
+      throw new Error(`Cannot forget child ${unsafe.record.id}; it was not durably paused`);
     }
     for (const job of jobs) this.jobs.delete(job.record.id);
   }
@@ -976,20 +904,14 @@ export class SubagentCoordinator implements SubagentControl {
    * any persisted task claims before discarding them.
    */
   discardThread(threadId: string): void {
-    const jobs = [...this.jobs.values()].filter(
-      (job) => job.record.parentThreadId === threadId,
-    );
+    const jobs = [...this.jobs.values()].filter((job) => job.record.parentThreadId === threadId);
     const unfinished = jobs.find((job) => !isTerminal(job.record.status));
     if (unfinished) {
-      throw new Error(
-        `Cannot discard thread ${threadId} while child ${unfinished.record.id} is still running`,
-      );
+      throw new Error(`Cannot discard thread ${threadId} while child ${unfinished.record.id} is still running`);
     }
     const unmerged = jobs.find((job) => !job.artifactsMerged);
     if (unmerged) {
-      throw new Error(
-        `Cannot discard thread ${threadId} before child ${unmerged.record.id} artifacts are merged`,
-      );
+      throw new Error(`Cannot discard thread ${threadId} before child ${unmerged.record.id} artifacts are merged`);
     }
     for (const job of jobs) {
       this.jobs.delete(job.record.id);
@@ -1009,7 +931,11 @@ export class SubagentCoordinator implements SubagentControl {
         },
         isPauseRequested: () => job.pauseRequested === true,
         reportActivity: (kind, label) => {
-          this.liveActivity.set(job.record.id, { kind, ...(label ? { label } : {}), startedAt: this.now().toISOString() });
+          this.liveActivity.set(job.record.id, {
+            kind,
+            ...(label ? { label } : {}),
+            startedAt: this.now().toISOString(),
+          });
           this.onViewChange?.(job.record.parentThreadId);
         },
       });
@@ -1022,18 +948,14 @@ export class SubagentCoordinator implements SubagentControl {
         try {
           job.record.result = validateAndCloneReport(job.task, outcome.report);
         } catch (error) {
-          const message = sanitizeSubagentText(
-            error instanceof Error ? error.message : String(error),
-          ).slice(0, 2_000);
+          const message = sanitizeSubagentText(error instanceof Error ? error.message : String(error)).slice(0, 2_000);
           job.outcome = { ...outcome, report: undefined, reason: "failed", error: message };
           job.record.error = message;
           job.record.status = "failed";
           return;
         }
       }
-      job.record.error = outcome.error
-        ? sanitizeSubagentText(outcome.error).slice(0, 2_000)
-        : undefined;
+      job.record.error = outcome.error ? sanitizeSubagentText(outcome.error).slice(0, 2_000) : undefined;
       job.record.status = statusForOutcome(
         outcome,
         job.controller.signal.aborted,
@@ -1043,10 +965,8 @@ export class SubagentCoordinator implements SubagentControl {
     } catch (error) {
       job.record.status = job.controller.signal.aborted ? "stopped" : "failed";
       job.record.error = job.controller.signal.aborted
-        ? job.stopReason ?? "The child was canceled."
-        : sanitizeSubagentText(
-            error instanceof Error ? error.message : String(error),
-          ).slice(0, 2_000);
+        ? (job.stopReason ?? "The child was canceled.")
+        : sanitizeSubagentText(error instanceof Error ? error.message : String(error)).slice(0, 2_000);
       job.outcome = {
         reason: job.record.status,
         error: job.record.error,
@@ -1065,11 +985,7 @@ export class SubagentCoordinator implements SubagentControl {
     }
   }
 
-  private finishUnstarted(
-    job: SubagentJob,
-    status: "stopped" | "interrupted",
-    error: string,
-  ): void {
+  private finishUnstarted(job: SubagentJob, status: "stopped" | "interrupted", error: string): void {
     job.record.status = status;
     job.record.error = error;
     job.record.finishedAt = this.now().toISOString();
@@ -1098,20 +1014,17 @@ export class SubagentCoordinator implements SubagentControl {
     if (!context.thinkingEffort) {
       throw new Error("The parent thinking effort is unavailable");
     }
-    return context.limits?.maxConcurrentSubagents[context.thinkingEffort]
-      ?? maxConcurrentSubagents(context.thinkingEffort);
+    return (
+      context.limits?.maxConcurrentSubagents[context.thinkingEffort] ?? maxConcurrentSubagents(context.thinkingEffort)
+    );
   }
 
   private recordsForThread(threadId: string): SubagentRecord[] {
-    return [...this.jobs.values()]
-      .filter((job) => job.record.parentThreadId === threadId)
-      .map((job) => job.record);
+    return [...this.jobs.values()].filter((job) => job.record.parentThreadId === threadId).map((job) => job.record);
   }
 
   private selectRecords(agentIds: readonly string[] | undefined, threadId: string): SubagentRecord[] {
-    return agentIds
-      ? this.selectJobs(agentIds, threadId).map((job) => job.record)
-      : this.recordsForThread(threadId);
+    return agentIds ? this.selectJobs(agentIds, threadId).map((job) => job.record) : this.recordsForThread(threadId);
   }
 
   private selectJobs(agentIds: readonly string[], threadId: string): SubagentJob[] {
@@ -1135,9 +1048,7 @@ function operationForObservedJob(job: SubagentJob): SubagentTaskOperation {
       taskId: job.record.taskId,
       agentId: job.record.id,
       evidence: report.completionEvidence.map((item) => item.evidence),
-      ...(job.record.resultArtifact
-        ? { resultArtifact: toResultArtifactRef(job.record.resultArtifact) }
-        : {}),
+      ...(job.record.resultArtifact ? { resultArtifact: toResultArtifactRef(job.record.resultArtifact) } : {}),
     };
   }
   return { action: "release", taskId: job.record.taskId, agentId: job.record.id };
@@ -1174,12 +1085,8 @@ function publicRecord(record: Readonly<SubagentRecord>): SubagentView {
       ? {
           resultArtifact: {
             ...toResultArtifactRef(record.resultArtifact),
-            ...(record.resultArtifact.delivery
-              ? { delivery: record.resultArtifact.delivery }
-              : {}),
-            ...(record.resultArtifact.branchName
-              ? { branchName: record.resultArtifact.branchName }
-              : {}),
+            ...(record.resultArtifact.delivery ? { delivery: record.resultArtifact.delivery } : {}),
+            ...(record.resultArtifact.branchName ? { branchName: record.resultArtifact.branchName } : {}),
           },
         }
       : {}),
@@ -1196,11 +1103,7 @@ function publicRecord(record: Readonly<SubagentRecord>): SubagentView {
   };
 }
 
-function standaloneTask(
-  definition: Readonly<StandaloneSubagentTask>,
-  agentId: string,
-  startedAt: string,
-): TaskNode {
+function standaloneTask(definition: Readonly<StandaloneSubagentTask>, agentId: string, startedAt: string): TaskNode {
   const uuid = agentId.slice("subagent_".length).replace(/-/gu, "");
   return {
     id: `child_${uuid}`,
@@ -1218,10 +1121,7 @@ function standaloneTask(
   };
 }
 
-function assignmentSnapshot(
-  record: Readonly<SubagentRecord>,
-  task: Readonly<TaskNode>,
-): SubagentAssignmentSnapshot {
+function assignmentSnapshot(record: Readonly<SubagentRecord>, task: Readonly<TaskNode>): SubagentAssignmentSnapshot {
   const common = {
     agentId: record.id,
     childThreadId: record.childThreadId,
@@ -1253,9 +1153,7 @@ function cloneTask(task: Readonly<TaskNode>): TaskNode {
     inputs: [...task.inputs],
     expectedArtifacts: [...task.expectedArtifacts],
     completionChecks: [...task.completionChecks],
-    ...(task.completionEvidence
-      ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) }
-      : {}),
+    ...(task.completionEvidence ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) } : {}),
     ...(task.resultArtifact
       ? {
           resultArtifact: {
@@ -1268,9 +1166,7 @@ function cloneTask(task: Readonly<TaskNode>): TaskNode {
 }
 
 /** Strip private and unbounded artifact fields before accepting lineage into a DAG. */
-export function toResultArtifactRef(
-  artifact: Readonly<ResultArtifact>,
-): ResultArtifactRef {
+export function toResultArtifactRef(artifact: Readonly<ResultArtifact>): ResultArtifactRef {
   return {
     id: artifact.id,
     agentId: artifact.agentId,
@@ -1292,9 +1188,7 @@ export function toResultArtifactRef(
 function cloneArtifact(artifact: Readonly<ResultArtifact>): ResultArtifact {
   return {
     ...artifact,
-    ...(artifact.parentArtifactIds
-      ? { parentArtifactIds: [...artifact.parentArtifactIds] }
-      : {}),
+    ...(artifact.parentArtifactIds ? { parentArtifactIds: [...artifact.parentArtifactIds] } : {}),
     changedFiles: [...artifact.changedFiles],
   };
 }
@@ -1318,10 +1212,7 @@ function cloneReport(report: Readonly<SubagentTaskReport>): SubagentTaskReport {
       };
 }
 
-function validateAndCloneReport(
-  task: Readonly<TaskNode>,
-  report: Readonly<SubagentTaskReport>,
-): SubagentTaskReport {
+function validateAndCloneReport(task: Readonly<TaskNode>, report: Readonly<SubagentTaskReport>): SubagentTaskReport {
   if (report.taskId !== task.id) {
     throw new Error(`Child result targeted ${report.taskId} instead of bound task ${task.id}`);
   }
@@ -1341,11 +1232,7 @@ function statusForOutcome(
   // its verified completion boundary, that completed result (and its artifact)
   // must remain atomic even when the pause abort arrives during finalization.
   // Explicit stop/shutdown requests still win because they are not pauses.
-  if (
-    paused &&
-    outcome.reason === "completed" &&
-    outcome.report?.outcome === "completed"
-  ) {
+  if (paused && outcome.reason === "completed" && outcome.report?.outcome === "completed") {
     return "completed";
   }
   if (aborted || outcome.reason === "stopped") return "stopped";

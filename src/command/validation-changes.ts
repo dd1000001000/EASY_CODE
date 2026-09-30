@@ -21,13 +21,13 @@ export function targetedValidationChanges(
   for (const [name, { first, last }] of prior) {
     if (!isValidationConfigPath(name) && !isValidationTestPath(name)) continue;
     if (!isValidationConfigPath(name) && first.operation === "create") continue;
-    if (last.operation === "delete" || last.operation === "deleted_by_command" ||
-        first.beforeHash !== last.afterHash) changed.add(name);
+    if (last.operation === "delete" || last.operation === "deleted_by_command" || first.beforeHash !== last.afterHash)
+      changed.add(name);
   }
   for (const original of [...delta.updated, ...delta.deleted]) {
     const name = original.replaceAll("\\", "/");
-    if (isValidationConfigPath(name) || isValidationTestPath(name) &&
-        prior.get(name)?.first.operation !== "create") changed.add(name);
+    if (isValidationConfigPath(name) || (isValidationTestPath(name) && prior.get(name)?.first.operation !== "create"))
+      changed.add(name);
   }
   for (const created of delta.created) {
     const name = created.replaceAll("\\", "/");
@@ -35,8 +35,15 @@ export function targetedValidationChanges(
   }
   if (!changed.size) return undefined;
   const changedPaths = [...changed].sort().slice(0, 32);
-  return { baselineDigest: sha256(JSON.stringify([...prior]
-    .filter(([name]) => changed.has(name))
-    .map(([name, { first }]) => [name, first.operation, first.beforeHash ?? null]).sort())),
-    changedPaths };
+  return {
+    baselineDigest: sha256(
+      JSON.stringify(
+        [...prior]
+          .filter(([name]) => changed.has(name))
+          .map(([name, { first }]) => [name, first.operation, first.beforeHash ?? null])
+          .sort(),
+      ),
+    ),
+    changedPaths,
+  };
 }

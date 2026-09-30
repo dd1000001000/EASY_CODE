@@ -9,25 +9,53 @@ import { createProgressGuardState, foldProgressObservation } from "../src/progre
 import { baseSessionState } from "./session-state.js";
 
 function state(): SessionState {
-  return { ...baseSessionState(), threadId: "thread_reliability", mode: "code", provider: "glm-coding-plan", model: "mock",
-    thinkingEffort: "high", workspaceRoot: process.cwd(), constraints: [],
+  return {
+    ...baseSessionState(),
+    threadId: "thread_reliability",
+    mode: "code",
+    provider: "glm-coding-plan",
+    model: "mock",
+    thinkingEffort: "high",
+    workspaceRoot: process.cwd(),
+    constraints: [],
     messages: [{ role: "user", content: "Fix tests without changing the API" }],
-    filesRead: new Map(), changes: [], commands: [], commandApprovalPrefixes: [],
-    workingSummary: "", compactedMessageCount: 0,
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    filesRead: new Map(),
+    changes: [],
+    commands: [],
+    commandApprovalPrefixes: [],
+    workingSummary: "",
+    compactedMessageCount: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function command(id: string, args = ["test"], exitCode = 1): CommandAuditEntry {
-  return { id, program: "npm", args, cwd: ".", status: "exited", exitCode,
-    durationMs: 10, timestamp: new Date().toISOString(), summary: `command ${id}` };
+  return {
+    id,
+    program: "npm",
+    args,
+    cwd: ".",
+    status: "exited",
+    exitCode,
+    durationMs: 10,
+    timestamp: new Date().toISOString(),
+    summary: `command ${id}`,
+  };
 }
 
 describe("context reliability", () => {
   it("keeps failed target evidence after an unrelated success, scoped by owner", () => {
     const current = state();
-    current.commands = [command("failed"), command("inspect", ["--version"], 0),
-      { ...command("child-pass", ["test"], 0), sourceAgentId: "child" }];
-    assert.deepEqual(unresolvedCommands(current).map((item) => item.id), ["failed"]);
+    current.commands = [
+      command("failed"),
+      command("inspect", ["--version"], 0),
+      { ...command("child-pass", ["test"], 0), sourceAgentId: "child" },
+    ];
+    assert.deepEqual(
+      unresolvedCommands(current).map((item) => item.id),
+      ["failed"],
+    );
     current.commands.push(command("rerun", ["test"], 0));
     assert.deepEqual(unresolvedCommands(current), []);
   });
@@ -40,20 +68,29 @@ describe("context reliability", () => {
       command("private-failure", ["test", "[REDACTED]"]),
       command("private-pass", ["test", "[REDACTED]"], 0),
     ];
-    assert.deepEqual(unresolvedCommands(current).map((item) => item.id), ["old", "private-failure"]);
+    assert.deepEqual(
+      unresolvedCommands(current).map((item) => item.id),
+      ["old", "private-failure"],
+    );
   });
 
   it("preserves a full accepted summary and constraints until explicit Runtime recovery", () => {
     const current = state();
     current.constraints = ["Never remove rollback support"];
     current.workingSummary = JSON.stringify({ currentWork: "x".repeat(8_100), nextStep: "RUN_COUNTEREXAMPLE_42" });
-    current.messages.push(...Array.from({ length: 30 }, () => ({ role: "assistant" as const, content: "old".repeat(300) })));
+    current.messages.push(
+      ...Array.from({ length: 30 }, () => ({ role: "assistant" as const, content: "old".repeat(300) })),
+    );
     const built = new ContextManager().build({ state: current, systemPrompt: "rules", maxContextChars: 16_000 });
     const text = built.map((message) => message.content).join("\n");
     assert.ok(text.includes(current.workingSummary));
     assert.match(text, /Never remove rollback support/u);
     assert.ok(estimateMessagesChars(built) > 16_000);
-    const inspected = new ContextManager().inspectProviderRequest({ state: current, messages: built, maxContextChars: 16_000 });
+    const inspected = new ContextManager().inspectProviderRequest({
+      state: current,
+      messages: built,
+      maxContextChars: 16_000,
+    });
     assert.equal(inspected.pressure, "force");
   });
 
@@ -63,24 +100,45 @@ describe("context reliability", () => {
     const before = structuredClone(current);
     const manager = new ContextManager();
     const built = manager.build({ state: current, systemPrompt: "rules", maxContextChars: 4_096 });
-    assert.ok(manager.inspectProviderRequest({ state: current, messages: built, maxContextChars: 4_096 }).utilization > 1);
+    assert.ok(
+      manager.inspectProviderRequest({ state: current, messages: built, maxContextChars: 4_096 }).utilization > 1,
+    );
     assert.deepEqual(current, before);
   });
 
   it("keeps output witnesses in checkpoints and review state in Runtime context", () => {
     const current = state();
-    current.commands = [{ ...command("failure"), outputEvidence: {
-      capturedOutputDigest: "sha256:" + "a".repeat(64), stdoutTail: "test_a FAILED expected 2 actual 3",
-      stderrTail: "", incomplete: false, processStarted: true, failureKind: "exit",
-    } }];
+    current.commands = [
+      {
+        ...command("failure"),
+        outputEvidence: {
+          capturedOutputDigest: "sha256:" + "a".repeat(64),
+          stdoutTail: "test_a FAILED expected 2 actual 3",
+          stderrTail: "",
+          incomplete: false,
+          processStarted: true,
+          failureKind: "exit",
+        },
+      },
+    ];
     let guard = createProgressGuardState();
     for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
       const commandId = `command_00000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`;
-      guard = foldProgressObservation(guard, { schemaVersion: 1, sourceEventId: `event_${ordinal}`,
-        sourceCallId: `call_${ordinal}`, scopeKey: "thread:test", responseOrdinal: ordinal,
-        tool: "run_command", kind: "verification_terminal", confidence: "high", outcomeClass: "failed",
+      guard = foldProgressObservation(guard, {
+        schemaVersion: 1,
+        sourceEventId: `event_${ordinal}`,
+        sourceCallId: `call_${ordinal}`,
+        scopeKey: "thread:test",
+        responseOrdinal: ordinal,
+        tool: "run_command",
+        kind: "verification_terminal",
+        confidence: "high",
+        outcomeClass: "failed",
         evidenceDigest: "sha256:" + "d".repeat(64),
-        verificationCycleId: commandId, commandId, targetKey: "sha256:" + "b".repeat(64), outcomeKey: "sha256:" + "c".repeat(64),
+        verificationCycleId: commandId,
+        commandId,
+        targetKey: "sha256:" + "b".repeat(64),
+        outcomeKey: "sha256:" + "c".repeat(64),
       }).state;
     }
     current.progressGuard = guard;
@@ -99,9 +157,19 @@ describe("context reliability", () => {
     const current = state();
     current.messages.push({ role: "assistant", content: "inspect", reasoning_content: "Reasoning stays exact\n" });
     const manager = new ContextManager();
-    const first = manager.build({ state: current, systemPrompt: "stable rules", runtimeContext: "old retrieval", maxContextChars: 20_000 });
+    const first = manager.build({
+      state: current,
+      systemPrompt: "stable rules",
+      runtimeContext: "old retrieval",
+      maxContextChars: 20_000,
+    });
     current.messages.push({ role: "user", content: "continue" });
-    const next = manager.build({ state: current, systemPrompt: "stable rules", runtimeContext: "new retrieval", maxContextChars: 20_000 });
+    const next = manager.build({
+      state: current,
+      systemPrompt: "stable rules",
+      runtimeContext: "new retrieval",
+      maxContextChars: 20_000,
+    });
     // Stable system + raw history; both Runtime continuity and retrieval are a changing suffix.
     assert.deepEqual(next.slice(0, first.length - 2), first.slice(0, -2));
     const tracker = new RequestPrefixTracker();

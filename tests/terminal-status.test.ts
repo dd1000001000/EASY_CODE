@@ -3,12 +3,7 @@ import { PassThrough } from "node:stream";
 
 import { Terminal } from "../src/cli/terminal.js";
 import type { ApprovalRequest } from "../src/core/types.js";
-import type {
-  UIProgressKind,
-  UISessionInfo,
-  UIState,
-  UITranscriptKind,
-} from "../src/ui/contracts.js";
+import type { UIProgressKind, UISessionInfo, UIState, UITranscriptKind } from "../src/ui/contracts.js";
 import { stripAnsi } from "../src/ui/render/layout.js";
 import { describe, it } from "./harness.js";
 
@@ -103,10 +98,7 @@ function terminalState(terminal: Terminal): UIState {
   return (terminal as unknown as { readonly uiState: UIState }).uiState;
 }
 
-type StableKind = Extract<
-  UITranscriptKind,
-  "info" | "success" | "warning" | "error"
->;
+type StableKind = Extract<UITranscriptKind, "info" | "success" | "warning" | "error">;
 
 type AuditedStatus =
   | { readonly text: string; readonly destination: "live"; readonly kind: UIProgressKind }
@@ -153,24 +145,73 @@ function approvalRequest(): ApprovalRequest {
 }
 
 describe("Terminal runtime status routing", () => {
-  it("keeps compaction non-interactive, accepts cancellation and retains the final size bar", async () => {
+  it("shows automatic elapsed time and completion without a size report", () => {
+    const fixture = createInlineFixture();
+    try {
+      fixture.terminal.setLanguage("zh_cn");
+      fixture.terminal.setCurrentRequest("Continue");
+      const startedAt = Date.now() - 12000;
+      fixture.terminal.compactionProgress({
+        operationId: "auto",
+        mode: "automatic",
+        phase: "summarizing",
+        beforeChars: 0,
+        startedAt,
+      });
+      assert.equal(terminalState(fixture.terminal).live.activity?.label, "自动压缩中");
+      assert.equal(terminalState(fixture.terminal).live.activity?.startedAt, startedAt);
+      fixture.terminal.compactionProgress({
+        operationId: "auto",
+        mode: "automatic",
+        phase: "completed",
+        beforeChars: 0,
+        startedAt,
+        completedAt: startedAt + 12000,
+        afterChars: 100,
+      });
+      const output = stripAnsi(fixture.outputText());
+      assert.match(output, /自动压缩完成 · 耗时 12s/);
+      assert.doesNotMatch(output, /chars removed|[█░]/u);
+    } finally {
+      fixture.close();
+    }
+  });
+  it("keeps compaction non-interactive, accepts cancellation and reports the final size without a bar", async () => {
     const fixture = createInlineFixture();
     let interrupts = 0;
     try {
-      fixture.terminal.setCurrentRequest("/compact", [], { onInterrupt: () => { interrupts++; } });
+      fixture.terminal.setCurrentRequest("/compact", [], {
+        onInterrupt: () => {
+          interrupts++;
+        },
+      });
       fixture.terminal.compactionProgress({ operationId: "compact_test", phase: "summarizing", beforeChars: 10000 });
+      const activity = terminalState(fixture.terminal).live.activity;
+      assert.equal(activity?.label, "Compacting");
+      fixture.terminal.compactionProgress({ operationId: "compact_test", phase: "validating", beforeChars: 10000 });
+      assert.equal(terminalState(fixture.terminal).live.activity?.id, activity?.id);
       fixture.input.sendFromTerminal("should not become a message\r");
       fixture.input.sendFromTerminal("\u0003");
-      await new Promise(resolve => setTimeout(resolve, 20));
+      await new Promise((resolve) => setTimeout(resolve, 20));
       assert.equal(interrupts, 1);
-      fixture.terminal.compactionProgress({ operationId: "compact_test", phase: "completed", beforeChars: 10000, afterChars: 1000, outcome: "compacted" });
+      fixture.terminal.compactionProgress({
+        operationId: "compact_test",
+        phase: "completed",
+        beforeChars: 10000,
+        afterChars: 1000,
+        outcome: "compacted",
+      });
       fixture.terminal.clearCurrentRequest();
       const output = stripAnsi(fixture.outputText());
       assert.match(output, /10,000 → 1,000/);
       assert.match(output, /90\.0%/);
-      assert.match(output, /█/);
+      assert.match(output, /Compaction complete/);
+      assert.match(output, /9,000 chars removed/);
+      assert.doesNotMatch(output, /[█░]/u);
       assert.doesNotMatch(output, /should not become a message/);
-    } finally { fixture.close(); }
+    } finally {
+      fixture.close();
+    }
   });
   it("keeps only audited progress live and commits notices with useful severity", () => {
     const fixture = createInlineFixture();
@@ -231,38 +272,19 @@ describe("Terminal runtime status routing", () => {
   it("keeps complete stable notices and tool summaries/errors outside compact live previews", () => {
     const fixture = createInlineFixture();
     try {
-      const notice = `Fatal provider failure: ${"diagnostic ".repeat(40)}` +
-        "STABLE-NOTICE-TAIL";
+      const notice = `Fatal provider failure: ${"diagnostic ".repeat(40)}` + "STABLE-NOTICE-TAIL";
       fixture.terminal.status(notice);
-      assert.match(
-        stripAnsi(terminalState(fixture.terminal).transcript.at(-1)?.text ?? ""),
-        /STABLE-NOTICE-TAIL/u,
-      );
+      assert.match(stripAnsi(terminalState(fixture.terminal).transcript.at(-1)?.text ?? ""), /STABLE-NOTICE-TAIL/u);
 
-      const error = `first failure line\n${"detail ".repeat(80)}` +
-        "TOOL-ERROR-TAIL";
-      fixture.terminal.toolCompleted(
-        "run_command",
-        false,
-        "Command failed",
-        error,
-      );
-      const entry = stripAnsi(
-        terminalState(fixture.terminal).transcript.at(-1)?.text ?? "",
-      );
+      const error = `first failure line\n${"detail ".repeat(80)}` + "TOOL-ERROR-TAIL";
+      fixture.terminal.toolCompleted("run_command", false, "Command failed", error);
+      const entry = stripAnsi(terminalState(fixture.terminal).transcript.at(-1)?.text ?? "");
       assert.match(entry, /first failure line/u);
       assert.match(entry, /TOOL-ERROR-TAIL/u);
 
-      const summary = `first summary line\n${"result ".repeat(80)}` +
-        "TOOL-SUMMARY-TAIL";
-      fixture.terminal.toolCompleted(
-        "read_file",
-        true,
-        summary,
-      );
-      const summaryEntry = stripAnsi(
-        terminalState(fixture.terminal).transcript.at(-1)?.text ?? "",
-      );
+      const summary = `first summary line\n${"result ".repeat(80)}` + "TOOL-SUMMARY-TAIL";
+      fixture.terminal.toolCompleted("read_file", true, summary);
+      const summaryEntry = stripAnsi(terminalState(fixture.terminal).transcript.at(-1)?.text ?? "");
       assert.match(summaryEntry, /first summary line/u);
       assert.match(summaryEntry, /TOOL-SUMMARY-TAIL/u);
     } finally {
@@ -279,10 +301,7 @@ describe("Terminal runtime status routing", () => {
       assert.equal(during.overlay?.kind, "approval");
       assert.equal(during.transcript.length, before + 1);
       assert.match(inline.outputText(), /Approval required: Run migration/u);
-      assert.match(
-        inline.outputText(),
-        /This migration modifies the workspace database\./u,
-      );
+      assert.match(inline.outputText(), /This migration modifies the workspace database\./u);
       assert.match(inline.outputText(), /Command: node scripts\/migrate\.js/u);
 
       inline.input.write("\r");
@@ -335,14 +354,16 @@ describe("Terminal runtime status routing", () => {
       assert.equal(fixture.input.isRaw, true);
 
       let settled = false;
-      const prompt = fixture.terminal.readPrompt("> ", {
-        captureImage: async () => {
-          throw new Error("Image capture is not expected in this test.");
-        },
-      }).then((result) => {
-        settled = true;
-        return result;
-      });
+      const prompt = fixture.terminal
+        .readPrompt("> ", {
+          captureImage: async () => {
+            throw new Error("Image capture is not expected in this test.");
+          },
+        })
+        .then((result) => {
+          settled = true;
+          return result;
+        });
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(settled, false);
 
@@ -366,10 +387,7 @@ describe("Terminal runtime status routing", () => {
       fixture.input.loseEffectiveRawMode();
       const rawCallsBeforeApproval = fixture.input.rawModeTransitions.length;
       const decision = fixture.terminal.approve(approvalRequest());
-      assert.equal(
-        fixture.input.rawModeTransitions.length,
-        rawCallsBeforeApproval + 1,
-      );
+      assert.equal(fixture.input.rawModeTransitions.length, rawCallsBeforeApproval + 1);
       assert.equal(fixture.input.rawModeTransitions.at(-1), true);
 
       fixture.input.sendFromTerminal("\u001B[B");
@@ -381,17 +399,11 @@ describe("Terminal runtime status routing", () => {
       // physical cursor must remain hidden rather than appearing beside
       // Progress as an unfocused white block.
       const afterApproval = fixture.outputText();
-      assert.ok(
-        afterApproval.lastIndexOf("\u001B[?25l") >
-          afterApproval.lastIndexOf("\u001B[?25h"),
-      );
+      assert.ok(afterApproval.lastIndexOf("\u001B[?25l") > afterApproval.lastIndexOf("\u001B[?25h"));
 
       fixture.terminal.clearCurrentRequest();
       const afterClear = fixture.outputText();
-      assert.ok(
-        afterClear.lastIndexOf("\u001B[?25l") >
-          afterClear.lastIndexOf("\u001B[?25h"),
-      );
+      assert.ok(afterClear.lastIndexOf("\u001B[?25l") > afterClear.lastIndexOf("\u001B[?25h"));
     } finally {
       fixture.close();
     }
@@ -409,12 +421,12 @@ describe("Terminal runtime status routing", () => {
         busyInputOwner?: unknown;
         disclosureViewer?: unknown;
       };
-      assert.ok(internals.busyInputOwner ?? internals.disclosureViewer, "the current request must retain one input owner");
-      assert.equal(fixture.input.isRaw, true);
-      assert.match(
-        terminalState(fixture.terminal).composer.placeholder,
-        /Replacement request/u,
+      assert.ok(
+        internals.busyInputOwner ?? internals.disclosureViewer,
+        "the current request must retain one input owner",
       );
+      assert.equal(fixture.input.isRaw, true);
+      assert.match(terminalState(fixture.terminal).composer.placeholder, /Replacement request/u);
     } finally {
       fixture.close();
     }

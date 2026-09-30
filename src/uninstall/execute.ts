@@ -25,16 +25,32 @@ export async function activeOwners(plan: UninstallPlan, confirmed: readonly stri
       try {
         db = new Database(dbPath, { fileMustExist: true, readOnly: true });
         const table = db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='thread_leases'");
-        const hasIdentity = table && db.all("PRAGMA table_info(thread_leases)").some((column: { name: string }) => column.name === "owner_process_identity");
-        if (table) for (const row of db.all(`SELECT owner_pid, owner_hostname, ${hasIdentity ? "owner_process_identity" : "NULL AS owner_process_identity"} FROM thread_leases`)) {
-          if (ownerState({ pid: row.owner_pid, hostname: row.owner_hostname,
-            processIdentity: row.owner_process_identity ? JSON.parse(row.owner_process_identity) : undefined }) !== "inactive") active.push("Thread PID " + row.owner_pid);
-        }
+        const hasIdentity =
+          table &&
+          db
+            .all("PRAGMA table_info(thread_leases)")
+            .some((column: { name: string }) => column.name === "owner_process_identity");
+        if (table)
+          for (const row of db.all(
+            `SELECT owner_pid, owner_hostname, ${hasIdentity ? "owner_process_identity" : "NULL AS owner_process_identity"} FROM thread_leases`,
+          )) {
+            if (
+              ownerState({
+                pid: row.owner_pid,
+                hostname: row.owner_hostname,
+                processIdentity: row.owner_process_identity ? JSON.parse(row.owner_process_identity) : undefined,
+              }) !== "inactive"
+            )
+              active.push("Thread PID " + row.owner_pid);
+          }
       } catch {
         if (!confirmed.includes("corrupt-store:" + dbPath))
-          active.push("Cannot verify thread leases in " + dbPath + "; close all sessions before confirming full uninstall.");
+          active.push(
+            "Cannot verify thread leases in " + dbPath + "; close all sessions before confirming full uninstall.",
+          );
+      } finally {
+        db?.close();
       }
-      finally { db?.close(); }
     }
     for (const workspace of await children(path.join(data, "command-leases"))) {
       for (const name of await children(path.join(data, "command-leases", workspace))) {
@@ -56,19 +72,36 @@ export interface ExecuteOptions {
 export async function executeUninstall(plan: UninstallPlan, options: ExecuteOptions = {}): Promise<void> {
   if (plan.blockers.length) throw new Error("Uninstall blocked:\n" + plan.blockers.join("\n"));
   const confirmations = new Set(options.confirmations ?? []);
-  for (const item of plan.actions) if (item.confirmation && !confirmations.has(item.confirmation))
-    throw new Error("Removal plan was not fully confirmed for " + item.target + "; confirm full uninstall before executing it.");
+  for (const item of plan.actions)
+    if (item.confirmation && !confirmations.has(item.confirmation))
+      throw new Error(
+        "Removal plan was not fully confirmed for " + item.target + "; confirm full uninstall before executing it.",
+      );
   const log = options.log ?? (() => undefined);
   const lockPath = maintenanceLock(plan.home);
   const statePath = path.join(plan.home, ".easy-code-uninstall-state.json");
-  assertPlainAncestors(lockPath); assertPlainAncestors(statePath);
+  assertPlainAncestors(lockPath);
+  assertPlainAncestors(statePath);
   const token = randomUUID();
   // A stale lock is never silently erased based on an unreliable PID match.
-  const lock = await open(lockPath, "wx", 0o600).catch(() => { throw new Error("Another uninstall or an unfinished uninstall lock exists: " + lockPath); });
+  const lock = await open(lockPath, "wx", 0o600).catch(() => {
+    throw new Error("Another uninstall or an unfinished uninstall lock exists: " + lockPath);
+  });
   const completed: string[] = [];
-  const state = { product: "easy-code-agent", version: 2, token,
-    resources: [...plan.resources, ...(["data", "config", "cache"] as const).flatMap(kind => plan.roots[kind].map(value => ({ kind, path: value })))],
-    completed, failed: "", failures: [] as Array<{ id: string; reason: string }> };
+  const state = {
+    product: "easy-code-agent",
+    version: 2,
+    token,
+    resources: [
+      ...plan.resources,
+      ...(["data", "config", "cache"] as const).flatMap((kind) =>
+        plan.roots[kind].map((value) => ({ kind, path: value })),
+      ),
+    ],
+    completed,
+    failed: "",
+    failures: [] as Array<{ id: string; reason: string }>,
+  };
   const persist = async () => {
     assertPlainAncestors(statePath);
     const temporary = statePath + "." + token + ".tmp";
@@ -76,7 +109,15 @@ export async function executeUninstall(plan: UninstallPlan, options: ExecuteOpti
     await rename(temporary, statePath);
   };
   try {
-    await lock.writeFile(JSON.stringify({ product: "easy-code-agent", pid: process.pid, hostname: os.hostname(), token, processIdentity: currentProcessIdentity() }));
+    await lock.writeFile(
+      JSON.stringify({
+        product: "easy-code-agent",
+        pid: process.pid,
+        hostname: os.hostname(),
+        token,
+        processIdentity: currentProcessIdentity(),
+      }),
+    );
     await lock.sync();
     await persist();
     const activity = options.activity ?? (() => activeOwners(plan, options.confirmations));
@@ -84,13 +125,17 @@ export async function executeUninstall(plan: UninstallPlan, options: ExecuteOpti
     let owners = await activity();
     if (owners.length) log("Requesting running EASY CODE sessions to stop; waiting for command/child cleanup.");
     while (owners.length && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 250));
       owners = await activity();
     }
-    if (owners.length) throw new Error("Close these active/unknown sessions before uninstalling:\n" + owners.join("\n"));
-    const known = new Set(plan.resources.map(resource => JSON.stringify(resource)));
+    if (owners.length)
+      throw new Error("Close these active/unknown sessions before uninstalling:\n" + owners.join("\n"));
+    const known = new Set(plan.resources.map((resource) => JSON.stringify(resource)));
     for (const resource of readOwnedResources(plan.home)) {
-      if (!known.has(JSON.stringify(resource))) throw new Error("New resources were registered after preview. Run uninstall again to review the updated inventory.");
+      if (!known.has(JSON.stringify(resource)))
+        throw new Error(
+          "New resources were registered after preview. Run uninstall again to review the updated inventory.",
+        );
     }
     for (const item of [...plan.actions].sort((a, b) => a.phase - b.phase)) {
       // Phase 60 begins data deletion. Keep recovery records, configuration and
@@ -98,14 +143,26 @@ export async function executeUninstall(plan: UninstallPlan, options: ExecuteOpti
       if (state.failures.length && item.phase >= 60) continue;
       if (options.onAction) options.onAction(item);
       else log(item.description + ": " + item.target);
-      state.failed = item.id; await persist();
-      try { await item.execute(); completed.push(item.id); state.failed = ""; }
-      catch (error) { state.failures.push({ id: item.id, reason: String(error).slice(0, 1600) }); log(`Pending: ${item.description}: ${String(error).slice(0, 800)}`); }
+      state.failed = item.id;
+      await persist();
+      try {
+        await item.execute();
+        completed.push(item.id);
+        state.failed = "";
+      } catch (error) {
+        state.failures.push({ id: item.id, reason: String(error).slice(0, 1600) });
+        log(`Pending: ${item.description}: ${String(error).slice(0, 800)}`);
+      }
       await persist();
     }
-    if (state.failures.length) throw new Error(`Uninstall has ${state.failures.length} pending step(s); recovery data and CLI preserved:\n${state.failures.map(item => item.reason).join("\n")}`);
+    if (state.failures.length)
+      throw new Error(
+        `Uninstall has ${state.failures.length} pending step(s); recovery data and CLI preserved:\n${state.failures.map((item) => item.reason).join("\n")}`,
+      );
     await unlink(statePath);
-    log("Uninstall completed. Deleted data is not recoverable without a backup; user projects and shared software were preserved.");
+    log(
+      "Uninstall completed. Deleted data is not recoverable without a backup; user projects and shared software were preserved.",
+    );
   } catch (error) {
     log("Uninstall incomplete; remaining work recorded in " + statePath);
     throw error;

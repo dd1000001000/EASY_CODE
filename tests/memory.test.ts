@@ -54,12 +54,14 @@ describe("model-managed long-term memory", () => {
 
       const duplicate = manager.applyModelMutations({
         ...mutationContext({ turnId: "turn_b" }),
-        mutations: [{
-          action: "remember",
-          category: "convention",
-          content: "All TypeScript modules use strict compiler settings.",
-          reason: "The same convention was confirmed again by the user.",
-        }],
+        mutations: [
+          {
+            action: "remember",
+            category: "convention",
+            content: "All TypeScript modules use strict compiler settings.",
+            reason: "The same convention was confirmed again by the user.",
+          },
+        ],
       });
       assert.equal(duplicate.applied, 0);
       assert.deepEqual(duplicate.memoryIds, []);
@@ -70,9 +72,7 @@ describe("model-managed long-term memory", () => {
       };
       assert.deepEqual(
         evidence.history?.map(({ threadId, turnId, action }) => ({ threadId, turnId, action })),
-        [
-          { threadId: "thread_a", turnId: "turn_a", action: "remember" },
-        ],
+        [{ threadId: "thread_a", turnId: "turn_a", action: "remember" }],
       );
     } finally {
       storage.close();
@@ -114,10 +114,7 @@ describe("model-managed long-term memory", () => {
         },
       });
 
-      const semantic = await hybridManager.searchHybrid(
-        "workspace_a",
-        "release without downtime",
-      );
+      const semantic = await hybridManager.searchHybrid("workspace_a", "release without downtime");
       assert.equal(semantic[0]?.id, deploymentId);
       // The authoritative status filter is applied after vector retrieval.
       assert.equal(vectorOptions?.includeInactive, true);
@@ -135,10 +132,7 @@ describe("model-managed long-term memory", () => {
           throw new Error("diagnostic callback failure");
         },
       });
-      const lexical = await fallbackManager.searchHybrid(
-        "workspace_a",
-        "documentation spelling",
-      );
+      const lexical = await fallbackManager.searchHybrid("workspace_a", "documentation spelling");
       assert.match(lexical[0]?.content ?? "", /documentation/iu);
       assert.equal(reportedError, true);
     } finally {
@@ -155,14 +149,30 @@ describe("model-managed long-term memory", () => {
       const seeded = seedManager.applyModelMutations({
         ...mutationContext(),
         mutations: [
-          { action: "remember", category: "convention",
-            content: "Strict TypeScript compilation is required for production.", reason: "Existing convention" },
-          { action: "remember", category: "environment",
-            content: "Strict TypeScript compilation is available in production.", reason: "Environment fact" },
-          { action: "remember", category: "convention",
-            content: "Production requires strict TypeScript compilation and linting.", reason: "New candidate" },
-          { action: "remember", category: "convention",
-            content: "Strict TypeScript compilation was previously required.", reason: "Inactive history" },
+          {
+            action: "remember",
+            category: "convention",
+            content: "Strict TypeScript compilation is required for production.",
+            reason: "Existing convention",
+          },
+          {
+            action: "remember",
+            category: "environment",
+            content: "Strict TypeScript compilation is available in production.",
+            reason: "Environment fact",
+          },
+          {
+            action: "remember",
+            category: "convention",
+            content: "Production requires strict TypeScript compilation and linting.",
+            reason: "New candidate",
+          },
+          {
+            action: "remember",
+            category: "convention",
+            content: "Strict TypeScript compilation was previously required.",
+            reason: "Inactive history",
+          },
         ],
       });
       const [expectedId, wrongCategoryId, excludedId, inactiveId] = seeded.memoryIds;
@@ -196,7 +206,10 @@ describe("model-managed long-term memory", () => {
       assert.equal(vectorOptions?.category, "convention");
       assert.equal(vectorOptions?.status, "active");
       assert.equal(vectorOptions?.excludeMemoryId, excludedId);
-      assert.deepEqual(found.map((memory) => memory.id), [expectedId]);
+      assert.deepEqual(
+        found.map((memory) => memory.id),
+        [expectedId],
+      );
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -213,20 +226,20 @@ describe("model-managed long-term memory", () => {
         revision: "revision-one",
         pooling: "masked-mean",
         version: 1,
-        embed: async (texts) => texts.map((text) =>
-          Float32Array.from(
-            /blue-green|downtime/iu.test(text) ? [1, 0] : [0, 1],
-          )),
+        embed: async (texts) =>
+          texts.map((text) => Float32Array.from(/blue-green|downtime/iu.test(text) ? [1, 0] : [0, 1])),
       });
       const manager = new MemoryManager(storage, { vectorIndex });
       const committed = await manager.applyModelMutationsWithEmbeddings({
         ...mutationContext(),
-        mutations: [{
-          action: "remember",
-          category: "architecture",
-          content: "Production deployments use blue-green environments.",
-          reason: "The deployment implementation verifies this architecture.",
-        }],
+        mutations: [
+          {
+            action: "remember",
+            category: "architecture",
+            content: "Production deployments use blue-green environments.",
+            reason: "The deployment implementation verifies this architecture.",
+          },
+        ],
       });
 
       const stored = storage.db
@@ -252,84 +265,98 @@ describe("model-managed long-term memory", () => {
     try {
       const manager = new MemoryManager(storage);
       assert.throws(
-        () => manager.applyModelMutations({
-          ...mutationContext(),
-          mutations: [
-            {
-              action: "remember",
-              category: "preference",
-              content: "The user prefers concise terminal status updates.",
-              reason: "The user explicitly stated this durable preference.",
-            },
-            {
-              action: "remember",
-              category: "environment",
-              content: "The deployment uses api_key=sk-abcdefghijklmnop.",
-              reason: "A credential appeared in command output.",
-            },
-          ],
-        }),
+        () =>
+          manager.applyModelMutations({
+            ...mutationContext(),
+            mutations: [
+              {
+                action: "remember",
+                category: "preference",
+                content: "The user prefers concise terminal status updates.",
+                reason: "The user explicitly stated this durable preference.",
+              },
+              {
+                action: "remember",
+                category: "environment",
+                content: "The deployment uses api_key=sk-abcdefghijklmnop.",
+                reason: "A credential appeared in command output.",
+              },
+            ],
+          }),
         /sensitive information/iu,
       );
       assert.equal(manager.list("workspace_a").length, 0);
 
       const plannedWithoutCue = manager.applyModelMutations({
         ...mutationContext({ workspaceId: "workspace_plan_no_cue", outcome: "planned" }),
-        mutations: [{ action: "remember", category: "preference",
-          content: "The user prefers npm for dependency installation.", reason: "Model-selected memory." }],
+        mutations: [
+          {
+            action: "remember",
+            category: "preference",
+            content: "The user prefers npm for dependency installation.",
+            reason: "Model-selected memory.",
+          },
+        ],
       });
       assert.equal(plannedWithoutCue.applied, 1);
 
       const plannedPreference = manager.applyModelMutations({
         ...mutationContext({ workspaceId: "workspace_plan_preference", outcome: "planned" }),
-        mutations: [{
-          action: "remember",
-          category: "preference",
-          content: "The user prefers npm for dependency installation.",
-          reason: "The current user message explicitly establishes this preference.",
-        }],
+        mutations: [
+          {
+            action: "remember",
+            category: "preference",
+            content: "The user prefers npm for dependency installation.",
+            reason: "The current user message explicitly establishes this preference.",
+          },
+        ],
       });
       assert.equal(plannedPreference.applied, 1);
       assert.equal(manager.list("workspace_plan_preference").length, 1);
 
       const plannedArchitecture = manager.applyModelMutations({
-          ...mutationContext({ workspaceId: "workspace_plan", outcome: "planned" }),
-          mutations: [
-            {
-              action: "remember",
-              category: "preference",
-              content: "The user prefers npm for dependency installation.",
-              reason: "The current request explicitly states this preference.",
-            },
-            {
-              action: "remember",
-              category: "architecture",
-              content: "The application entry point is located in src/index.ts.",
-              reason: "The plan proposes this repository structure.",
-            },
-          ],
-        });
+        ...mutationContext({ workspaceId: "workspace_plan", outcome: "planned" }),
+        mutations: [
+          {
+            action: "remember",
+            category: "preference",
+            content: "The user prefers npm for dependency installation.",
+            reason: "The current request explicitly states this preference.",
+          },
+          {
+            action: "remember",
+            category: "architecture",
+            content: "The application entry point is located in src/index.ts.",
+            reason: "The plan proposes this repository structure.",
+          },
+        ],
+      });
       assert.equal(plannedArchitecture.applied, 2);
       assert.equal(manager.list("workspace_plan").length, 2);
 
       const seeded = manager.applyModelMutations({
         ...mutationContext(),
-        mutations: [{
-          action: "remember",
-          category: "decision",
-          content: "The project uses SQLite for durable local metadata.",
-          reason: "The implementation and schema verify this project decision.",
-        }],
+        mutations: [
+          {
+            action: "remember",
+            category: "decision",
+            content: "The project uses SQLite for durable local metadata.",
+            reason: "The implementation and schema verify this project decision.",
+          },
+        ],
       });
       assert.throws(
-        () => manager.applyModelMutations({
-          ...mutationContext({ workspaceId: "workspace_b", turnId: "turn_b" }),
-          mutations: [{
-            action: "forget",
-            memoryId: seeded.memoryIds[0]!,
-            reason: "Attempt to modify a memory from another workspace.",
-          }],
-        }),
+        () =>
+          manager.applyModelMutations({
+            ...mutationContext({ workspaceId: "workspace_b", turnId: "turn_b" }),
+            mutations: [
+              {
+                action: "forget",
+                memoryId: seeded.memoryIds[0]!,
+                reason: "Attempt to modify a memory from another workspace.",
+              },
+            ],
+          }),
         /not found in this workspace/iu,
       );
       assert.equal(manager.get("workspace_a", seeded.memoryIds[0]!)?.status, "active");
@@ -346,23 +373,27 @@ describe("model-managed long-term memory", () => {
       const manager = new MemoryManager(storage);
       const initial = manager.applyModelMutations({
         ...mutationContext(),
-        mutations: [{
-          action: "remember",
-          category: "environment",
-          content: "The minimum supported runtime is Node.js 16.20.",
-          reason: "The package metadata verifies the minimum runtime.",
-        }],
+        mutations: [
+          {
+            action: "remember",
+            category: "environment",
+            content: "The minimum supported runtime is Node.js 16.20.",
+            reason: "The package metadata verifies the minimum runtime.",
+          },
+        ],
       });
       const originalId = initial.memoryIds[0]!;
       const revised = manager.applyModelMutations({
         ...mutationContext({ turnId: "turn_revision" }),
-        mutations: [{
-          action: "revise",
-          memoryId: originalId,
-          category: "environment",
-          content: "The minimum supported runtime is Node.js 18.0.",
-          reason: "The package engine requirement was deliberately raised.",
-        }],
+        mutations: [
+          {
+            action: "revise",
+            memoryId: originalId,
+            category: "environment",
+            content: "The minimum supported runtime is Node.js 18.0.",
+            reason: "The package engine requirement was deliberately raised.",
+          },
+        ],
       });
       const replacementId = revised.memoryIds[0]!;
 
@@ -370,18 +401,17 @@ describe("model-managed long-term memory", () => {
       assert.equal(manager.get("workspace_a", originalId)?.status, "superseded");
       assert.equal(manager.get("workspace_a", replacementId)?.status, "active");
       assert.equal(manager.search("workspace_a", "16.20").length, 0);
-      assert.equal(
-        manager.search("workspace_a", "16.20", { includeInactive: true })[0]?.id,
-        originalId,
-      );
+      assert.equal(manager.search("workspace_a", "16.20", { includeInactive: true })[0]?.id, originalId);
 
       const forgotten = manager.applyModelMutations({
         ...mutationContext({ turnId: "turn_forget" }),
-        mutations: [{
-          action: "forget",
-          memoryId: replacementId,
-          reason: "The runtime requirement no longer applies to this workspace.",
-        }],
+        mutations: [
+          {
+            action: "forget",
+            memoryId: replacementId,
+            reason: "The runtime requirement no longer applies to this workspace.",
+          },
+        ],
       });
       assert.equal(forgotten.applied, 1);
       assert.equal(manager.get("workspace_a", replacementId)?.status, "expired");
@@ -390,12 +420,14 @@ describe("model-managed long-term memory", () => {
 
       const auditSeed = manager.applyModelMutations({
         ...mutationContext({ workspaceId: "workspace_audit", turnId: "turn_seed" }),
-        mutations: [{
-          action: "remember",
-          category: "convention",
-          content: "Repository documentation uses American English spelling.",
-          reason: "The user established the documentation convention.",
-        }],
+        mutations: [
+          {
+            action: "remember",
+            category: "convention",
+            content: "Repository documentation uses American English spelling.",
+            reason: "The user established the documentation convention.",
+          },
+        ],
       });
       for (let index = 0; index < 30; index += 1) {
         manager.applyModelMutations({
@@ -403,13 +435,15 @@ describe("model-managed long-term memory", () => {
             workspaceId: "workspace_audit",
             turnId: `turn_confirm_${index}`,
           }),
-          mutations: [{
-            action: "revise",
-            memoryId: auditSeed.memoryIds[0]!,
-            category: "convention",
-            content: "Repository documentation uses American English spelling.",
-            reason: `The convention was reconfirmed during completed turn ${index}.`,
-          }],
+          mutations: [
+            {
+              action: "revise",
+              memoryId: auditSeed.memoryIds[0]!,
+              category: "convention",
+              content: "Repository documentation uses American English spelling.",
+              reason: `The convention was reconfirmed during completed turn ${index}.`,
+            },
+          ],
         });
       }
       const audited = manager.get("workspace_audit", auditSeed.memoryIds[0]!);

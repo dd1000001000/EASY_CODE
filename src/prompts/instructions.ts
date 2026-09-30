@@ -66,9 +66,7 @@ export async function loadEasyCodeInstructions(
   // the chain exceeds its context allowance. The final output remains root-to-cwd.
   const priority = [
     ...discovered.filter((item) => item.source === "user"),
-    ...discovered
-      .filter((item) => item.source === "workspace")
-      .sort((left, right) => right.depth - left.depth),
+    ...discovered.filter((item) => item.source === "workspace").sort((left, right) => right.depth - left.depth),
   ];
   const kept = new Map<number, EasyCodeInstruction>();
   let remaining = maxTotalChars;
@@ -85,21 +83,13 @@ export async function loadEasyCodeInstructions(
     remaining -= content.length;
   }
 
-  return [...kept.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([, instruction]) => instruction);
+  return [...kept.entries()].sort(([left], [right]) => left - right).map(([, instruction]) => instruction);
 }
 
-function workspaceCandidates(
-  workspaceRoot: string,
-  cwd: string,
-): InstructionCandidate[] {
+function workspaceCandidates(workspaceRoot: string, cwd: string): InstructionCandidate[] {
   const relative = path.relative(workspaceRoot, cwd);
   const cwdIsInside =
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative));
+    relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
   const directories = [workspaceRoot];
   if (cwdIsInside && relative) {
     let current = workspaceRoot;
@@ -167,20 +157,10 @@ async function readInstruction(
   }
 }
 
-function isWithin(
-  root: string,
-  candidate: string,
-  platform: NodeJS.Platform,
-): boolean {
-  const normalize = (value: string): string =>
-    platform === "win32" ? value.toLowerCase() : value;
+function isWithin(root: string, candidate: string, platform: NodeJS.Platform): boolean {
+  const normalize = (value: string): string => (platform === "win32" ? value.toLowerCase() : value);
   const relative = path.relative(normalize(root), normalize(candidate));
-  return (
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative))
-  );
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
 function normalizeIdentity(value: string, platform: NodeJS.Platform): string {

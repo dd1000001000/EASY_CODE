@@ -8,11 +8,11 @@ import { defaultRuntimeLimits, runtimeLimitsSchema } from "../src/config/runtime
 import { ContextManager, contextPressureLevel } from "../src/context/manager.js";
 import { tokenBudget, requestTokens } from "../src/context/token-budget.js";
 import { effectiveContextWindow } from "../src/models/catalog.js";
-import { CompactContextTool } from "../src/tools/compact-context.js";
+import { createSemanticSummarySchema } from "../src/context/semantic-compaction.js";
 import { createManageSubagentsInputSchema } from "../src/tools/manage-subagents.js";
 import { createSubmitTaskResultInputSchema } from "../src/tools/submit-task-result.js";
 import { createRecallContextSchema } from "../src/tools/context-read.js";
-import { runCompactionTransaction, foldCompactionControl } from "../src/context/compaction-transaction.js";
+import { runCompactionTransaction } from "../src/context/compaction-transaction.js";
 import { foldMemoryGate } from "../src/context/pressure-recovery.js";
 import { toolResultForModel } from "../src/tools/errors.js";
 import { OutputCollector } from "../src/command/output-stream.js";
@@ -26,22 +26,49 @@ import { recallThreadContext } from "../src/context/recall.js";
 import type { ChatMessage, SessionState, ToolContext } from "../src/core/types.js";
 import { baseSessionState } from "./session-state.js";
 
-const state = (): SessionState => ({ ...baseSessionState(), threadId: "thread_large", workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "mock",
-  thinkingEffort: "none", messages: [{ role: "user", content: "Fix the parser; preserve all user requirements." }], constraints: [],
-  filesRead: new Map(), changes: [], commands: [], commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
-  createdAt: "now", updatedAt: "now" });
+const state = (): SessionState => ({
+  ...baseSessionState(),
+  threadId: "thread_large",
+  workspaceRoot: process.cwd(),
+  mode: "code",
+  provider: "glm",
+  model: "mock",
+  thinkingEffort: "none",
+  messages: [{ role: "user", content: "Fix the parser; preserve all user requirements." }],
+  constraints: [],
+  filesRead: new Map(),
+  changes: [],
+  commands: [],
+  commandApprovalPrefixes: [],
+  workingSummary: "",
+  compactedMessageCount: 0,
+  createdAt: "now",
+  updatedAt: "now",
+});
 
 describe("configurable 1M context", () => {
   it("uses a 1M window, separate reservations, and exact configured pressure boundaries", () => {
     const limits = defaultRuntimeLimits();
     assert.equal(limits.maxContextTokens, 1_000_000);
-    assert.deepEqual(tokenBudget(limits.maxContextTokens, limits), { window: 1_000_000, outputReserve: 32768,
-      toolReserve: 65536, safetyReserve: 50000, inputCapacity: 851696 });
+    assert.deepEqual(tokenBudget(limits.maxContextTokens, limits), {
+      window: 1_000_000,
+      outputReserve: 32768,
+      toolReserve: 65536,
+      safetyReserve: 50000,
+      inputCapacity: 851696,
+    });
     assert.equal(tokenBudget(limits.maxContextTokens, limits, "low").outputReserve, 32768);
     assert.equal(tokenBudget(limits.maxContextTokens, limits, "medium").outputReserve, 65536);
     assert.equal(tokenBudget(limits.maxContextTokens, limits, "high").outputReserve, 131072);
-    for (const [value, expected] of [[0.79999, "normal"], [0.8, "suggest"], [0.89999, "suggest"],
-      [0.9, "require"], [0.94999, "require"], [0.95, "force"], [1, "force"]] as const)
+    for (const [value, expected] of [
+      [0.79999, "normal"],
+      [0.8, "suggest"],
+      [0.89999, "suggest"],
+      [0.9, "require"],
+      [0.94999, "require"],
+      [0.95, "force"],
+      [1, "force"],
+    ] as const)
       assert.equal(contextPressureLevel(value, limits), expected);
     assert.equal(contextPressureLevel(0.7, { ...limits, contextReferenceTriggerRatio: 0.7 }), "suggest");
     assert.equal(effectiveContextWindow("glm", "glm-5.3-flash", 2_000_000), 1_000_000);
@@ -52,23 +79,49 @@ describe("configurable 1M context", () => {
   });
 
   it("changes real schema and prose budgets, not just defaults", () => {
-    const limits = { ...defaultRuntimeLimits(), contextSemanticFieldMaxChars: 6000,
-      subagentInstructionsMaxChars: 16000, subagentSummaryMaxChars: 18000, evidenceRecallMaxChars: 40000 };
-    const schema = new CompactContextTool(limits).definition.function.parameters as any;
-    assert.equal(schema.properties.currentWork.maxLength, 6000);
-    assert.equal(createManageSubagentsInputSchema(limits).parse({ action: "spawn", taskId: "task_a", instructions: "a".repeat(15000) }).action, "spawn");
+    const limits = {
+      ...defaultRuntimeLimits(),
+      contextSemanticFieldMaxChars: 6000,
+      subagentInstructionsMaxChars: 16000,
+      subagentSummaryMaxChars: 18000,
+      evidenceRecallMaxChars: 40000,
+    };
+    const schema = createSemanticSummarySchema(limits.contextSemanticFieldMaxChars);
+    assert.equal(schema.shape.currentWork.safeParse("a".repeat(6000)).success, true);
+    assert.equal(schema.shape.currentWork.safeParse("a".repeat(6001)).success, false);
+    assert.equal(
+      createManageSubagentsInputSchema(limits).parse({
+        action: "spawn",
+        taskId: "task_a",
+        instructions: "a".repeat(15000),
+      }).action,
+      "spawn",
+    );
     const oversizedSpawn = createManageSubagentsInputSchema(limits).parse({
-      action: "spawn", taskId: "task_a", instructions: "a".repeat(16001),
+      action: "spawn",
+      taskId: "task_a",
+      instructions: "a".repeat(16001),
     });
     assert.equal(oversizedSpawn.action, "spawn");
     if (oversizedSpawn.action === "spawn") assert.equal(oversizedSpawn.instructions.length, 16000);
-    assert.equal(createSubmitTaskResultInputSchema(limits).parse({ outcome: "completed", summary: "s".repeat(17000), evidence: ["verified"] }).summary.length, 17000);
+    assert.equal(
+      createSubmitTaskResultInputSchema(limits).parse({
+        outcome: "completed",
+        summary: "s".repeat(17000),
+        evidence: ["verified"],
+      }).summary.length,
+      17000,
+    );
     assert.equal(createRecallContextSchema(limits).parse({ evidenceId: "ref", limit: 39000 }).limit, 39000);
   });
 
   it("estimates append-only history incrementally but detects mutation of nested arguments and thinking", () => {
-    const message: ChatMessage = { role: "assistant", content: "text", reasoning_content: "reason", tool_calls: [
-      { id: "call", type: "function", function: { name: "run_command", arguments: "{}" } }] };
+    const message: ChatMessage = {
+      role: "assistant",
+      content: "text",
+      reasoning_content: "reason",
+      tool_calls: [{ id: "call", type: "function", function: { name: "run_command", arguments: "{}" } }],
+    };
     const before = requestTokens([message]);
     assert.equal(requestTokens([message]), before);
     message.tool_calls![0]!.function.arguments = JSON.stringify({ program: "python", args: ["x".repeat(1000)] });
@@ -79,34 +132,91 @@ describe("configurable 1M context", () => {
   });
 
   it("does not constrain read tools by the old character window in Token mode", async () => {
-    const s = state(); s.messages.push({ role: "assistant", content: "old evidence ".repeat(25000) });
-    let calls = 0, observed: ToolContext | undefined;
+    const s = state();
+    s.messages.push({ role: "assistant", content: "old evidence ".repeat(25000) });
+    let calls = 0,
+      observed: ToolContext | undefined;
     const limits = defaultRuntimeLimits();
-    const runtime = new AgentRuntime({ limits, contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "", searchMemories: async () => [],
-      appendEvent: async () => undefined, requestApproval: async () => false,
-      toolCatalog: snapshotToolSet([{ name: "read_file", mutating: false, definition: { type: "function", function: { name: "read_file", description: "Read", parameters: {} } },
-        execute: async (_input, context) => { observed = context; return { ok: true, summary: "read", data: { content: "source" } }; } }]),
-      provider: { name: "glm", model: "mock", complete: async () => ({ message: ++calls === 1 ? { role: "assistant", content: null,
-        tool_calls: [{ id: "read", type: "function", function: { name: "read_file", arguments: "{}" } }] } : { role: "assistant", content: "Source examined." } }) } });
-    await runtime.run(s, "Read source", { maxSteps: 3, maxContextChars: 250000, maxContextTokens: 1_000_000,
-      maxOutputChars: 64000, commandTimeoutMs: 1000, approvalPolicy: "never" });
-    assert.ok(observed); assert.equal(observed.resultCharBudget, undefined);
+    const runtime = new AgentRuntime({
+      limits,
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      toolCatalog: snapshotToolSet([
+        {
+          name: "read_file",
+          mutating: false,
+          definition: { type: "function", function: { name: "read_file", description: "Read", parameters: {} } },
+          execute: async (_input, context) => {
+            observed = context;
+            return { ok: true, summary: "read", data: { content: "source" } };
+          },
+        },
+      ]),
+      provider: {
+        name: "glm",
+        model: "mock",
+        complete: async () => ({
+          message:
+            ++calls === 1
+              ? {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [{ id: "read", type: "function", function: { name: "read_file", arguments: "{}" } }],
+                }
+              : { role: "assistant", content: "Source examined." },
+        }),
+      },
+    });
+    await runtime.run(s, "Read source", {
+      maxSteps: 3,
+      maxContextChars: 250000,
+      maxContextTokens: 1_000_000,
+      maxOutputChars: 64000,
+      commandTimeoutMs: 1000,
+      approvalPolicy: "never",
+    });
+    assert.ok(observed);
+    assert.equal(observed.resultCharBudget, undefined);
     assert.ok(observed.resultTokenBudget! > 100000);
   });
 
   it("summarizes a minimum old prefix instead of everything before the last five exchanges", async () => {
     const s = state();
-    s.messages.push(...Array.from({ length: 24 }, (_, i): ChatMessage => ({ role: "assistant", content: `${i}:` + "a".repeat(12000) })));
-    const limits = { ...defaultRuntimeLimits(), maxContextTokens: 100000,
+    s.messages.push(
+      ...Array.from({ length: 24 }, (_, i): ChatMessage => ({
+        role: "assistant",
+        content: `${i}:` + "a".repeat(12000),
+      })),
+    );
+    const limits = {
+      ...defaultRuntimeLimits(),
+      maxContextTokens: 100000,
       maxResponseTokens: { none: 2048, low: 2048, medium: 4096, high: 8192 },
-      contextToolReserveTokens: 1024, contextSummaryMaxTokens: 2048 };
-    const manager = new ContextManager(); manager.configureTokenBudget(limits.maxContextTokens, limits);
+      contextToolReserveTokens: 1024,
+      contextSummaryMaxTokens: 2048,
+    };
+    const manager = new ContextManager();
+    manager.configureTokenBudget(limits.maxContextTokens, limits);
     const original = s.messages.length;
-    const result = await runCompactionTransaction({ state: s, manager, limits, maxContextChars: 250000,
-      turnId: "turn", required: true, maxRequests: 3, tool: new CompactContextTool(limits).definition,
-      nextRequest: { systemPrompt: "system", runtimeContext: "", tools: [] }, append: async () => undefined,
-      complete: async () => ({ role: "assistant", content: "<analysis>scratch</analysis><summary>Investigation remains unverified. Check the parser.</summary>" }) });
+    const result = await runCompactionTransaction({
+      state: s,
+      manager,
+      limits,
+      maxContextChars: 250000,
+      turnId: "turn",
+      required: true,
+      maxRequests: 3,
+      nextRequest: { systemPrompt: "system", runtimeContext: "", tools: [] },
+      append: async () => undefined,
+      complete: async () => ({
+        role: "assistant",
+        content: "<analysis>scratch</analysis><summary>Investigation remains unverified. Check the parser.</summary>",
+      }),
+    });
     assert.equal(result.committed, true);
     assert.ok(s.compactedMessageCount > 0);
     assert.ok(original - s.compactedMessageCount > 5);
@@ -114,12 +224,41 @@ describe("configurable 1M context", () => {
   });
 
   it("preserves useful command diagnostics and complete file lines under final JSON clipping", () => {
-    const result = JSON.parse(toolResultForModel({ ok: false, summary: "failed", evidenceId: "evidence_" + "a".repeat(64), data: {
-      commandId: "command", status: "exited", exitCode: 1, stdout: { text: "HEAD\n" + "line\n".repeat(5000) + "TAIL", totalBytes: 25000 }, stderr: { text: "error" } } }, 2000));
+    const result = JSON.parse(
+      toolResultForModel(
+        {
+          ok: false,
+          summary: "failed",
+          evidenceId: "evidence_" + "a".repeat(64),
+          data: {
+            commandId: "command",
+            status: "exited",
+            exitCode: 1,
+            stdout: { text: "HEAD\n" + "line\n".repeat(5000) + "TAIL", totalBytes: 25000 },
+            stderr: { text: "error" },
+          },
+        },
+        2000,
+      ),
+    );
     assert.equal(result.data.exitCode, 1);
-    assert.match(result.data.stdout.text, /HEAD/); assert.match(result.data.stdout.text, /TAIL/);
-    const read = JSON.parse(toolResultForModel({ ok: true, summary: "read", data: { path: "f", startLine: 10, endLine: 509,
-      content: Array.from({ length: 500 }, (_, i) => `line ${i} complete`).join("\n") } }, 1000));
+    assert.match(result.data.stdout.text, /HEAD/);
+    assert.match(result.data.stdout.text, /TAIL/);
+    const read = JSON.parse(
+      toolResultForModel(
+        {
+          ok: true,
+          summary: "read",
+          data: {
+            path: "f",
+            startLine: 10,
+            endLine: 509,
+            content: Array.from({ length: 500 }, (_, i) => `line ${i} complete`).join("\n"),
+          },
+        },
+        1000,
+      ),
+    );
     assert.ok(read.data.content.endsWith("complete"));
     assert.equal(read.data.nextStartLine, read.data.endLine + 1);
     assert.ok(JSON.stringify(read).length <= 1000);
@@ -128,21 +267,41 @@ describe("configurable 1M context", () => {
   it("reassesses pressure after referencing old results without buying an unnecessary summary", async () => {
     const s = state();
     s.messages = [{ role: "user", content: "Investigate without claiming verification." }];
-    for (let n = 0; n < 8; n++) s.messages.push(
-      { role: "assistant", content: null, reasoning_content: "r".repeat(6000), tool_calls: [{ id: `read_${n}`,
-        type: "function", function: { name: "read_file", arguments: "{}" } }] },
-      { role: "tool", name: "read_file", tool_call_id: `read_${n}`, content: "e".repeat(20000) });
+    for (let n = 0; n < 8; n++)
+      s.messages.push(
+        {
+          role: "assistant",
+          content: null,
+          reasoning_content: "r".repeat(6000),
+          tool_calls: [{ id: `read_${n}`, type: "function", function: { name: "read_file", arguments: "{}" } }],
+        },
+        { role: "tool", name: "read_file", tool_call_id: `read_${n}`, content: "e".repeat(20000) },
+      );
     const raw = JSON.stringify(s.messages);
-    const limits = defaultRuntimeLimits(), manager = new ContextManager();
+    const limits = defaultRuntimeLimits(),
+      manager = new ContextManager();
     manager.configureTokenBudget(100000, limits);
     let requests = 0;
-    const result = await runCompactionTransaction({ state: s, manager, limits, turnId: "reference_first", maxContextChars: 250000,
-      required: true, maxRequests: 3, nextRequest: { systemPrompt: "rules", runtimeContext: "", tools: [] },
-      append: async () => undefined, complete: async () => { requests++; throw new Error("Unnecessary summary"); } });
-    assert.equal(result.committed, true); assert.equal(requests, 0);
+    const result = await runCompactionTransaction({
+      state: s,
+      manager,
+      limits,
+      turnId: "reference_first",
+      maxContextChars: 250000,
+      required: true,
+      maxRequests: 3,
+      nextRequest: { systemPrompt: "rules", runtimeContext: "", tools: [] },
+      append: async () => undefined,
+      complete: async () => {
+        requests++;
+        throw new Error("Unnecessary summary");
+      },
+    });
+    assert.equal(result.committed, true);
+    assert.equal(requests, 0);
     assert.equal(s.compactedMessageCount, 0);
     assert.ok(s.pressureRecovery!.toolReferences.length > 0);
-    assert.ok(s.pressureRecovery!.toolReferences.every(index => index < 7));
+    assert.ok(s.pressureRecovery!.toolReferences.every((index) => index < 7));
     assert.equal(JSON.stringify(s.messages), raw);
   });
 
@@ -153,28 +312,36 @@ describe("configurable 1M context", () => {
       const limits = { ...defaultRuntimeLimits(), commandArchiveMaxBytes: 40000, commandThreadArchiveMaxBytes: 40000 };
       const evidence = new EvidenceStore(storage, limits);
       const archive = evidence.createCommandArchive("workspace", "thread", "command");
-      const collector = new OutputCollector(256, text => archive.push("stdout", text));
+      const collector = new OutputCollector(256, (text) => archive.push("stdout", text));
       collector.push("head".repeat(1000) + "MIDDLE_EVIDENCE" + "tail".repeat(1000));
       assert.doesNotMatch(collector.finish().text, /MIDDLE_EVIDENCE/);
       archive.finish();
       const id = archive.reference("stdout").evidenceId;
       assert.equal(createRecallContextSchema(limits).safeParse({ evidenceId: id, limit: 32000 }).success, true);
       const page = evidence.read("workspace", "thread", id, 3900, 500) as any;
-      assert.match(page.content, /MIDDLE_EVIDENCE/); assert.equal(page.complete, true);
+      assert.match(page.content, /MIDDLE_EVIDENCE/);
+      assert.equal(page.complete, true);
       assert.throws(() => evidence.read("workspace", "other", id, 0, 100));
       const large = evidence.createCommandArchive("workspace", "thread", "large");
-      large.push("stdout", "x".repeat(40000)); large.finish();
+      large.push("stdout", "x".repeat(40000));
+      large.finish();
       const clipped = evidence.read("workspace", "thread", large.reference("stdout").evidenceId, 0, 100) as any;
-      assert.equal(clipped.complete, false); assert.equal(clipped.sourceTruncated, true);
+      assert.equal(clipped.complete, false);
+      assert.equal(clipped.sourceTruncated, true);
       assert.ok(clipped.missingRange.end > clipped.missingRange.start);
       const unicode = evidence.createCommandArchive("workspace", "unicode", "unicode");
-      unicode.push("stdout", "a😀b"); unicode.finish();
+      unicode.push("stdout", "a😀b");
+      unicode.finish();
       const unicodeId = unicode.reference("stdout").evidenceId;
       const first = evidence.read("workspace", "unicode", unicodeId, 0, 2) as any;
-      assert.equal(first.content, "a"); assert.equal(first.nextOffset, 1);
+      assert.equal(first.content, "a");
+      assert.equal(first.nextOffset, 1);
       assert.equal((evidence.read("workspace", "unicode", unicodeId, first.nextOffset, 2) as any).content, "😀");
       assert.throws(() => evidence.read("workspace", "unicode", unicodeId, 2, 2), /Unicode/);
-    } finally { storage.close(); rmSync(directory, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("restores memory hysteresis without resetting Runtime counters", () => {
@@ -182,23 +349,51 @@ describe("configurable 1M context", () => {
     const storage = createStorage(directory);
     try {
       const store = new ThreadStore(storage);
-      const s = store.create({ threadId: "thread_gate", workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "mock", thinkingEffort: "none" });
+      const s = store.create({
+        threadId: "thread_gate",
+        workspaceRoot: process.cwd(),
+        mode: "code",
+        provider: "glm",
+        model: "mock",
+        thinkingEffort: "none",
+      });
       store.appendEvent(s.threadId, { type: "context.memory.gated", payload: { suppressed: true } });
       foldMemoryGate(s, { suppressed: true });
       assert.equal(store.recover(s.threadId).pressureRecovery?.optionalMemorySuppressed, true);
-      assert.throws(() => store.appendEvent(s.threadId, { type: "context.memory.gated", payload: { suppressed: "false" } }));
+      assert.throws(() =>
+        store.appendEvent(s.threadId, { type: "context.memory.gated", payload: { suppressed: "false" } }),
+      );
       assert.equal(store.recover(s.threadId).pressureRecovery?.optionalMemorySuppressed, true);
-    } finally { storage.close(); rmSync(directory, { recursive: true, force: true }); }
+    } finally {
+      storage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("keeps one reviewer report and makes its full content recallable", () => {
     const s = state();
-    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task",
-      snapshotId: "snapshot", requirementRevision: "req", reviewerThreadId: "reviewer_thread" });
+    foldReviewEvent(s, {
+      type: "started",
+      id: "r",
+      key: "k",
+      scope: "task",
+      snapshotId: "snapshot",
+      requirementRevision: "req",
+      reviewerThreadId: "reviewer_thread",
+    });
     foldReviewEvent(s, { type: "brief_ready", id: "r", text: "Main handoff" });
     foldReviewEvent(s, { type: "review_started", id: "r" });
-    foldReviewEvent(s, { type: "reported", id: "r", report: { verdict: "revise", conclusion: "Unverified",
-      nextAction: "Verify named IntFlag separately from unnamed composites", evidenceRefs: [], uncertainties: [] } });
+    foldReviewEvent(s, {
+      type: "reported",
+      id: "r",
+      report: {
+        verdict: "revise",
+        conclusion: "Unverified",
+        nextAction: "Verify named IntFlag separately from unnamed composites",
+        evidenceRefs: [],
+        uncertainties: [],
+      },
+    });
     foldReviewEvent(s, { type: "applied", id: "r", fresh: true });
     const handoff = s.reviewSessions![0]!.handoff!;
     assert.ok(estimatedTokens(handoff) < 10000);

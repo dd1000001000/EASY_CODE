@@ -22,8 +22,7 @@ const COMBINING_MARK = /^\p{Mark}$/u;
 const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
 const EMOJI_MODIFIER = /^\p{Emoji_Modifier}$/u;
 const REGIONAL_INDICATOR = /\p{Regional_Indicator}/u;
-const BIDI_OR_INVISIBLE_FORMAT =
-  /[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/u;
+const BIDI_OR_INVISIBLE_FORMAT = /[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/u;
 
 interface AnsiSequence {
   readonly end: number;
@@ -93,10 +92,7 @@ export function stripAnsi(value: string): string {
  * Newlines are retained, carriage returns become newlines, tabs become spaces,
  * cursor/OSC controls are removed, and only numeric SGR sequences may survive.
  */
-export function sanitizeTerminalText(
-  value: string,
-  options: SanitizeTerminalTextOptions = {},
-): string {
+export function sanitizeTerminalText(value: string, options: SanitizeTerminalTextOptions = {}): string {
   const allowSgr = options.allowSgr ?? true;
   const tabWidth = normalizeTabWidth(options.tabWidth);
   let result = "";
@@ -173,25 +169,17 @@ export function maxLineWidth(value: string): number {
  * Embedded newlines are represented by one space so no cursor controls leak
  * into a single-line status field.
  */
-export function truncateToWidth(
-  value: string,
-  columns: number,
-  options: TruncateToWidthOptions = {},
-): string {
+export function truncateToWidth(value: string, columns: number, options: TruncateToWidthOptions = {}): string {
   const limit = normalizeColumns(columns, 0);
   if (limit === 0) return "";
 
   const preserveAnsi = options.preserveAnsi ?? true;
-  const source = sanitizeTerminalText(value, { allowSgr: preserveAnsi })
-    .replace(/\n/gu, " ");
+  const source = sanitizeTerminalText(value, { allowSgr: preserveAnsi }).replace(/\n/gu, " ");
   const sourceTokens = layoutSanitizedTokens(source, preserveAnsi);
   const sourceWidth = tokensWidth(sourceTokens);
   if (sourceWidth <= limit) return finishSgr(sourceTokens, preserveAnsi);
 
-  const rawEllipsis = sanitizeTerminalText(
-    options.ellipsis ?? "…",
-    { allowSgr: false },
-  ).replace(/\n/gu, " ");
+  const rawEllipsis = sanitizeTerminalText(options.ellipsis ?? "…", { allowSgr: false }).replace(/\n/gu, " ");
   const ellipsis = takePlainWidth(rawEllipsis, limit);
   const ellipsisWidth = displayWidth(ellipsis);
   const contentLimit = Math.max(0, limit - ellipsisWidth);
@@ -220,11 +208,7 @@ export function truncateToWidth(
  * Hard-wrap text by terminal display cells. Explicit newlines and empty lines
  * are preserved. Every returned line fits within `columns`.
  */
-export function wrapToWidth(
-  value: string,
-  columns: number,
-  options: WrapToWidthOptions = {},
-): string[] {
+export function wrapToWidth(value: string, columns: number, options: WrapToWidthOptions = {}): string[] {
   const limit = normalizeColumns(columns, 1);
   const preserveAnsi = options.preserveAnsi ?? true;
   const source = sanitizeTerminalText(value, { allowSgr: preserveAnsi });
@@ -252,9 +236,7 @@ export function wrapToWidth(
     if (token.kind === "sgr") {
       current.push(token);
       lineHasSgr = true;
-      activeSgr = isPureSgrReset(token.value)
-        ? []
-        : [...activeSgr, token];
+      activeSgr = isPureSgrReset(token.value) ? [] : [...activeSgr, token];
       continue;
     }
     if (token.value === "\n") {
@@ -293,9 +275,7 @@ export function countVisualRows(value: string, columns: number): number {
  * the terminal cursor in the second cell of a wide character.
  */
 export function clampVisualColumn(value: string, requestedColumn: number): number {
-  const requested = Number.isFinite(requestedColumn)
-    ? Math.max(0, Math.floor(requestedColumn))
-    : 0;
+  const requested = Number.isFinite(requestedColumn) ? Math.max(0, Math.floor(requestedColumn)) : 0;
   let column = 0;
   for (const token of layoutTokens(value, false)) {
     if (token.kind !== "text" || token.value === "\n" || token.width === 0) {
@@ -371,12 +351,7 @@ function readCsi(value: string, start: number, payloadStart: number): AnsiSequen
   };
 }
 
-function readControlString(
-  value: string,
-  start: number,
-  payloadStart: number,
-  allowBel: boolean,
-): AnsiSequence {
+function readControlString(value: string, start: number, payloadStart: number, allowBel: boolean): AnsiSequence {
   let cursor = payloadStart;
   while (cursor < value.length) {
     const byte = value.charCodeAt(cursor);
@@ -437,10 +412,7 @@ function layoutSanitizedTokens(sanitized: string, preserveAnsi: boolean): Layout
 }
 
 type GraphemeSegmenter = { segment(input: string): Iterable<{ segment: string }> };
-type GraphemeSegmenterConstructor = new (
-  locale?: string,
-  options?: { granularity: "grapheme" },
-) => GraphemeSegmenter;
+type GraphemeSegmenterConstructor = new (locale?: string, options?: { granularity: "grapheme" }) => GraphemeSegmenter;
 let sharedSegmenter: GraphemeSegmenter | undefined;
 let segmenterConstructor: GraphemeSegmenterConstructor | undefined;
 
@@ -509,25 +481,27 @@ function graphemeWidth(grapheme: string): number {
 function isEmojiGrapheme(grapheme: string): boolean {
   if (grapheme.includes("\uFE0F") || grapheme.includes("\u200D")) return true;
   if (grapheme.includes("\u20E3")) return true;
-  const regionalCount = Array.from(grapheme)
-    .filter((character) => REGIONAL_INDICATOR.test(character)).length;
+  const regionalCount = Array.from(grapheme).filter((character) => REGIONAL_INDICATOR.test(character)).length;
   if (regionalCount >= 2) return true;
   return EMOJI_PRESENTATION.test(grapheme);
 }
 
 function isZeroWidthCodePoint(codePoint: number, character: string): boolean {
-  return COMBINING_MARK.test(character) ||
+  return (
+    COMBINING_MARK.test(character) ||
     EMOJI_MODIFIER.test(character) ||
     codePoint === 0x200c ||
     codePoint === 0x200d ||
     (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
     (codePoint >= 0xe0100 && codePoint <= 0xe01ef) ||
-    (codePoint >= 0xe0020 && codePoint <= 0xe007f);
+    (codePoint >= 0xe0020 && codePoint <= 0xe007f)
+  );
 }
 
 function isFullWidthCodePoint(codePoint: number): boolean {
   if (!Number.isFinite(codePoint) || codePoint < 0x1100) return false;
-  return codePoint <= 0x115f ||
+  return (
+    codePoint <= 0x115f ||
     codePoint === 0x2329 ||
     codePoint === 0x232a ||
     (codePoint >= 0x2e80 && codePoint <= 0x303e) ||
@@ -540,13 +514,12 @@ function isFullWidthCodePoint(codePoint: number): boolean {
     (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
     (codePoint >= 0x1b000 && codePoint <= 0x1b2ff) ||
     (codePoint >= 0x1f200 && codePoint <= 0x1f251) ||
-    (codePoint >= 0x20000 && codePoint <= 0x3fffd);
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  );
 }
 
 function isTerminalControl(codePoint: number): boolean {
-  return codePoint <= 0x08 ||
-    (codePoint >= 0x0b && codePoint <= 0x1f) ||
-    (codePoint >= 0x7f && codePoint <= 0x9f);
+  return codePoint <= 0x08 || (codePoint >= 0x0b && codePoint <= 0x1f) || (codePoint >= 0x7f && codePoint <= 0x9f);
 }
 
 function takePlainWidth(value: string, limit: number): string {
@@ -562,25 +535,16 @@ function takePlainWidth(value: string, limit: number): string {
 }
 
 function tokensWidth(tokens: readonly LayoutToken[]): number {
-  return tokens.reduce(
-    (width, token) => width + (token.kind === "text" ? token.width : 0),
-    0,
-  );
+  return tokens.reduce((width, token) => width + (token.kind === "text" ? token.width : 0), 0);
 }
 
 function tokensToString(tokens: readonly LayoutToken[]): string {
   return tokens.map((token) => token.value).join("");
 }
 
-function finishSgr(
-  tokens: readonly LayoutToken[],
-  preserveAnsi: boolean,
-  suffix = "",
-): string {
+function finishSgr(tokens: readonly LayoutToken[], preserveAnsi: boolean, suffix = ""): string {
   const text = `${tokensToString(tokens)}${suffix}`;
-  return preserveAnsi && tokens.some((token) => token.kind === "sgr")
-    ? `${text}\u001B[0m`
-    : text;
+  return preserveAnsi && tokens.some((token) => token.kind === "sgr") ? `${text}\u001B[0m` : text;
 }
 
 /**

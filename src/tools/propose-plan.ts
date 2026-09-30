@@ -1,12 +1,6 @@
 import { z } from "zod";
 
-import type {
-  AgentTool,
-  PlanDraft,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
-} from "../core/types.js";
+import type { AgentTool, PlanDraft, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import {
   MAX_PLAN_OVERVIEW_CHARS,
   MAX_PLAN_STEPS,
@@ -20,8 +14,7 @@ import { toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import { displayTextSchema } from "../utils/bounded-text.js";
 
-const boundedPlanText = (maximum: number) =>
-  z.string().trim().min(1).max(maximum);
+const boundedPlanText = (maximum: number) => z.string().trim().min(1).max(maximum);
 
 export const planStepDraftInputSchema = z
   .object({

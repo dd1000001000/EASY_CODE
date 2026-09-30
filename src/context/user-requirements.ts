@@ -7,11 +7,11 @@ export function recordUserRequirement(state: SessionState, index: number): void 
   state.userMessageIndices = [...new Set([...state.userMessageIndices, index])].sort((a, b) => a - b);
 }
 export function userRequirementIndices(state: Readonly<SessionState>): number[] {
-  return [...new Set(state.userMessageIndices)]
-    .filter(i => state.messages[i]?.role === "user")
-    .sort((a, b) => a - b);
+  return [...new Set(state.userMessageIndices)].filter((i) => state.messages[i]?.role === "user").sort((a, b) => a - b);
 }
 export function requirementScope(state: Readonly<SessionState>): string {
   // Re-entering with the identical requirement is not a fresh capacity incident.
-  return sha256(JSON.stringify([...new Set(userRequirementIndices(state).map(i => JSON.stringify(state.messages[i])))]));
+  return sha256(
+    JSON.stringify([...new Set(userRequirementIndices(state).map((i) => JSON.stringify(state.messages[i])))]),
+  );
 }
