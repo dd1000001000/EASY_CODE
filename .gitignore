@@ -20,3 +20,5 @@ __pycache__/
 test-api-key.txt
 /PLAN.md
 /smoke-tests/
+/CLAUDE.md
+/AGENTS.md
