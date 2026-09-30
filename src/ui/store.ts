@@ -18,6 +18,7 @@ import type {
   UITranscriptEntry,
 } from "./contracts.js";
 import { sanitizeTerminalText } from "./render/layout.js";
+import { boundedInteger } from "../utils/guards.js";
 
 export const MAX_LIVE_TASKS = 32;
 export const MAX_LIVE_SUBAGENTS = 64;
@@ -56,11 +57,6 @@ function mergeHeader(current: Readonly<UIHeaderState>, patch: Readonly<UIHeaderP
     title: patch.title ?? current.title,
     session,
   };
-}
-
-function boundedInteger(value: number, minimum: number, maximum: number): number {
-  if (!Number.isFinite(value)) return minimum;
-  return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
 }
 
 function optionalCount(value: number | undefined): number | undefined {
@@ -102,7 +98,7 @@ function normalizeThinkingPanel(input: Readonly<UIThinkingPanelInput>, id: numbe
 
 function mergeComposer(current: Readonly<UIComposerState>, patch: Readonly<UIComposerPatch>): UIComposerState {
   const text = patch.text ?? current.text;
-  const cursor = boundedInteger(patch.cursor ?? current.cursor, 0, text.length);
+  const cursor = boundedInteger(patch.cursor ?? current.cursor, 0, 0, text.length);
   const images = (patch.images ?? current.images).slice(0, MAX_COMPOSER_IMAGES).map((image) => ({ ...image }));
   const completionSuffix =
     patch.completionSuffix !== undefined
@@ -117,6 +113,7 @@ function mergeComposer(current: Readonly<UIComposerState>, patch: Readonly<UICom
     busy: patch.busy ?? current.busy,
     pendingSubmissions: boundedInteger(
       patch.pendingSubmissions ?? current.pendingSubmissions,
+      0,
       0,
       Number.MAX_SAFE_INTEGER,
     ),
@@ -225,7 +222,7 @@ function clonePlan(proposal: Readonly<PlanProposal>): PlanProposal {
 }
 
 function normalizedSelectedIndex(selectedIndex: number, rowCount: number): number {
-  return rowCount === 0 ? 0 : boundedInteger(selectedIndex, 0, rowCount - 1);
+  return rowCount === 0 ? 0 : boundedInteger(selectedIndex, 0, 0, rowCount - 1);
 }
 
 function cloneOverlay(overlay: Readonly<UIOverlayState>): UIOverlayState {

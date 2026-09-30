@@ -3,14 +3,11 @@ import { readFile, readdir, lstat } from "node:fs/promises";
 import path from "node:path";
 
 import { PROMPT_BUNDLE_FORMAT_VERSION, type PromptBundleManifest } from "./types.js";
+import { isRecord } from "../utils/guards.js";
 
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {

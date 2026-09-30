@@ -52,7 +52,8 @@ import {
 } from "../workspace/execution-environment.js";
 import type { ProjectWorkspace } from "../projects/types.js";
 import { repairInterruptedTurn } from "./thread-recovery.js";
-import { json, samePath, renderPromptBundleText, promptBundleText } from "./text.js";
+import { json, renderPromptBundleText, promptBundleText } from "./text.js";
+import { samePath } from "../utils/paths.js";
 import type { ToolSourceFactory } from "../app.js";
 
 /** What SubagentHost needs from its host; live values are forwarded through getters. */

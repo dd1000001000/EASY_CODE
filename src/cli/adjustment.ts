@@ -4,6 +4,7 @@ import { sanitizeCommandOutput, stripTerminalControls } from "../command/output-
 import type { ImageAttachment } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText, wrapToWidth } from "../ui/render/layout.js";
+import { boundedInteger } from "../utils/guards.js";
 
 const DEFAULT_ADJUSTMENT_PREVIEW_CHARS = 160;
 
@@ -20,11 +21,6 @@ export interface AdjustmentRenderOptions {
   readonly color?: boolean;
   readonly previewChars?: number;
   readonly columns?: number;
-}
-
-function boundedInteger(value: number | undefined, fallback: number, maximum: number): number {
-  if (value === undefined || !Number.isFinite(value)) return fallback;
-  return Math.max(1, Math.min(Math.trunc(value), maximum));
 }
 
 function takeCodePoints(
@@ -132,7 +128,7 @@ export function renderAdjustmentMarker(
   options: AdjustmentRenderOptions = {},
 ): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
-  const previewLimit = boundedInteger(options.previewChars, DEFAULT_ADJUSTMENT_PREVIEW_CHARS, 2_000);
+  const previewLimit = boundedInteger(options.previewChars, DEFAULT_ADJUSTMENT_PREVIEW_CHARS, 1, 2_000);
   const content = previewWithImageBadges(block);
   const retained = takeCodePoints(content, previewLimit);
   const omitted = retained.truncated || block.truncated;
@@ -145,7 +141,7 @@ export function renderAdjustmentMarker(
 
 export function renderAdjustmentPanel(block: Readonly<AdjustmentBlock>, options: AdjustmentRenderOptions = {}): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
-  const columns = boundedInteger(options.columns, 80, 10_000);
+  const columns = boundedInteger(options.columns, 80, 1, 10_000);
   const text = block.text || "(No text; this adjustment contains attachments only.)";
   const innerWidth = Math.max(1, columns - 2);
   const wrappedText = wrapToWidth(text, innerWidth, {

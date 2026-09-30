@@ -1,6 +1,5 @@
-/** Small text and path helpers used by the interactive app shell. */
+/** Small text helpers used by the interactive app shell. */
 
-import path from "node:path";
 import type { ChatMessage, ImageAttachment } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
@@ -14,14 +13,6 @@ export function renderPromptBundleText(
   values: Readonly<Record<string, string | number | boolean>>,
 ): string {
   return loadPromptBundleCatalog().render(path, values).trimEnd();
-}
-
-export function samePath(left: string, right: string): boolean {
-  const normalizedLeft = path.normalize(path.resolve(left));
-  const normalizedRight = path.normalize(path.resolve(right));
-  return process.platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
 }
 
 export function messagePreview(message: ChatMessage): string {

@@ -26,6 +26,7 @@ import { postJsonWithNode, type JsonPostResponse } from "./http-transport.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
 import { abortableSleep, retryableStatus, runWithRetries } from "./retry-loop.js";
 import { ServerSentEventDecoder, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
+import { isRecord } from "../utils/guards.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS = 600;
@@ -560,9 +561,6 @@ function apiError(body: string): string {
     /* bounded fallback */
   }
   return body.trim().slice(0, 1_000) || "No error details were returned";
-}
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function appendHistoricalImageOmissionNote(
   content: string,

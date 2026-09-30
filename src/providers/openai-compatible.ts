@@ -21,6 +21,7 @@ import { ProviderError, redactImageDataUrls, streamProviderError, type ProviderP
 import { postJsonWithNode, type JsonPostResponse, type JsonPostTransport } from "./http-transport.js";
 import { abortableSleep, parseRetryAfter, retryableStatus, runWithRetries } from "./retry-loop.js";
 import { ServerSentEventDecoder, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
+import { isRecord } from "../utils/guards.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS = 600;
@@ -780,10 +781,6 @@ function extractApiErrorMessage(body: string): string {
   }
   const trimmed = body.trim();
   return trimmed ? trimmed.slice(0, 1_000) : "No error details were returned";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {

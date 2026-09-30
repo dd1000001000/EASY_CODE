@@ -6,6 +6,7 @@ import type { EmbeddingProvider } from "../memory/vector-index.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { sha256 } from "../utils/hash.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
+import { boundedInteger } from "../utils/guards.js";
 
 export type ContextArtifactSource = "user" | "assistant" | "tool";
 
@@ -139,11 +140,6 @@ const MAX_CACHED_VECTOR_THREADS = 4;
 const MAX_CACHED_VECTORS = 8_192;
 const MAX_THREAD_VECTOR_ROWS = 4_096;
 const VECTOR_RETRY_DELAY_MS = 60_000;
-
-function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
-  const resolved = value !== undefined && Number.isFinite(value) ? value : fallback;
-  return Math.max(minimum, Math.min(Math.trunc(resolved), maximum));
-}
 
 function boundedUnit(value: number | undefined, fallback: number): number {
   const resolved = value !== undefined && Number.isFinite(value) ? value : fallback;

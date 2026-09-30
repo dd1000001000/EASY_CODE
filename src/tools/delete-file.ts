@@ -1,5 +1,4 @@
 import { readFile, unlink } from "node:fs/promises";
-import path from "node:path";
 import { z } from "zod";
 import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
@@ -15,6 +14,7 @@ import {
   type FileToolTarget,
 } from "./file-access.js";
 import { documentToolSchema } from "./metadata.js";
+import { samePath } from "../utils/paths.js";
 
 export const deleteFileInputSchema = z
   .object({
@@ -161,12 +161,4 @@ export class DeleteFileTool implements AgentTool {
       timestamp: new Date().toISOString(),
     });
   }
-}
-
-function samePath(left: string, right: string): boolean {
-  const normalizedLeft = path.normalize(left);
-  const normalizedRight = path.normalize(right);
-  return process.platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
 }

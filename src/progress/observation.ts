@@ -10,6 +10,7 @@ import {
   type ProgressObservationKind,
   type ProgressOutcomeClass,
 } from "./types.js";
+import { isRecord } from "../utils/guards.js";
 
 const MAX_IDENTIFIER_CHARS = 256;
 const MAX_SCOPE_CHARS = 512;
@@ -79,10 +80,6 @@ interface CommandResultData extends Record<string, unknown> {
   commandId: string;
   status: string;
   exitCode: number | null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function safeText(value: unknown, maximum: number, field: string): asserts value is string {

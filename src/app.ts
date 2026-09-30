@@ -115,12 +115,12 @@ import {
 } from "./app/thread-recovery.js";
 import {
   json,
-  samePath,
   stripPasteFailureMarkers,
   stripImageMarkers,
   renderPromptBundleText,
   parseQuotedArguments,
 } from "./app/text.js";
+import { samePath } from "./utils/paths.js";
 import { McpServerController, type McpServerControllerContext } from "./app/mcp-servers.js";
 import { ModelSelection, type ModelSelectionContext } from "./app/model-selection.js";
 import { ApprovalReviewer, type ApprovalReviewerContext } from "./app/approval-reviewer.js";

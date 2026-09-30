@@ -11,6 +11,7 @@ import { createDefaultEasyCodeConfig, resolveEasyCodePaths, type EasyCodePaths }
 import { validateEasyCodeConfig } from "./schema.js";
 import { normalizeCurrentTomlConfig, type EasyCodeConfigLayer, type ProviderConfigLayer } from "./toml-format.js";
 import { DEFAULT_RUNTIME_LIMITS } from "./runtime-limits.js";
+import { isRecord } from "../utils/guards.js";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -37,10 +38,6 @@ export class EasyCodeConfigError extends Error {
     this.name = "EasyCodeConfigError";
     this.configPath = configPath;
   }
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function compact<T extends Record<string, unknown>>(value: T): T {

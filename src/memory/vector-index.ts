@@ -3,6 +3,7 @@ import { create, insertMultiple, search, type Orama, type WhereCondition } from 
 import type { EasyCodeStorage } from "../storage/database.js";
 import type { LongTermMemory, LongTermMemoryCategory, LongTermMemoryScope } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
+import { boundedInteger } from "../utils/guards.js";
 
 export interface EmbeddingProvider {
   readonly dimension: number;
@@ -101,11 +102,6 @@ const DEFAULT_BACKFILL_BATCH_SIZE = 16;
 const MAX_BACKFILL_BATCH_SIZE = 64;
 const DEFAULT_SEARCH_LIMIT = 6;
 const MAX_SEARCH_LIMIT = 50;
-
-function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
-  const resolved = value !== undefined && Number.isFinite(value) ? value : fallback;
-  return Math.max(minimum, Math.min(Math.trunc(resolved), maximum));
-}
 
 function boundedUnit(value: number | undefined, fallback: number): number {
   const resolved = value !== undefined && Number.isFinite(value) ? value : fallback;

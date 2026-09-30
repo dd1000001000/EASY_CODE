@@ -23,6 +23,7 @@ import { sha256 } from "../utils/hash.js";
 import { CURRENT_PROTOCOL, requireCurrentProtocol } from "../protocol/versions.js";
 import { userRequirementIndices } from "../context/user-requirements.js";
 import { createProgressGuardState } from "../progress/guard.js";
+import { isRecord } from "../utils/guards.js";
 
 export interface SerializedSessionState {
   readonly formatVersion: typeof CURRENT_PROTOCOL.sessionState;
@@ -95,10 +96,6 @@ export interface SerializedThreadCheckpointDelta {
 
 /** Prevent one save from turning an incremental record back into an unbounded snapshot. */
 export const MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES = 4 * 1024 * 1024;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function isContextSourceQuote(value: unknown): boolean {
   return (

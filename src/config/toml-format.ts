@@ -1,4 +1,5 @@
 import type { RuntimeLimits } from "./runtime-limits.js";
+import { isRecord } from "../utils/guards.js";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -24,10 +25,6 @@ export interface EasyCodeConfigLayer {
   worktreeBaseMode?: unknown;
   worktreeRoot?: unknown;
   providers?: Record<string, ProviderConfigLayer>;
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function compact<T extends UnknownRecord>(value: T): T {

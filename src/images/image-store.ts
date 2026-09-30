@@ -8,6 +8,7 @@ import type { ImageAttachment, SupportedImageMediaType } from "../core/types.js"
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
 import { MAX_THREAD_IMAGE_NUMBER } from "./labels.js";
+import { isRecord } from "../utils/guards.js";
 
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_EDGE = 8_192;
@@ -1395,7 +1396,7 @@ function emptyGarbageCollectionResult(acquiredLock: boolean): ImageGarbageCollec
 }
 
 function isPendingImageMarker(value: unknown): value is PendingImageMarker {
-  if (!isPlainRecord(value)) return false;
+  if (!isRecord(value)) return false;
   return (
     Object.keys(value).every((key) => ["version", "leaseId", "pid", "storageKey", "createdAt"].includes(key)) &&
     value.version === 1 &&
@@ -1412,7 +1413,7 @@ function isPendingImageMarker(value: unknown): value is PendingImageMarker {
 }
 
 function isLeaseRecord(value: unknown): value is LeaseRecord {
-  if (!isPlainRecord(value)) return false;
+  if (!isRecord(value)) return false;
   return (
     Object.keys(value).every((key) => ["version", "leaseId", "pid", "createdAt"].includes(key)) &&
     value.version === 1 &&
@@ -1427,7 +1428,7 @@ function isLeaseRecord(value: unknown): value is LeaseRecord {
 }
 
 function isGarbageCollectionLock(value: unknown): value is GarbageCollectionLock {
-  if (!isPlainRecord(value)) return false;
+  if (!isRecord(value)) return false;
   return (
     Object.keys(value).every((key) => ["version", "token", "pid", "createdAt"].includes(key)) &&
     value.version === 1 &&
@@ -1439,10 +1440,6 @@ function isGarbageCollectionLock(value: unknown): value is GarbageCollectionLock
     Number.isFinite(value.createdAt) &&
     value.createdAt >= 0
   );
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 async function writeJsonExclusive(filePath: string, value: unknown, allowedRoot: string): Promise<void> {

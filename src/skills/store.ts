@@ -6,6 +6,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { sha256 } from "../utils/hash.js";
 import { assertSkillName, createSkillMarkdown, parseSkillMarkdown, SKILL_DIRECTORY_NAME } from "./format.js";
+import { samePath } from "../utils/paths.js";
 
 export type SkillScope = "global" | "project";
 
@@ -48,12 +49,6 @@ export interface SkillFileChange {
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === "ENOENT";
-}
-
-function samePath(left: string, right: string): boolean {
-  const a = path.normalize(left);
-  const b = path.normalize(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function inside(parent: string, candidate: string): boolean {

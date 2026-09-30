@@ -2,6 +2,7 @@ import { Chalk } from "chalk";
 
 import { sanitizeCommandOutput, stripTerminalControls } from "../command/output-stream.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { boundedInteger } from "../utils/guards.js";
 
 const DEFAULT_REASONING_PREVIEW_CHARS = 160;
 
@@ -29,12 +30,6 @@ export interface ReasoningRenderOptions {
     readonly lastDeltaAtMs: number;
     readonly nowMs?: number;
   }>;
-}
-
-function boundedInteger(value: number | undefined, fallback: number, maximum: number): number {
-  if (value === undefined) return fallback;
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(1, Math.min(Math.trunc(value), maximum));
 }
 
 function optionalBoundedInteger(value: number | undefined, maximum: number): number | undefined {
@@ -181,7 +176,7 @@ export class ReasoningRegistry {
 
 export function renderReasoningMarker(block: ReasoningBlock, options: ReasoningRenderOptions = {}): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
-  const previewLimit = boundedInteger(options.previewChars, DEFAULT_REASONING_PREVIEW_CHARS, 2_000);
+  const previewLimit = boundedInteger(options.previewChars, DEFAULT_REASONING_PREVIEW_CHARS, 1, 2_000);
   const compactText = block.text.replace(/\s+/gu, " ").trim();
   const retainedPreview = takeCodePoints(compactText, previewLimit);
   const preview = retainedPreview.text || "(No visible Thinking text.)";
