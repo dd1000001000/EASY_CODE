@@ -22,8 +22,7 @@ import { McpConfigStore, USER_MCP_CONFIG_PATH } from "./mcp/config.js";
 import { McpConnections, McpToolSource } from "./mcp/source.js";
 import { MCP_SERVER_ACTION_IDS } from "./mcp/menu.js";
 import { SkillStore } from "./skills/store.js";
-import { sanitizeTerminalText } from "./ui/render/layout.js";
-import { isCommandApprovalPrefixGranted, formatCommandApprovalPrefix } from "./command/approval.js";
+import { isCommandApprovalPrefixGranted } from "./command/approval.js";
 import { ApprovalQueue, type ApprovalReview } from "./command/approval-agent.js";
 import { canGrantCommandPrefix } from "./command/approval.js";
 import { CommandRuntime } from "./command/runtime.js";
@@ -106,7 +105,6 @@ import {
 } from "./subagents/coordinator.js";
 import { SubagentMessageMailbox } from "./subagents/messages.js";
 import { WorkspaceMutationLock } from "./subagents/workspace-mutation-lock.js";
-import { isToolAvailable, toolMetadata } from "./tools/capabilities.js";
 import { BuiltinToolSource } from "./tools/builtin-source.js";
 import { ToolCatalog, type ToolCatalogSnapshot, type ToolSource } from "./tools/catalog.js";
 import type { ToolExecutionAuthorizer, ToolExecutionAuthorizationRequest } from "./tools/execution-gateway.js";
@@ -147,12 +145,12 @@ import {
   renderPromptBundleText,
   promptBundleText,
   parseQuotedArguments,
-  messagePreview,
 } from "./app/text.js";
 import { McpServerController, type McpServerControllerContext } from "./app/mcp-servers.js";
 import { ModelSelection, type ModelSelectionContext } from "./app/model-selection.js";
 import { ApprovalReviewer, type ApprovalReviewerContext } from "./app/approval-reviewer.js";
 import { ApprovalFlow, type ApprovalFlowContext } from "./app/approval-flow.js";
+import { InfoCommands, type InfoCommandsContext } from "./app/info-commands.js";
 
 // Re-exported so the package entry (src/index.ts `export *`) keeps its public API.
 export {
@@ -374,7 +372,7 @@ export class EasyCodeApp {
         }
       },
       onViewChange: (parentThreadId) => {
-        if (this.state.threadId === parentThreadId) this.printSubagents();
+        if (this.state.threadId === parentThreadId) this.infoCommands.printSubagents();
       },
       pendingMessages: (parentThreadId, agentIds) => this.subagentMessages.pending(parentThreadId, agentIds),
       handoff: (artifact, destination) => this.handoffSubagentResult(artifact, destination),
@@ -900,7 +898,7 @@ export class EasyCodeApp {
     if (!(await this.prepareInteractiveStartup())) return;
     this.syncTerminalView();
     printBanner(this.terminal, readLanguage(this.storage));
-    if (!this.terminal.isInlineShell()) this.printStatus();
+    if (!this.terminal.isInlineShell()) this.infoCommands.printStatus();
     this.announceResumeRecovery();
     this.startMemoryMaintenance();
 
@@ -1182,7 +1180,7 @@ export class EasyCodeApp {
         await this.selectCommandExecutionMode(true, command.args[0] as CommandExecutionMode | undefined);
         return false;
       case "status":
-        this.printStatus();
+        this.infoCommands.printStatus();
         return false;
       case "workspace": {
         await this.updateWorkspaceCommand(command.rawArgs);
@@ -1209,11 +1207,11 @@ export class EasyCodeApp {
         return false;
       }
       case "tools":
-        await this.printTools();
+        await this.infoCommands.printTools();
         return false;
       case "skills":
         if (command.args.length) throw new Error("Usage: /skills");
-        await this.showSkills();
+        await this.infoCommands.showSkills();
         return false;
       case "mcp":
         if (command.args.length !== 0 && command.args.length !== 2)
@@ -1229,7 +1227,7 @@ export class EasyCodeApp {
         );
         return false;
       case "permissions":
-        this.updatePermissions(command.args);
+        this.infoCommands.updatePermissions(command.args);
         return false;
       case "context":
         this.terminal.write(
@@ -1261,10 +1259,10 @@ export class EasyCodeApp {
         return false;
       }
       case "memory":
-        this.printMemory(command.args);
+        this.infoCommands.printMemory(command.args);
         return false;
       case "sessions":
-        this.printSessions();
+        this.infoCommands.printSessions();
         return false;
       case "resume": {
         if (command.args.length > 1) throw new Error("Usage: /resume [thread-id]");
@@ -2005,7 +2003,7 @@ export class EasyCodeApp {
         }
         if (toolName === "manage_subagents" && result.ok) {
           try {
-            this.printSubagents();
+            this.infoCommands.printSubagents();
           } catch {
             this.terminal.info(
               "The child-agent state was updated successfully, but its terminal view could not be rendered.",
@@ -3935,7 +3933,7 @@ export class EasyCodeApp {
     } else {
       this.terminal.clearTaskGraph();
     }
-    this.printSubagents();
+    this.infoCommands.printSubagents();
   }
 
   private resumableThreads(): ThreadSummary[] {
@@ -3962,118 +3960,6 @@ export class EasyCodeApp {
       })),
       this.state.threadId,
     );
-  }
-
-  private printStatus(): void {
-    const providerConfig = this.effectiveConfig().providers[this.state.provider];
-    if (!providerConfig) throw new Error(`Provider ${this.state.provider} is not configured`);
-    const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests, ...activeLimits } = this.config.limits;
-    void legacySteps;
-    void legacyMaxModelRequests;
-    this.terminal.write(
-      `${json({
-        agent: "EASY CODE",
-        thread: this.state.threadId,
-        mode: this.state.mode,
-        provider: this.state.provider,
-        model: this.state.model,
-        thinkingEffort: this.state.thinkingEffort,
-        thinkingApplied: thinkingEffortIsApplied(this.state.provider, this.state.model, this.state.thinkingEffort),
-        limits: activeLimits,
-        orchestrationEnabled: this.orchestrationEnabled(),
-        reviewerEnabled: true,
-        taskBudget: this.taskBudgets.get(this.state.threadId)?.snapshot(),
-        modelRequestLimit: this.maxModelRequests ?? null,
-        contextCharLimit: this.activeContextCharLimit(),
-        vision: modelSupportsVision(this.state.provider, this.state.model),
-        pendingImages: this.pendingImages.map((image) => image.label),
-        taskDag: this.state.taskGraph
-          ? (() => {
-              const view = taskGraphView(this.state.taskGraph as NonNullable<SessionState["taskGraph"]>);
-              return {
-                id: view.id,
-                status: view.status,
-                progress: `${view.completed}/${view.total}`,
-                currentTask: view.currentTask,
-                startableTasks: view.startableTasks,
-              };
-            })()
-          : null,
-        subagents: this.subagentCoordinator.snapshot(this.state.threadId),
-        subagentConcurrency: {
-          active: this.subagentCoordinator
-            .snapshot(this.state.threadId)
-            .filter((agent) => agent.status === "running" || agent.status === "stopping").length,
-          limit: this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort],
-        },
-        planReview: this.state.planReview
-          ? {
-              id: this.state.planReview.proposal.id,
-              revision: this.state.planReview.proposal.revision,
-              title: this.state.planReview.proposal.title,
-              status: this.state.planReview.status,
-            }
-          : null,
-        apiKeyConfigured: Boolean(providerConfig.apiKey),
-        workspace: this.workspace.root,
-        approvalPolicy: this.config.approvalPolicy,
-        commandExecutionMode: this.commandExecutionMode,
-        independentApprovalAgent: this.commandExecutionMode === "auto_approve",
-        unrestrictedCommands: this.commandExecutionMode === "unrestricted",
-        database: this.storage.databasePath,
-      })}\n`,
-    );
-  }
-
-  private printSubagents(): void {
-    const taskGraph = this.state.taskGraph ? taskGraphView(this.state.taskGraph) : undefined;
-    const agents = this.subagentCoordinator.snapshot(this.state.threadId);
-    const concurrencyLimit = this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort];
-    this.terminal.subagents(
-      agents.filter((agent) => agent.status === "running" || agent.status === "stopping"),
-      taskGraph,
-      concurrencyLimit,
-    );
-  }
-
-  private async printTools(): Promise<void> {
-    const catalog = await this.mainToolCatalogSnapshot();
-    const tools = catalog.tools.map((tool) => {
-      const availableForMode = isToolAvailable(tool, {
-        mode: this.state.mode,
-        role: "main_agent",
-        orchestrationAvailable: this.state.orchestrationEnabled !== false,
-        visionAvailable: modelSupportsVision(this.state.provider, this.state.model),
-      });
-      return {
-        id: toolMetadata(tool).identity.id,
-        source: toolMetadata(tool).identity.sourceId,
-        name: tool.name,
-        description: tool.definition.function.description,
-        available: availableForMode,
-        mutating: tool.mutating,
-        effects: toolMetadata(tool).effects,
-      };
-    });
-    this.terminal.write(`${json(tools)}\n`);
-  }
-
-  private async showSkills(): Promise<void> {
-    const listing = await SkillStore.forProject(
-      this.workspace.root,
-      this.config.dataDir,
-      this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
-    ).list();
-    const safeLine = (value: string): string => sanitizeTerminalText(value, { allowSgr: false }).replace(/\s+/gu, " ");
-    for (const [title, directory, skills] of [
-      ["Global Skills", listing.globalDirectory, listing.global],
-      ["Project Skills", listing.projectDirectory, listing.project],
-    ] as const) {
-      this.terminal.write(`${title} (${safeLine(directory)})\n`);
-      if (skills.length === 0) this.terminal.write("  (none)\n");
-      for (const skill of skills) this.terminal.write(`  ${skill.name} — ${safeLine(skill.description)}\n`);
-    }
-    for (const warning of listing.warnings) this.terminal.warning(`Skill skipped: ${safeLine(warning)}`);
   }
 
   private observedToolCatalog(workspace: WorkspaceManager, runtime: CommandRuntime): ToolCatalog {
@@ -4263,130 +4149,6 @@ export class EasyCodeApp {
     );
   }
 
-  private printPermissions(): void {
-    this.terminal.write(
-      `${json({
-        logicalWorkspace: this.workspace.root,
-        mode: this.state.mode,
-        approvalPolicy: this.config.approvalPolicy,
-        commandExecutionMode: this.commandExecutionMode,
-        independentApprovalAgent: this.commandExecutionMode === "auto_approve",
-        fullAccess: this.commandExecutionMode === "unrestricted",
-        threadExecutableGrants: this.state.commandApprovalPrefixes.map((prefix, index) => ({
-          index: index + 1,
-          prefix: formatCommandApprovalPrefix(prefix),
-        })),
-        osSandbox: {
-          enabled: Boolean(this.trustedOuterSandbox) || this.commandExecutionMode !== "unrestricted",
-          failClosed: true,
-          backend:
-            this.trustedOuterSandbox === "harbor"
-              ? "benchmark-container"
-              : this.commandExecutionMode === "unrestricted"
-                ? "host-unrestricted"
-                : "native",
-          filesystem: this.trustedOuterSandbox === "harbor" ? "container" : "host",
-          network: this.trustedOuterSandbox
-            ? "offline worker: no external networking"
-            : this.commandExecutionMode === "unrestricted"
-              ? "host network, no approval"
-              : "per-command approval and network gate; explicit host escalation uses host networking",
-          setup: "easy-code sandbox doctor | easy-code sandbox setup",
-        },
-        commandBoundary:
-          "structured argv; Plan discourages direct editing, not command writes; normal CLI commands use the platform-native OS sandbox; explicit host scope requires approval; full access is unsandboxed; Benchmark keeps its offline Harbor container bridge",
-        npmInstall:
-          "normal command approvals apply; requested scripts/flags are preserved; Benchmark dependencies must be preinstalled or available offline",
-        subagents:
-          "main agent only; Code mode; DAG-bound or standalone isolated tasks; parent effort limits none/low=2, medium=4, high=8; no nested children; shared mutations serialized",
-        note: "File tools remain workspace-scoped in every mode. Failed isolation never falls back to host execution.",
-      })}\n`,
-    );
-  }
-
-  private updatePermissions(args: string[]): void {
-    if (!args.length) {
-      this.printPermissions();
-      return;
-    }
-    if (args[0] !== "revoke" || args.length !== 2 || !/^[1-9]\d*$/u.test(args[1]!))
-      throw new Error("Usage: /permissions [revoke <index>]");
-    this.assertNoRunningCommands("revoke a command prefix");
-    const prefix = this.state.commandApprovalPrefixes[Number(args[1]) - 1];
-    if (!prefix) throw new Error("Permission index does not exist; use /permissions");
-    this.threadStore.recordCommandApprovalPrefixRevocation(this.state.threadId, prefix, this.state.activeTurnId);
-    this.state.commandApprovalPrefixes = this.state.commandApprovalPrefixes.filter((p) => p !== prefix);
-    this.dirty = true;
-    this.terminal.info(
-      `Revoked: ${formatCommandApprovalPrefix(prefix)}. This removes the saved grant; dangerous mode remains no-prompt.`,
-    );
-  }
-
-  private printMemory(args: string[]): void {
-    const kind = args[0];
-    if (kind === "short" && args.length <= 2) {
-      const rawLimit = args[1];
-      if (rawLimit !== undefined && !/^[1-9]\d*$/u.test(rawLimit)) {
-        throw new Error("Usage: /memory short [limit] (limit must be an integer from 1 to 500)");
-      }
-      const limit = rawLimit === undefined ? 8 : Number(rawLimit);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-        throw new Error("Usage: /memory short [limit] (limit must be an integer from 1 to 500)");
-      }
-      this.syncWorkspaceState();
-      const compactedMessageCount = Math.min(Math.max(0, this.state.compactedMessageCount), this.state.messages.length);
-      const activeMessages = this.state.messages.slice(compactedMessageCount);
-      const recentMessagePreviews = activeMessages.slice(-limit).map(messagePreview);
-      this.terminal.write(
-        `${json({
-          latestRequest: this.state.goal ?? null,
-          constraints: this.state.constraints,
-          workingSummary: redactSensitiveInformation(this.state.workingSummary),
-          compactedMessageCount: this.state.compactedMessageCount,
-          showingLast: recentMessagePreviews.length,
-          totalActive: activeMessages.length,
-          recentMessagePreviews,
-          filesRead: [...this.state.filesRead.values()],
-          changeCount: this.state.changes.length,
-          commandCount: this.state.commands.length,
-        })}\n`,
-      );
-      return;
-    }
-
-    if (kind === "long" && args.length <= 3) {
-      const projectId = this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
-      const scope = args[1] === "global" || args[1] === "project" || args[1] === "all" ? args[1] : "all";
-      const id = scope === "all" && args[1] !== "all" ? args[1] : args[2];
-      const memories = this.memoryManager.listScoped(projectId, scope, {
-        limit: 500,
-        status: "all",
-      });
-      if (id) {
-        const memory = memories.find((entry) => entry.id === id);
-        if (!memory) throw new Error(`Long-term memory not found: ${id}`);
-        this.terminal.write(`${json(memory)}\n`);
-      } else {
-        this.terminal.write(
-          memories.length
-            ? `${json({
-                global: memories.filter((memory) => memory.scope === "global"),
-                project: memories.filter((memory) => memory.scope === "project"),
-              })}\n`
-            : "No long-term memories in the selected scope.\n",
-        );
-      }
-      return;
-    }
-
-    throw new Error("Usage: /memory short [limit] | /memory long [global|project] [id] (read-only)");
-  }
-
-  private printSessions(): void {
-    const sessions = this.resumableThreads();
-    this.terminal.write(sessions.length ? `${json(sessions)}\n` : "This workspace has no previous threads.\n");
-  }
-
   private prompt(): string {
     const shortTermTokens = this.contextManager.estimateShortTermTokens(this.state);
     const text =
@@ -4559,5 +4321,67 @@ export class EasyCodeApp {
 
   private authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {
     return this.approvalFlow.authorizeCatalogToolCall(request);
+  }
+
+  private infoCommandsInstance?: InfoCommands;
+  private get infoCommands(): InfoCommands {
+    return (this.infoCommandsInstance ??= new InfoCommands(this.infoCommandsContext()));
+  }
+  private infoCommandsContext(): InfoCommandsContext {
+    const app = this;
+    return {
+      activeContextCharLimit: (...args) => app.activeContextCharLimit(...args),
+      assertNoRunningCommands: (...args) => app.assertNoRunningCommands(...args),
+      get commandExecutionMode() {
+        return app.commandExecutionMode;
+      },
+      get config() {
+        return app.config;
+      },
+      get dirty() {
+        return app.dirty;
+      },
+      set dirty(value) {
+        app.dirty = value;
+      },
+      effectiveConfig: (...args) => app.effectiveConfig(...args),
+      mainToolCatalogSnapshot: (...args) => app.mainToolCatalogSnapshot(...args),
+      get maxModelRequests() {
+        return app.maxModelRequests;
+      },
+      get memoryManager() {
+        return app.memoryManager;
+      },
+      orchestrationEnabled: (...args) => app.orchestrationEnabled(...args),
+      get pendingImages() {
+        return app.pendingImages;
+      },
+      resumableThreads: (...args) => app.resumableThreads(...args),
+      get state() {
+        return app.state;
+      },
+      get storage() {
+        return app.storage;
+      },
+      get subagentCoordinator() {
+        return app.subagentCoordinator;
+      },
+      syncWorkspaceState: (...args) => app.syncWorkspaceState(...args),
+      get taskBudgets() {
+        return app.taskBudgets;
+      },
+      get terminal() {
+        return app.terminal;
+      },
+      get threadStore() {
+        return app.threadStore;
+      },
+      get trustedOuterSandbox() {
+        return app.trustedOuterSandbox;
+      },
+      get workspace() {
+        return app.workspace;
+      },
+    };
   }
 }
