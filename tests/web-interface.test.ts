@@ -816,6 +816,54 @@ describe("loopback Web service", () => {
     }
   });
 
+  it("still closes a deleted conversation whose staged-file cleanup fails", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-web-teardown-"));
+    const interaction = new WebInteraction();
+    const hostedPort = new WebInteraction();
+    let closedApps = 0;
+    let closedPorts = 0;
+    const app = {
+      sessionInfo: () => ({ workspaceRoot: directory, threadId: "thread_test" }),
+      isRequestActive: () => false,
+      discardHostedImage: async () => {
+        throw new Error("simulated staged image failure");
+      },
+      closeAsync: async () => {
+        closedApps += 1;
+      },
+    } as unknown as EasyCodeApp;
+    const originalClose = hostedPort.close.bind(hostedPort);
+    hostedPort.close = () => {
+      closedPorts += 1;
+      originalClose();
+    };
+    const service = new EasyCodeWebServer(app, interaction, directory, directory);
+    const internals = service as unknown as {
+      app: EasyCodeApp | undefined;
+      hosts: Map<string, unknown>;
+      prepareDelete(threadId: string): Promise<void>;
+    };
+    internals.hosts.set("thread_test", {
+      app,
+      port: hostedPort,
+      staged: new Map([["image_test", { id: "image_test" }]]),
+      stagedResources: new Map(),
+      unsubscribe: () => undefined,
+    });
+    try {
+      await assert.rejects(internals.prepareDelete("thread_test"), /simulated staged image failure/u);
+      // The host already left the index, so this was the only chance to close it.
+      assert.equal(internals.hosts.has("thread_test"), false);
+      assert.equal(closedApps, 1);
+      assert.equal(closedPorts, 1);
+      assert.equal(internals.app, undefined);
+    } finally {
+      await service.stop();
+      interaction.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("starts empty, keeps project registration separate from Thread creation, and gates sending", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-empty-web-"));
     const projectRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-empty-project-"));

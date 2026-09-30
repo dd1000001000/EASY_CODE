@@ -4,6 +4,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import type { EasyCodeApp } from "../app.js";
 import type { ImageAttachment } from "../core/types.js";
@@ -132,6 +133,7 @@ export class EasyCodeWebServer {
   private origin = "";
   private transitioning = false;
   private stopping = false;
+  private stopWork?: Promise<void>;
   private readonly projects: ProjectIndex;
   private readonly projectStorage: EasyCodeStorage;
   private broadcastLanguageValue: Language = "en_us";
@@ -253,11 +255,9 @@ export class EasyCodeWebServer {
     for (const threadId of threadIds) {
       const host = this.hosts.get(threadId);
       if (!host) continue;
-      await this.clearStaged(host);
       host.unsubscribe();
       this.hosts.delete(threadId);
-      await host.app.closeAsync();
-      host.port.close();
+      await this.teardownDetachedHost(host);
     }
     if (this.app && threadIds.has(this.app.sessionInfo().threadId)) await this.leaveCurrentSession();
   }
@@ -359,23 +359,29 @@ export class EasyCodeWebServer {
   }
 
   private async waitForStop(): Promise<void> {
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
       const stop = () => {
-        void this.stop().then(resolve);
+        void this.stop().then(resolve, reject);
       };
       process.once("SIGINT", stop);
       process.once("SIGTERM", stop);
       this.server.once("close", () => {
         process.off("SIGINT", stop);
         process.off("SIGTERM", stop);
-        resolve();
+        stop();
       });
     });
   }
 
-  async stop(): Promise<void> {
-    if (this.stopping) return;
-    this.stopping = true;
+  stop(): Promise<void> {
+    if (!this.stopWork) {
+      this.stopping = true;
+      this.stopWork = Promise.resolve().then(() => this.shutdown());
+    }
+    return this.stopWork;
+  }
+
+  private async shutdown(): Promise<void> {
     for (const host of this.hosts.values()) {
       host.app.cancelActiveRequest();
       host.port.cancelExternalOperation();
@@ -398,8 +404,11 @@ export class EasyCodeWebServer {
       await Promise.all(
         [...this.hosts.values()].map(async (host) => {
           host.unsubscribe();
-          await host.app.closeAsync();
-          host.port.close();
+          try {
+            await host.app.closeAsync();
+          } finally {
+            host.port.close();
+          }
         }),
       );
     } finally {
@@ -465,6 +474,12 @@ export class EasyCodeWebServer {
         nextPort.close();
         throw new Error("This project uses a different EASY CODE data directory.");
       }
+      if (this.stopping) {
+        // Shutdown has already snapshotted the hosts; never attach after it.
+        await next.closeAsync();
+        nextPort.close();
+        throw new Error("The local server is stopping.");
+      }
       this.attachHost(next, nextPort);
       this.app = next;
       this.port = nextPort;
@@ -500,11 +515,11 @@ export class EasyCodeWebServer {
       throw new Error("Stop this conversation before deleting it.");
     const host = this.hosts.get(targetThreadId);
     if (host) {
-      await this.clearStaged(host);
+      // Detach synchronously so a concurrent delete request cannot capture the
+      // same host and repeat its teardown.
       host.unsubscribe();
       this.hosts.delete(targetThreadId);
-      await host.app.closeAsync();
-      host.port.close();
+      await this.teardownDetachedHost(host);
     }
     if (this.app?.sessionInfo().threadId !== targetThreadId) return;
     this.app = undefined;
@@ -547,6 +562,10 @@ export class EasyCodeWebServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
+      if (this.stopping) {
+        json(response, 503, { error: "The local server is stopping." });
+        return;
+      }
       const host = request.headers.host;
       if (!this.origin || host !== new URL(this.origin).host) {
         json(response, 403, { error: "Invalid Host." });
@@ -1005,6 +1024,28 @@ export class EasyCodeWebServer {
     json(response, 200, { removed: project.id, deletedThreads: threads.length });
   }
 
+  /**
+   * Close a host that has already left `hosts`. Nothing else can reach it any
+   * more, so a failed staged-file cleanup must not skip closing its app, and a
+   * failed teardown must not leave it serving as the current session.
+   */
+  private async teardownDetachedHost(host: HostedThread): Promise<void> {
+    try {
+      try {
+        await this.clearStaged(host);
+      } finally {
+        try {
+          await host.app.closeAsync();
+        } finally {
+          host.port.close();
+        }
+      }
+    } catch (error) {
+      if (this.app === host.app) await this.leaveCurrentSession();
+      throw error;
+    }
+  }
+
   private async clearStaged(host: HostedThread): Promise<void> {
     let failure: unknown;
     for (const image of host.staged.values()) {
@@ -1042,7 +1083,7 @@ export class EasyCodeWebServer {
       "Cache-Control": "no-store",
     });
     if (request.method === "HEAD") response.end();
-    else createReadStream(target).pipe(response);
+    else await pipeline(createReadStream(target), response);
   }
 }
 
