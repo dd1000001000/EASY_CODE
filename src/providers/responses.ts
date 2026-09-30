@@ -225,10 +225,14 @@ export class ResponsesProvider implements ModelProvider {
           emit({ kind: "interrupted" });
         }
         if (!normalized.retryable || attempt >= maxRetries) throw normalized;
-        await (this.runtime.sleep ?? sleep)(
-          normalized.retryAfterMs ?? retryDelay(attempt, this.runtime.random?.() ?? Math.random()),
-          request.signal,
-        );
+        try {
+          await (this.runtime.sleep ?? sleep)(
+            normalized.retryAfterMs ?? retryDelay(attempt, this.runtime.random?.() ?? Math.random()),
+            request.signal,
+          );
+        } catch (sleepError) {
+          throw this.normalizeError(sleepError, request.signal);
+        }
       }
     }
     throw lastError ?? this.error("Provider request failed", "request_failed");

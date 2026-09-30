@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { createDefaultEasyCodeConfig } from "../src/config/defaults.js";
 import { PACKAGED_MODEL_REGISTRY_SOURCE, activateModelRegistry } from "../src/models/catalog.js";
 import { createProvider } from "../src/providers/factory.js";
-import type { JsonPostRequest } from "../src/providers/http-transport.js";
+import { ProviderError } from "../src/providers/errors.js";
+import { HttpTransportError, type JsonPostRequest } from "../src/providers/http-transport.js";
 import { describe, it } from "./harness.js";
 
 const RESPONSES_REGISTRY = `schema_version = 1
@@ -84,6 +85,43 @@ describe("Responses provider", () => {
     } finally {
       activateModelRegistry(PACKAGED_MODEL_REGISTRY_SOURCE, "packaged test registry");
     }
+  });
+
+  it("reports cancellation during retry backoff as a ProviderError, like chat completions", async () => {
+    const cancelDuringBackoff = async (providerName: string): Promise<void> => {
+      const config = createDefaultEasyCodeConfig(process.cwd());
+      config.providers[providerName]!.apiKey = "test-key";
+      config.providers[providerName]!.maxRetries = 2;
+      const controller = new AbortController();
+      let attempts = 0;
+      const provider = createProvider(config, providerName, undefined, {
+        transport: async () => {
+          attempts += 1;
+          return { statusCode: 503, headers: {}, body: JSON.stringify({ error: { message: "busy" } }) };
+        },
+        sleep: async () => {
+          controller.abort();
+          throw new HttpTransportError("aborted", "Request was canceled");
+        },
+      });
+      const error = await provider
+        .complete({ messages: [{ role: "user", content: "hello" }], signal: controller.signal })
+        .then(
+          () => undefined,
+          (caught: unknown) => caught,
+        );
+      assert.ok(error instanceof ProviderError, `${providerName} must normalize a backoff cancellation`);
+      assert.equal(error.code, "aborted");
+      assert.equal(attempts, 1);
+    };
+
+    activateModelRegistry(RESPONSES_REGISTRY, "responses test registry");
+    try {
+      await cancelDuringBackoff("openai-like");
+    } finally {
+      activateModelRegistry(PACKAGED_MODEL_REGISTRY_SOURCE, "packaged test registry");
+    }
+    await cancelDuringBackoff("deepseek");
   });
 
   it("uses registry capabilities to omit unsupported native tools", async () => {
