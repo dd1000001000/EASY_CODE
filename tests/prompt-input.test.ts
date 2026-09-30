@@ -1102,6 +1102,88 @@ describe("image-aware CLI prompt", () => {
     assert.match(transcript, /\u001B\[\?2004l/u);
   });
 
+  it("resolves an already-aborted prompt without leaving the terminal in raw mode", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const controller = new AbortController();
+    controller.abort();
+    const drafts: string[] = [];
+    const result = await readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      signal: controller.signal,
+      captureImage: async (index) => attachment(index),
+      onDraftChange: (draft) => drafts.push(draft.text),
+    });
+    assert.equal(result, null);
+    assert.equal(input.isRaw, false);
+    assert.deepEqual(drafts, [""]);
+  });
+
+  it("rejects and restores the terminal when the session-ready hook throws", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    const sessions: Array<PromptInputSession | undefined> = [];
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      onSessionReady: (session) => {
+        sessions.push(session);
+        if (session) throw new Error("renderer unavailable");
+      },
+    });
+    await assert.rejects(prompt, /renderer unavailable/u);
+    assert.equal(sessions.length, 2);
+    assert.equal(sessions[1], undefined);
+    assert.equal(input.isRaw, false);
+    assert.match(transcript, /\u001B\[\?2004l/u);
+  });
+
+  it("redraws a changed dynamic prompt prefix around the edit buffer", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let prefix = "A> ";
+    let activeSession: PromptInputSession | undefined;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      renderPrompt: () => prefix,
+      renderBelow: () => "footer",
+      captureImage: async (index) => attachment(index),
+      onSessionReady: (session) => {
+        activeSession = session;
+      },
+    });
+    input.write("draft");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.match(transcript, /A> /u);
+    assert.doesNotMatch(transcript, /B> /u);
+    prefix = "B> ";
+    const before = transcript.length;
+    activeSession?.refreshBelow();
+    assert.match(transcript.slice(before), /B> draft/u);
+    assert.match(transcript.slice(before), /footer/u);
+    input.write("\r");
+    assert.equal((await prompt)?.text, "draft");
+  });
+
   it("swallows unknown private OSC during approval and secret input", async () => {
     const approvalInput = new TtyInput();
     const approvalOutput = new TtyOutput();
