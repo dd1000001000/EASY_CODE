@@ -86,7 +86,7 @@ import { MemoryMaintenance } from "./memory/maintenance.js";
 import { redactSensitiveInformation } from "./memory/sensitive.js";
 import { MemoryVectorIndex } from "./memory/vector-index.js";
 import { formatPlanProposal } from "./plans/plan.js";
-import { activePromptBundleBinding, ensurePromptBundle, loadPromptBundleCatalog } from "./prompt-bundle/index.js";
+import { activePromptBundleBinding, ensurePromptBundle } from "./prompt-bundle/index.js";
 import { deleteThreadTree } from "./threads/delete-thread.js";
 import { ThreadTitleStore } from "./threads/thread-title.js";
 import {
@@ -118,7 +118,6 @@ import { runSandboxStartupGuide, type SandboxStartupService } from "./sandbox/st
 import { createStorage, workspaceIdFromRoot, type EasyCodeStorage } from "./storage/database.js";
 import {
   SubagentCoordinator,
-  toResultArtifactRef,
   type ObservedSubagentArtifacts,
   type SubagentExecutionOutcome,
   type SubagentExecutionRequest,
@@ -133,10 +132,9 @@ import { toolApprovalIdentity, type ToolApprovalIdentity } from "./tools/approva
 import { reviewToolApproval, type ToolApprovalReview } from "./tools/approval-agent.js";
 import { DownloadBroker } from "./downloads/broker.js";
 import { ThreadStore, peekThreadWorkspaceRoot, type ThreadLease, type ThreadSummary } from "./threads/thread-store.js";
-import { interruptedTurnAssistantMessage } from "./threads/event-replay.js";
 import type { UISessionInfo } from "./ui/contracts.js";
 import type { PlanReviewDecision } from "./ui/interaction-port.js";
-import { applySubagentTaskOperation, taskGraphView } from "./tasks/task-graph.js";
+import { taskGraphView } from "./tasks/task-graph.js";
 import { createId } from "./utils/ids.js";
 import { foldPendingOperations } from "./context/pending-operations.js";
 import { WorkspaceManager, type WorkspaceRestoreSummary } from "./workspace/manager.js";
@@ -153,6 +151,29 @@ import {
   ThreadResourceStore,
   type ThreadResourceAttachment,
 } from "./resources/index.js";
+import {
+  type ResumeRecoverySummary,
+  releaseOrphanedSubagentTasks,
+  repairInterruptedTurn,
+  resumeRecoverySummary,
+} from "./app/thread-recovery.js";
+import {
+  json,
+  samePath,
+  stripPasteFailureMarkers,
+  stripImageMarkers,
+  renderPromptBundleText,
+  promptBundleText,
+  parseQuotedArguments,
+  messagePreview,
+} from "./app/text.js";
+
+// Re-exported so the package entry (src/index.ts `export *`) keeps its public API.
+export {
+  releaseOrphanedSubagentTasks,
+  repairInterruptedTurn,
+  type ResumeRecoverySummary,
+} from "./app/thread-recovery.js";
 
 export interface EasyCodeAppOptions {
   workspaceRoot?: string;
@@ -224,285 +245,6 @@ interface ActiveTurnSteering {
   readonly notifier: TurnSteeringAttemptNotifier;
   readonly requestImages: readonly ImageAttachment[];
   readonly draftImages: Map<string, ImageAttachment>;
-}
-
-export interface ResumeRecoverySummary {
-  readonly threadId: string;
-  readonly messageCount: number;
-  readonly compactedMessageCount: number;
-  readonly workingSummaryRestored: boolean;
-  readonly restoredReasoningBlocks: number;
-  readonly restoredReadVersions: number;
-  readonly staleReadVersions: number;
-  readonly restoredChanges: number;
-  readonly discardedChanges: number;
-  readonly restoredCommands: number;
-  readonly interruptedTurnRepaired: boolean;
-  readonly reconciledSubagentAssignments: number;
-  readonly recoveredStandaloneSubagents: number;
-  readonly taskGraph?: {
-    readonly id: string;
-    readonly status: string;
-    readonly completed: number;
-    readonly total: number;
-    readonly currentTask?: string;
-  };
-  readonly planReview?: {
-    readonly id: string;
-    readonly revision: number;
-    readonly status: string;
-  };
-}
-
-function promptBundleText(path: string): string {
-  return loadPromptBundleCatalog().readText(path).trimEnd();
-}
-
-function renderPromptBundleText(path: string, values: Readonly<Record<string, string | number | boolean>>): string {
-  return loadPromptBundleCatalog().render(path, values).trimEnd();
-}
-
-function samePath(left: string, right: string): boolean {
-  const normalizedLeft = path.normalize(path.resolve(left));
-  const normalizedRight = path.normalize(path.resolve(right));
-  return process.platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
-}
-
-function messagePreview(message: ChatMessage): string {
-  const role = message.role === "user" ? "User" : message.role === "assistant" ? "Assistant" : "Tool";
-  let content = message.content ?? "";
-  if (!content && message.role === "assistant" && message.tool_calls?.length) {
-    content = `[Tool calls: ${message.tool_calls.map((call) => call.function.name).join(", ")}]`;
-  }
-  const compact = redactSensitiveInformation(content.replace(/\s+/gu, " ").trim()).slice(0, 240);
-  const labels =
-    message.role === "user" && message.images?.length
-      ? ` [${message.images.map((image) => image.label).join(", ")}]`
-      : "";
-  return `${role}: ${compact || "(empty)"}${labels}`;
-}
-
-function json(value: unknown): string {
-  return JSON.stringify(value, null, 2);
-}
-
-function parseQuotedArguments(value: string): string[] {
-  const args: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | undefined;
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index]!;
-    if (quote) {
-      if (char === quote) quote = undefined;
-      else if (char === "\\" && quote === '"' && value[index + 1] === '"') current += value[++index]!;
-      else current += char;
-    } else if (char === '"' || char === "'") quote = char;
-    else if (/\s/u.test(char)) {
-      if (current) {
-        args.push(current);
-        current = "";
-      }
-    } else current += char;
-  }
-  if (quote) throw new Error("Unclosed quote in command arguments");
-  if (current) args.push(current);
-  return args;
-}
-
-function stripPasteFailureMarkers(value: string): string {
-  return value.replace(/\s*\[Image paste failed\]\s*/gu, " ").trim();
-}
-
-function stripImageMarkers(value: string, images: readonly ImageAttachment[]): string {
-  let result = value;
-  for (const image of images) {
-    result = result.replaceAll(`[${image.label}]`, " ");
-  }
-  return stripPasteFailureMarkers(result).replace(/\s+/gu, " ").trim();
-}
-
-export function repairInterruptedTurn(threadStore: ThreadStore, state: SessionState): boolean {
-  const turnId = state.activeTurnId;
-  if (!turnId) return false;
-  const interruptedPlanReview = threadStore.interruptedPlanReview(state.threadId, turnId);
-  const finalAssistantWasDurable = threadStore.hasDurableFinalAssistant(state.threadId, turnId);
-
-  const repairedMessages: ChatMessage[] = [];
-  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
-    const candidate = state.messages[index];
-    if (candidate?.role !== "assistant" || !candidate.tool_calls?.length) continue;
-    const completedCallIds = new Set(
-      state.messages
-        .slice(index + 1)
-        .filter((message): message is Extract<ChatMessage, { role: "tool" }> => message.role === "tool")
-        .map((message) => message.tool_call_id),
-    );
-    for (const call of candidate.tool_calls) {
-      if (completedCallIds.has(call.id)) continue;
-      const toolMessage: Extract<ChatMessage, { role: "tool" }> = {
-        role: "tool",
-        tool_call_id: call.id,
-        name: call.function.name,
-        content: JSON.stringify({
-          ok: false,
-          summary: "Tool execution was interrupted before a result was recorded.",
-          error: "interrupted",
-        }),
-      };
-      repairedMessages.push(toolMessage);
-    }
-    break;
-  }
-
-  if (!finalAssistantWasDurable) {
-    repairedMessages.push({
-      role: "assistant",
-      content: interruptedTurnAssistantMessage(),
-    });
-  }
-  threadStore.appendEvent(state.threadId, {
-    turnId,
-    type: "turn.recovered",
-    phase: "completed",
-    payload: {
-      reason: "interrupted",
-      steps: 0,
-      recovered: true,
-      messages: repairedMessages,
-      ...(interruptedPlanReview ? { planReview: interruptedPlanReview } : {}),
-    },
-  });
-  state.messages.push(...repairedMessages);
-  if (interruptedPlanReview) state.planReview = interruptedPlanReview;
-  state.activeTurnId = undefined;
-  state.updatedAt = new Date().toISOString();
-  return true;
-}
-
-/** Reconcile child claims that cannot survive a process/thread boundary. */
-export function releaseOrphanedSubagentTasks(
-  threadStore: ThreadStore,
-  state: SessionState,
-  reason = "The owning child runtime is no longer active.",
-): number {
-  let released = 0;
-  const resumableBindings = new Set(
-    threadStore
-      .unobservedSubagentAssignments(state.threadId)
-      .filter(
-        (entry) =>
-          Boolean(entry.assignment.childThreadId) &&
-          Boolean(entry.assignment.environmentId) &&
-          !threadStore.hasCommittedSubagentStop(state.threadId, entry.assignment.agentId),
-      )
-      .map((entry) => entry.assignment.agentId),
-  );
-  while (state.taskGraph) {
-    const orphan = state.taskGraph.tasks.find(
-      (task) =>
-        task.owner === "subagent" &&
-        task.status === "in_progress" &&
-        Boolean(task.assignedAgentId) &&
-        !resumableBindings.has(task.assignedAgentId as string),
-    );
-    if (!orphan?.assignedAgentId) break;
-    const turnId = createId("turn");
-    const durableResult = threadStore.latestSubagentResult(state.threadId, orphan.assignedAgentId, orphan.id);
-    const stopWasCommitted = threadStore.hasCommittedSubagentStop(state.threadId, orphan.assignedAgentId);
-    const completedReport =
-      !stopWasCommitted &&
-      durableResult?.reason === "completed" &&
-      durableResult.report?.outcome === "completed" &&
-      durableResult.report.taskId === orphan.id &&
-      durableResult.report.completionEvidence.length === orphan.completionChecks.length &&
-      durableResult.report.completionEvidence.every((item, index) => item.check === orphan.completionChecks[index])
-        ? durableResult.report
-        : undefined;
-    const operation = completedReport
-      ? {
-          action: "complete" as const,
-          taskId: orphan.id,
-          agentId: orphan.assignedAgentId,
-          evidence: completedReport.completionEvidence.map((item) => item.evidence),
-          ...(durableResult?.resultArtifact
-            ? { resultArtifact: toResultArtifactRef(durableResult.resultArtifact) }
-            : {}),
-        }
-      : {
-          action: "release" as const,
-          taskId: orphan.id,
-          agentId: orphan.assignedAgentId,
-        };
-    const next = applySubagentTaskOperation(state.taskGraph, operation, { turnId });
-    threadStore.appendEvent(state.threadId, {
-      turnId,
-      type: "subagent.reconciled",
-      phase: "completed",
-      payload: {
-        taskGraph: next,
-        subagentTaskOperation: operation,
-        agentId: orphan.assignedAgentId,
-        taskId: orphan.id,
-        reason: completedReport ? "Recovered the child's durable verified result." : reason,
-        ...(completedReport ? { report: completedReport } : {}),
-      },
-    });
-    state.taskGraph = next;
-    state.updatedAt = next.updatedAt;
-    released += 1;
-  }
-  return released;
-}
-
-function resumeRecoverySummary(
-  state: Readonly<SessionState>,
-  workspace: Readonly<WorkspaceRestoreSummary>,
-  options: {
-    interruptedTurnRepaired: boolean;
-    reconciledSubagentAssignments: number;
-  },
-): ResumeRecoverySummary {
-  const graph = state.taskGraph ? taskGraphView(state.taskGraph) : undefined;
-  return {
-    threadId: state.threadId,
-    messageCount: state.messages.length,
-    compactedMessageCount: state.compactedMessageCount,
-    workingSummaryRestored: Boolean(state.workingSummary.trim()),
-    restoredReasoningBlocks: state.messages.reduce(
-      (count, message) => count + (message.role === "assistant" && message.reasoning_content?.trim() ? 1 : 0),
-      0,
-    ),
-    restoredReadVersions: workspace.restoredReadVersions,
-    staleReadVersions: workspace.staleReadVersions,
-    restoredChanges: workspace.restoredChanges,
-    discardedChanges: workspace.discardedChanges,
-    restoredCommands: state.commands.length,
-    interruptedTurnRepaired: options.interruptedTurnRepaired,
-    reconciledSubagentAssignments: options.reconciledSubagentAssignments,
-    recoveredStandaloneSubagents: 0,
-    ...(graph
-      ? {
-          taskGraph: {
-            id: graph.id,
-            status: graph.status,
-            completed: graph.completed,
-            total: graph.total,
-            ...(graph.currentTask ? { currentTask: graph.currentTask } : {}),
-          },
-        }
-      : {}),
-    ...(state.planReview
-      ? {
-          planReview: {
-            id: state.planReview.proposal.id,
-            revision: state.planReview.proposal.revision,
-            status: state.planReview.status,
-          },
-        }
-      : {}),
-  };
 }
 
 export class EasyCodeApp {

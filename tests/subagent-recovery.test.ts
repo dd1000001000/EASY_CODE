@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { EasyCodeApp, releaseOrphanedSubagentTasks } from "../src/app.js";
+import { EasyCodeApp } from "../src/app.js";
+import { releaseOrphanedSubagentTasks } from "../src/app/thread-recovery.js";
 import { createDefaultEasyCodeConfig } from "../src/config/index.js";
 import type {
   ExecutionEnvironmentSnapshot,

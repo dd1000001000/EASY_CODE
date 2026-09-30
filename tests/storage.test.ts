@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { repairInterruptedTurn } from "../src/app.js";
+import { repairInterruptedTurn } from "../src/app/thread-recovery.js";
 import { describe, it } from "./harness.js";
 import { createStorage } from "../src/storage/index.js";
 import { executeLanguageCommand, readLanguage } from "../src/i18n/language.js";
