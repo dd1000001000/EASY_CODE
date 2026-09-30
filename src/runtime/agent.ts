@@ -31,6 +31,7 @@ import {
   type ToolName,
   type TurnSteeringBatch,
   type TurnSteeringBoundary,
+  type FunctionToolCall,
 } from "../core/types.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { TaskBudgetExceeded } from "./task-budget.js";
@@ -736,6 +737,159 @@ function isSubagentAssignmentSnapshot(value: unknown): value is SubagentAssignme
   );
 }
 
+/** The runtime identity a turn runs under (main agent unless a child runtime was configured). */
+type AgentIdentity = NonNullable<AgentRuntimeDependencies["agentIdentity"]>;
+
+/** Per-turn memory bookkeeping threaded through the phases of AgentRuntime.run. */
+interface TurnMemoryContext {
+  userInput: string;
+  mutations: MemoryMutationRequest[];
+  approvedPlanReview: PlanReviewState | undefined;
+}
+
+/** Values executeToolCalls reads from the enclosing turn; see AgentRuntime.run. */
+interface ToolCallsContext {
+  readonly agentIdentity: AgentIdentity;
+  readonly calls: FunctionToolCall[];
+  readonly commandRetries: CommandRetryTracker;
+  readonly effectiveMode: AgentMode;
+  readonly imageNumbering: { next: number };
+  readonly memoryContext: TurnMemoryContext;
+  readonly options: AgentRunOptions;
+  readonly ordinaryToolDefinitions: ToolDefinition[];
+  readonly progressResponseBase: number;
+  readonly progressVerificationCommands: Map<string, VerificationKind>;
+  readonly projectionHistory: ChatMessage[];
+  readonly proposePlanBatched: boolean;
+  readonly state: SessionState;
+  readonly step: number;
+  readonly stepImageAttachments: ImageAttachment[];
+  readonly submitTaskResultBatched: boolean;
+  readonly toolGateway: ToolExecutionGateway;
+  readonly toolRecovery: ToolRecoveryBudget;
+  readonly turnId: string;
+  readonly turnImages: ImageAttachment[];
+}
+
+/** Turn-local variables executeToolCalls updates; written back when it returns or throws. */
+interface ToolCallsState {
+  completedVerificationPhase: boolean;
+  environmentFault: string | undefined;
+  finishRejectedReason: string | undefined;
+  proposedPlan: PlanProposal | undefined;
+  requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
+  steeringAppliedBetweenTools: boolean;
+  submittedTaskReport: SubagentTaskReport | undefined;
+}
+
+/** Values handleTextResponse reads from the enclosing turn; see AgentRuntime.run. */
+interface TextResponseContext {
+  readonly agentIdentity: AgentIdentity;
+  readonly assistantMessage: ChatMessage;
+  readonly calls: FunctionToolCall[];
+  readonly effectiveMode: AgentMode;
+  readonly memoryContext: TurnMemoryContext;
+  readonly options: AgentRunOptions;
+  readonly state: SessionState;
+  readonly step: number;
+  readonly turnHistoryStart: number;
+  readonly turnId: string;
+  readonly turnImages: ImageAttachment[];
+}
+
+type HandleTextResponseFlow =
+  { kind: "next" } | { kind: "continue" } | { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> };
+
+/** Values resolveTurnMode reads from the enclosing turn; see AgentRuntime.run. */
+interface TurnModeContext {
+  readonly agentIdentity: AgentIdentity;
+  readonly commitAutoRoute: (mode: "plan" | "code", reason: string) => Promise<void>;
+  readonly memoryContext: TurnMemoryContext;
+  readonly options: AgentRunOptions;
+  readonly outstandingSubagentsAtRoute: readonly {
+    id: string;
+    assignmentKind: "dag" | "standalone";
+    taskId: string;
+    taskTitle: string;
+    status: string;
+  }[];
+  readonly state: SessionState;
+  readonly turnHistoryStart: number;
+  readonly turnId: string;
+  readonly turnImages: ImageAttachment[];
+  readonly userInput: string;
+}
+
+/** Turn-local variables resolveTurnMode updates; written back when it returns or throws. */
+interface TurnModeState {
+  autoReason: string;
+  phaseCompactionRequestsUsed: number;
+}
+
+type ResolveTurnModeFlow = { kind: "next" } | { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> };
+
+/** Values settleToolBatch reads from the enclosing turn; see AgentRuntime.run. */
+interface ToolBatchOutcomeContext {
+  readonly agentIdentity: AgentIdentity;
+  readonly completedVerificationPhase: boolean;
+  readonly environmentFault: string | undefined;
+  readonly finishRejectedReason: string | undefined;
+  readonly memoryContext: TurnMemoryContext;
+  readonly proposedPlan: PlanProposal | undefined;
+  readonly requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
+  readonly state: SessionState;
+  readonly step: number;
+  readonly stepImageAttachments: ImageAttachment[];
+  readonly submittedTaskReport: SubagentTaskReport | undefined;
+  readonly turnId: string;
+  readonly turnImages: ImageAttachment[];
+}
+
+/** Turn-local variables settleToolBatch updates; written back when it returns or throws. */
+interface ToolBatchOutcomeState {
+  steeringAppliedBetweenTools: boolean;
+}
+
+type SettleToolBatchFlow =
+  { kind: "next" } | { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> } | { kind: "continue" };
+
+/** Values prepareStepRequest reads from the enclosing turn; see AgentRuntime.run. */
+interface StepRequestContext {
+  readonly agentIdentity: AgentIdentity;
+  readonly effectiveMode: AgentMode;
+  readonly memoryContext: TurnMemoryContext;
+  readonly options: AgentRunOptions;
+  readonly state: SessionState;
+  readonly toolGateway: ToolExecutionGateway;
+  readonly turnId: string;
+  readonly turnImages: ImageAttachment[];
+}
+
+/** Turn-local variables prepareStepRequest updates; written back when it returns or throws. */
+interface StepRequestState {
+  memories: readonly Readonly<LongTermMemory>[];
+  phaseCompactionRequestsUsed: number;
+  rememberedPhaseKey: string | undefined;
+  rememberedQueryKey: string;
+  retrievedCache: RuntimeLayeredContext | undefined;
+  retrievedQueryKey: string;
+  step: number;
+}
+
+type PrepareStepRequestFlow =
+  | {
+      kind: "next";
+      outputs: {
+        stepRuntimeContext: string;
+        selectedForStep: ReturnType<typeof selectMemoryContext> | undefined;
+        ordinaryToolDefinitions: ToolDefinition[];
+        enabledTools: AgentTool[];
+        messages: ChatMessage[];
+      };
+    }
+  | { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> }
+  | { kind: "continue" };
+
 export class AgentRuntime {
   /** Auxiliary operation: no user turn, tool dispatch, memory writes or task continuation. */
   async compactSession(
@@ -1330,6 +1484,1116 @@ export class AgentRuntime {
           /* Presentation cannot undo a durable mode transition. */
         }
       };
+      const resolveTurnModeState: TurnModeState = { autoReason, phaseCompactionRequestsUsed };
+      try {
+        const resolveTurnModeFlow = await this.resolveTurnMode(
+          {
+            agentIdentity,
+            commitAutoRoute,
+            memoryContext,
+            options,
+            outstandingSubagentsAtRoute,
+            state,
+            turnHistoryStart,
+            turnId,
+            turnImages,
+            userInput,
+          },
+          resolveTurnModeState,
+        );
+        if (resolveTurnModeFlow.kind === "return") return resolveTurnModeFlow.value;
+      } finally {
+        ({ autoReason, phaseCompactionRequestsUsed } = resolveTurnModeState);
+      }
+
+      let memories: readonly Readonly<LongTermMemory>[] = [];
+      let rememberedQueryKey = "";
+      let rememberedPhaseKey: string | undefined;
+      let retrievedQueryKey = "";
+      let retrievedCache: RuntimeLayeredContext | undefined;
+      // Shared by reference: tool callbacks (attachImage) advance it from inside tool execution.
+      const imageNumbering = { next: nextThreadImageNumber(state.messages) };
+      const exposedTools = availableTools(
+        this.dependencies.toolCatalog.tools,
+        effectiveMode,
+        agentIdentity.role,
+        state.thinkingEffort,
+        this.orchestrationToolsAvailable(state, options),
+        this.dependencies.visionAvailable ?? true,
+      ).filter(
+        (tool) =>
+          (tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId)) &&
+          (state.mode !== "auto" ||
+            (tool.name !== "manage_tasks" &&
+              (tool.name !== "manage_subagents" || outstandingSubagentsAtRoute.length > 0))),
+      );
+      const exposedToolCatalog = snapshotToolSet(exposedTools, this.dependencies.toolCatalog.revision);
+      const toolGateway = new ToolExecutionGateway(exposedToolCatalog, this.dependencies.authorizeToolExecution);
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        type: "tool.catalog.bound",
+        phase: "completed",
+        payload: {
+          catalogRevision: this.dependencies.toolCatalog.revision,
+          catalogHash: this.dependencies.toolCatalog.hash,
+          exposureHash: exposedToolCatalog.hash,
+          toolCount: exposedToolCatalog.bindings.size,
+          toolsTruncated: exposedToolCatalog.bindings.size > MAX_AUDITED_TOOL_BINDINGS,
+          tools: [...exposedToolCatalog.bindings.values()].slice(0, MAX_AUDITED_TOOL_BINDINGS).map((binding) => ({
+            toolId: binding.toolId,
+            modelName: binding.modelName,
+            sourceId: binding.sourceId,
+            sourceKind: binding.sourceKind,
+            schemaHash: binding.schemaHash,
+            metadataHash: binding.metadataHash,
+          })),
+        },
+      });
+      const progressResponseBase = state.progressGuard?.lastObservedResponseOrdinal ?? 0;
+      const progressVerificationCommands = new Map<string, VerificationKind>();
+
+      const toolRecovery = new ToolRecoveryBudget(
+        (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1,
+      );
+      let invalidOutputAttempts = 0;
+      const commandRetries = new CommandRetryTracker(
+        (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).sandboxInitializationRetries,
+      );
+      // Once execution becomes uncertain, this run never re-enables mutations.
+      // Recovery is an explicit external repair followed by Resume.
+      for (let step = 1; !this.requestLimitReached(); step += 1) {
+        if (options.signal?.aborted) {
+          return this.finish(
+            state,
+            turnId,
+            "The task was interrupted by the user.",
+            "interrupted",
+            step - 1,
+            memoryContext,
+          );
+        }
+
+        if (agentIdentity.role === "main_agent") {
+          for (const report of (await this.dependencies.takeSubagentMessages?.(state.threadId, turnId)) ?? []) {
+            state.messages.push(report);
+          }
+        }
+        for (const instruction of this.dependencies.takeAdditionalInstructions?.() ?? []) {
+          const followUp: Extract<ChatMessage, { role: "user" }> = {
+            role: "user",
+            content: renderRuntimePrompt("runtime/parent-follow-up.md", {
+              instruction,
+            }),
+          };
+          state.messages.push(followUp);
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            stepId: `step_${step}`,
+            type: "message.user.synthetic",
+            phase: "completed",
+            payload: followUp,
+          });
+        }
+        await this.takeAndApplySteering(state, turnId, "before_model", turnImages, false, memoryContext);
+        if (agentIdentity.role === "main_agent") {
+          const shared = this.dependencies.taskBudget?.snapshot();
+          const sharedRemaining =
+            shared?.maxRequests === null || shared === undefined
+              ? undefined
+              : Math.max(0, shared.maxRequests - shared.requests);
+          const localRemaining = this.remainingRequestAllowance();
+          const remainingModelRequests =
+            localRemaining === undefined
+              ? sharedRemaining
+              : sharedRemaining === undefined
+                ? localRemaining
+                : Math.min(localRemaining, sharedRemaining);
+          const reviewRequests = await this.processProgressIntervention({
+            state,
+            turnId,
+            userInput: memoryContext.userInput,
+            remainingModelRequests,
+            signal: options.signal,
+          });
+          this.modelRequestsUsed += reviewRequests;
+          if (this.requestLimitReached()) {
+            return this.finish(
+              state,
+              turnId,
+              "The shared model-request budget was exhausted while reviewing stalled progress.",
+              "limit_reached",
+              this.modelRequestsUsed,
+              memoryContext,
+            );
+          }
+        }
+        const prepareStepRequestState: StepRequestState = {
+          memories,
+          phaseCompactionRequestsUsed,
+          rememberedPhaseKey,
+          rememberedQueryKey,
+          retrievedCache,
+          retrievedQueryKey,
+          step,
+        };
+        let prepareStepRequestFlow: PrepareStepRequestFlow;
+        try {
+          prepareStepRequestFlow = await this.prepareStepRequest(
+            { agentIdentity, effectiveMode, memoryContext, options, state, toolGateway, turnId, turnImages },
+            prepareStepRequestState,
+          );
+        } finally {
+          ({
+            memories,
+            phaseCompactionRequestsUsed,
+            rememberedPhaseKey,
+            rememberedQueryKey,
+            retrievedCache,
+            retrievedQueryKey,
+            step,
+          } = prepareStepRequestState);
+        }
+        if (prepareStepRequestFlow.kind === "return") return prepareStepRequestFlow.value;
+        if (prepareStepRequestFlow.kind === "continue") continue;
+        const { stepRuntimeContext, selectedForStep, ordinaryToolDefinitions, enabledTools, messages } =
+          prepareStepRequestFlow.outputs;
+
+        let response;
+        try {
+          const attempted = await this.runProviderAttempt(options.signal, (attemptSignal) =>
+            this.withModelRequestActivity(`Waiting for ${this.dependencies.provider.model} response`, () =>
+              this.dependencies.provider.complete({
+                messages,
+                // Every actor prefers the same streaming provider transport.
+                // Presentation remains main-agent-only so private child context
+                // cannot leak into the parent's terminal.
+                responseMode: "stream",
+                currentTurnImageIds: turnImages.map((image) => image.id),
+                tools: enabledTools.map((tool) => tool.definition),
+                signal: attemptSignal,
+                thinkingEffort: state.thinkingEffort,
+                ...(agentIdentity.role === "main_agent" && this.dependencies.onModelStream
+                  ? {
+                      onStreamEvent: (event: ProviderStreamEvent) => {
+                        try {
+                          this.dependencies.onModelStream?.(event);
+                        } catch {
+                          // Live presentation must never replace provider output.
+                        }
+                      },
+                    }
+                  : {}),
+              }),
+            ),
+          );
+          if (attempted.kind === "steering_interrupted") {
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "model.attempt.steering_interrupted",
+              phase: "interrupted",
+              payload: { purpose: "agent_step" },
+            });
+            await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext);
+            step -= 1;
+            continue;
+          }
+          response = attempted.value;
+          if (
+            agentIdentity.role === "main_agent" &&
+            selectedForStep?.memories.length &&
+            messages.some((message) => message.role === "user" && message.content === stepRuntimeContext)
+          ) {
+            try {
+              this.dependencies.recordMemoryRecall?.(
+                state.threadId,
+                turnId,
+                selectedForStep.memories.map((memory) => memory.id),
+              );
+            } catch {
+              // Recall accounting is derived state, never a reason to discard a model response.
+            }
+          }
+          await this.reportModelUsage(turnId, "agent_step", response.usage, { step, attempt: 1, retry: false });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!options.signal?.aborted && isContextCapacityError(error)) {
+            return this.finish(
+              state,
+              turnId,
+              "Context paused: the provider rejected the input capacity after bounded recovery. History, files and pending operations are preserved; reduce required input or configure a supported model window before resuming.",
+              "limit_reached",
+              step,
+              memoryContext,
+              undefined,
+              undefined,
+              {
+                code: "context_capacity_exhausted",
+                tool: "runtime",
+                attempts: state.pressureRecovery?.serverReset ? 1 : 0,
+                recoverable: true,
+              },
+            );
+          }
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            stepId: `step_${step}`,
+            type: "model.error",
+            phase: "failed",
+            payload: { message, category: failureCategory(error, options.signal), commandReplay: false },
+          });
+          const interrupted = Boolean(options.signal?.aborted);
+          return this.finish(
+            state,
+            turnId,
+            interrupted ? "The task was interrupted by the user." : `Model request failed: ${message}`,
+            interrupted ? "interrupted" : error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
+            error instanceof TaskBudgetExceeded ? this.modelRequestsUsed : step,
+            memoryContext,
+            undefined,
+            undefined,
+            interrupted ? undefined : contextCapacityFailure(error, state),
+          );
+        }
+
+        if (
+          agentIdentity.role === "main_agent" &&
+          (await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext))
+        ) {
+          // The response was never added to the transcript, so a tool-call
+          // protocol cannot be left half-open. Retry this logical step with the
+          // newly coalesced user message.
+          step -= 1;
+          continue;
+        }
+
+        const executionToolCalls = deduplicateThreadTitleCalls(response.message.tool_calls);
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content: response.message.content,
+          ...(response.message.phase ? { phase: response.message.phase } : {}),
+          tool_calls: executionToolCalls,
+          reasoning_content: response.message.reasoning_content,
+        };
+        state.messages.push(assistantMessage);
+        const projectionHistory: ChatMessage[] = [...messages, assistantMessage];
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          stepId: `step_${step}`,
+          type: "message.assistant",
+          phase: "completed",
+          payload: assistantMessage,
+        });
+        const reasoningText = response.message.reasoning_content;
+        const thinkingEffort = state.thinkingEffort;
+        if (
+          thinkingEffort !== "none" &&
+          reasoningText !== undefined &&
+          reasoningText !== null &&
+          reasoningText.trim().length > 0
+        ) {
+          try {
+            this.dependencies.onReasoning?.({
+              type: "reasoning",
+              text: reasoningText,
+              threadId: state.threadId,
+              turnId,
+              step,
+              provider: this.dependencies.provider.name,
+              model: this.dependencies.provider.model,
+              thinkingEffort,
+            });
+          } catch {
+            // This hook is ephemeral presentation only. A broken UI must not
+            // interrupt the durable assistant message or its pending tool calls.
+          }
+        }
+
+        // Execute original arguments; the complete sanitized candidate remains
+        // in history until an accepted compaction retires it.
+        const invalidOutput = incompleteModelOutput(response);
+        if (invalidOutput) {
+          invalidOutputAttempts++;
+          for (const call of executionToolCalls ?? []) {
+            const rejected: ChatMessage = {
+              role: "tool",
+              name: call.function.name,
+              tool_call_id: call.id,
+              content: JSON.stringify({ ok: false, error: invalidOutput, executed: false }),
+            };
+            state.messages.push(rejected);
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              type: "tool.result",
+              phase: "failed",
+              payload: {
+                callId: call.id,
+                tool: call.function.name,
+                message: rejected,
+                result: { ok: false, executed: false, error: invalidOutput },
+              },
+            });
+          }
+          const feedback: ChatMessage = { role: "user", content: "RUNTIME_MODEL_CONTENT_ERROR: " + invalidOutput };
+          state.messages.push(feedback);
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            type: "message.user.synthetic",
+            payload: feedback,
+          });
+          if (invalidOutputAttempts <= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries)
+            continue;
+          return this.finish(
+            state,
+            turnId,
+            invalidOutput + " Content correction budget exhausted; work is unverified and retained.",
+            "failed",
+            step,
+            memoryContext,
+          );
+        }
+        invalidOutputAttempts = 0;
+        const calls = executionToolCalls ?? [];
+        const handleTextResponseFlow = await this.handleTextResponse({
+          agentIdentity,
+          assistantMessage,
+          calls,
+          effectiveMode,
+          memoryContext,
+          options,
+          state,
+          step,
+          turnHistoryStart,
+          turnId,
+          turnImages,
+        });
+        if (handleTextResponseFlow.kind === "continue") continue;
+        if (handleTextResponseFlow.kind === "return") return handleTextResponseFlow.value;
+
+        const proposePlanBatched = calls.length > 1 && calls.some((call) => call.function.name === "propose_plan");
+        const submitTaskResultBatched =
+          calls.length > 1 && calls.some((call) => call.function.name === "submit_task_result");
+        const stepImageAttachments: ImageAttachment[] = [];
+        let proposedPlan: PlanProposal | undefined;
+        let submittedTaskReport: SubagentTaskReport | undefined;
+        let steeringAppliedBetweenTools = false;
+        let requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
+        let finishRejectedReason: string | undefined;
+        let completedVerificationPhase = false;
+        let environmentFault = this.dependencies.getEnvironmentFault?.();
+
+        const executeToolCallsState: ToolCallsState = {
+          completedVerificationPhase,
+          environmentFault,
+          finishRejectedReason,
+          proposedPlan,
+          requiredProtocolExhaustion,
+          steeringAppliedBetweenTools,
+          submittedTaskReport,
+        };
+        try {
+          await this.executeToolCalls(
+            {
+              agentIdentity,
+              calls,
+              commandRetries,
+              effectiveMode,
+              imageNumbering,
+              memoryContext,
+              options,
+              ordinaryToolDefinitions,
+              progressResponseBase,
+              progressVerificationCommands,
+              projectionHistory,
+              proposePlanBatched,
+              state,
+              step,
+              stepImageAttachments,
+              submitTaskResultBatched,
+              toolGateway,
+              toolRecovery,
+              turnId,
+              turnImages,
+            },
+            executeToolCallsState,
+          );
+        } finally {
+          ({
+            completedVerificationPhase,
+            environmentFault,
+            finishRejectedReason,
+            proposedPlan,
+            requiredProtocolExhaustion,
+            steeringAppliedBetweenTools,
+            submittedTaskReport,
+          } = executeToolCallsState);
+        }
+
+        const settleToolBatchState: ToolBatchOutcomeState = { steeringAppliedBetweenTools };
+        try {
+          const settleToolBatchFlow = await this.settleToolBatch(
+            {
+              agentIdentity,
+              completedVerificationPhase,
+              environmentFault,
+              finishRejectedReason,
+              memoryContext,
+              proposedPlan,
+              requiredProtocolExhaustion,
+              state,
+              step,
+              stepImageAttachments,
+              submittedTaskReport,
+              turnId,
+              turnImages,
+            },
+            settleToolBatchState,
+          );
+          if (settleToolBatchFlow.kind === "return") return settleToolBatchFlow.value;
+          if (settleToolBatchFlow.kind === "continue") continue;
+        } finally {
+          ({ steeringAppliedBetweenTools } = settleToolBatchState);
+        }
+      }
+
+      if (state.completionControl?.active) {
+        const obligations = state.completionControl.active.obligations;
+        const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(
+          (item) => item.kind === "subagent_submission" || item.kind === "collect_subagents",
+        )
+          ? "subagent"
+          : "completion_protocol";
+        return this.finish(
+          state,
+          turnId,
+          `Task paused at the model-request limit with ${obligations.length} unresolved completion obligation(s).`,
+          "paused",
+          this.modelRequestsUsed,
+          memoryContext,
+          undefined,
+          undefined,
+          undefined,
+          {
+            cause,
+            resumable: true,
+            requiredAction: obligations.map((item) => item.requiredAction).join(" "),
+            obligations,
+          },
+        );
+      }
+      if (this.requestLimit === undefined) {
+        throw new Error("Agent loop ended without completion or a configured model-request limit");
+      }
+      return this.finish(
+        state,
+        turnId,
+        `Reached the hard limit of ${this.requestLimit} model requests before the task could be confirmed complete.`,
+        "limit_reached",
+        this.modelRequestsUsed,
+        memoryContext,
+      );
+    } catch (error) {
+      const interrupted = Boolean(options.signal?.aborted);
+      const message = error instanceof Error ? error.message : String(error);
+      const protocolFailure = !interrupted && error instanceof ToolProtocolExhausted ? error : undefined;
+      const controlFailure =
+        protocolFailure?.failure ?? (!interrupted ? contextCapacityFailure(error, state) : undefined);
+      const capacityExhausted = !interrupted && isContextCapacityError(error);
+      const result: AgentRunResult = {
+        text: interrupted
+          ? "The task was interrupted by the user."
+          : error instanceof CommandEnvironmentQuarantined
+            ? `Task paused: the command environment is quarantined. History and pending work are preserved; repair and verify cleanup before resuming. ${message}`
+            : capacityExhausted
+              ? "Context paused: the required request exceeds the model capacity. History and pending work are preserved; reduce required input or use a supported larger window before resuming."
+              : `Agent run failed: ${message}`,
+        reason: interrupted
+          ? "interrupted"
+          : capacityExhausted || error instanceof TaskBudgetExceeded
+            ? "limit_reached"
+            : "failed",
+        steps:
+          error instanceof TaskBudgetExceeded || error instanceof CommandEnvironmentQuarantined
+            ? this.modelRequestsUsed
+            : (protocolFailure?.steps ?? 0),
+        threadId: state.threadId,
+        turnId,
+        ...(controlFailure ? { failure: controlFailure } : {}),
+      };
+      if (state.activeTurnId === turnId) {
+        try {
+          return await this.finish(
+            state,
+            turnId,
+            result.text,
+            result.reason,
+            result.steps,
+            memoryContext,
+            undefined,
+            undefined,
+            result.failure,
+          );
+        } catch {
+          state.activeTurnId = undefined;
+          state.updatedAt = new Date().toISOString();
+        }
+      }
+      return result;
+    }
+  }
+
+  /** Assemble this step's provider request: memory selection, layered retrieval, system prompt, enabled tools and capacity-checked messages. */
+  private async prepareStepRequest(
+    ctx: StepRequestContext,
+    updates: StepRequestState,
+  ): Promise<PrepareStepRequestFlow> {
+    const { agentIdentity, effectiveMode, memoryContext, options, state, toolGateway, turnId, turnImages } = ctx;
+    let {
+      memories,
+      phaseCompactionRequestsUsed,
+      rememberedPhaseKey,
+      rememberedQueryKey,
+      retrievedCache,
+      retrievedQueryKey,
+      step,
+    } = updates;
+    try {
+      let layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview);
+      const memoryLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
+      const queries = memoryQueries(state, memoryContext.userInput).slice(0, memoryLimits.memoryMaxQueries);
+      const queryKey = `${memoryQueryKey(state, queries)}:${this.dependencies.memoryGeneration?.() ?? ""}`;
+      let memorySearchCalls = 0;
+      const memorySearchStarted = Date.now();
+      if (queryKey !== rememberedQueryKey && !reconciliationPending(state)) {
+        const found: Readonly<LongTermMemory>[] = [];
+        for (const [index, query] of queries.entries()) {
+          memorySearchCalls += 1;
+          found.push(
+            ...(await this.dependencies.searchMemories(
+              query,
+              index === 0 || query === memoryContext.userInput ? undefined : { scope: "project" },
+            )),
+          );
+        }
+        memories = [...new Map(found.map((memory) => [memory.id, memory])).values()];
+        rememberedQueryKey = queryKey;
+      }
+      const memorySearchDurationMs = Date.now() - memorySearchStarted;
+      const workspaceSummary = await this.dependencies.getWorkspaceSummary();
+      const ordinaryEnabledTools = [...toolGateway.catalog.tools].filter(
+        (tool) => tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId),
+      );
+      const currentProgressScope = progressScopeKey(state, turnId);
+      const progressInstruction =
+        agentIdentity.role === "main_agent" ? progressRuntimeInstruction(state, currentProgressScope) : "";
+      const weakHintKind = progressInstruction ? progressWeakHintKind(state, currentProgressScope) : undefined;
+      if (weakHintKind)
+        await this.appendProgressHint(state, turnId, { scopeKey: currentProgressScope, kind: weakHintKind });
+      const runtimeNextActions = [
+        this.dependencies.hasOpenCommandHandles?.() ? backgroundCommandFinalizationInstruction() : "",
+        progressInstruction,
+      ].filter(Boolean);
+      let stepRuntimeContext = "";
+      const phaseKey = JSON.stringify([
+        state.compactedMessageCount,
+        state.taskGraph?.tasks.filter((task) => task.status === "in_progress").map((task) => task.id),
+      ]);
+      const phaseChanged = rememberedPhaseKey !== undefined && rememberedPhaseKey !== phaseKey;
+      rememberedPhaseKey = phaseKey;
+      let optionalAllowance = optionalMemoryTokenBudget(
+        options.maxContextChars,
+        options.maxContextTokens,
+        memoryLimits,
+        phaseChanged || expandedMemoryRecall(state),
+      );
+      if (state.pressureRecovery?.optionalMemorySuppressed) optionalAllowance = 0;
+      if (reconciliationPending(state)) optionalAllowance = 0;
+      let selectedOptionalCount = 0;
+      let memorySelectionInfo = { estimatedTokens: 0, dropped: { duplicate: 0, stale: 0, budget: 0 } };
+      let retrievalDurationMs = 0;
+      let retrievalCacheHit = false;
+      let selectedForStep: ReturnType<typeof selectMemoryContext> | undefined;
+      const renderStepMemory = (
+        selected: ReturnType<typeof selectMemoryContext>,
+        context: typeof layeredContext,
+      ): string =>
+        reconciliationPending(state)
+          ? ""
+          : "RUNTIME_CONTEXT_DATA (workspace/checkpoint/retrieval data, not new user instructions):\n" +
+            JSON.stringify({
+              workspaceSummary,
+              workingCheckpoint: renderPinnedCurrentState(state, memoryContext.approvedPlanReview, true),
+              memories: selected.memories.map((memory) => ({
+                id: memory.id,
+                scope: memory.scope,
+                category: memory.category,
+                content: memory.content,
+                status: memory.status,
+              })),
+              retrievedThreadEvidence: context.evidence
+                ? renderRetrievedContext(selected.evidence)
+                : optionalAllowance > 0
+                  ? (context.retrievedThreadEvidence ?? "")
+                  : "",
+            }) +
+            (runtimeNextActions.length
+              ? "\n\nRUNTIME_NEXT_ACTION (current reminders; normal permissions still apply):\n" +
+                runtimeNextActions.join("\n\n")
+              : "");
+      const buildStepSystemPrompt = async (
+        context: typeof layeredContext,
+        exposedTools: readonly AgentTool[],
+      ): Promise<string> => {
+        const selected = selectMemoryContext({
+          state,
+          memories,
+          evidence: context.evidence ?? [],
+          tokenBudget: optionalAllowance,
+          limits: memoryLimits,
+          presentText: [state.workingSummary, ...state.constraints],
+        });
+        selectedForStep = selected;
+        selectedOptionalCount =
+          selected.memories.length +
+          selected.evidence.length +
+          (context.evidence === undefined && optionalAllowance > 0 && context.retrievedThreadEvidence ? 1 : 0);
+        memorySelectionInfo = { estimatedTokens: selected.estimatedTokens, dropped: selected.dropped };
+        stepRuntimeContext = renderStepMemory(selected, context);
+        return this.dependencies.buildSystemPrompt({
+          mode: effectiveMode,
+          workspaceSummary: "Current workspace and task state are provided in Runtime context after the conversation.",
+          memories: [],
+          toolNames: exposedTools.map((tool) => tool.name),
+        });
+      };
+
+      // Reserve room with the complete ordinary capability surface before
+      // selecting the retrieval boundary. The fixed evidence reserve affects
+      // selection only; pressure below is measured from a concrete provider
+      // request after retrieval, projection, and tool-schema serialization.
+      const selectionSystemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools);
+      const ordinaryToolDefinitions = ordinaryEnabledTools.map((tool) => tool.definition);
+      const reservedSystemPromptChars =
+        selectionSystemPrompt.length +
+        32 +
+        estimateToolDefinitionsChars(ordinaryToolDefinitions) +
+        (this.dependencies.getLayeredContext ? LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS : 0) +
+        CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS;
+      let retrievalContextChanged = false;
+      if (this.dependencies.getLayeredContext && !reconciliationPending(state)) {
+        try {
+          const boundary = this.dependencies.contextManager.retrievalBoundary(state);
+          const cacheKey = `${queryKey}:${boundary}`;
+          const retrievalStarted = Date.now();
+          retrievalCacheHit = retrievedQueryKey === cacheKey && retrievedCache !== undefined;
+          const derived =
+            retrievedQueryKey === cacheKey && retrievedCache
+              ? retrievedCache
+              : await this.dependencies.getLayeredContext({
+                  state,
+                  query: contextRetrievalQuery(state, memoryContext.userInput),
+                  queries,
+                  beforeMessageIndex: boundary,
+                });
+          retrievedQueryKey = cacheKey;
+          retrievedCache = derived;
+          retrievalDurationMs = Date.now() - retrievalStarted;
+          layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview, derived);
+          retrievalContextChanged = true;
+        } catch {
+          // Continue with the pinned checkpoint. Retrieval diagnostics belong
+          // in durable internals, not the user-visible activity stream.
+        }
+      }
+
+      let systemPrompt = retrievalContextChanged
+        ? await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools)
+        : selectionSystemPrompt;
+      let enabledTools = ordinaryEnabledTools;
+      let messages = this.dependencies.contextManager.build({
+        systemPrompt,
+        runtimeContext: stepRuntimeContext,
+        state,
+        maxContextChars: options.maxContextChars,
+        reservedSystemPromptChars,
+      });
+      let requestInspection = this.dependencies.contextManager.inspectProviderRequest({
+        state,
+        maxContextChars: options.maxContextChars,
+        messages,
+        tools: ordinaryToolDefinitions,
+      });
+      let contextPressure = requestInspection.pressure;
+      let contextUtilization = requestInspection.utilization;
+      const setMemoryGate = async (suppressed: boolean) => {
+        if (Boolean(state.pressureRecovery?.optionalMemorySuppressed) === suppressed) return;
+        const payload = { suppressed };
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "context.memory.gated",
+          phase: "completed",
+          payload,
+        });
+        foldMemoryGate(state, payload);
+      };
+      if (contextUtilization >= memoryLimits.contextReferenceTriggerRatio) await setMemoryGate(true);
+      else if (contextUtilization <= memoryLimits.contextMemoryResumeRatio) await setMemoryGate(false);
+
+      // Optional recall must not force eviction of the live working chain.
+      // First remove optional memory as whole records, then reassess pressure.
+      if (selectedOptionalCount > 0 && contextPressure !== "normal") {
+        optionalAllowance = 0;
+        systemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools);
+        messages = this.dependencies.contextManager.build({
+          systemPrompt,
+          runtimeContext: stepRuntimeContext,
+          state,
+          maxContextChars: options.maxContextChars,
+          reservedSystemPromptChars,
+        });
+        requestInspection = this.dependencies.contextManager.inspectProviderRequest({
+          state,
+          maxContextChars: options.maxContextChars,
+          messages,
+          tools: ordinaryToolDefinitions,
+        });
+        contextPressure = requestInspection.pressure;
+        contextUtilization = requestInspection.utilization;
+      }
+
+      // One isolated transaction for token/character capacity and explicit requests.
+      {
+        // Also enforce the aggregate tool-output budget below the pressure trigger.
+        const compacted = await this.maintainContext(
+          state,
+          turnId,
+          turnImages,
+          memoryContext,
+          options,
+          {
+            systemPrompt,
+            runtimeContext: stepRuntimeContext,
+            tools: ordinaryToolDefinitions,
+            reservedTokens: Math.max(0, optionalAllowance - memorySelectionInfo.estimatedTokens),
+          },
+          contextUtilization >= memoryLimits.contextCompactionTriggerRatio,
+          this.remainingRequestAllowance(),
+        );
+        phaseCompactionRequestsUsed += compacted.requests;
+        if (compacted.paused)
+          return {
+            kind: "return",
+            value: this.finish(
+              state,
+              turnId,
+              `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History, files and pending operations are preserved. Reduce required input or use a larger supported window to resume.`,
+              "limit_reached",
+              step,
+              memoryContext,
+              undefined,
+              undefined,
+              {
+                code: "context_capacity_exhausted",
+                tool: "runtime",
+                attempts: state.compactionControl?.transaction?.attempts ?? 0,
+                recoverable: true,
+              },
+            ),
+          };
+        if (compacted.committed || compacted.requests > 0) {
+          step -= 1;
+          return { kind: "continue" };
+        }
+      }
+      // Remove only duplicates backed by the FINAL visible message set. Keep
+      // all other messages byte-identical: no re-selection can evict their proof.
+      if (selectedForStep && selectedOptionalCount > 0) {
+        const subset = selectMemoryContext({
+          state,
+          memories: selectedForStep.memories,
+          evidence: selectedForStep.evidence,
+          tokenBudget: optionalAllowance,
+          limits: memoryLimits,
+          presentText: [
+            state.workingSummary,
+            ...state.constraints,
+            ...visibleMemoryText(messages.filter((message) => message.content !== stepRuntimeContext)),
+          ],
+        });
+        const reducedContext = renderStepMemory(subset, layeredContext);
+        if (reducedContext.length <= stepRuntimeContext.length) {
+          messages = messages.map((message) =>
+            message.role === "user" && message.content === stepRuntimeContext
+              ? { ...message, content: reducedContext }
+              : message,
+          );
+          stepRuntimeContext = reducedContext;
+          memorySelectionInfo = {
+            estimatedTokens: subset.estimatedTokens,
+            dropped: {
+              duplicate: selectedForStep.dropped.duplicate + subset.dropped.duplicate,
+              stale: selectedForStep.dropped.stale + subset.dropped.stale,
+              budget: selectedForStep.dropped.budget + subset.dropped.budget,
+            },
+          };
+          selectedOptionalCount -=
+            selectedForStep.memories.length +
+            selectedForStep.evidence.length -
+            subset.memories.length -
+            subset.evidence.length;
+          selectedForStep = subset;
+          requestInspection = this.dependencies.contextManager.inspectProviderRequest({
+            state,
+            maxContextChars: options.maxContextChars,
+            messages,
+            tools: enabledTools.map((tool) => tool.definition),
+          });
+        }
+      }
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        stepId: `step_${step}`,
+        type: "context.memory.selected",
+        phase: "completed",
+        payload: {
+          estimatedTokens: memorySelectionInfo.estimatedTokens,
+          dropped: memorySelectionInfo.dropped,
+          memorySearchCalls,
+          memorySearchDurationMs,
+          retrievalCacheHit,
+          optionalAllowance,
+          retrievalDurationMs,
+          selectedOptionalCount,
+          tokenCapacityEnabled: options.maxContextTokens !== undefined,
+        },
+      });
+      this.observeProviderContext({
+        state,
+        turnId,
+        step,
+        attempt: 1,
+        purpose: "agent_step",
+        messages,
+        tools: enabledTools.map((tool) => tool.definition),
+        enforcedPressure: contextPressure,
+        enforcedUtilization: contextUtilization,
+        maxContextChars: options.maxContextChars,
+        actualRequest: requestInspection,
+      });
+      this.dependencies.onStatus?.(
+        `Step ${step}${this.requestLimit === undefined ? "" : `/${this.requestLimit}`}: requesting ${this.dependencies.provider.model}`,
+      );
+      return {
+        kind: "next",
+        outputs: { stepRuntimeContext, selectedForStep, ordinaryToolDefinitions, enabledTools, messages },
+      };
+    } finally {
+      updates.memories = memories;
+      updates.phaseCompactionRequestsUsed = phaseCompactionRequestsUsed;
+      updates.rememberedPhaseKey = rememberedPhaseKey;
+      updates.rememberedQueryKey = rememberedQueryKey;
+      updates.retrievedCache = retrievedCache;
+      updates.retrievedQueryKey = retrievedQueryKey;
+      updates.step = step;
+    }
+  }
+
+  /** Act on what a tool batch produced: environment faults, protocol exhaustion, rejected finishes, child reports, plan proposals and new image attachments. */
+  private async settleToolBatch(
+    ctx: ToolBatchOutcomeContext,
+    updates: ToolBatchOutcomeState,
+  ): Promise<SettleToolBatchFlow> {
+    const {
+      agentIdentity,
+      completedVerificationPhase,
+      environmentFault,
+      finishRejectedReason,
+      memoryContext,
+      proposedPlan,
+      requiredProtocolExhaustion,
+      state,
+      step,
+      stepImageAttachments,
+      submittedTaskReport,
+      turnId,
+      turnImages,
+    } = ctx;
+    let { steeringAppliedBetweenTools } = updates;
+    try {
+      if (environmentFault) {
+        return {
+          kind: "return",
+          value: this.finish(
+            state,
+            turnId,
+            `Task paused because the command environment is quarantined. ${environmentFault}`,
+            "paused",
+            step,
+            memoryContext,
+            undefined,
+            undefined,
+            undefined,
+            {
+              cause: "command_environment",
+              resumable: true,
+              requiredAction: "Repair the command environment and verify cleanup, then resume this task.",
+              obligations: [],
+            },
+          ),
+        };
+      }
+      if (completedVerificationPhase) await this.closeContextPhase(state, turnId);
+      else if (investigationExchangeStart(state.messages) !== undefined)
+        await this.closeContextPhase(state, turnId, "investigation");
+      if (!steeringAppliedBetweenTools) {
+        steeringAppliedBetweenTools = Boolean(
+          await this.takeAndApplySteering(state, turnId, "between_tools", turnImages, false, memoryContext),
+        );
+      }
+      if (steeringAppliedBetweenTools) {
+        return { kind: "continue" };
+      }
+
+      if (requiredProtocolExhaustion) {
+        throw new ToolProtocolExhausted(requiredProtocolExhaustion.tool, requiredProtocolExhaustion.attempt, step);
+      }
+      if (finishRejectedReason) {
+        const obligations = evaluateCompletionGate({
+          state,
+          role: agentIdentity.role,
+          reconciliationPending: reconciliationPending(state),
+          openCommandHandles: true,
+          outstandingSubagents:
+            agentIdentity.role === "main_agent" ? (this.dependencies.getOutstandingSubagents?.() ?? []) : [],
+        });
+        const { signature, attempt } = nextCompletionAttempt(state, obligations);
+        const payload = { signature, attempt, obligations };
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "completion.rejected",
+          phase: "completed",
+          payload,
+        });
+        foldCompletionControl(state, "completion.rejected", payload);
+        const maximum = (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).prematureFinishRetries;
+        if (attempt <= maximum) {
+          const feedback: ChatMessage = {
+            role: "user",
+            content: renderCompletionCorrection(obligations, attempt, maximum - attempt),
+          };
+          state.messages.push(feedback);
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            type: "message.user.synthetic",
+            phase: "completed",
+            payload: feedback,
+          });
+          return { kind: "continue" };
+        }
+        return {
+          kind: "return",
+          value: this.finish(
+            state,
+            turnId,
+            finishRejectedReason,
+            "paused",
+            step,
+            memoryContext,
+            undefined,
+            undefined,
+            undefined,
+            {
+              cause: "completion_protocol",
+              resumable: true,
+              requiredAction: obligations.map((item) => item.requiredAction).join(" "),
+              obligations,
+            },
+          ),
+        };
+      }
+      if (submittedTaskReport) {
+        const text = submittedTaskReport.summary;
+        this.dependencies.onText?.(text);
+        return {
+          kind: "return",
+          value: this.finish(
+            state,
+            turnId,
+            text,
+            submittedTaskReport.outcome === "completed" ? "success" : "blocked",
+            step,
+            memoryContext,
+            undefined,
+            submittedTaskReport,
+          ),
+        };
+      }
+
+      if (proposedPlan) {
+        if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) {
+          return { kind: "continue" };
+        }
+        const text = `${formatPlanProposal(proposedPlan)}\n\n` + runtimePromptText("runtime/plan-waiting-review.md");
+        this.dependencies.onText?.(text);
+        return {
+          kind: "return",
+          value: this.finish(state, turnId, text, "planned", step, memoryContext, proposedPlan),
+        };
+      }
+
+      if (stepImageAttachments.length) {
+        const labels = stepImageAttachments.map((image) => image.label).join(", ");
+        const imageMessage: Extract<ChatMessage, { role: "user" }> = {
+          role: "user",
+          content: renderRuntimePrompt("runtime/read-image-follow-up.md", {
+            labels,
+          }),
+          images: stepImageAttachments,
+        };
+        state.messages.push(imageMessage);
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          stepId: `step_${step}`,
+          type: "message.user.synthetic",
+          phase: "completed",
+          payload: imageMessage,
+        });
+        await this.dependencies.commitImages?.(state.threadId, stepImageAttachments);
+      }
+    } finally {
+      updates.steeringAppliedBetweenTools = steeringAppliedBetweenTools;
+    }
+    return { kind: "next" };
+  }
+
+  /** Resolve the effective mode for this turn: honor an explicit override, or run Auto routing (which may answer directly or pause the turn). */
+  private async resolveTurnMode(ctx: TurnModeContext, updates: TurnModeState): Promise<ResolveTurnModeFlow> {
+    const {
+      agentIdentity,
+      commitAutoRoute,
+      memoryContext,
+      options,
+      outstandingSubagentsAtRoute,
+      state,
+      turnHistoryStart,
+      turnId,
+      turnImages,
+      userInput,
+    } = ctx;
+    let { autoReason, phaseCompactionRequestsUsed } = updates;
+    try {
       if (state.mode === "auto" && options.modeOverride) {
         autoReason =
           options.modeOverride === "plan"
@@ -1385,31 +2649,37 @@ export class AgentRuntime {
             );
             phaseCompactionRequestsUsed += compacted.requests;
             if (compacted.paused)
-              return this.finish(
-                state,
-                turnId,
-                `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History and task state are preserved.`,
-                "limit_reached",
-                phaseCompactionRequestsUsed,
-                memoryContext,
-                undefined,
-                undefined,
-                {
-                  code: "context_capacity_exhausted",
-                  tool: "runtime",
-                  attempts: state.compactionControl?.transaction?.attempts ?? 0,
-                  recoverable: true,
-                },
-              );
+              return {
+                kind: "return",
+                value: this.finish(
+                  state,
+                  turnId,
+                  `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History and task state are preserved.`,
+                  "limit_reached",
+                  phaseCompactionRequestsUsed,
+                  memoryContext,
+                  undefined,
+                  undefined,
+                  {
+                    code: "context_capacity_exhausted",
+                    tool: "runtime",
+                    attempts: state.compactionControl?.transaction?.attempts ?? 0,
+                    recoverable: true,
+                  },
+                ),
+              };
             if (this.requestLimitReached())
-              return this.finish(
-                state,
-                turnId,
-                "The shared model-request budget was exhausted during pre-route context compaction.",
-                "limit_reached",
-                this.modelRequestsUsed,
-                memoryContext,
-              );
+              return {
+                kind: "return",
+                value: this.finish(
+                  state,
+                  turnId,
+                  "The shared model-request budget was exhausted during pre-route context compaction.",
+                  "limit_reached",
+                  this.modelRequestsUsed,
+                  memoryContext,
+                ),
+              };
           }
         }
         const backgroundCommandHandleOpenAtRoute = this.dependencies.hasOpenCommandHandles?.() ?? false;
@@ -1680,1521 +2950,94 @@ export class AgentRuntime {
                 }
               }
               this.dependencies.onText?.(decision.content);
-              return this.finish(state, turnId, decision.content, "success", 0, memoryContext);
+              return {
+                kind: "return",
+                value: this.finish(state, turnId, decision.content, "success", 0, memoryContext),
+              };
             }
             await commitAutoRoute(decision.mode, decision.reason);
             routeResolved = true;
           }
         }
       }
+    } finally {
+      updates.autoReason = autoReason;
+      updates.phaseCompactionRequestsUsed = phaseCompactionRequestsUsed;
+    }
+    return { kind: "next" };
+  }
 
-      let memories: readonly Readonly<LongTermMemory>[] = [];
-      let rememberedQueryKey = "";
-      let rememberedPhaseKey: string | undefined;
-      let retrievedQueryKey = "";
-      let retrievedCache: RuntimeLayeredContext | undefined;
-      let nextImageNumber = nextThreadImageNumber(state.messages);
-      const exposedTools = availableTools(
-        this.dependencies.toolCatalog.tools,
-        effectiveMode,
-        agentIdentity.role,
-        state.thinkingEffort,
-        this.orchestrationToolsAvailable(state, options),
-        this.dependencies.visionAvailable ?? true,
-      ).filter(
-        (tool) =>
-          (tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId)) &&
-          (state.mode !== "auto" ||
-            (tool.name !== "manage_tasks" &&
-              (tool.name !== "manage_subagents" || outstandingSubagentsAtRoute.length > 0))),
-      );
-      const exposedToolCatalog = snapshotToolSet(exposedTools, this.dependencies.toolCatalog.revision);
-      const toolGateway = new ToolExecutionGateway(exposedToolCatalog, this.dependencies.authorizeToolExecution);
-      await this.dependencies.appendEvent({
-        threadId: state.threadId,
-        turnId,
-        type: "tool.catalog.bound",
-        phase: "completed",
-        payload: {
-          catalogRevision: this.dependencies.toolCatalog.revision,
-          catalogHash: this.dependencies.toolCatalog.hash,
-          exposureHash: exposedToolCatalog.hash,
-          toolCount: exposedToolCatalog.bindings.size,
-          toolsTruncated: exposedToolCatalog.bindings.size > MAX_AUDITED_TOOL_BINDINGS,
-          tools: [...exposedToolCatalog.bindings.values()].slice(0, MAX_AUDITED_TOOL_BINDINGS).map((binding) => ({
-            toolId: binding.toolId,
-            modelName: binding.modelName,
-            sourceId: binding.sourceId,
-            sourceKind: binding.sourceKind,
-            schemaHash: binding.schemaHash,
-            metadataHash: binding.metadataHash,
-          })),
-        },
+  /** Handle a model response without tool calls: enforce outstanding obligations, then finish the turn or continue with the next step. */
+  private async handleTextResponse(ctx: TextResponseContext): Promise<HandleTextResponseFlow> {
+    const {
+      agentIdentity,
+      assistantMessage,
+      calls,
+      effectiveMode,
+      memoryContext,
+      options,
+      state,
+      step,
+      turnHistoryStart,
+      turnId,
+      turnImages,
+    } = ctx;
+    if (calls.length === 0) {
+      if (agentIdentity.role === "main_agent" && this.dependencies.collectReadySubagents) {
+        const collected = await this.dependencies.collectReadySubagents(state, turnId, options.signal);
+        if (collected > 0) {
+          return { kind: "continue" };
+        }
+      }
+      const outstandingSubagents =
+        agentIdentity.role === "main_agent" ? (this.dependencies.getOutstandingSubagents?.() ?? []) : [];
+      const obligations = evaluateCompletionGate({
+        state,
+        role: agentIdentity.role,
+        planning: effectiveMode === "plan",
+        reconciliationPending: reconciliationPending(state),
+        openCommandHandles: this.dependencies.hasOpenCommandHandles?.() ?? false,
+        outstandingSubagents,
       });
-      const progressResponseBase = state.progressGuard?.lastObservedResponseOrdinal ?? 0;
-      const progressVerificationCommands = new Map<string, VerificationKind>();
-
-      const toolRecovery = new ToolRecoveryBudget(
-        (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1,
-      );
-      let invalidOutputAttempts = 0;
-      const commandRetries = new CommandRetryTracker(
-        (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).sandboxInitializationRetries,
-      );
-      // Once execution becomes uncertain, this run never re-enables mutations.
-      // Recovery is an explicit external repair followed by Resume.
-      for (let step = 1; !this.requestLimitReached(); step += 1) {
-        if (options.signal?.aborted) {
-          return this.finish(
-            state,
-            turnId,
-            "The task was interrupted by the user.",
-            "interrupted",
-            step - 1,
-            memoryContext,
-          );
-        }
-
-        if (agentIdentity.role === "main_agent") {
-          for (const report of (await this.dependencies.takeSubagentMessages?.(state.threadId, turnId)) ?? []) {
-            state.messages.push(report);
-          }
-        }
-        for (const instruction of this.dependencies.takeAdditionalInstructions?.() ?? []) {
-          const followUp: Extract<ChatMessage, { role: "user" }> = {
+      if (obligations.length) {
+        const { signature, attempt } = nextCompletionAttempt(state, obligations);
+        const payload = { signature, attempt, obligations };
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "completion.rejected",
+          phase: "completed",
+          payload,
+        });
+        foldCompletionControl(state, "completion.rejected", payload);
+        const limits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
+        // When several obligations coexist, stop as soon as the most
+        // restrictive configured correction budget is exhausted. Resolving
+        // that obligation creates a new signature and lets the remaining
+        // obligations use their own budget on Resume.
+        const maximum = limits.prematureFinishRetries;
+        if (attempt <= maximum) {
+          const feedback: ChatMessage = {
             role: "user",
-            content: renderRuntimePrompt("runtime/parent-follow-up.md", {
-              instruction,
-            }),
+            content: renderCompletionCorrection(obligations, attempt, maximum - attempt),
           };
-          state.messages.push(followUp);
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            stepId: `step_${step}`,
-            type: "message.user.synthetic",
-            phase: "completed",
-            payload: followUp,
-          });
-        }
-        await this.takeAndApplySteering(state, turnId, "before_model", turnImages, false, memoryContext);
-        if (agentIdentity.role === "main_agent") {
-          const shared = this.dependencies.taskBudget?.snapshot();
-          const sharedRemaining =
-            shared?.maxRequests === null || shared === undefined
-              ? undefined
-              : Math.max(0, shared.maxRequests - shared.requests);
-          const localRemaining = this.remainingRequestAllowance();
-          const remainingModelRequests =
-            localRemaining === undefined
-              ? sharedRemaining
-              : sharedRemaining === undefined
-                ? localRemaining
-                : Math.min(localRemaining, sharedRemaining);
-          const reviewRequests = await this.processProgressIntervention({
-            state,
-            turnId,
-            userInput: memoryContext.userInput,
-            remainingModelRequests,
-            signal: options.signal,
-          });
-          this.modelRequestsUsed += reviewRequests;
-          if (this.requestLimitReached()) {
-            return this.finish(
-              state,
-              turnId,
-              "The shared model-request budget was exhausted while reviewing stalled progress.",
-              "limit_reached",
-              this.modelRequestsUsed,
-              memoryContext,
-            );
-          }
-        }
-        let layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview);
-        const memoryLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
-        const queries = memoryQueries(state, memoryContext.userInput).slice(0, memoryLimits.memoryMaxQueries);
-        const queryKey = `${memoryQueryKey(state, queries)}:${this.dependencies.memoryGeneration?.() ?? ""}`;
-        let memorySearchCalls = 0;
-        const memorySearchStarted = Date.now();
-        if (queryKey !== rememberedQueryKey && !reconciliationPending(state)) {
-          const found: Readonly<LongTermMemory>[] = [];
-          for (const [index, query] of queries.entries()) {
-            memorySearchCalls += 1;
-            found.push(
-              ...(await this.dependencies.searchMemories(
-                query,
-                index === 0 || query === memoryContext.userInput ? undefined : { scope: "project" },
-              )),
-            );
-          }
-          memories = [...new Map(found.map((memory) => [memory.id, memory])).values()];
-          rememberedQueryKey = queryKey;
-        }
-        const memorySearchDurationMs = Date.now() - memorySearchStarted;
-        const workspaceSummary = await this.dependencies.getWorkspaceSummary();
-        const ordinaryEnabledTools = [...toolGateway.catalog.tools].filter(
-          (tool) => tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId),
-        );
-        const currentProgressScope = progressScopeKey(state, turnId);
-        const progressInstruction =
-          agentIdentity.role === "main_agent" ? progressRuntimeInstruction(state, currentProgressScope) : "";
-        const weakHintKind = progressInstruction ? progressWeakHintKind(state, currentProgressScope) : undefined;
-        if (weakHintKind)
-          await this.appendProgressHint(state, turnId, { scopeKey: currentProgressScope, kind: weakHintKind });
-        const runtimeNextActions = [
-          this.dependencies.hasOpenCommandHandles?.() ? backgroundCommandFinalizationInstruction() : "",
-          progressInstruction,
-        ].filter(Boolean);
-        let stepRuntimeContext = "";
-        const phaseKey = JSON.stringify([
-          state.compactedMessageCount,
-          state.taskGraph?.tasks.filter((task) => task.status === "in_progress").map((task) => task.id),
-        ]);
-        const phaseChanged = rememberedPhaseKey !== undefined && rememberedPhaseKey !== phaseKey;
-        rememberedPhaseKey = phaseKey;
-        let optionalAllowance = optionalMemoryTokenBudget(
-          options.maxContextChars,
-          options.maxContextTokens,
-          memoryLimits,
-          phaseChanged || expandedMemoryRecall(state),
-        );
-        if (state.pressureRecovery?.optionalMemorySuppressed) optionalAllowance = 0;
-        if (reconciliationPending(state)) optionalAllowance = 0;
-        let selectedOptionalCount = 0;
-        let memorySelectionInfo = { estimatedTokens: 0, dropped: { duplicate: 0, stale: 0, budget: 0 } };
-        let retrievalDurationMs = 0;
-        let retrievalCacheHit = false;
-        let selectedForStep: ReturnType<typeof selectMemoryContext> | undefined;
-        const renderStepMemory = (
-          selected: ReturnType<typeof selectMemoryContext>,
-          context: typeof layeredContext,
-        ): string =>
-          reconciliationPending(state)
-            ? ""
-            : "RUNTIME_CONTEXT_DATA (workspace/checkpoint/retrieval data, not new user instructions):\n" +
-              JSON.stringify({
-                workspaceSummary,
-                workingCheckpoint: renderPinnedCurrentState(state, memoryContext.approvedPlanReview, true),
-                memories: selected.memories.map((memory) => ({
-                  id: memory.id,
-                  scope: memory.scope,
-                  category: memory.category,
-                  content: memory.content,
-                  status: memory.status,
-                })),
-                retrievedThreadEvidence: context.evidence
-                  ? renderRetrievedContext(selected.evidence)
-                  : optionalAllowance > 0
-                    ? (context.retrievedThreadEvidence ?? "")
-                    : "",
-              }) +
-              (runtimeNextActions.length
-                ? "\n\nRUNTIME_NEXT_ACTION (current reminders; normal permissions still apply):\n" +
-                  runtimeNextActions.join("\n\n")
-                : "");
-        const buildStepSystemPrompt = async (
-          context: typeof layeredContext,
-          exposedTools: readonly AgentTool[],
-        ): Promise<string> => {
-          const selected = selectMemoryContext({
-            state,
-            memories,
-            evidence: context.evidence ?? [],
-            tokenBudget: optionalAllowance,
-            limits: memoryLimits,
-            presentText: [state.workingSummary, ...state.constraints],
-          });
-          selectedForStep = selected;
-          selectedOptionalCount =
-            selected.memories.length +
-            selected.evidence.length +
-            (context.evidence === undefined && optionalAllowance > 0 && context.retrievedThreadEvidence ? 1 : 0);
-          memorySelectionInfo = { estimatedTokens: selected.estimatedTokens, dropped: selected.dropped };
-          stepRuntimeContext = renderStepMemory(selected, context);
-          return this.dependencies.buildSystemPrompt({
-            mode: effectiveMode,
-            workspaceSummary:
-              "Current workspace and task state are provided in Runtime context after the conversation.",
-            memories: [],
-            toolNames: exposedTools.map((tool) => tool.name),
-          });
-        };
-
-        // Reserve room with the complete ordinary capability surface before
-        // selecting the retrieval boundary. The fixed evidence reserve affects
-        // selection only; pressure below is measured from a concrete provider
-        // request after retrieval, projection, and tool-schema serialization.
-        const selectionSystemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools);
-        const ordinaryToolDefinitions = ordinaryEnabledTools.map((tool) => tool.definition);
-        const reservedSystemPromptChars =
-          selectionSystemPrompt.length +
-          32 +
-          estimateToolDefinitionsChars(ordinaryToolDefinitions) +
-          (this.dependencies.getLayeredContext ? LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS : 0) +
-          CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS;
-        let retrievalContextChanged = false;
-        if (this.dependencies.getLayeredContext && !reconciliationPending(state)) {
-          try {
-            const boundary = this.dependencies.contextManager.retrievalBoundary(state);
-            const cacheKey = `${queryKey}:${boundary}`;
-            const retrievalStarted = Date.now();
-            retrievalCacheHit = retrievedQueryKey === cacheKey && retrievedCache !== undefined;
-            const derived =
-              retrievedQueryKey === cacheKey && retrievedCache
-                ? retrievedCache
-                : await this.dependencies.getLayeredContext({
-                    state,
-                    query: contextRetrievalQuery(state, memoryContext.userInput),
-                    queries,
-                    beforeMessageIndex: boundary,
-                  });
-            retrievedQueryKey = cacheKey;
-            retrievedCache = derived;
-            retrievalDurationMs = Date.now() - retrievalStarted;
-            layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview, derived);
-            retrievalContextChanged = true;
-          } catch {
-            // Continue with the pinned checkpoint. Retrieval diagnostics belong
-            // in durable internals, not the user-visible activity stream.
-          }
-        }
-
-        let systemPrompt = retrievalContextChanged
-          ? await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools)
-          : selectionSystemPrompt;
-        let enabledTools = ordinaryEnabledTools;
-        let messages = this.dependencies.contextManager.build({
-          systemPrompt,
-          runtimeContext: stepRuntimeContext,
-          state,
-          maxContextChars: options.maxContextChars,
-          reservedSystemPromptChars,
-        });
-        let requestInspection = this.dependencies.contextManager.inspectProviderRequest({
-          state,
-          maxContextChars: options.maxContextChars,
-          messages,
-          tools: ordinaryToolDefinitions,
-        });
-        let contextPressure = requestInspection.pressure;
-        let contextUtilization = requestInspection.utilization;
-        const setMemoryGate = async (suppressed: boolean) => {
-          if (Boolean(state.pressureRecovery?.optionalMemorySuppressed) === suppressed) return;
-          const payload = { suppressed };
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            type: "context.memory.gated",
-            phase: "completed",
-            payload,
-          });
-          foldMemoryGate(state, payload);
-        };
-        if (contextUtilization >= memoryLimits.contextReferenceTriggerRatio) await setMemoryGate(true);
-        else if (contextUtilization <= memoryLimits.contextMemoryResumeRatio) await setMemoryGate(false);
-
-        // Optional recall must not force eviction of the live working chain.
-        // First remove optional memory as whole records, then reassess pressure.
-        if (selectedOptionalCount > 0 && contextPressure !== "normal") {
-          optionalAllowance = 0;
-          systemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools);
-          messages = this.dependencies.contextManager.build({
-            systemPrompt,
-            runtimeContext: stepRuntimeContext,
-            state,
-            maxContextChars: options.maxContextChars,
-            reservedSystemPromptChars,
-          });
-          requestInspection = this.dependencies.contextManager.inspectProviderRequest({
-            state,
-            maxContextChars: options.maxContextChars,
-            messages,
-            tools: ordinaryToolDefinitions,
-          });
-          contextPressure = requestInspection.pressure;
-          contextUtilization = requestInspection.utilization;
-        }
-
-        // One isolated transaction for token/character capacity and explicit requests.
-        {
-          // Also enforce the aggregate tool-output budget below the pressure trigger.
-          const compacted = await this.maintainContext(
-            state,
-            turnId,
-            turnImages,
-            memoryContext,
-            options,
-            {
-              systemPrompt,
-              runtimeContext: stepRuntimeContext,
-              tools: ordinaryToolDefinitions,
-              reservedTokens: Math.max(0, optionalAllowance - memorySelectionInfo.estimatedTokens),
-            },
-            contextUtilization >= memoryLimits.contextCompactionTriggerRatio,
-            this.remainingRequestAllowance(),
-          );
-          phaseCompactionRequestsUsed += compacted.requests;
-          if (compacted.paused)
-            return this.finish(
-              state,
-              turnId,
-              `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History, files and pending operations are preserved. Reduce required input or use a larger supported window to resume.`,
-              "limit_reached",
-              step,
-              memoryContext,
-              undefined,
-              undefined,
-              {
-                code: "context_capacity_exhausted",
-                tool: "runtime",
-                attempts: state.compactionControl?.transaction?.attempts ?? 0,
-                recoverable: true,
-              },
-            );
-          if (compacted.committed || compacted.requests > 0) {
-            step -= 1;
-            continue;
-          }
-        }
-        // Remove only duplicates backed by the FINAL visible message set. Keep
-        // all other messages byte-identical: no re-selection can evict their proof.
-        if (selectedForStep && selectedOptionalCount > 0) {
-          const subset = selectMemoryContext({
-            state,
-            memories: selectedForStep.memories,
-            evidence: selectedForStep.evidence,
-            tokenBudget: optionalAllowance,
-            limits: memoryLimits,
-            presentText: [
-              state.workingSummary,
-              ...state.constraints,
-              ...visibleMemoryText(messages.filter((message) => message.content !== stepRuntimeContext)),
-            ],
-          });
-          const reducedContext = renderStepMemory(subset, layeredContext);
-          if (reducedContext.length <= stepRuntimeContext.length) {
-            messages = messages.map((message) =>
-              message.role === "user" && message.content === stepRuntimeContext
-                ? { ...message, content: reducedContext }
-                : message,
-            );
-            stepRuntimeContext = reducedContext;
-            memorySelectionInfo = {
-              estimatedTokens: subset.estimatedTokens,
-              dropped: {
-                duplicate: selectedForStep.dropped.duplicate + subset.dropped.duplicate,
-                stale: selectedForStep.dropped.stale + subset.dropped.stale,
-                budget: selectedForStep.dropped.budget + subset.dropped.budget,
-              },
-            };
-            selectedOptionalCount -=
-              selectedForStep.memories.length +
-              selectedForStep.evidence.length -
-              subset.memories.length -
-              subset.evidence.length;
-            selectedForStep = subset;
-            requestInspection = this.dependencies.contextManager.inspectProviderRequest({
-              state,
-              maxContextChars: options.maxContextChars,
-              messages,
-              tools: enabledTools.map((tool) => tool.definition),
-            });
-          }
-        }
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
-          turnId,
-          stepId: `step_${step}`,
-          type: "context.memory.selected",
-          phase: "completed",
-          payload: {
-            estimatedTokens: memorySelectionInfo.estimatedTokens,
-            dropped: memorySelectionInfo.dropped,
-            memorySearchCalls,
-            memorySearchDurationMs,
-            retrievalCacheHit,
-            optionalAllowance,
-            retrievalDurationMs,
-            selectedOptionalCount,
-            tokenCapacityEnabled: options.maxContextTokens !== undefined,
-          },
-        });
-        this.observeProviderContext({
-          state,
-          turnId,
-          step,
-          attempt: 1,
-          purpose: "agent_step",
-          messages,
-          tools: enabledTools.map((tool) => tool.definition),
-          enforcedPressure: contextPressure,
-          enforcedUtilization: contextUtilization,
-          maxContextChars: options.maxContextChars,
-          actualRequest: requestInspection,
-        });
-        this.dependencies.onStatus?.(
-          `Step ${step}${this.requestLimit === undefined ? "" : `/${this.requestLimit}`}: requesting ${this.dependencies.provider.model}`,
-        );
-
-        let response;
-        try {
-          const attempted = await this.runProviderAttempt(options.signal, (attemptSignal) =>
-            this.withModelRequestActivity(`Waiting for ${this.dependencies.provider.model} response`, () =>
-              this.dependencies.provider.complete({
-                messages,
-                // Every actor prefers the same streaming provider transport.
-                // Presentation remains main-agent-only so private child context
-                // cannot leak into the parent's terminal.
-                responseMode: "stream",
-                currentTurnImageIds: turnImages.map((image) => image.id),
-                tools: enabledTools.map((tool) => tool.definition),
-                signal: attemptSignal,
-                thinkingEffort: state.thinkingEffort,
-                ...(agentIdentity.role === "main_agent" && this.dependencies.onModelStream
-                  ? {
-                      onStreamEvent: (event: ProviderStreamEvent) => {
-                        try {
-                          this.dependencies.onModelStream?.(event);
-                        } catch {
-                          // Live presentation must never replace provider output.
-                        }
-                      },
-                    }
-                  : {}),
-              }),
-            ),
-          );
-          if (attempted.kind === "steering_interrupted") {
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "model.attempt.steering_interrupted",
-              phase: "interrupted",
-              payload: { purpose: "agent_step" },
-            });
-            await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext);
-            step -= 1;
-            continue;
-          }
-          response = attempted.value;
-          if (
-            agentIdentity.role === "main_agent" &&
-            selectedForStep?.memories.length &&
-            messages.some((message) => message.role === "user" && message.content === stepRuntimeContext)
-          ) {
-            try {
-              this.dependencies.recordMemoryRecall?.(
-                state.threadId,
-                turnId,
-                selectedForStep.memories.map((memory) => memory.id),
-              );
-            } catch {
-              // Recall accounting is derived state, never a reason to discard a model response.
-            }
-          }
-          await this.reportModelUsage(turnId, "agent_step", response.usage, { step, attempt: 1, retry: false });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (!options.signal?.aborted && isContextCapacityError(error)) {
-            return this.finish(
-              state,
-              turnId,
-              "Context paused: the provider rejected the input capacity after bounded recovery. History, files and pending operations are preserved; reduce required input or configure a supported model window before resuming.",
-              "limit_reached",
-              step,
-              memoryContext,
-              undefined,
-              undefined,
-              {
-                code: "context_capacity_exhausted",
-                tool: "runtime",
-                attempts: state.pressureRecovery?.serverReset ? 1 : 0,
-                recoverable: true,
-              },
-            );
-          }
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            stepId: `step_${step}`,
-            type: "model.error",
-            phase: "failed",
-            payload: { message, category: failureCategory(error, options.signal), commandReplay: false },
-          });
-          const interrupted = Boolean(options.signal?.aborted);
-          return this.finish(
-            state,
-            turnId,
-            interrupted ? "The task was interrupted by the user." : `Model request failed: ${message}`,
-            interrupted ? "interrupted" : error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
-            error instanceof TaskBudgetExceeded ? this.modelRequestsUsed : step,
-            memoryContext,
-            undefined,
-            undefined,
-            interrupted ? undefined : contextCapacityFailure(error, state),
-          );
-        }
-
-        if (
-          agentIdentity.role === "main_agent" &&
-          (await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext))
-        ) {
-          // The response was never added to the transcript, so a tool-call
-          // protocol cannot be left half-open. Retry this logical step with the
-          // newly coalesced user message.
-          step -= 1;
-          continue;
-        }
-
-        const executionToolCalls = deduplicateThreadTitleCalls(response.message.tool_calls);
-        const assistantMessage: ChatMessage = {
-          role: "assistant",
-          content: response.message.content,
-          ...(response.message.phase ? { phase: response.message.phase } : {}),
-          tool_calls: executionToolCalls,
-          reasoning_content: response.message.reasoning_content,
-        };
-        state.messages.push(assistantMessage);
-        const projectionHistory: ChatMessage[] = [...messages, assistantMessage];
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
-          turnId,
-          stepId: `step_${step}`,
-          type: "message.assistant",
-          phase: "completed",
-          payload: assistantMessage,
-        });
-        const reasoningText = response.message.reasoning_content;
-        const thinkingEffort = state.thinkingEffort;
-        if (
-          thinkingEffort !== "none" &&
-          reasoningText !== undefined &&
-          reasoningText !== null &&
-          reasoningText.trim().length > 0
-        ) {
-          try {
-            this.dependencies.onReasoning?.({
-              type: "reasoning",
-              text: reasoningText,
-              threadId: state.threadId,
-              turnId,
-              step,
-              provider: this.dependencies.provider.name,
-              model: this.dependencies.provider.model,
-              thinkingEffort,
-            });
-          } catch {
-            // This hook is ephemeral presentation only. A broken UI must not
-            // interrupt the durable assistant message or its pending tool calls.
-          }
-        }
-
-        // Execute original arguments; the complete sanitized candidate remains
-        // in history until an accepted compaction retires it.
-        const invalidOutput = incompleteModelOutput(response);
-        if (invalidOutput) {
-          invalidOutputAttempts++;
-          for (const call of executionToolCalls ?? []) {
-            const rejected: ChatMessage = {
-              role: "tool",
-              name: call.function.name,
-              tool_call_id: call.id,
-              content: JSON.stringify({ ok: false, error: invalidOutput, executed: false }),
-            };
-            state.messages.push(rejected);
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              type: "tool.result",
-              phase: "failed",
-              payload: {
-                callId: call.id,
-                tool: call.function.name,
-                message: rejected,
-                result: { ok: false, executed: false, error: invalidOutput },
-              },
-            });
-          }
-          const feedback: ChatMessage = { role: "user", content: "RUNTIME_MODEL_CONTENT_ERROR: " + invalidOutput };
           state.messages.push(feedback);
           await this.dependencies.appendEvent({
             threadId: state.threadId,
             turnId,
             type: "message.user.synthetic",
+            phase: "completed",
             payload: feedback,
           });
-          if (invalidOutputAttempts <= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries)
-            continue;
-          return this.finish(
+          return { kind: "continue" };
+        }
+        return {
+          kind: "return",
+          value: this.finish(
             state,
             turnId,
-            invalidOutput + " Content correction budget exhausted; work is unverified and retained.",
-            "failed",
-            step,
-            memoryContext,
-          );
-        }
-        invalidOutputAttempts = 0;
-        const calls = executionToolCalls ?? [];
-        if (calls.length === 0) {
-          if (agentIdentity.role === "main_agent" && this.dependencies.collectReadySubagents) {
-            const collected = await this.dependencies.collectReadySubagents(state, turnId, options.signal);
-            if (collected > 0) {
-              continue;
-            }
-          }
-          const outstandingSubagents =
-            agentIdentity.role === "main_agent" ? (this.dependencies.getOutstandingSubagents?.() ?? []) : [];
-          const obligations = evaluateCompletionGate({
-            state,
-            role: agentIdentity.role,
-            planning: effectiveMode === "plan",
-            reconciliationPending: reconciliationPending(state),
-            openCommandHandles: this.dependencies.hasOpenCommandHandles?.() ?? false,
-            outstandingSubagents,
-          });
-          if (obligations.length) {
-            const { signature, attempt } = nextCompletionAttempt(state, obligations);
-            const payload = { signature, attempt, obligations };
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              type: "completion.rejected",
-              phase: "completed",
-              payload,
-            });
-            foldCompletionControl(state, "completion.rejected", payload);
-            const limits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
-            // When several obligations coexist, stop as soon as the most
-            // restrictive configured correction budget is exhausted. Resolving
-            // that obligation creates a new signature and lets the remaining
-            // obligations use their own budget on Resume.
-            const maximum = limits.prematureFinishRetries;
-            if (attempt <= maximum) {
-              const feedback: ChatMessage = {
-                role: "user",
-                content: renderCompletionCorrection(obligations, attempt, maximum - attempt),
-              };
-              state.messages.push(feedback);
-              await this.dependencies.appendEvent({
-                threadId: state.threadId,
-                turnId,
-                type: "message.user.synthetic",
-                phase: "completed",
-                payload: feedback,
-              });
-              continue;
-            }
-            return this.finish(
-              state,
-              turnId,
-              `Task paused after ${attempt} repeated invalid completion proposals. Pending obligations: ` +
-                obligations.map((item) => item.description).join(" "),
-              "paused",
-              step,
-              memoryContext,
-              undefined,
-              undefined,
-              undefined,
-              {
-                cause: obligations.some(
-                  (item) => item.kind === "subagent_submission" || item.kind === "collect_subagents",
-                )
-                  ? "subagent"
-                  : "completion_protocol",
-                resumable: true,
-                requiredAction: obligations.map((item) => item.requiredAction).join(" "),
-                obligations,
-              },
-            );
-          }
-          if (state.completionControl?.active) {
-            const payload = { signature: state.completionControl.active.signature };
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              type: "completion.resolved",
-              phase: "completed",
-              payload,
-            });
-            foldCompletionControl(state, "completion.resolved", payload);
-          }
-          if (effectiveMode === "plan" && agentIdentity.role === "main_agent" && assistantMessage.content?.trim()) {
-            if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext))
-              continue;
-            const planReview = createPlanReviewState(
-              planDraftFromText(assistantMessage.content),
-              turnId,
-              state.planReview,
-            );
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              type: "plan.proposed",
-              phase: "completed",
-              payload: { planReview },
-            });
-            state.planReview = planReview;
-            state.updatedAt = new Date().toISOString();
-            const text =
-              `${formatPlanProposal(planReview.proposal)}\n\n` + runtimePromptText("runtime/plan-waiting-review.md");
-            this.dependencies.onText?.(text);
-            return this.finish(state, turnId, text, "planned", step, memoryContext, planReview.proposal);
-          }
-          let text =
-            assistantMessage.content?.trim() || "The task ended, but the model did not provide an explanation.";
-          if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, false, memoryContext)) {
-            continue;
-          }
-          if (
-            effectiveMode === "code" &&
-            agentIdentity.role === "main_agent" &&
-            assistantMessage.content?.trim() &&
-            !this.dependencies.deliveryChallengeAlreadyUsed?.(state.threadId)
-          ) {
-            const priorRequest = /^\s*(continue|resume|继续|接着做|继续执行)[\s.!。！]*$/iu.test(
-              memoryContext.userInput,
-            )
-              ? state.messages
-                  .slice(0, turnHistoryStart)
-                  .reverse()
-                  .find(
-                    (message) =>
-                      message.role === "user" && message.content.trim() && !message.content.startsWith("RUNTIME_"),
-                  )?.content
-              : undefined;
-            const requirements = [
-              priorRequest,
-              memoryContext.userInput,
-              ...(state.contextIntentLedger?.activeConstraints.map((item) => item.text) ?? []),
-              ...(state.contextIntentLedger?.userCorrections.map((item) => item.text) ?? []),
-            ]
-              .filter(Boolean)
-              .join("\n\n");
-            const input = `Original user request:\n${requirements}\n\nMain agent completion summary:\n${text}`;
-            const local = await this.decideLocally(state, turnId, "delivery", input, options.signal);
-            if (local) {
-              if (local.appliedDecision === "CHALLENGE") {
-                const feedback: ChatMessage = {
-                  role: "user",
-                  content:
-                    "RUNTIME_DELIVERY_CHALLENGE: Your own completion summary may not cover every user requirement. " +
-                    "Check the requested outcomes against the actual changes and verification once more. " +
-                    "Correct any omission you find, then submit a new final response. " +
-                    "This local classifier does not identify a specific bug and will not challenge this task again.",
-                };
-                await this.dependencies.appendEvent({
-                  threadId: state.threadId,
-                  turnId,
-                  type: "decision.delivery.challenge_requested",
-                  phase: "completed",
-                  payload: { decisionId: local.id, message: feedback },
-                });
-                state.messages.push(feedback);
-              }
-              await this.recordLocalDecision(
-                local.id,
-                state,
-                turnId,
-                local.result,
-                local.appliedDecision,
-                local.appliedDecision === "CHALLENGE",
-              );
-              if (local.appliedDecision === "CHALLENGE") continue;
-            }
-          }
-          // Finalization seals user steering exactly once. Reviewer advice, when
-          // present, was already injected before this model request.
-          if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) continue;
-          this.dependencies.onText?.(text);
-          const reason = state.taskGraph?.status === "terminal_blocked" ? "blocked" : "success";
-          return this.finish(state, turnId, text, reason, step, memoryContext);
-        }
-
-        const proposePlanBatched = calls.length > 1 && calls.some((call) => call.function.name === "propose_plan");
-        const submitTaskResultBatched =
-          calls.length > 1 && calls.some((call) => call.function.name === "submit_task_result");
-        const stepImageAttachments: ImageAttachment[] = [];
-        let proposedPlan: PlanProposal | undefined;
-        let submittedTaskReport: SubagentTaskReport | undefined;
-        let steeringAppliedBetweenTools = false;
-        let requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
-        let finishRejectedReason: string | undefined;
-        let completedVerificationPhase = false;
-        let environmentFault = this.dependencies.getEnvironmentFault?.();
-
-        for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
-          const call = calls[callIndex]!;
-          if (
-            agentIdentity.role === "main_agent" &&
-            (await this.dependencies.hasPendingSteering?.({
-              threadId: state.threadId,
-              turnId,
-            }))
-          ) {
-            // Close the assistant's complete tool-call protocol before the
-            // durable steering application event adds a new user message.
-            for (const skipped of calls.slice(callIndex)) {
-              await this.dependencies.appendEvent({
-                threadId: state.threadId,
-                turnId,
-                stepId: `step_${step}`,
-                type: "tool.call",
-                phase: "requested",
-                payload: skipped,
-              });
-              const skippedResult: ToolExecutionResult = {
-                ok: false,
-                summary: "Tool call skipped because newer user steering arrived.",
-                error: "superseded_by_user_steering",
-              };
-              const skippedMessage: ChatMessage = {
-                role: "tool",
-                tool_call_id: skipped.id,
-                name: skipped.function.name,
-                content: resultForModel(skippedResult, options.maxOutputChars),
-              };
-              const skippedEventId = createId("event");
-              const skippedObservation = observeToolResult({
-                sourceEventId: skippedEventId,
-                sourceCallId: skipped.id,
-                scopeKey: progressScopeKey(state, turnId),
-                responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
-                tool: skipped.function.name,
-                result: skippedResult,
-                verificationIntent: false,
-              });
-              await this.dependencies.appendEvent({
-                eventId: skippedEventId,
-                threadId: state.threadId,
-                turnId,
-                stepId: `step_${step}`,
-                type: "tool.result",
-                phase: "interrupted",
-                payload: {
-                  callId: skipped.id,
-                  tool: skipped.function.name,
-                  message: skippedMessage,
-                  progressObservation: skippedObservation,
-                },
-              });
-              state.progressGuard = foldProgressObservation(state.progressGuard, skippedObservation).state;
-              state.messages.push(skippedMessage);
-            }
-            await this.takeAndApplySteering(state, turnId, "between_tools", turnImages, false, memoryContext);
-            steeringAppliedBetweenTools = true;
-            break;
-          }
-          const toolName = call.function.name as ToolName;
-          // The gateway is a run-level snapshot, while this one-shot tool can be
-          // withdrawn between requests; recheck its availability at execution.
-          const tool =
-            toolName === "name_thread" && !threadTitleUnclaimed(this.dependencies, state.threadId)
-              ? undefined
-              : toolGateway.get(toolName);
-          let displayName = toolName;
-          // Verification relies on recorded changes and actual command results;
-          // no whole-repository test baseline is captured or replayed.
-          const taskIdAtCall = activeTask(state.taskGraph)?.id;
-          let taskGraphOperation: TaskGraphTransitionOperation | undefined;
-          let subagentTaskOperation: SubagentTaskOperation | undefined;
-          let result: ToolExecutionResult;
-          let preparedSubagentLifecycle: SubagentLifecycleUpdate | undefined;
-          let preparedSubagentLifecycleRolledBack = false;
-
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            stepId: `step_${step}`,
-            type: "tool.call",
-            phase: "requested",
-            payload: call,
-          });
-
-          if (environmentFault && tool?.mutating) {
-            result = toolFailure(
-              new CommandEnvironmentQuarantined(environmentFault),
-              "Tool skipped: environment quarantined; task paused.",
-            );
-          } else if (proposePlanBatched) {
-            result = {
-              ok: false,
-              summary: "propose_plan must be the only tool call in a model response.",
-              error: "propose_plan_must_be_exclusive",
-            };
-          } else if (submitTaskResultBatched) {
-            result = {
-              ok: false,
-              summary: "submit_task_result must be the only tool call in a model response.",
-              error: "submit_task_result_must_be_exclusive",
-            };
-          } else if (!tool) {
-            result = {
-              ok: false,
-              summary: `Tool ${call.function.name} is not available in the current mode.`,
-              error: "tool_not_available",
-              failure: protocolToolFailure(
-                "tool_not_available",
-                "Use only currently exposed tools. This call was not executed; permissions have not changed.",
-              ),
-            };
-          } else {
-            try {
-              const preparedInvocation = toolGateway.prepare(toolName, call.function.arguments);
-              if (!preparedInvocation) throw new Error(`Tool ${toolName} is not available`);
-              const rawInput = preparedInvocation.input;
-              displayName = toolApprovalIdentity(
-                preparedInvocation.tool,
-                rawInput,
-                preparedInvocation.binding,
-                state.workspaceRoot,
-              ).label;
-              let input: unknown = rawInput;
-              if (toolName === "manage_tasks") {
-                const parsedOperation = taskGraphOperationSchema.parse(rawInput);
-                if (
-                  (parsedOperation.action === "complete" || parsedOperation.action === "block") &&
-                  this.dependencies.hasOpenCommandHandles?.()
-                ) {
-                  finishRejectedReason = backgroundCommandFinalizationInstruction();
-                  throw new Error(finishRejectedReason);
-                }
-                if (
-                  parsedOperation.action === "create" &&
-                  (this.dependencies.getOutstandingSubagents?.() ?? []).some(
-                    (agent) => agent.assignmentKind === "standalone",
-                  )
-                ) {
-                  throw new Error("Collect every standalone child result before creating a task DAG.");
-                }
-                input = parsedOperation;
-                if (parsedOperation.action !== "list") {
-                  taskGraphOperation = parsedOperation;
-                }
-              }
-              if (toolName === "submit_task_result" && this.dependencies.hasOpenCommandHandles?.()) {
-                finishRejectedReason = backgroundCommandFinalizationInstruction();
-                throw new Error(finishRejectedReason);
-              }
-              this.dependencies.onStatus?.(`Tool: ${displayName}`);
-              const toolContext = {
-                limits: this.dependencies.limits,
-                resultTokenBudget: this.dependencies.contextManager.tokenCapacity
-                  ? Math.max(
-                      0,
-                      this.dependencies.contextManager.tokenCapacity.inputCapacity -
-                        this.dependencies.contextManager.estimateRequestTokens(
-                          projectionHistory,
-                          ordinaryToolDefinitions,
-                        ) -
-                        (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens,
-                    )
-                  : undefined,
-                resultCharBudget: this.dependencies.contextManager.tokenCapacity
-                  ? undefined
-                  : Math.max(
-                      0,
-                      this.dependencies.contextManager.activeCharBudget(options.maxContextChars) -
-                        JSON.stringify(projectionHistory).length -
-                        estimateToolDefinitionsChars(ordinaryToolDefinitions) -
-                        (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens * 2,
-                    ),
-                orchestrationEnabled: options.orchestrationEnabled,
-                isOrchestrationEnabled: options.isOrchestrationEnabled,
-                workspaceRoot: state.workspaceRoot,
-                ...(toolName === "run_command" || toolName === "start_command"
-                  ? { validationPriorChanges: state.changes.map((change) => ({ ...change })) }
-                  : {}),
-                mode: effectiveMode,
-                selectedMode: state.mode,
-                threadId: state.threadId,
-                turnId,
-                approvalPolicy: options.approvalPolicy,
-                commandExecutionMode: options.commandExecutionMode,
-                isUnrestrictedHostAccessActive: options.isUnrestrictedHostAccessActive,
-                unrestrictedHostAccessEpoch: options.unrestrictedHostAccessEpoch,
-                requestApproval: this.dependencies.requestApproval,
-                signal: options.signal,
-                reportProgress: (update: { message?: string; progress?: number; total?: number }) => {
-                  const detail = update.message?.replace(/[\u0000-\u001F\u007F]/gu, " ").slice(0, 240);
-                  const amount =
-                    typeof update.progress === "number"
-                      ? `${update.progress}${typeof update.total === "number" ? `/${update.total}` : ""}`
-                      : undefined;
-                  this.dependencies.onStatus?.([`Tool: ${displayName}`, amount, detail].filter(Boolean).join(" · "));
-                },
-                commandTimeoutMs: options.commandTimeoutMs,
-                maxOutputChars: options.maxOutputChars,
-                agentRole: agentIdentity.role,
-                ...(agentIdentity.role === "subagent"
-                  ? {
-                      agentId: agentIdentity.agentId,
-                      assignedTaskId: agentIdentity.assignedTaskId,
-                    }
-                  : {}),
-                thinkingEffort: state.thinkingEffort,
-                provider: state.provider,
-                model: state.model,
-                toolCallId: call.id,
-                searchProjectMemory: this.dependencies.searchMemories,
-                recordMemoryRecall: (memoryIds: readonly string[]) =>
-                  this.dependencies.recordMemoryRecall?.(state.threadId, turnId, memoryIds),
-                recallContext: async (input: { evidenceId: string; offset: number; limit: number }) =>
-                  recallThreadContext(
-                    state,
-                    input,
-                    this.dependencies.readToolEvidence
-                      ? (id, offset, limit) => this.dependencies.readToolEvidence!(state, id, offset, limit)
-                      : undefined,
-                    this.dependencies.limits,
-                  ),
-                ...(this.dependencies.getLayeredContext
-                  ? {
-                      searchHistory: async (query: string, limit: number) => {
-                        const history = await this.dependencies.getLayeredContext!({
-                          state,
-                          query,
-                          queries: [query],
-                          beforeMessageIndex: state.messages.length,
-                        });
-                        return (history.evidence ?? []).slice(0, limit).map((hit) => ({
-                          id: hit.id,
-                          title: hit.title.slice(0, 160),
-                          preview: hit.content.slice(0, 400),
-                          historical: true as const,
-                        }));
-                      },
-                    }
-                  : {}),
-                ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
-                recordCommand: (entry: CommandAuditEntry) => {
-                  const taskId = state.taskGraph ? activeTask(state.taskGraph)?.id : undefined;
-                  const scopedEntry: CommandAuditEntry = {
-                    ...entry,
-                    sourceAgentRole: agentIdentity.role,
-                    sourceScopeKey: state.taskGraph
-                      ? `${state.threadId}/${state.taskGraph.id}/${taskId ?? "none"}`
-                      : `${state.threadId}/intent:${state.contextIntentLedger?.latestRequest.sourceMessageIndex ?? turnId}`,
-                    ...(agentIdentity.role === "subagent" ? { sourceAgentId: agentIdentity.agentId } : {}),
-                    ...(taskId ? { sourceTaskId: taskId } : {}),
-                  };
-                  state.commands.push(scopedEntry);
-                  this.dependencies.recordCommand?.(turnId, scopedEntry);
-                },
-                ...(this.dependencies.attachImage
-                  ? {
-                      attachImage: async (image: { absolutePath: string; sourceName?: string }) => {
-                        if (turnImages.length >= MAX_IMAGES_PER_MODEL_REQUEST) {
-                          throw new Error(`A turn can contain at most ${MAX_IMAGES_PER_MODEL_REQUEST} images.`);
-                        }
-                        assertThreadImageNumberAvailable(nextImageNumber);
-                        const attachment = await this.dependencies.attachImage?.({
-                          threadId: state.threadId,
-                          label: `Image #${nextImageNumber}`,
-                          absolutePath: image.absolutePath,
-                          sourceName: image.sourceName,
-                        });
-                        if (!attachment) {
-                          throw new Error("Image attachment storage is unavailable.");
-                        }
-                        try {
-                          validateImageAttachmentCollection([...turnImages, attachment]);
-                          validateProviderImageAttachments(this.dependencies.provider.name, [attachment]);
-                        } catch (error) {
-                          await this.dependencies.discardImage?.(state.threadId, attachment).catch(() => undefined);
-                          throw error;
-                        }
-                        turnImages.push(attachment);
-                        nextImageNumber += 1;
-                        return attachment;
-                      },
-                    }
-                  : {}),
-              };
-              const waitAttempt =
-                tool.name === "poll_command" ? this.dependencies.steeringNotifier?.openAttempt() : undefined;
-              try {
-                result =
-                  reconciliationGate(state, tool.name, input) ??
-                  commandRetries.before(tool.name, input) ??
-                  (await toolGateway.invoke(
-                    { ...preparedInvocation, input },
-                    { ...toolContext, waitSignal: waitAttempt?.signal },
-                    (name, execute) => this.withToolExecutionActivity(name, execute),
-                  ));
-                result = commandRetries.after(tool.name, input, result);
-              } finally {
-                waitAttempt?.dispose();
-              }
-              preparedSubagentLifecycle = result.subagentLifecycle;
-            } catch (error) {
-              result = toolFailure(error, `Tool ${displayName} failed.`);
-            }
-          }
-
-          if (
-            toolName === "write_memory" &&
-            result.ok &&
-            result.memoryMutation &&
-            memoryContext.mutations.length >= MAX_MEMORY_MUTATIONS_PER_TURN
-          ) {
-            result = {
-              ok: false,
-              summary: `A turn can stage at most ${MAX_MEMORY_MUTATIONS_PER_TURN} memory changes.`,
-              error: "memory_mutation_limit_reached",
-            };
-          }
-
-          let taskGraphUpdate: TaskGraph | undefined;
-          if (result.ok && result.taskGraphUpdate) {
-            try {
-              if (toolName === "manage_tasks" && taskGraphOperation) {
-                taskGraphUpdate = validateTaskGraphTransition(
-                  state.taskGraph,
-                  taskGraphOperation,
-                  result.taskGraphUpdate,
-                  turnId,
-                );
-              } else if (toolName === "manage_subagents" && result.subagentTaskOperation) {
-                subagentTaskOperation = subagentTaskOperationSchema.parse(result.subagentTaskOperation);
-                taskGraphUpdate = validateSubagentTaskTransition(
-                  state.taskGraph,
-                  subagentTaskOperation,
-                  result.taskGraphUpdate,
-                  turnId,
-                );
-              } else {
-                throw new Error("Only an authorized manage_tasks or manage_subagents call may update the task DAG");
-              }
-            } catch (error) {
-              result = {
-                ok: false,
-                summary: "Runtime rejected an invalid task DAG transition.",
-                error: error instanceof Error ? error.message : String(error),
-              };
-            }
-          } else if (result.ok && taskGraphOperation) {
-            result = {
-              ok: false,
-              summary: "Runtime rejected a missing task DAG transition.",
-              error: "manage_tasks did not return an authoritative task DAG update",
-            };
-          }
-
-          if (result.ok && result.subagentLifecycle) {
-            const lifecycle = result.subagentLifecycle;
-            const requiresBinding = lifecycle.action === "activate" || lifecycle.action === "observe";
-            const assignment = result.subagentAssignment;
-            let lifecycleError: string | undefined;
-            if (toolName !== "manage_subagents") {
-              lifecycleError = "Only manage_subagents may change child lifecycle state";
-            } else if (requiresBinding) {
-              if (!isSubagentAssignmentSnapshot(assignment) || assignment.agentId !== lifecycle.agentId) {
-                lifecycleError = "The child lifecycle transition is missing its exact Runtime binding";
-              } else if (assignment.kind === "dag") {
-                if (
-                  !taskGraphUpdate ||
-                  !subagentTaskOperation ||
-                  assignment.taskGraphId !== taskGraphUpdate.id ||
-                  assignment.taskId !== subagentTaskOperation.taskId ||
-                  assignment.agentId !== subagentTaskOperation.agentId ||
-                  (lifecycle.action === "activate" && subagentTaskOperation.action !== "claim") ||
-                  (lifecycle.action === "observe" && subagentTaskOperation.action === "claim")
-                ) {
-                  lifecycleError =
-                    "A DAG child lifecycle transition requires its matching authoritative task-DAG transition";
-                }
-              } else if (taskGraphUpdate || subagentTaskOperation) {
-                lifecycleError = "A standalone child lifecycle transition must not update the task DAG";
-              }
-            } else if (taskGraphUpdate || subagentTaskOperation || assignment) {
-              lifecycleError = "Follow-up and stop lifecycle transitions must not alter the child binding or task DAG";
-            }
-            if (lifecycleError) {
-              result = {
-                ok: false,
-                summary: "Runtime rejected an invalid subagent lifecycle transition.",
-                error: lifecycleError,
-              };
-            }
-          } else if (result.ok && result.subagentAssignment) {
-            result = {
-              ok: false,
-              summary: "Runtime rejected an unpaired child assignment.",
-              error: "A child assignment requires an activate or observe lifecycle transition",
-            };
-          }
-
-          if (result.ok && result.subagentTaskReport) {
-            const report = result.subagentTaskReport;
-            if (
-              toolName !== "submit_task_result" ||
-              agentIdentity.role !== "subagent" ||
-              report.taskId !== agentIdentity.assignedTaskId
-            ) {
-              result = {
-                ok: false,
-                summary: "Runtime rejected an unauthorized child task result.",
-                error: "invalid_subagent_task_result",
-              };
-            } else {
-              submittedTaskReport = report;
-            }
-          } else if (result.ok && toolName === "submit_task_result") {
-            result = {
-              ok: false,
-              summary: "Runtime rejected a missing child task result.",
-              error: "submit_task_result did not return a structured result",
-            };
-          }
-
-          let planReviewUpdate: SessionState["planReview"] | undefined;
-          if (result.ok && result.planProposal) {
-            try {
-              if (toolName !== "propose_plan" || effectiveMode !== "plan") {
-                throw new Error("Only propose_plan may submit a proposal in Plan mode");
-              }
-              if ((this.dependencies.getOutstandingSubagents?.() ?? []).length > 0) {
-                throw new Error("Outstanding child assignments must be collected before proposing a plan");
-              }
-              if (state.taskGraph && state.taskGraph.status !== "completed")
-                throw new Error("Finish the planning task DAG before proposing a plan");
-              planReviewUpdate = createPlanReviewState(result.planProposal, turnId, state.planReview);
-            } catch (error) {
-              result = {
-                ok: false,
-                summary: "Runtime rejected an invalid plan proposal.",
-                error: error instanceof Error ? error.message : String(error),
-              };
-            }
-          } else if (result.ok && toolName === "propose_plan") {
-            result = {
-              ok: false,
-              summary: "Runtime rejected a missing plan proposal.",
-              error: "propose_plan did not return a structured proposal",
-            };
-          }
-          if (!result.ok && toolName === "submit_task_result") {
-            submittedTaskReport = undefined;
-          }
-
-          result = normalizeToolFailure(result);
-          if (toolName === "write_memory" && !result.ok && result.failure) {
-            // Long-term memory is a best-effort projection of completed work. A
-            // malformed or unsupported proposal must never consume the shared
-            // tool-protocol budget or turn a successfully completed coding task
-            // into a paused task. Keep the per-call failure visible, skip only
-            // that proposal, and let the model deliver its result.
-            result = {
-              ...result,
-              failure: {
-                ...result.failure,
-                recovery: "none",
-                instruction:
-                  `${result.failure.instruction} This memory proposal was skipped. ` +
-                  "Do not retry it solely for memory maintenance; continue the task or provide the final answer.",
-              },
-            };
-            toolRecovery.succeed(toolName);
-          }
-          if (result.failure?.code === "command_environment_quarantined") {
-            environmentFault = result.error ?? result.failure.instruction;
-          }
-          if (result.ok) toolRecovery.succeed(toolName);
-          // Ordinary tools share field-level repair guidance; mutations are never auto-replayed.
-          // Internal context maintenance owns its own durable correction budget.
-          if (result.failure?.recovery === "correct_arguments") {
-            const recovery = toolRecovery.fail(toolName);
-            result = {
-              ...result,
-              failure: {
-                ...result.failure,
-                instruction: `${result.failure.instruction} Correction attempts remaining: ${recovery.remaining}.`,
-                ...(recovery.remaining === 0 ? { recovery: "none" as const } : {}),
-              },
-            };
-            if (recovery.remaining === 0) requiredProtocolExhaustion = { tool: toolName, attempt: recovery.attempt };
-          }
-
-          if (this.dependencies.captureToolEvidence && toolName !== "write_memory") {
-            try {
-              result = {
-                ...result,
-                evidenceId: this.dependencies.captureToolEvidence(state, call.id, toolName, result),
-              };
-            } catch {
-              // The bounded journal result remains authoritative. Evidence
-              // archival is internal bookkeeping and should fail silently.
-            }
-          }
-          let projectionIntent: string | undefined;
-          if (toolName === "run_command" || toolName === "start_command") {
-            try {
-              projectionIntent = JSON.parse(call.function.arguments).intent;
-            } catch {
-              /* invalid arguments were not executed */
-            }
-          }
-          const projected = projectToolResult(result, this.dependencies.limits, {
-            intent: projectionIntent,
-            previousMessages: projectionHistory,
-          });
-          const projectionLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
-          const readData = result.data as
-            | { path?: unknown; content?: unknown; contentHash?: unknown; startLine?: unknown; endLine?: unknown }
-            | undefined;
-          const versionedRead =
-            result.ok &&
-            toolName === "read_file" &&
-            readData &&
-            typeof readData.path === "string" &&
-            typeof readData.content === "string" &&
-            typeof readData.contentHash === "string" &&
-            /^[a-f0-9]{64}$/u.test(readData.contentHash) &&
-            Number.isSafeInteger(readData.startLine) &&
-            Number.isSafeInteger(readData.endLine);
-          const isMcpResult = tool?.metadata?.identity.sourceId === "mcp";
-          const resultChars = versionedRead
-            ? projectionLimits.maxReadResultTokens * 8 + 4096
-            : toolName === "search_files"
-              ? projectionLimits.searchMaxResultTokens * 8 + 4096
-              : isMcpResult
-                ? options.maxOutputChars
-                : (this.dependencies.limits?.maxToolResultChars ?? options.maxOutputChars);
-          const toolMessage: ChatMessage = {
-            role: "tool",
-            tool_call_id: call.id,
-            name: call.function.name,
-            content: resultForModel(projected, resultChars),
-          };
-          const toolResultEventId = createId("event");
-          const verification = commandVerificationClassification(
-            toolName,
-            call.function.arguments,
-            progressVerificationCommands,
-            result,
-          );
-          const progressCommandData =
-            result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : undefined;
-          if (
-            verification.intent &&
-            (toolName === "run_command" || toolName === "start_command") &&
-            typeof progressCommandData?.commandId === "string"
-          ) {
-            progressVerificationCommands.set(progressCommandData.commandId, verification.kind ?? "custom");
-          }
-          const progressObservation = observeToolResult({
-            sourceEventId: toolResultEventId,
-            sourceCallId: call.id,
-            scopeKey: taskIdAtCall ? `thread:${state.threadId}/task:${taskIdAtCall}` : progressScopeKey(state, turnId),
-            responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
-            tool: call.function.name,
-            result,
-            verificationIntent: verification.intent,
-            investigationPolicy: {
-              minimum: projectionLimits.progressInvestigationMinSamples,
-              ratio: projectionLimits.progressInvestigationRepeatRatio,
-              window: projectionLimits.progressInvestigationWindowResponses,
-              review: projectionLimits.progressInvestigationReviewEnabled,
-            },
-            ...(verification.kind ? { verificationKind: verification.kind } : {}),
-          });
-          const rollbackPreparedSubagent = (): void => {
-            if (!preparedSubagentLifecycle || preparedSubagentLifecycleRolledBack) return;
-            preparedSubagentLifecycleRolledBack = true;
-            try {
-              this.dependencies.onSubagentLifecycleRollback?.(preparedSubagentLifecycle);
-            } catch {
-              // A local reservation cleanup hook must not replace the durable tool result/error.
-            }
-          };
-          if (!result.ok) rollbackPreparedSubagent();
-          const contextCommand = pendingCommandObservation(toolName, result, taskIdAtCall);
-          const contextReconciliation = reconciliationObservation(state, toolName, result);
-          let displayDetails: ReturnType<typeof safeToolDisplayDetails> = [];
-          try {
-            displayDetails = safeToolDisplayDetails(
-              toolDisplayDetails(tool, toolName, call.function.arguments, result, state),
-            );
-          } catch {
-            // Presentation metadata must never prevent a tool result from being committed.
-          }
-          try {
-            await this.dependencies.appendEvent({
-              eventId: toolResultEventId,
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "tool.result",
-              phase: result.ok ? "completed" : "failed",
-              payload: {
-                callId: call.id,
-                tool: call.function.name,
-                ...(toolGateway.catalog.bindings.get(call.function.name)
-                  ? { toolBinding: toolGateway.catalog.bindings.get(call.function.name) }
-                  : {}),
-                message: toolMessage,
-                ...(displayDetails.length ? { toolDetails: displayDetails } : {}),
-                progressObservation,
-                ...(contextCommand ? { contextCommand } : {}),
-                ...(contextReconciliation ? { contextReconciliation } : {}),
-                outputProjection: {
-                  capturedResultChars: JSON.stringify(result.data ?? null).length,
-                  modelResultChars: toolMessage.content.length,
-                },
-                ...(result.failure ? { failure: result.failure } : {}),
-                ...(taskIdAtCall ? { taskId: taskIdAtCall } : {}),
-                ...(taskGraphUpdate && taskGraphOperation ? { taskGraph: taskGraphUpdate, taskGraphOperation } : {}),
-                ...(taskGraphUpdate && subagentTaskOperation
-                  ? { taskGraph: taskGraphUpdate, subagentTaskOperation }
-                  : {}),
-                ...(result.ok && result.subagentLifecycle ? { subagentLifecycle: result.subagentLifecycle } : {}),
-                ...(result.ok && result.subagentAssignment ? { subagentAssignment: result.subagentAssignment } : {}),
-                ...(result.ok && result.subagentMessageId ? { subagentMessageId: result.subagentMessageId } : {}),
-                ...(planReviewUpdate ? { planReview: planReviewUpdate } : {}),
-              },
-            });
-          } catch (error) {
-            rollbackPreparedSubagent();
-            throw error;
-          }
-          projectionHistory.push(toolMessage);
-          const progressFold = foldProgressObservation(state.progressGuard, progressObservation);
-          state.progressGuard = progressFold.state;
-          foldPendingOperations(state, {
-            tool: toolName,
-            contextCommand,
-            contextReconciliation,
-            ...(result.ok
-              ? { subagentLifecycle: result.subagentLifecycle, subagentAssignment: result.subagentAssignment }
-              : {}),
-          });
-          completedVerificationPhase ||= progressFold.accepted && progressObservation.kind === "verification_terminal";
-          state.messages.push(toolMessage);
-          if (taskGraphUpdate) {
-            state.taskGraph = taskGraphUpdate;
-            state.updatedAt = new Date().toISOString();
-          }
-          if (planReviewUpdate) {
-            state.planReview = planReviewUpdate;
-            proposedPlan = planReviewUpdate.proposal;
-            state.updatedAt = new Date().toISOString();
-          }
-          if (result.ok && result.imageAttachments?.length) {
-            stepImageAttachments.push(...result.imageAttachments);
-          }
-          if (toolName === "write_memory" && result.ok && result.memoryMutation) {
-            memoryContext.mutations.push(result.memoryMutation);
-          }
-          await this.dependencies.onToolCompleted?.(state, call.function.name, result, displayName, displayDetails);
-        }
-
-        if (environmentFault) {
-          return this.finish(
-            state,
-            turnId,
-            `Task paused because the command environment is quarantined. ${environmentFault}`,
+            `Task paused after ${attempt} repeated invalid completion proposals. Pending obligations: ` +
+              obligations.map((item) => item.description).join(" "),
             "paused",
             step,
             memoryContext,
@@ -3202,210 +3045,827 @@ export class AgentRuntime {
             undefined,
             undefined,
             {
-              cause: "command_environment",
-              resumable: true,
-              requiredAction: "Repair the command environment and verify cleanup, then resume this task.",
-              obligations: [],
-            },
-          );
-        }
-        if (completedVerificationPhase) await this.closeContextPhase(state, turnId);
-        else if (investigationExchangeStart(state.messages) !== undefined)
-          await this.closeContextPhase(state, turnId, "investigation");
-        if (!steeringAppliedBetweenTools) {
-          steeringAppliedBetweenTools = Boolean(
-            await this.takeAndApplySteering(state, turnId, "between_tools", turnImages, false, memoryContext),
-          );
-        }
-        if (steeringAppliedBetweenTools) {
-          continue;
-        }
-
-        if (requiredProtocolExhaustion) {
-          throw new ToolProtocolExhausted(requiredProtocolExhaustion.tool, requiredProtocolExhaustion.attempt, step);
-        }
-        if (finishRejectedReason) {
-          const obligations = evaluateCompletionGate({
-            state,
-            role: agentIdentity.role,
-            reconciliationPending: reconciliationPending(state),
-            openCommandHandles: true,
-            outstandingSubagents:
-              agentIdentity.role === "main_agent" ? (this.dependencies.getOutstandingSubagents?.() ?? []) : [],
-          });
-          const { signature, attempt } = nextCompletionAttempt(state, obligations);
-          const payload = { signature, attempt, obligations };
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            type: "completion.rejected",
-            phase: "completed",
-            payload,
-          });
-          foldCompletionControl(state, "completion.rejected", payload);
-          const maximum = (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).prematureFinishRetries;
-          if (attempt <= maximum) {
-            const feedback: ChatMessage = {
-              role: "user",
-              content: renderCompletionCorrection(obligations, attempt, maximum - attempt),
-            };
-            state.messages.push(feedback);
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              type: "message.user.synthetic",
-              phase: "completed",
-              payload: feedback,
-            });
-            continue;
-          }
-          return this.finish(
-            state,
-            turnId,
-            finishRejectedReason,
-            "paused",
-            step,
-            memoryContext,
-            undefined,
-            undefined,
-            undefined,
-            {
-              cause: "completion_protocol",
+              cause: obligations.some(
+                (item) => item.kind === "subagent_submission" || item.kind === "collect_subagents",
+              )
+                ? "subagent"
+                : "completion_protocol",
               resumable: true,
               requiredAction: obligations.map((item) => item.requiredAction).join(" "),
               obligations,
             },
-          );
-        }
-        if (submittedTaskReport) {
-          const text = submittedTaskReport.summary;
-          this.dependencies.onText?.(text);
-          return this.finish(
+          ),
+        };
+      }
+      if (state.completionControl?.active) {
+        const payload = { signature: state.completionControl.active.signature };
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "completion.resolved",
+          phase: "completed",
+          payload,
+        });
+        foldCompletionControl(state, "completion.resolved", payload);
+      }
+      if (effectiveMode === "plan" && agentIdentity.role === "main_agent" && assistantMessage.content?.trim()) {
+        if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext))
+          return { kind: "continue" };
+        const planReview = createPlanReviewState(planDraftFromText(assistantMessage.content), turnId, state.planReview);
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "plan.proposed",
+          phase: "completed",
+          payload: { planReview },
+        });
+        state.planReview = planReview;
+        state.updatedAt = new Date().toISOString();
+        const text =
+          `${formatPlanProposal(planReview.proposal)}\n\n` + runtimePromptText("runtime/plan-waiting-review.md");
+        this.dependencies.onText?.(text);
+        return {
+          kind: "return",
+          value: this.finish(state, turnId, text, "planned", step, memoryContext, planReview.proposal),
+        };
+      }
+      let text = assistantMessage.content?.trim() || "The task ended, but the model did not provide an explanation.";
+      if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, false, memoryContext)) {
+        return { kind: "continue" };
+      }
+      if (
+        effectiveMode === "code" &&
+        agentIdentity.role === "main_agent" &&
+        assistantMessage.content?.trim() &&
+        !this.dependencies.deliveryChallengeAlreadyUsed?.(state.threadId)
+      ) {
+        const priorRequest = /^\s*(continue|resume|继续|接着做|继续执行)[\s.!。！]*$/iu.test(memoryContext.userInput)
+          ? state.messages
+              .slice(0, turnHistoryStart)
+              .reverse()
+              .find(
+                (message) =>
+                  message.role === "user" && message.content.trim() && !message.content.startsWith("RUNTIME_"),
+              )?.content
+          : undefined;
+        const requirements = [
+          priorRequest,
+          memoryContext.userInput,
+          ...(state.contextIntentLedger?.activeConstraints.map((item) => item.text) ?? []),
+          ...(state.contextIntentLedger?.userCorrections.map((item) => item.text) ?? []),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        const input = `Original user request:\n${requirements}\n\nMain agent completion summary:\n${text}`;
+        const local = await this.decideLocally(state, turnId, "delivery", input, options.signal);
+        if (local) {
+          if (local.appliedDecision === "CHALLENGE") {
+            const feedback: ChatMessage = {
+              role: "user",
+              content:
+                "RUNTIME_DELIVERY_CHALLENGE: Your own completion summary may not cover every user requirement. " +
+                "Check the requested outcomes against the actual changes and verification once more. " +
+                "Correct any omission you find, then submit a new final response. " +
+                "This local classifier does not identify a specific bug and will not challenge this task again.",
+            };
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              type: "decision.delivery.challenge_requested",
+              phase: "completed",
+              payload: { decisionId: local.id, message: feedback },
+            });
+            state.messages.push(feedback);
+          }
+          await this.recordLocalDecision(
+            local.id,
             state,
             turnId,
-            text,
-            submittedTaskReport.outcome === "completed" ? "success" : "blocked",
-            step,
-            memoryContext,
-            undefined,
-            submittedTaskReport,
+            local.result,
+            local.appliedDecision,
+            local.appliedDecision === "CHALLENGE",
           );
+          if (local.appliedDecision === "CHALLENGE") return { kind: "continue" };
         }
+      }
+      // Finalization seals user steering exactly once. Reviewer advice, when
+      // present, was already injected before this model request.
+      if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext))
+        return { kind: "continue" };
+      this.dependencies.onText?.(text);
+      const reason = state.taskGraph?.status === "terminal_blocked" ? "blocked" : "success";
+      return { kind: "return", value: this.finish(state, turnId, text, reason, step, memoryContext) };
+    }
+    return { kind: "next" };
+  }
 
-        if (proposedPlan) {
-          if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) {
-            continue;
+  /** Execute one model response's tool calls in order: gating, execution, and applying task-graph, subagent and plan effects. */
+  private async executeToolCalls(ctx: ToolCallsContext, updates: ToolCallsState): Promise<void> {
+    const {
+      agentIdentity,
+      calls,
+      commandRetries,
+      effectiveMode,
+      imageNumbering,
+      memoryContext,
+      options,
+      ordinaryToolDefinitions,
+      progressResponseBase,
+      progressVerificationCommands,
+      projectionHistory,
+      proposePlanBatched,
+      state,
+      step,
+      stepImageAttachments,
+      submitTaskResultBatched,
+      toolGateway,
+      toolRecovery,
+      turnId,
+      turnImages,
+    } = ctx;
+    let {
+      completedVerificationPhase,
+      environmentFault,
+      finishRejectedReason,
+      proposedPlan,
+      requiredProtocolExhaustion,
+      steeringAppliedBetweenTools,
+      submittedTaskReport,
+    } = updates;
+    try {
+      for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
+        const call = calls[callIndex]!;
+        if (
+          agentIdentity.role === "main_agent" &&
+          (await this.dependencies.hasPendingSteering?.({
+            threadId: state.threadId,
+            turnId,
+          }))
+        ) {
+          // Close the assistant's complete tool-call protocol before the
+          // durable steering application event adds a new user message.
+          for (const skipped of calls.slice(callIndex)) {
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "tool.call",
+              phase: "requested",
+              payload: skipped,
+            });
+            const skippedResult: ToolExecutionResult = {
+              ok: false,
+              summary: "Tool call skipped because newer user steering arrived.",
+              error: "superseded_by_user_steering",
+            };
+            const skippedMessage: ChatMessage = {
+              role: "tool",
+              tool_call_id: skipped.id,
+              name: skipped.function.name,
+              content: resultForModel(skippedResult, options.maxOutputChars),
+            };
+            const skippedEventId = createId("event");
+            const skippedObservation = observeToolResult({
+              sourceEventId: skippedEventId,
+              sourceCallId: skipped.id,
+              scopeKey: progressScopeKey(state, turnId),
+              responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
+              tool: skipped.function.name,
+              result: skippedResult,
+              verificationIntent: false,
+            });
+            await this.dependencies.appendEvent({
+              eventId: skippedEventId,
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "tool.result",
+              phase: "interrupted",
+              payload: {
+                callId: skipped.id,
+                tool: skipped.function.name,
+                message: skippedMessage,
+                progressObservation: skippedObservation,
+              },
+            });
+            state.progressGuard = foldProgressObservation(state.progressGuard, skippedObservation).state;
+            state.messages.push(skippedMessage);
           }
-          const text = `${formatPlanProposal(proposedPlan)}\n\n` + runtimePromptText("runtime/plan-waiting-review.md");
-          this.dependencies.onText?.(text);
-          return this.finish(state, turnId, text, "planned", step, memoryContext, proposedPlan);
+          await this.takeAndApplySteering(state, turnId, "between_tools", turnImages, false, memoryContext);
+          steeringAppliedBetweenTools = true;
+          break;
+        }
+        const toolName = call.function.name as ToolName;
+        // The gateway is a run-level snapshot, while this one-shot tool can be
+        // withdrawn between requests; recheck its availability at execution.
+        const tool =
+          toolName === "name_thread" && !threadTitleUnclaimed(this.dependencies, state.threadId)
+            ? undefined
+            : toolGateway.get(toolName);
+        let displayName = toolName;
+        // Verification relies on recorded changes and actual command results;
+        // no whole-repository test baseline is captured or replayed.
+        const taskIdAtCall = activeTask(state.taskGraph)?.id;
+        let taskGraphOperation: TaskGraphTransitionOperation | undefined;
+        let subagentTaskOperation: SubagentTaskOperation | undefined;
+        let result: ToolExecutionResult;
+        let preparedSubagentLifecycle: SubagentLifecycleUpdate | undefined;
+        let preparedSubagentLifecycleRolledBack = false;
+
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          stepId: `step_${step}`,
+          type: "tool.call",
+          phase: "requested",
+          payload: call,
+        });
+
+        if (environmentFault && tool?.mutating) {
+          result = toolFailure(
+            new CommandEnvironmentQuarantined(environmentFault),
+            "Tool skipped: environment quarantined; task paused.",
+          );
+        } else if (proposePlanBatched) {
+          result = {
+            ok: false,
+            summary: "propose_plan must be the only tool call in a model response.",
+            error: "propose_plan_must_be_exclusive",
+          };
+        } else if (submitTaskResultBatched) {
+          result = {
+            ok: false,
+            summary: "submit_task_result must be the only tool call in a model response.",
+            error: "submit_task_result_must_be_exclusive",
+          };
+        } else if (!tool) {
+          result = {
+            ok: false,
+            summary: `Tool ${call.function.name} is not available in the current mode.`,
+            error: "tool_not_available",
+            failure: protocolToolFailure(
+              "tool_not_available",
+              "Use only currently exposed tools. This call was not executed; permissions have not changed.",
+            ),
+          };
+        } else {
+          try {
+            const preparedInvocation = toolGateway.prepare(toolName, call.function.arguments);
+            if (!preparedInvocation) throw new Error(`Tool ${toolName} is not available`);
+            const rawInput = preparedInvocation.input;
+            displayName = toolApprovalIdentity(
+              preparedInvocation.tool,
+              rawInput,
+              preparedInvocation.binding,
+              state.workspaceRoot,
+            ).label;
+            let input: unknown = rawInput;
+            if (toolName === "manage_tasks") {
+              const parsedOperation = taskGraphOperationSchema.parse(rawInput);
+              if (
+                (parsedOperation.action === "complete" || parsedOperation.action === "block") &&
+                this.dependencies.hasOpenCommandHandles?.()
+              ) {
+                finishRejectedReason = backgroundCommandFinalizationInstruction();
+                throw new Error(finishRejectedReason);
+              }
+              if (
+                parsedOperation.action === "create" &&
+                (this.dependencies.getOutstandingSubagents?.() ?? []).some(
+                  (agent) => agent.assignmentKind === "standalone",
+                )
+              ) {
+                throw new Error("Collect every standalone child result before creating a task DAG.");
+              }
+              input = parsedOperation;
+              if (parsedOperation.action !== "list") {
+                taskGraphOperation = parsedOperation;
+              }
+            }
+            if (toolName === "submit_task_result" && this.dependencies.hasOpenCommandHandles?.()) {
+              finishRejectedReason = backgroundCommandFinalizationInstruction();
+              throw new Error(finishRejectedReason);
+            }
+            this.dependencies.onStatus?.(`Tool: ${displayName}`);
+            const toolContext = {
+              limits: this.dependencies.limits,
+              resultTokenBudget: this.dependencies.contextManager.tokenCapacity
+                ? Math.max(
+                    0,
+                    this.dependencies.contextManager.tokenCapacity.inputCapacity -
+                      this.dependencies.contextManager.estimateRequestTokens(
+                        projectionHistory,
+                        ordinaryToolDefinitions,
+                      ) -
+                      (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens,
+                  )
+                : undefined,
+              resultCharBudget: this.dependencies.contextManager.tokenCapacity
+                ? undefined
+                : Math.max(
+                    0,
+                    this.dependencies.contextManager.activeCharBudget(options.maxContextChars) -
+                      JSON.stringify(projectionHistory).length -
+                      estimateToolDefinitionsChars(ordinaryToolDefinitions) -
+                      (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens * 2,
+                  ),
+              orchestrationEnabled: options.orchestrationEnabled,
+              isOrchestrationEnabled: options.isOrchestrationEnabled,
+              workspaceRoot: state.workspaceRoot,
+              ...(toolName === "run_command" || toolName === "start_command"
+                ? { validationPriorChanges: state.changes.map((change) => ({ ...change })) }
+                : {}),
+              mode: effectiveMode,
+              selectedMode: state.mode,
+              threadId: state.threadId,
+              turnId,
+              approvalPolicy: options.approvalPolicy,
+              commandExecutionMode: options.commandExecutionMode,
+              isUnrestrictedHostAccessActive: options.isUnrestrictedHostAccessActive,
+              unrestrictedHostAccessEpoch: options.unrestrictedHostAccessEpoch,
+              requestApproval: this.dependencies.requestApproval,
+              signal: options.signal,
+              reportProgress: (update: { message?: string; progress?: number; total?: number }) => {
+                const detail = update.message?.replace(/[\u0000-\u001F\u007F]/gu, " ").slice(0, 240);
+                const amount =
+                  typeof update.progress === "number"
+                    ? `${update.progress}${typeof update.total === "number" ? `/${update.total}` : ""}`
+                    : undefined;
+                this.dependencies.onStatus?.([`Tool: ${displayName}`, amount, detail].filter(Boolean).join(" · "));
+              },
+              commandTimeoutMs: options.commandTimeoutMs,
+              maxOutputChars: options.maxOutputChars,
+              agentRole: agentIdentity.role,
+              ...(agentIdentity.role === "subagent"
+                ? {
+                    agentId: agentIdentity.agentId,
+                    assignedTaskId: agentIdentity.assignedTaskId,
+                  }
+                : {}),
+              thinkingEffort: state.thinkingEffort,
+              provider: state.provider,
+              model: state.model,
+              toolCallId: call.id,
+              searchProjectMemory: this.dependencies.searchMemories,
+              recordMemoryRecall: (memoryIds: readonly string[]) =>
+                this.dependencies.recordMemoryRecall?.(state.threadId, turnId, memoryIds),
+              recallContext: async (input: { evidenceId: string; offset: number; limit: number }) =>
+                recallThreadContext(
+                  state,
+                  input,
+                  this.dependencies.readToolEvidence
+                    ? (id, offset, limit) => this.dependencies.readToolEvidence!(state, id, offset, limit)
+                    : undefined,
+                  this.dependencies.limits,
+                ),
+              ...(this.dependencies.getLayeredContext
+                ? {
+                    searchHistory: async (query: string, limit: number) => {
+                      const history = await this.dependencies.getLayeredContext!({
+                        state,
+                        query,
+                        queries: [query],
+                        beforeMessageIndex: state.messages.length,
+                      });
+                      return (history.evidence ?? []).slice(0, limit).map((hit) => ({
+                        id: hit.id,
+                        title: hit.title.slice(0, 160),
+                        preview: hit.content.slice(0, 400),
+                        historical: true as const,
+                      }));
+                    },
+                  }
+                : {}),
+              ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
+              recordCommand: (entry: CommandAuditEntry) => {
+                const taskId = state.taskGraph ? activeTask(state.taskGraph)?.id : undefined;
+                const scopedEntry: CommandAuditEntry = {
+                  ...entry,
+                  sourceAgentRole: agentIdentity.role,
+                  sourceScopeKey: state.taskGraph
+                    ? `${state.threadId}/${state.taskGraph.id}/${taskId ?? "none"}`
+                    : `${state.threadId}/intent:${state.contextIntentLedger?.latestRequest.sourceMessageIndex ?? turnId}`,
+                  ...(agentIdentity.role === "subagent" ? { sourceAgentId: agentIdentity.agentId } : {}),
+                  ...(taskId ? { sourceTaskId: taskId } : {}),
+                };
+                state.commands.push(scopedEntry);
+                this.dependencies.recordCommand?.(turnId, scopedEntry);
+              },
+              ...(this.dependencies.attachImage
+                ? {
+                    attachImage: async (image: { absolutePath: string; sourceName?: string }) => {
+                      if (turnImages.length >= MAX_IMAGES_PER_MODEL_REQUEST) {
+                        throw new Error(`A turn can contain at most ${MAX_IMAGES_PER_MODEL_REQUEST} images.`);
+                      }
+                      assertThreadImageNumberAvailable(imageNumbering.next);
+                      const attachment = await this.dependencies.attachImage?.({
+                        threadId: state.threadId,
+                        label: `Image #${imageNumbering.next}`,
+                        absolutePath: image.absolutePath,
+                        sourceName: image.sourceName,
+                      });
+                      if (!attachment) {
+                        throw new Error("Image attachment storage is unavailable.");
+                      }
+                      try {
+                        validateImageAttachmentCollection([...turnImages, attachment]);
+                        validateProviderImageAttachments(this.dependencies.provider.name, [attachment]);
+                      } catch (error) {
+                        await this.dependencies.discardImage?.(state.threadId, attachment).catch(() => undefined);
+                        throw error;
+                      }
+                      turnImages.push(attachment);
+                      imageNumbering.next += 1;
+                      return attachment;
+                    },
+                  }
+                : {}),
+            };
+            const waitAttempt =
+              tool.name === "poll_command" ? this.dependencies.steeringNotifier?.openAttempt() : undefined;
+            try {
+              result =
+                reconciliationGate(state, tool.name, input) ??
+                commandRetries.before(tool.name, input) ??
+                (await toolGateway.invoke(
+                  { ...preparedInvocation, input },
+                  { ...toolContext, waitSignal: waitAttempt?.signal },
+                  (name, execute) => this.withToolExecutionActivity(name, execute),
+                ));
+              result = commandRetries.after(tool.name, input, result);
+            } finally {
+              waitAttempt?.dispose();
+            }
+            preparedSubagentLifecycle = result.subagentLifecycle;
+          } catch (error) {
+            result = toolFailure(error, `Tool ${displayName} failed.`);
+          }
         }
 
-        if (stepImageAttachments.length) {
-          const labels = stepImageAttachments.map((image) => image.label).join(", ");
-          const imageMessage: Extract<ChatMessage, { role: "user" }> = {
-            role: "user",
-            content: renderRuntimePrompt("runtime/read-image-follow-up.md", {
-              labels,
-            }),
-            images: stepImageAttachments,
+        if (
+          toolName === "write_memory" &&
+          result.ok &&
+          result.memoryMutation &&
+          memoryContext.mutations.length >= MAX_MEMORY_MUTATIONS_PER_TURN
+        ) {
+          result = {
+            ok: false,
+            summary: `A turn can stage at most ${MAX_MEMORY_MUTATIONS_PER_TURN} memory changes.`,
+            error: "memory_mutation_limit_reached",
           };
-          state.messages.push(imageMessage);
+        }
+
+        let taskGraphUpdate: TaskGraph | undefined;
+        if (result.ok && result.taskGraphUpdate) {
+          try {
+            if (toolName === "manage_tasks" && taskGraphOperation) {
+              taskGraphUpdate = validateTaskGraphTransition(
+                state.taskGraph,
+                taskGraphOperation,
+                result.taskGraphUpdate,
+                turnId,
+              );
+            } else if (toolName === "manage_subagents" && result.subagentTaskOperation) {
+              subagentTaskOperation = subagentTaskOperationSchema.parse(result.subagentTaskOperation);
+              taskGraphUpdate = validateSubagentTaskTransition(
+                state.taskGraph,
+                subagentTaskOperation,
+                result.taskGraphUpdate,
+                turnId,
+              );
+            } else {
+              throw new Error("Only an authorized manage_tasks or manage_subagents call may update the task DAG");
+            }
+          } catch (error) {
+            result = {
+              ok: false,
+              summary: "Runtime rejected an invalid task DAG transition.",
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        } else if (result.ok && taskGraphOperation) {
+          result = {
+            ok: false,
+            summary: "Runtime rejected a missing task DAG transition.",
+            error: "manage_tasks did not return an authoritative task DAG update",
+          };
+        }
+
+        if (result.ok && result.subagentLifecycle) {
+          const lifecycle = result.subagentLifecycle;
+          const requiresBinding = lifecycle.action === "activate" || lifecycle.action === "observe";
+          const assignment = result.subagentAssignment;
+          let lifecycleError: string | undefined;
+          if (toolName !== "manage_subagents") {
+            lifecycleError = "Only manage_subagents may change child lifecycle state";
+          } else if (requiresBinding) {
+            if (!isSubagentAssignmentSnapshot(assignment) || assignment.agentId !== lifecycle.agentId) {
+              lifecycleError = "The child lifecycle transition is missing its exact Runtime binding";
+            } else if (assignment.kind === "dag") {
+              if (
+                !taskGraphUpdate ||
+                !subagentTaskOperation ||
+                assignment.taskGraphId !== taskGraphUpdate.id ||
+                assignment.taskId !== subagentTaskOperation.taskId ||
+                assignment.agentId !== subagentTaskOperation.agentId ||
+                (lifecycle.action === "activate" && subagentTaskOperation.action !== "claim") ||
+                (lifecycle.action === "observe" && subagentTaskOperation.action === "claim")
+              ) {
+                lifecycleError =
+                  "A DAG child lifecycle transition requires its matching authoritative task-DAG transition";
+              }
+            } else if (taskGraphUpdate || subagentTaskOperation) {
+              lifecycleError = "A standalone child lifecycle transition must not update the task DAG";
+            }
+          } else if (taskGraphUpdate || subagentTaskOperation || assignment) {
+            lifecycleError = "Follow-up and stop lifecycle transitions must not alter the child binding or task DAG";
+          }
+          if (lifecycleError) {
+            result = {
+              ok: false,
+              summary: "Runtime rejected an invalid subagent lifecycle transition.",
+              error: lifecycleError,
+            };
+          }
+        } else if (result.ok && result.subagentAssignment) {
+          result = {
+            ok: false,
+            summary: "Runtime rejected an unpaired child assignment.",
+            error: "A child assignment requires an activate or observe lifecycle transition",
+          };
+        }
+
+        if (result.ok && result.subagentTaskReport) {
+          const report = result.subagentTaskReport;
+          if (
+            toolName !== "submit_task_result" ||
+            agentIdentity.role !== "subagent" ||
+            report.taskId !== agentIdentity.assignedTaskId
+          ) {
+            result = {
+              ok: false,
+              summary: "Runtime rejected an unauthorized child task result.",
+              error: "invalid_subagent_task_result",
+            };
+          } else {
+            submittedTaskReport = report;
+          }
+        } else if (result.ok && toolName === "submit_task_result") {
+          result = {
+            ok: false,
+            summary: "Runtime rejected a missing child task result.",
+            error: "submit_task_result did not return a structured result",
+          };
+        }
+
+        let planReviewUpdate: SessionState["planReview"] | undefined;
+        if (result.ok && result.planProposal) {
+          try {
+            if (toolName !== "propose_plan" || effectiveMode !== "plan") {
+              throw new Error("Only propose_plan may submit a proposal in Plan mode");
+            }
+            if ((this.dependencies.getOutstandingSubagents?.() ?? []).length > 0) {
+              throw new Error("Outstanding child assignments must be collected before proposing a plan");
+            }
+            if (state.taskGraph && state.taskGraph.status !== "completed")
+              throw new Error("Finish the planning task DAG before proposing a plan");
+            planReviewUpdate = createPlanReviewState(result.planProposal, turnId, state.planReview);
+          } catch (error) {
+            result = {
+              ok: false,
+              summary: "Runtime rejected an invalid plan proposal.",
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        } else if (result.ok && toolName === "propose_plan") {
+          result = {
+            ok: false,
+            summary: "Runtime rejected a missing plan proposal.",
+            error: "propose_plan did not return a structured proposal",
+          };
+        }
+        if (!result.ok && toolName === "submit_task_result") {
+          submittedTaskReport = undefined;
+        }
+
+        result = normalizeToolFailure(result);
+        if (toolName === "write_memory" && !result.ok && result.failure) {
+          // Long-term memory is a best-effort projection of completed work. A
+          // malformed or unsupported proposal must never consume the shared
+          // tool-protocol budget or turn a successfully completed coding task
+          // into a paused task. Keep the per-call failure visible, skip only
+          // that proposal, and let the model deliver its result.
+          result = {
+            ...result,
+            failure: {
+              ...result.failure,
+              recovery: "none",
+              instruction:
+                `${result.failure.instruction} This memory proposal was skipped. ` +
+                "Do not retry it solely for memory maintenance; continue the task or provide the final answer.",
+            },
+          };
+          toolRecovery.succeed(toolName);
+        }
+        if (result.failure?.code === "command_environment_quarantined") {
+          environmentFault = result.error ?? result.failure.instruction;
+        }
+        if (result.ok) toolRecovery.succeed(toolName);
+        // Ordinary tools share field-level repair guidance; mutations are never auto-replayed.
+        // Internal context maintenance owns its own durable correction budget.
+        if (result.failure?.recovery === "correct_arguments") {
+          const recovery = toolRecovery.fail(toolName);
+          result = {
+            ...result,
+            failure: {
+              ...result.failure,
+              instruction: `${result.failure.instruction} Correction attempts remaining: ${recovery.remaining}.`,
+              ...(recovery.remaining === 0 ? { recovery: "none" as const } : {}),
+            },
+          };
+          if (recovery.remaining === 0) requiredProtocolExhaustion = { tool: toolName, attempt: recovery.attempt };
+        }
+
+        if (this.dependencies.captureToolEvidence && toolName !== "write_memory") {
+          try {
+            result = {
+              ...result,
+              evidenceId: this.dependencies.captureToolEvidence(state, call.id, toolName, result),
+            };
+          } catch {
+            // The bounded journal result remains authoritative. Evidence
+            // archival is internal bookkeeping and should fail silently.
+          }
+        }
+        let projectionIntent: string | undefined;
+        if (toolName === "run_command" || toolName === "start_command") {
+          try {
+            projectionIntent = JSON.parse(call.function.arguments).intent;
+          } catch {
+            /* invalid arguments were not executed */
+          }
+        }
+        const projected = projectToolResult(result, this.dependencies.limits, {
+          intent: projectionIntent,
+          previousMessages: projectionHistory,
+        });
+        const projectionLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
+        const readData = result.data as
+          | { path?: unknown; content?: unknown; contentHash?: unknown; startLine?: unknown; endLine?: unknown }
+          | undefined;
+        const versionedRead =
+          result.ok &&
+          toolName === "read_file" &&
+          readData &&
+          typeof readData.path === "string" &&
+          typeof readData.content === "string" &&
+          typeof readData.contentHash === "string" &&
+          /^[a-f0-9]{64}$/u.test(readData.contentHash) &&
+          Number.isSafeInteger(readData.startLine) &&
+          Number.isSafeInteger(readData.endLine);
+        const isMcpResult = tool?.metadata?.identity.sourceId === "mcp";
+        const resultChars = versionedRead
+          ? projectionLimits.maxReadResultTokens * 8 + 4096
+          : toolName === "search_files"
+            ? projectionLimits.searchMaxResultTokens * 8 + 4096
+            : isMcpResult
+              ? options.maxOutputChars
+              : (this.dependencies.limits?.maxToolResultChars ?? options.maxOutputChars);
+        const toolMessage: ChatMessage = {
+          role: "tool",
+          tool_call_id: call.id,
+          name: call.function.name,
+          content: resultForModel(projected, resultChars),
+        };
+        const toolResultEventId = createId("event");
+        const verification = commandVerificationClassification(
+          toolName,
+          call.function.arguments,
+          progressVerificationCommands,
+          result,
+        );
+        const progressCommandData =
+          result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : undefined;
+        if (
+          verification.intent &&
+          (toolName === "run_command" || toolName === "start_command") &&
+          typeof progressCommandData?.commandId === "string"
+        ) {
+          progressVerificationCommands.set(progressCommandData.commandId, verification.kind ?? "custom");
+        }
+        const progressObservation = observeToolResult({
+          sourceEventId: toolResultEventId,
+          sourceCallId: call.id,
+          scopeKey: taskIdAtCall ? `thread:${state.threadId}/task:${taskIdAtCall}` : progressScopeKey(state, turnId),
+          responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
+          tool: call.function.name,
+          result,
+          verificationIntent: verification.intent,
+          investigationPolicy: {
+            minimum: projectionLimits.progressInvestigationMinSamples,
+            ratio: projectionLimits.progressInvestigationRepeatRatio,
+            window: projectionLimits.progressInvestigationWindowResponses,
+            review: projectionLimits.progressInvestigationReviewEnabled,
+          },
+          ...(verification.kind ? { verificationKind: verification.kind } : {}),
+        });
+        const rollbackPreparedSubagent = (): void => {
+          if (!preparedSubagentLifecycle || preparedSubagentLifecycleRolledBack) return;
+          preparedSubagentLifecycleRolledBack = true;
+          try {
+            this.dependencies.onSubagentLifecycleRollback?.(preparedSubagentLifecycle);
+          } catch {
+            // A local reservation cleanup hook must not replace the durable tool result/error.
+          }
+        };
+        if (!result.ok) rollbackPreparedSubagent();
+        const contextCommand = pendingCommandObservation(toolName, result, taskIdAtCall);
+        const contextReconciliation = reconciliationObservation(state, toolName, result);
+        let displayDetails: ReturnType<typeof safeToolDisplayDetails> = [];
+        try {
+          displayDetails = safeToolDisplayDetails(
+            toolDisplayDetails(tool, toolName, call.function.arguments, result, state),
+          );
+        } catch {
+          // Presentation metadata must never prevent a tool result from being committed.
+        }
+        try {
           await this.dependencies.appendEvent({
+            eventId: toolResultEventId,
             threadId: state.threadId,
             turnId,
             stepId: `step_${step}`,
-            type: "message.user.synthetic",
-            phase: "completed",
-            payload: imageMessage,
+            type: "tool.result",
+            phase: result.ok ? "completed" : "failed",
+            payload: {
+              callId: call.id,
+              tool: call.function.name,
+              ...(toolGateway.catalog.bindings.get(call.function.name)
+                ? { toolBinding: toolGateway.catalog.bindings.get(call.function.name) }
+                : {}),
+              message: toolMessage,
+              ...(displayDetails.length ? { toolDetails: displayDetails } : {}),
+              progressObservation,
+              ...(contextCommand ? { contextCommand } : {}),
+              ...(contextReconciliation ? { contextReconciliation } : {}),
+              outputProjection: {
+                capturedResultChars: JSON.stringify(result.data ?? null).length,
+                modelResultChars: toolMessage.content.length,
+              },
+              ...(result.failure ? { failure: result.failure } : {}),
+              ...(taskIdAtCall ? { taskId: taskIdAtCall } : {}),
+              ...(taskGraphUpdate && taskGraphOperation ? { taskGraph: taskGraphUpdate, taskGraphOperation } : {}),
+              ...(taskGraphUpdate && subagentTaskOperation
+                ? { taskGraph: taskGraphUpdate, subagentTaskOperation }
+                : {}),
+              ...(result.ok && result.subagentLifecycle ? { subagentLifecycle: result.subagentLifecycle } : {}),
+              ...(result.ok && result.subagentAssignment ? { subagentAssignment: result.subagentAssignment } : {}),
+              ...(result.ok && result.subagentMessageId ? { subagentMessageId: result.subagentMessageId } : {}),
+              ...(planReviewUpdate ? { planReview: planReviewUpdate } : {}),
+            },
           });
-          await this.dependencies.commitImages?.(state.threadId, stepImageAttachments);
+        } catch (error) {
+          rollbackPreparedSubagent();
+          throw error;
         }
-      }
-
-      if (state.completionControl?.active) {
-        const obligations = state.completionControl.active.obligations;
-        const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(
-          (item) => item.kind === "subagent_submission" || item.kind === "collect_subagents",
-        )
-          ? "subagent"
-          : "completion_protocol";
-        return this.finish(
-          state,
-          turnId,
-          `Task paused at the model-request limit with ${obligations.length} unresolved completion obligation(s).`,
-          "paused",
-          this.modelRequestsUsed,
-          memoryContext,
-          undefined,
-          undefined,
-          undefined,
-          {
-            cause,
-            resumable: true,
-            requiredAction: obligations.map((item) => item.requiredAction).join(" "),
-            obligations,
-          },
-        );
-      }
-      if (this.requestLimit === undefined) {
-        throw new Error("Agent loop ended without completion or a configured model-request limit");
-      }
-      return this.finish(
-        state,
-        turnId,
-        `Reached the hard limit of ${this.requestLimit} model requests before the task could be confirmed complete.`,
-        "limit_reached",
-        this.modelRequestsUsed,
-        memoryContext,
-      );
-    } catch (error) {
-      const interrupted = Boolean(options.signal?.aborted);
-      const message = error instanceof Error ? error.message : String(error);
-      const protocolFailure = !interrupted && error instanceof ToolProtocolExhausted ? error : undefined;
-      const controlFailure =
-        protocolFailure?.failure ?? (!interrupted ? contextCapacityFailure(error, state) : undefined);
-      const capacityExhausted = !interrupted && isContextCapacityError(error);
-      const result: AgentRunResult = {
-        text: interrupted
-          ? "The task was interrupted by the user."
-          : error instanceof CommandEnvironmentQuarantined
-            ? `Task paused: the command environment is quarantined. History and pending work are preserved; repair and verify cleanup before resuming. ${message}`
-            : capacityExhausted
-              ? "Context paused: the required request exceeds the model capacity. History and pending work are preserved; reduce required input or use a supported larger window before resuming."
-              : `Agent run failed: ${message}`,
-        reason: interrupted
-          ? "interrupted"
-          : capacityExhausted || error instanceof TaskBudgetExceeded
-            ? "limit_reached"
-            : "failed",
-        steps:
-          error instanceof TaskBudgetExceeded || error instanceof CommandEnvironmentQuarantined
-            ? this.modelRequestsUsed
-            : (protocolFailure?.steps ?? 0),
-        threadId: state.threadId,
-        turnId,
-        ...(controlFailure ? { failure: controlFailure } : {}),
-      };
-      if (state.activeTurnId === turnId) {
-        try {
-          return await this.finish(
-            state,
-            turnId,
-            result.text,
-            result.reason,
-            result.steps,
-            memoryContext,
-            undefined,
-            undefined,
-            result.failure,
-          );
-        } catch {
-          state.activeTurnId = undefined;
+        projectionHistory.push(toolMessage);
+        const progressFold = foldProgressObservation(state.progressGuard, progressObservation);
+        state.progressGuard = progressFold.state;
+        foldPendingOperations(state, {
+          tool: toolName,
+          contextCommand,
+          contextReconciliation,
+          ...(result.ok
+            ? { subagentLifecycle: result.subagentLifecycle, subagentAssignment: result.subagentAssignment }
+            : {}),
+        });
+        completedVerificationPhase ||= progressFold.accepted && progressObservation.kind === "verification_terminal";
+        state.messages.push(toolMessage);
+        if (taskGraphUpdate) {
+          state.taskGraph = taskGraphUpdate;
           state.updatedAt = new Date().toISOString();
         }
+        if (planReviewUpdate) {
+          state.planReview = planReviewUpdate;
+          proposedPlan = planReviewUpdate.proposal;
+          state.updatedAt = new Date().toISOString();
+        }
+        if (result.ok && result.imageAttachments?.length) {
+          stepImageAttachments.push(...result.imageAttachments);
+        }
+        if (toolName === "write_memory" && result.ok && result.memoryMutation) {
+          memoryContext.mutations.push(result.memoryMutation);
+        }
+        await this.dependencies.onToolCompleted?.(state, call.function.name, result, displayName, displayDetails);
       }
-      return result;
+    } finally {
+      updates.completedVerificationPhase = completedVerificationPhase;
+      updates.environmentFault = environmentFault;
+      updates.finishRejectedReason = finishRejectedReason;
+      updates.proposedPlan = proposedPlan;
+      updates.requiredProtocolExhaustion = requiredProtocolExhaustion;
+      updates.steeringAppliedBetweenTools = steeringAppliedBetweenTools;
+      updates.submittedTaskReport = submittedTaskReport;
     }
   }
 
