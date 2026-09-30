@@ -91,6 +91,18 @@ describe("Thinking terminal presentation", () => {
     assert.equal(second.id, first.id + 1);
   });
 
+  it("does not count a terminating newline as an extra Thinking line", () => {
+    const bounded = prepareReasoningText("Line one\nLine two\n", { maxLines: 2 });
+    assert.equal(bounded.sourceLines, 2);
+    assert.equal(bounded.truncated, false);
+    assert.equal(bounded.text, "Line one\nLine two");
+
+    const truncated = prepareReasoningText("Line one\nLine two\n", { maxLines: 1 });
+    assert.equal(truncated.sourceLines, 2);
+    assert.equal(truncated.truncated, true);
+    assert.equal(truncated.text, "Line one");
+  });
+
   it("retains complete sanitized Thinking by default without a hidden registry cap", () => {
     const source = Array.from({ length: 300 }, (_, index) => `reasoning row ${index + 1}: ${"x".repeat(80)}`).join(
       "\n",

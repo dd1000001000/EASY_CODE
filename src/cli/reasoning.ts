@@ -45,6 +45,8 @@ function countText(value: string): { chars: number; lines: number } {
     chars += 1;
     if (character === "\n") lines += 1;
   }
+  // A single trailing newline terminates the final line; it does not open a new one.
+  if (value.endsWith("\n")) lines -= 1;
   return { chars, lines };
 }
 
@@ -95,7 +97,10 @@ export function prepareReasoningText(value: string, limits: ReasoningRenderLimit
     /\t/gu,
     "    ",
   );
-  const candidateLines = maxLines === undefined ? safe.split("\n") : safe.split("\n", maxLines + 1);
+  // Counting and splitting must agree: dropping the single terminating newline
+  // keeps a fully retained block from reporting a phantom extra line.
+  const body = safe.endsWith("\n") ? safe.slice(0, -1) : safe;
+  const candidateLines = maxLines === undefined ? body.split("\n") : body.split("\n", maxLines + 1);
   let truncated = maxLines !== undefined && candidateLines.length > maxLines;
   const retainedLines = (maxLines === undefined ? candidateLines : candidateLines.slice(0, maxLines)).map((line) => {
     if (maxLineChars === undefined) return line;
