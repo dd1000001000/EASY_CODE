@@ -16,6 +16,7 @@ import {
   runCompactionTransaction,
 } from "../src/context/compaction-transaction.js";
 import { exactContext } from "../src/context/context-request.js";
+import { manualSummaryContext } from "../src/context/manual-compaction.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
@@ -58,7 +59,7 @@ function candidate(_primary = 0, text = "Fix the task") {
     ],
   };
 }
-function fixture() {
+function fixture({ oldReasoning = "old ".repeat(15_000) } = {}) {
   const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-compaction-tx-"));
   const storage = createStorage(directory);
   const store = new ThreadStore(storage);
@@ -89,7 +90,7 @@ function fixture() {
     state.messages.push(m);
   };
   message({ role: "user", content: "Fix the task" });
-  message({ role: "assistant", content: "Old completed work", reasoning_content: "old ".repeat(15_000) });
+  message({ role: "assistant", content: "Old completed work", reasoning_content: oldReasoning });
   for (const end of [2, 4]) {
     if (end === 4) {
       message({
@@ -138,6 +139,123 @@ function fixture() {
   };
 }
 describe("completed-phase compaction transactions", () => {
+  it("characterizes the journal sequence of manual and automatic flows", async () => {
+    const summary = (text) => ({ role: "assistant", content: `<summary>${text}</summary>` });
+    const trace = async (f, runs) => {
+      const types = [];
+      for (const overrides of runs) {
+        const phases = [];
+        const outcome = await f
+          .run({
+            ...overrides,
+            ...(overrides.manual
+              ? { manual: { summaryContext: () => manualSummaryContext(f.state), onPhase: (p) => phases.push(p) } }
+              : {}),
+          })
+          .then(
+            (result) => result,
+            (error) => String(error),
+          );
+        types.push({ outcome, phases });
+      }
+      return { events: f.events.map((e) => e.type.replace("context.", "")), runs: types };
+    };
+    const scenario = async (options, runs) => {
+      const f = fixture(options);
+      try {
+        return await trace(f, runs);
+      } finally {
+        f.dispose();
+      }
+    };
+    const committedTail = ["compaction.prepared", "compaction.accepted", "compaction.committed", "maintenance.checked"];
+    const invalid = { role: "assistant", content: "no envelope" };
+
+    const manualValid = await scenario({}, [{ manual: true, complete: async () => summary("Manual; tests pending.") }]);
+    assert.deepEqual(manualValid.events, [
+      "compaction.started",
+      "compaction.attempt",
+      "compaction.candidate",
+      ...committedTail,
+    ]);
+    assert.deepEqual(manualValid.runs, [
+      { outcome: { requests: 1, committed: true }, phases: ["summarizing", "validating"] },
+    ]);
+
+    // A valid summary that saves nothing is abandoned quietly, not reported as a failure.
+    const noBenefit = await scenario({ oldReasoning: "old" }, [
+      { manual: true, complete: async () => summary("Manual; tests pending.") },
+    ]);
+    assert.deepEqual(noBenefit.events, [
+      "compaction.started",
+      "compaction.attempt",
+      "compaction.candidate",
+      "compaction.prepared",
+      "compaction.abandoned",
+      "maintenance.checked",
+    ]);
+    assert.deepEqual(noBenefit.runs[0].outcome, { requests: 1, committed: false });
+
+    let calls = 0;
+    const corrected = await scenario({}, [
+      { manual: true, complete: async () => (++calls === 1 ? invalid : summary("Second try; pending.")) },
+    ]);
+    assert.deepEqual(corrected.events, [
+      "compaction.started",
+      "compaction.attempt",
+      "compaction.candidate",
+      "compaction.rejected",
+      "compaction.attempt",
+      "compaction.candidate",
+      ...committedTail,
+    ]);
+
+    const exhausted = await scenario({}, [{ manual: true, complete: async () => invalid }]);
+    assert.deepEqual(exhausted.events, [
+      "compaction.started",
+      ...Array(3).fill(["compaction.attempt", "compaction.candidate", "compaction.rejected"]).flat(),
+      "compaction.abandoned",
+    ]);
+    assert.match(exhausted.runs[0].outcome, /No valid summary within the requested budget/u);
+
+    // An automatic run abandons a crashed manual transaction before starting its own.
+    const crashed = fixture();
+    try {
+      const crashAppend = async (event) => {
+        await crashed.append(event);
+        if (event.type === "context.compaction.attempt") throw new Error("crash");
+      };
+      const result = await trace(crashed, [{ manual: true, append: crashAppend }, {}]);
+      assert.deepEqual(result.events, [
+        "compaction.started",
+        "compaction.attempt",
+        "compaction.abandoned",
+        "compaction.started",
+        "compaction.attempt",
+        "compaction.candidate",
+        ...committedTail,
+      ]);
+      assert.deepEqual(
+        result.runs.map((run) => run.outcome),
+        ["Error: crash", { requests: 1, committed: true }],
+      );
+    } finally {
+      crashed.dispose();
+    }
+
+    // Forced recovery on a history too small to benefit falls back to a server-context reset.
+    const forced = await scenario({ oldReasoning: "old" }, [{ forceRecovery: true }]);
+    assert.deepEqual(forced.events, [
+      "compaction.started",
+      "compaction.attempt",
+      "compaction.candidate",
+      "compaction.prepared",
+      "compaction.rejected",
+      "server_reset",
+      "maintenance.checked",
+    ]);
+    assert.deepEqual(forced.runs[0].outcome, { requests: 1, committed: true });
+  });
   it("reports an empty manual compaction as nothing to summarize rather than a budget failure", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-compaction-empty-"));
     const storage = createStorage(directory);
