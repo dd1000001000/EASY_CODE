@@ -5,7 +5,7 @@ import { describe, it } from "./harness.js";
 
 type McpMenuApp = {
   showMcpServers(): Promise<void>;
-  connectAuthenticatedMcpServer(id: string, server: RemoteMcpServerConfig): Promise<number>;
+  mcpServers: { connectAuthenticatedMcpServer(id: string, server: RemoteMcpServerConfig): Promise<number> };
 };
 
 function menuApp(server: McpServerConfig, answers: string[]) {
@@ -116,7 +116,7 @@ describe("MCP app menu navigation", () => {
   it("connects and enables a newly authenticated OAuth server", async () => {
     const oauth: RemoteMcpServerConfig = { ...remote, auth: "oauth" };
     const fixture = menuApp(oauth, []);
-    assert.equal(await fixture.app.connectAuthenticatedMcpServer("sample", oauth), 3);
+    assert.equal(await fixture.app.mcpServers.connectAuthenticatedMcpServer("sample", oauth), 3);
     assert.equal(fixture.connections, 1);
     assert.deepEqual(fixture.enabled, [["sample", true]]);
   });
