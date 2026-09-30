@@ -11,7 +11,6 @@ import { consumeHarborProviderApiKeyFile, resolveHarborOuterSandbox } from "./be
 import { Terminal, printBanner } from "./cli/terminal.js";
 import { formatTokenCount } from "./cli/token-count.js";
 import type { AppInteractionPort, UserSubmission } from "./ui/interaction-port.js";
-import { DECISION_TIMEOUT_MS } from "./ui/decision-timeout.js";
 import { compactionRunning } from "./ui/compaction.js";
 import { helpText, parseModelCommand, parseSlashCommand } from "./cli/slash-command.js";
 import { SystemKeyringCredentialStore, type ApiKeyCredentialStore } from "./config/credentials.js";
@@ -24,14 +23,8 @@ import { McpConnections, McpToolSource } from "./mcp/source.js";
 import { MCP_SERVER_ACTION_IDS } from "./mcp/menu.js";
 import { SkillStore } from "./skills/store.js";
 import { sanitizeTerminalText } from "./ui/render/layout.js";
-import {
-  grantCommandApprovalPrefix,
-  isCommandApprovalPrefixGranted,
-  formatCommandApprovalPrefix,
-} from "./command/approval.js";
-import { autoApproveNetwork } from "./command/network-approval.js";
-import { autoApproveLocal } from "./command/local-approval.js";
-import { ApprovalQueue, reviewCommandApproval } from "./command/approval-agent.js";
+import { isCommandApprovalPrefixGranted, formatCommandApprovalPrefix } from "./command/approval.js";
+import { ApprovalQueue, type ApprovalReview } from "./command/approval-agent.js";
 import { canGrantCommandPrefix } from "./command/approval.js";
 import { CommandRuntime } from "./command/runtime.js";
 import { ContextArtifactIndex, renderContextCheckpoint, renderRetrievedContext } from "./context/artifact-index.js";
@@ -117,8 +110,8 @@ import { isToolAvailable, toolMetadata } from "./tools/capabilities.js";
 import { BuiltinToolSource } from "./tools/builtin-source.js";
 import { ToolCatalog, type ToolCatalogSnapshot, type ToolSource } from "./tools/catalog.js";
 import type { ToolExecutionAuthorizer, ToolExecutionAuthorizationRequest } from "./tools/execution-gateway.js";
-import { toolApprovalIdentity, type ToolApprovalIdentity } from "./tools/approval.js";
-import { reviewToolApproval, type ToolApprovalReview } from "./tools/approval-agent.js";
+import { type ToolApprovalIdentity } from "./tools/approval.js";
+import { type ToolApprovalReview } from "./tools/approval-agent.js";
 import { DownloadBroker } from "./downloads/broker.js";
 import { ThreadStore, peekThreadWorkspaceRoot, type ThreadLease, type ThreadSummary } from "./threads/thread-store.js";
 import type { UISessionInfo } from "./ui/contracts.js";
@@ -158,6 +151,8 @@ import {
 } from "./app/text.js";
 import { McpServerController, type McpServerControllerContext } from "./app/mcp-servers.js";
 import { ModelSelection, type ModelSelectionContext } from "./app/model-selection.js";
+import { ApprovalReviewer, type ApprovalReviewerContext } from "./app/approval-reviewer.js";
+import { ApprovalFlow, type ApprovalFlowContext } from "./app/approval-flow.js";
 
 // Re-exported so the package entry (src/index.ts `export *`) keeps its public API.
 export {
@@ -3035,175 +3030,6 @@ export class EasyCodeApp {
     }
   }
 
-  private async requestToolApproval(request: ApprovalRequest): Promise<boolean> {
-    const threadId = this.state.threadId;
-    return (this.approvalQueue ??= new ApprovalQueue()).run(async () => {
-      if (threadId !== this.state.threadId || request.signal?.aborted) return false;
-      return this.resolveToolApproval(request);
-    });
-  }
-
-  private async resolveToolApproval(request: ApprovalRequest): Promise<boolean> {
-    if (request.signal?.aborted) return false;
-    const threadId = this.state.threadId;
-    const mode = this.commandExecutionMode ?? (this.assumeYes ? "auto_approve" : "manual");
-    if (
-      request.requiredReviewer !== "user" &&
-      (request.network ? autoApproveNetwork(mode, request.network.effect) : autoApproveLocal(mode, request.risk))
-    ) {
-      request.observeDecision?.("allow_once");
-      return true;
-    }
-
-    if (
-      isCommandApprovalPrefixGranted(this.state.commandApprovalPrefixes, request.commandPrefix) ||
-      (request.existingNetworkCommandPrefix !== undefined &&
-        isCommandApprovalPrefixGranted(this.state.commandApprovalPrefixes, request.existingNetworkCommandPrefix))
-    ) {
-      request.observeDecision?.("allow_prefix");
-      return true;
-    }
-
-    let decision: import("./core/types.js").ApprovalDecision | undefined;
-    if (mode === "auto_approve" && request.requiredReviewer !== "user") {
-      const review = await this.reviewApproval(request);
-      this.threadStore.appendEvent(threadId, {
-        type: "approval.reviewed",
-        payload: { id: request.id, source: request.source, ...review },
-      });
-      if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode)
-        return false;
-      if (
-        review.decision !== "reject" &&
-        (review.decision !== "allow_prefix" || canGrantCommandPrefix(request.commandPrefix))
-      )
-        decision = review.decision;
-      else {
-        request = { ...request, description: `${request.description}\nApproval agent: ${review.reason}` };
-      }
-    }
-    if (!decision) {
-      if (request.allowPrompt === false) {
-        this.threadStore.appendEvent(this.state.threadId, {
-          type: "approval.user_required",
-          payload: { id: request.id, source: request.source },
-        });
-        throw new Error("User approval is required but interactive approval is unavailable");
-      }
-      decision = await this.terminal.approve(request);
-    }
-    if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
-    this.threadStore.appendEvent(threadId, {
-      type: "approval.decided",
-      payload: { id: request.id, decision, source: request.source },
-    });
-    if (decision === "reject") {
-      request.observeDecision?.("reject");
-      this.terminal.info("Command execution rejected.");
-      return false;
-    }
-    if (decision === "allow_once") {
-      request.observeDecision?.("allow_once");
-      this.terminal.info(
-        request.executionTiming === "future_resubmission"
-          ? "Approved once for the next exact resubmission; the stopped command was not replayed."
-          : "Approved once; starting the command.",
-      );
-      return true;
-    }
-
-    // Validate and derive the next in-memory state before writing the
-    // authoritative event. If the durable append fails, the exception reaches
-    // CommandRuntime and the command fails closed without executing.
-    const prefixes = grantCommandApprovalPrefix(this.state.commandApprovalPrefixes, request.commandPrefix);
-    this.threadStore.recordCommandApprovalPrefixGrant(
-      this.state.threadId,
-      request.commandPrefix,
-      this.state.activeTurnId,
-    );
-    this.state.commandApprovalPrefixes = prefixes;
-    this.dirty = true;
-    request.observeDecision?.("allow_prefix");
-    this.terminal.info(
-      `${request.executionTiming === "future_resubmission" ? "Allowed for a future resubmission in this Thread" : "Allowed for this Thread"}: ${formatCommandApprovalPrefix(request.commandPrefix)}`,
-    );
-    return true;
-  }
-
-  private requestSubagentApproval(
-    request: ApprovalRequest,
-    source: { agentId: string; taskId: string },
-  ): Promise<boolean> {
-    return this.requestToolApproval({ ...request, source, title: `[${source.agentId}] ${request.title}` });
-  }
-
-  private async reviewApproval(
-    request: ApprovalRequest,
-  ): Promise<import("./command/approval-agent.js").ApprovalReview> {
-    try {
-      const threadId = this.state.threadId;
-      const turnId = this.state.activeTurnId;
-      const provider = createProvider(
-        this.effectiveConfig(),
-        this.state.provider,
-        this.config.approvalModel ?? this.state.model,
-      );
-      const task = this.state.messages
-        .filter((message) => message.role === "user")
-        .slice(-3)
-        .map((message) => message.content)
-        .join("\n");
-      return await reviewCommandApproval(request, task, {
-        provider,
-        budget: this.sharedTaskBudget(threadId),
-        limits: this.config.limits,
-        maxInputChars: this.config.limits.approvalInputChars,
-        maxOutputTokens: this.config.limits.approvalOutputTokens,
-        onResponse: (response) =>
-          this.threadStore.appendEvent(threadId, {
-            type: "model.output.captured",
-            turnId,
-            payload: {
-              purpose: "command_approval",
-              finishReason: response.finishReason ?? null,
-              message: JSON.parse(
-                redactSensitiveInformation(
-                  JSON.stringify({ content: response.message.content, tool_calls: response.message.tool_calls }),
-                ),
-              ),
-            },
-          }),
-        onUsage: (usage, attempt) => {
-          if (attempt)
-            this.threadStore.appendEvent(threadId, {
-              type: "model.api_attempt",
-              turnId,
-              phase: attempt.outcome,
-              payload: { ...attempt, actor: "approval_agent", purpose: "command_approval" },
-            });
-          // A failed API attempt still completes an unreported usage record.
-          // model.usage has a completed-only journal protocol; its phase is not the API outcome.
-          this.threadStore.appendEvent(threadId, {
-            type: "model.usage",
-            phase: "completed",
-            payload: {
-              actor: "approval_agent",
-              purpose: "command_approval",
-              provider: provider.name,
-              model: provider.model,
-              turnId,
-              retry: attempt?.retry ?? false,
-              attempt: attempt?.attempt,
-              usage,
-            },
-          });
-        },
-      });
-    } catch (error) {
-      return { decision: "reject", reason: redactSensitiveInformation(String(error)), unavailable: true };
-    }
-  }
-
   private requireCurrentModelVision(): void {
     requireVisionModel(this.state.provider, this.state.model);
   }
@@ -4250,156 +4076,6 @@ export class EasyCodeApp {
     for (const warning of listing.warnings) this.terminal.warning(`Skill skipped: ${safeLine(warning)}`);
   }
 
-  private async authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {
-    if (request.binding?.sourceId !== "mcp" && request.binding?.sourceId !== "builtin") {
-      return this.authorizeToolExecution?.(request) ?? false;
-    }
-    const identity = toolApprovalIdentity(request.tool, request.input, request.binding, request.context.workspaceRoot);
-    const parentThreadId = this.state.threadId;
-    const threadId = request.context.threadId;
-    const mode = request.context.commandExecutionMode ?? this.commandExecutionMode;
-    const signal = request.context.signal;
-    return this.approvalQueue.run(async () => {
-      if (signal?.aborted || parentThreadId !== this.state.threadId) return false;
-      const saved = this.threadStore.recover(threadId);
-      if ((saved.toolApprovalGrants ?? []).includes(identity.key)) {
-        return true;
-      }
-      if (mode === "unrestricted") {
-        return true;
-      }
-      const approvalId = createId("approval");
-      let decision: "allow_once" | "allow_same_tool" | "reject" | undefined;
-      let reviewerReason: string | undefined;
-      if (mode === "auto_approve") {
-        const review = await this.reviewCatalogToolApproval(identity, threadId, request.context.turnId, signal);
-        this.threadStore.appendEvent(threadId, {
-          type: "approval.reviewed",
-          turnId: request.context.turnId,
-          payload: {
-            id: approvalId,
-            tool: identity.label,
-            decision: review.decision,
-            reason: review.reason,
-            unavailable: review.unavailable ?? false,
-          },
-        });
-        if (review.decision === "reject") {
-          reviewerReason = review.reason;
-        } else decision = review.decision;
-      }
-      if (signal?.aborted || parentThreadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
-      if (!decision) {
-        const preview = redactSensitiveInformation(JSON.stringify(identity.input)).slice(0, 300);
-        const selected = await this.terminal.selectChoice(
-          `Allow tool ${identity.label}?`,
-          [
-            { id: "allow_once", label: "Allow this call once", detail: preview },
-            { id: "allow_same_tool", label: "Allow this tool in this Thread", detail: "Later arguments may differ" },
-            { id: "reject", label: "Reject", detail: reviewerReason?.slice(0, 160) },
-          ],
-          "allow_once",
-          { idleTimeoutMs: DECISION_TIMEOUT_MS, idleChoiceId: "allow_once", signal },
-        );
-        if (!selected) {
-          this.threadStore.appendEvent(threadId, {
-            type: "approval.user_required",
-            turnId: request.context.turnId,
-            payload: { id: approvalId, tool: identity.label },
-          });
-          return false;
-        }
-        decision = selected as "allow_once" | "allow_same_tool" | "reject";
-      }
-      if (signal?.aborted || parentThreadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
-      this.threadStore.appendEvent(threadId, {
-        type: "approval.decided",
-        turnId: request.context.turnId,
-        payload: { id: approvalId, tool: identity.label, decision },
-      });
-      if (decision === "reject") return false;
-      if (decision === "allow_same_tool") {
-        this.threadStore.recordToolApprovalGrant(threadId, identity.key, request.context.turnId);
-        if (threadId === this.state.threadId) {
-          this.state.toolApprovalGrants = [...new Set([...(this.state.toolApprovalGrants ?? []), identity.key])];
-          this.dirty = true;
-        }
-        this.terminal.info(`Allowed in this Thread: ${identity.label}`);
-      }
-      return true;
-    });
-  }
-
-  private async reviewCatalogToolApproval(
-    identity: ToolApprovalIdentity,
-    threadId: string,
-    turnId: string,
-    signal?: AbortSignal,
-  ): Promise<ToolApprovalReview> {
-    try {
-      const parentThreadId = this.state.threadId;
-      const provider = createProvider(
-        this.effectiveConfig(),
-        this.state.provider,
-        this.config.approvalModel ?? this.state.model,
-      );
-      const task = this.threadStore
-        .recover(threadId)
-        .messages.filter((message) => message.role === "user")
-        .slice(-3)
-        .map((message) => message.content)
-        .join("\n");
-      return await reviewToolApproval(identity, task, {
-        provider,
-        budget: this.sharedTaskBudget(parentThreadId),
-        systemPrompt: promptBundleText("agents/tool-approval.md"),
-        limits: this.config.limits,
-        signal,
-        maxInputChars: this.config.limits.approvalInputChars,
-        maxOutputTokens: this.config.limits.approvalOutputTokens,
-        onResponse: (response) =>
-          this.threadStore.appendEvent(threadId, {
-            type: "model.output.captured",
-            turnId,
-            payload: {
-              purpose: "tool_approval",
-              finishReason: response.finishReason ?? null,
-              message: JSON.parse(
-                redactSensitiveInformation(
-                  JSON.stringify({ content: response.message.content, tool_calls: response.message.tool_calls }),
-                ),
-              ),
-            },
-          }),
-        onUsage: (usage, attempt) => {
-          if (attempt)
-            this.threadStore.appendEvent(threadId, {
-              type: "model.api_attempt",
-              turnId,
-              phase: attempt.outcome,
-              payload: { ...attempt, actor: "approval_agent", purpose: "tool_approval" },
-            });
-          this.threadStore.appendEvent(threadId, {
-            type: "model.usage",
-            phase: "completed",
-            payload: {
-              actor: "approval_agent",
-              purpose: "tool_approval",
-              provider: provider.name,
-              model: provider.model,
-              turnId,
-              retry: attempt?.retry ?? false,
-              attempt: attempt?.attempt,
-              usage,
-            },
-          });
-        },
-      });
-    } catch (error) {
-      return { decision: "reject", reason: redactSensitiveInformation(String(error)), unavailable: true };
-    }
-  }
-
   private observedToolCatalog(workspace: WorkspaceManager, runtime: CommandRuntime): ToolCatalog {
     if (this.trustedOuterSandbox) return new ToolCatalog();
     const observer = new WorkspaceToolObserver(
@@ -4792,5 +4468,96 @@ export class EasyCodeApp {
         return app.terminal;
       },
     };
+  }
+
+  private approvalReviewerInstance?: ApprovalReviewer;
+  private get approvalReviewer(): ApprovalReviewer {
+    return (this.approvalReviewerInstance ??= new ApprovalReviewer(this.approvalReviewerContext()));
+  }
+  private approvalReviewerContext(): ApprovalReviewerContext {
+    const app = this;
+    return {
+      get config() {
+        return app.config;
+      },
+      effectiveConfig: (...args) => app.effectiveConfig(...args),
+      sharedTaskBudget: (...args) => app.sharedTaskBudget(...args),
+      get state() {
+        return app.state;
+      },
+      get threadStore() {
+        return app.threadStore;
+      },
+    };
+  }
+
+  private reviewApproval(request: ApprovalRequest): Promise<ApprovalReview> {
+    return this.approvalReviewer.reviewApproval(request);
+  }
+
+  private reviewCatalogToolApproval(
+    identity: ToolApprovalIdentity,
+    threadId: string,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<ToolApprovalReview> {
+    return this.approvalReviewer.reviewCatalogToolApproval(identity, threadId, turnId, signal);
+  }
+
+  private approvalFlowInstance?: ApprovalFlow;
+  private get approvalFlow(): ApprovalFlow {
+    return (this.approvalFlowInstance ??= new ApprovalFlow(this.approvalFlowContext()));
+  }
+  private approvalFlowContext(): ApprovalFlowContext {
+    const app = this;
+    return {
+      get approvalQueue() {
+        return app.approvalQueue;
+      },
+      set approvalQueue(value) {
+        app.approvalQueue = value;
+      },
+      get assumeYes() {
+        return app.assumeYes;
+      },
+      get authorizeToolExecution() {
+        return app.authorizeToolExecution;
+      },
+      get commandExecutionMode() {
+        return app.commandExecutionMode;
+      },
+      get dirty() {
+        return app.dirty;
+      },
+      set dirty(value) {
+        app.dirty = value;
+      },
+      reviewApproval: (...args) => app.reviewApproval(...args),
+      reviewCatalogToolApproval: (...args) => app.reviewCatalogToolApproval(...args),
+      get state() {
+        return app.state;
+      },
+      get terminal() {
+        return app.terminal;
+      },
+      get threadStore() {
+        return app.threadStore;
+      },
+    };
+  }
+
+  private requestToolApproval(request: ApprovalRequest): Promise<boolean> {
+    return this.approvalFlow.requestToolApproval(request);
+  }
+
+  private requestSubagentApproval(
+    request: ApprovalRequest,
+    source: { agentId: string; taskId: string },
+  ): Promise<boolean> {
+    return this.approvalFlow.requestSubagentApproval(request, source);
+  }
+
+  private authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {
+    return this.approvalFlow.authorizeCatalogToolCall(request);
   }
 }
