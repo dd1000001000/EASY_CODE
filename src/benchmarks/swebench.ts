@@ -501,24 +501,113 @@ export async function stageBenchmarkCredential(
   }
 }
 
+/** The resolved I/O, platform and credential store shared by the benchmark subcommands. */
+interface SweBenchCli {
+  readonly runtime: SweBenchCommandRuntime;
+  readonly stdout: Pick<NodeJS.WritableStream, "write">;
+  readonly stderr: Pick<NodeJS.WritableStream, "write">;
+  readonly env: NodeJS.ProcessEnv;
+  readonly platform: NodeJS.Platform;
+  readonly packageRoot: string;
+  readonly credentialStore: ApiKeyCredentialStore;
+  readonly setExitCode: (code: number) => void;
+  writeLine(value: string): void;
+}
+
+interface SweBenchRunOptions {
+  root: string;
+  runId: string;
+  concurrency: number;
+  offset: number;
+  limit: number;
+  package?: string;
+  dryRun?: boolean;
+  confirmFullRun?: boolean;
+}
+
 export function registerSweBenchCommands(program: Command, runtime: SweBenchCommandRuntime = {}): Command {
   const stdout = runtime.stdout ?? process.stdout;
-  const stderr = runtime.stderr ?? process.stderr;
-  const env = runtime.env ?? process.env;
   const platform = runtime.platform ?? process.platform;
-  const packageRoot = runtime.packageRoot ?? findPackageRoot();
-  const credentialStore =
-    runtime.credentialStore ?? new SystemKeyringCredentialStore(EASY_CODE_BENCHMARK_KEYRING_SERVICE);
-  const setExitCode =
-    runtime.setExitCode ??
-    ((code: number) => {
-      process.exitCode = code;
-    });
-  const writeLine = (value: string): void => {
-    stdout.write(`${value}\n`);
+  const cli: SweBenchCli = {
+    runtime,
+    stdout,
+    stderr: runtime.stderr ?? process.stderr,
+    env: runtime.env ?? process.env,
+    platform,
+    packageRoot: runtime.packageRoot ?? findPackageRoot(),
+    credentialStore: runtime.credentialStore ?? new SystemKeyringCredentialStore(EASY_CODE_BENCHMARK_KEYRING_SERVICE),
+    setExitCode:
+      runtime.setExitCode ??
+      ((code: number) => {
+        process.exitCode = code;
+      }),
+    writeLine: (value) => {
+      stdout.write(`${value}\n`);
+    },
   };
 
   const benchmark = program.command("benchmark").description("run reproducible coding-agent benchmarks");
+  registerBenchmarkCredentialCommands(benchmark, cli);
+  const sweBench = benchmark
+    .command("swe-bench")
+    .description(
+      `evaluate ${SWE_BENCH_MODEL_PROFILE.model} via ${SWE_BENCH_MODEL_PROFILE.providerLabel} ` +
+        "on the pinned 50-task Verified Mini subset",
+    )
+    .addHelpText(
+      "after",
+      "\nThis integration evaluates the published HAL/community 50-task subset " +
+        "against the official SWE-bench Verified Harbor dataset. It is not the full 500-task score.\n",
+    );
+
+  sweBench
+    .command("info")
+    .description("show the immutable subset and harness provenance")
+    .action(() => printSweBenchInfo(cli));
+
+  sweBench
+    .command("setup")
+    .description("create the pinned Python benchmark environment on the F drive")
+    .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
+    .option("--python <path>", "Python 3.12+ executable", "python")
+    .action((options: { root: string; python: string }) => setUpSweBench(cli, options));
+
+  sweBench
+    .command("doctor")
+    .description("check Docker, Harbor, the pinned manifest, and the GLM credential")
+    .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
+    .action((options: { root: string }) => diagnoseSweBench(cli, options));
+
+  sweBench
+    .command("prepare")
+    .description("pack the current EASY CODE build into the F-drive benchmark root")
+    .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
+    .action(async (options: { root: string }) => {
+      const root = validateSweBenchRoot(options.root, platform);
+      const packagePath = await packEasyCode(cli.packageRoot, root, cli.env, platform);
+      cli.writeLine(`Prepared package: ${packagePath}`);
+    });
+
+  sweBench
+    .command("run")
+    .description("run a smoke test or the complete pinned 50-task subset")
+    .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
+    .option("--run-id <id>", "stable Harbor job name", defaultRunId())
+    .option("--concurrency <count>", "parallel task count", parsePositiveOption, 1)
+    .option("--offset <count>", "zero-based offset into the ordered 50-task set", parseNonNegativeOption, 0)
+    .option("--limit <count>", "number of tasks to run after the offset", parsePositiveOption, 1)
+    .option("--confirm-full-run", "confirm the API cost of starting all 50 tasks")
+    .option("--package <path>", "existing local EASY CODE npm .tgz")
+    .option("--dry-run", "print the exact non-secret Harbor invocation without running it")
+    .action((options: SweBenchRunOptions) => runSweBench(cli, options));
+
+  sweBench.action(() => sweBench.outputHelp());
+  benchmark.action(() => benchmark.outputHelp());
+  return benchmark;
+}
+
+function registerBenchmarkCredentialCommands(benchmark: Command, cli: SweBenchCli): void {
+  const { credentialStore, writeLine } = cli;
   const credential = benchmark
     .command("credential")
     .description("manage EASY CODE Benchmark API keys in its separate system credential namespace");
@@ -533,8 +622,8 @@ export function registerSweBenchCommands(program: Command, runtime: SweBenchComm
     .action(async (rawProvider: string) => {
       const provider = requireProvider(rawProvider);
       const value = await readSecretInput(
-        runtime.input ?? process.stdin,
-        stderr,
+        cli.runtime.input ?? process.stdin,
+        cli.stderr,
         `EASY CODE Benchmark API key for ${provider}: `,
       );
       await storeVerifiedApiKey(credentialStore, provider, value, providerCatalogEntry(provider).defaultBaseUrl);
@@ -561,378 +650,353 @@ export function registerSweBenchCommands(program: Command, runtime: SweBenchComm
         throw new Error(`EASY CODE Benchmark ${provider} API key was not removed.`);
       writeLine(`Deleted EASY CODE Benchmark ${provider} API key.`);
     });
-  const sweBench = benchmark
-    .command("swe-bench")
-    .description(
-      `evaluate ${SWE_BENCH_MODEL_PROFILE.model} via ${SWE_BENCH_MODEL_PROFILE.providerLabel} ` +
-        "on the pinned 50-task Verified Mini subset",
-    )
-    .addHelpText(
-      "after",
-      "\nThis integration evaluates the published HAL/community 50-task subset " +
-        "against the official SWE-bench Verified Harbor dataset. It is not the full 500-task score.\n",
-    );
+}
 
-  sweBench
-    .command("info")
-    .description("show the immutable subset and harness provenance")
-    .action(() => {
-      writeLine(`Subset: ${SWE_BENCH_VERIFIED_50.subsetSource}`);
-      writeLine(`Subset revision: ${SWE_BENCH_VERIFIED_50.subsetRevision}`);
-      writeLine(`Official dataset: ${SWE_BENCH_VERIFIED_50.officialDataset}`);
-      writeLine(`Official revision: ${SWE_BENCH_VERIFIED_50.officialDatasetRevision}`);
-      writeLine(`Tasks: ${String(SWE_BENCH_VERIFIED_50.instanceIds.length)}`);
-      writeLine(
-        `Model profile: ${SWE_BENCH_MODEL_PROFILE.harborModel} / ` +
-          `${SWE_BENCH_MODEL_PROFILE.providerLabel} / ${SWE_BENCH_MODEL_PROFILE.mode} / ` +
-          SWE_BENCH_MODEL_PROFILE.thinkingEffort,
-      );
-      writeLine(`Provider endpoint: ${SWE_BENCH_MODEL_PROFILE.baseUrl}`);
-    });
+function printSweBenchInfo({ writeLine }: SweBenchCli): void {
+  writeLine(`Subset: ${SWE_BENCH_VERIFIED_50.subsetSource}`);
+  writeLine(`Subset revision: ${SWE_BENCH_VERIFIED_50.subsetRevision}`);
+  writeLine(`Official dataset: ${SWE_BENCH_VERIFIED_50.officialDataset}`);
+  writeLine(`Official revision: ${SWE_BENCH_VERIFIED_50.officialDatasetRevision}`);
+  writeLine(`Tasks: ${String(SWE_BENCH_VERIFIED_50.instanceIds.length)}`);
+  writeLine(
+    `Model profile: ${SWE_BENCH_MODEL_PROFILE.harborModel} / ` +
+      `${SWE_BENCH_MODEL_PROFILE.providerLabel} / ${SWE_BENCH_MODEL_PROFILE.mode} / ` +
+      SWE_BENCH_MODEL_PROFILE.thinkingEffort,
+  );
+  writeLine(`Provider endpoint: ${SWE_BENCH_MODEL_PROFILE.baseUrl}`);
+}
 
-  sweBench
-    .command("setup")
-    .description("create the pinned Python benchmark environment on the F drive")
-    .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
-    .option("--python <path>", "Python 3.12+ executable", "python")
-    .action(async (options: { root: string; python: string }) => {
-      const root = validateSweBenchRoot(options.root, platform);
-      prepareBenchmarkDirectories(root);
-      const childEnv = benchmarkEnvironment(root, env);
-      writeLine(`Benchmark root: ${root}`);
-      writeLine("Creating the isolated Python environment...");
-      await runInherited(options.python, ["-m", "venv", benchmarkVenv(root)], {
-        cwd: root,
-        env: childEnv,
-      });
-      const python = benchmarkPython(root, platform);
-      await runInherited(python, ["-m", "pip", "install", "--upgrade", "pip"], {
-        cwd: root,
-        env: childEnv,
-      });
-      await runInherited(
-        python,
-        ["-m", "pip", "install", `harbor==${HARBOR_VERSION}`, `swebench==${SWEBENCH_VERSION}`],
-        { cwd: root, env: childEnv },
-      );
-      writeLine("Preparing the pinned multilingual embedding model on the benchmark drive...");
-      await runInherited(process.execPath, [path.join(packageRoot, "scripts", "embedding-model.cjs"), "prepare"], {
-        cwd: packageRoot,
-        env: {
-          ...childEnv,
-          EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
-        },
-      });
-      writeLine(`Installed harbor==${HARBOR_VERSION} and swebench==${SWEBENCH_VERSION} under ${benchmarkVenv(root)}.`);
-    });
+async function setUpSweBench(cli: SweBenchCli, options: { root: string; python: string }): Promise<void> {
+  const { env, packageRoot, platform, writeLine } = cli;
+  const root = validateSweBenchRoot(options.root, platform);
+  prepareBenchmarkDirectories(root);
+  const childEnv = benchmarkEnvironment(root, env);
+  writeLine(`Benchmark root: ${root}`);
+  writeLine("Creating the isolated Python environment...");
+  await runInherited(options.python, ["-m", "venv", benchmarkVenv(root)], {
+    cwd: root,
+    env: childEnv,
+  });
+  const python = benchmarkPython(root, platform);
+  await runInherited(python, ["-m", "pip", "install", "--upgrade", "pip"], {
+    cwd: root,
+    env: childEnv,
+  });
+  await runInherited(python, ["-m", "pip", "install", `harbor==${HARBOR_VERSION}`, `swebench==${SWEBENCH_VERSION}`], {
+    cwd: root,
+    env: childEnv,
+  });
+  writeLine("Preparing the pinned multilingual embedding model on the benchmark drive...");
+  await runInherited(process.execPath, [path.join(packageRoot, "scripts", "embedding-model.cjs"), "prepare"], {
+    cwd: packageRoot,
+    env: {
+      ...childEnv,
+      EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
+    },
+  });
+  writeLine(`Installed harbor==${HARBOR_VERSION} and swebench==${SWEBENCH_VERSION} under ${benchmarkVenv(root)}.`);
+}
 
-  sweBench
-    .command("doctor")
-    .description("check Docker, Harbor, the pinned manifest, and the GLM credential")
-    .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
-    .action(async (options: { root: string }) => {
-      const root = validateSweBenchRoot(options.root, platform);
-      const childEnv = benchmarkEnvironment(root, env, {
-        PYTHONPATH: prependPath(packageRoot, env.PYTHONPATH),
-      });
-      const checks: BenchmarkDoctorCheck[] = [];
-      const docker = await runCaptured("docker", ["version", "--format", "{{.Server.Version}}"], {
-        cwd: packageRoot,
-        env: childEnv,
-      });
-      checks.push({
-        label: "Docker Engine",
-        status: docker.code === 0 ? "ok" : "fail",
-        detail: docker.code === 0 ? docker.stdout.trim() || "ready" : compactProcessError(docker),
-      });
-      const dockerPlatform =
-        docker.code === 0
-          ? await runCaptured("docker", ["info", "--format", "{{.OSType}}|{{.Architecture}}|{{.DockerRootDir}}"], {
-              cwd: packageRoot,
-              env: childEnv,
-            })
-          : { code: 1, stdout: "", stderr: "Docker Engine is unavailable." };
-      const dockerParts = dockerPlatform.stdout.trim().split("|");
-      const dockerTargetOk =
-        dockerPlatform.code === 0 &&
-        dockerParts[0]?.toLowerCase() === "linux" &&
-        ["amd64", "x86_64"].includes(dockerParts[1]?.toLowerCase() ?? "");
-      checks.push({
-        label: "Docker task platform",
-        status: dockerTargetOk ? "ok" : "fail",
-        detail: dockerTargetOk
-          ? `${dockerParts[0]}/${dockerParts[1]} (${dockerParts[2] || "storage path unavailable"})`
-          : compactProcessError(dockerPlatform),
-      });
-      // Compose plugin discovery is independent of daemon readiness. Check it
-      // even when the Engine is stopped so doctor reports the actionable cause.
-      const dockerCompose = await runCaptured("docker", ["compose", "--project-name", "easy-code-doctor", "version"], {
-        cwd: packageRoot,
-        env: childEnv,
-      });
-      const dockerComposeVersion = extractSemanticVersion(`${dockerCompose.stdout}\n${dockerCompose.stderr}`);
-      const dockerComposeReady = dockerCompose.code === 0 && versionAtLeast(dockerComposeVersion, "2.0.0");
-      checks.push({
-        label: "Docker Compose >=2",
-        status: dockerComposeReady ? "ok" : "fail",
-        detail: dockerComposeReady ? (dockerComposeVersion ?? "ready") : compactProcessError(dockerCompose),
-      });
-      const harbor = await runCaptured(benchmarkHarbor(root, platform), ["--version"], {
-        cwd: packageRoot,
-        env: childEnv,
-      });
-      const harborVersion = extractSemanticVersion(`${harbor.stdout}\n${harbor.stderr}`);
-      checks.push({
-        label: `Harbor ${HARBOR_VERSION}`,
-        status: harbor.code === 0 && harborVersion === HARBOR_VERSION ? "ok" : "fail",
-        detail: harbor.code === 0 ? (harborVersion ?? "version was not reported") : compactProcessError(harbor),
-      });
-      const python = await runCaptured(benchmarkPython(root, platform), ["--version"], {
-        cwd: packageRoot,
-        env: childEnv,
-      });
-      const pythonVersion = extractSemanticVersion(`${python.stdout}\n${python.stderr}`);
-      const pythonReady = python.code === 0 && versionAtLeast(pythonVersion, "3.12.0");
-      checks.push({
-        label: "Benchmark Python >=3.12",
-        status: pythonReady ? "ok" : "fail",
-        detail: python.code === 0 ? (pythonVersion ?? "version was not reported") : compactProcessError(python),
-      });
-      const swebench = pythonReady
-        ? await runCaptured(
-            benchmarkPython(root, platform),
-            ["-c", "import importlib.metadata as m; print(m.version('swebench'))"],
-            { cwd: packageRoot, env: childEnv },
-          )
-        : { code: 1, stdout: "", stderr: "Benchmark Python is unavailable." };
-      checks.push({
-        label: `swebench ${SWEBENCH_VERSION}`,
-        status: swebench.code === 0 && swebench.stdout.trim() === SWEBENCH_VERSION ? "ok" : "fail",
-        detail:
-          swebench.code === 0 ? swebench.stdout.trim() || "version was not reported" : compactProcessError(swebench),
-      });
-      const adapter = pythonReady
-        ? await runCaptured(
-            benchmarkPython(root, platform),
-            [
-              "-c",
-              "from benchmarks.swebench_verified.easy_code_agent import EasyCodeAgent; print(EasyCodeAgent.name())",
-            ],
-            { cwd: packageRoot, env: childEnv },
-          )
-        : { code: 1, stdout: "", stderr: "Benchmark Python is unavailable." };
-      checks.push({
-        label: "EASY CODE Harbor adapter",
-        status: adapter.code === 0 && adapter.stdout.trim() === "easy-code" ? "ok" : "fail",
-        detail:
-          adapter.code === 0 ? adapter.stdout.trim() || "adapter name was not reported" : compactProcessError(adapter),
-      });
-      const embeddingModel = await runCaptured(
-        process.execPath,
-        [path.join(packageRoot, "scripts", "embedding-model.cjs"), "verify"],
-        {
-          cwd: packageRoot,
-          env: {
-            ...childEnv,
-            EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
-          },
-        },
-      );
-      checks.push({
-        label: "Pinned hybrid-retrieval embedding model",
-        status: embeddingModel.code === 0 ? "ok" : "fail",
-        detail:
-          embeddingModel.code === 0
-            ? embeddingModel.stdout.trim() || benchmarkEmbeddingModelDirectory(root)
-            : `${compactProcessError(embeddingModel)} Run easy-code benchmark swe-bench setup to prepare it.`,
-      });
-      const manifest = readPinnedManifest(packageRoot);
-      checks.push({
-        label: "Pinned 50-task manifest",
-        status: manifest.ok ? "ok" : "fail",
-        detail: manifest.detail,
-      });
-      checks.push(...inspectBenchmarkStorage(root, platform, env));
-      checks.push(inspectCredentialStaging(root));
-      let hasCredential = false;
-      try {
-        hasCredential = Boolean(
-          await credentialStore.get(SWE_BENCH_MODEL_PROFILE.credentialSlot, SWE_BENCH_MODEL_PROFILE.baseUrl),
-        );
-      } catch {
-        /* Doctor reports the missing or unavailable store below. */
-      }
-      checks.push({
-        label: `EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key`,
-        status: hasCredential ? "ok" : "fail",
-        detail: hasCredential ? "configured (value hidden)" : "not available",
-      });
-      writeLine(`Benchmark root: ${root}`);
-      for (const check of checks) {
-        writeLine(`${check.status.toUpperCase()} ${check.label}: ${check.detail}`);
-      }
-      if (checks.some((check) => check.status === "fail")) setExitCode(2);
-    });
-
-  sweBench
-    .command("prepare")
-    .description("pack the current EASY CODE build into the F-drive benchmark root")
-    .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
-    .action(async (options: { root: string }) => {
-      const root = validateSweBenchRoot(options.root, platform);
-      const packagePath = await packEasyCode(packageRoot, root, env, platform);
-      writeLine(`Prepared package: ${packagePath}`);
-    });
-
-  sweBench
-    .command("run")
-    .description("run a smoke test or the complete pinned 50-task subset")
-    .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
-    .option("--run-id <id>", "stable Harbor job name", defaultRunId())
-    .option("--concurrency <count>", "parallel task count", parsePositiveOption, 1)
-    .option("--offset <count>", "zero-based offset into the ordered 50-task set", parseNonNegativeOption, 0)
-    .option("--limit <count>", "number of tasks to run after the offset", parsePositiveOption, 1)
-    .option("--confirm-full-run", "confirm the API cost of starting all 50 tasks")
-    .option("--package <path>", "existing local EASY CODE npm .tgz")
-    .option("--dry-run", "print the exact non-secret Harbor invocation without running it")
-    .action(
-      async (options: {
-        root: string;
-        runId: string;
-        concurrency: number;
-        offset: number;
-        limit: number;
-        package?: string;
-        dryRun?: boolean;
-        confirmFullRun?: boolean;
-      }) => {
-        const root = validateSweBenchRoot(options.root, platform);
-        const args = buildHarborRunArgs({
-          root,
-          runId: options.runId,
-          concurrency: options.concurrency,
-          offset: options.offset,
-          limit: options.limit,
-          platform,
-        });
-        writeLine(`Benchmark root: ${root}`);
-        const firstPosition = options.offset + 1;
-        const lastPosition = options.offset + options.limit;
-        writeLine(
-          `Tasks: ${String(options.limit)} / 50; offset: ${String(options.offset)} ` +
-            `(positions ${String(firstPosition)}-${String(lastPosition)}); ` +
-            `concurrency: ${String(options.concurrency)}`,
-        );
-        writeLine(`Harbor argv: ${JSON.stringify(args)}`);
-        if (options.dryRun) {
-          writeLine("Dry run only; no package was built, no API key was read, and no task was started.");
-          return;
-        }
-        if (options.offset === 0 && options.limit === INSTANCE_IDS.length && !options.confirmFullRun) {
-          throw new Error("A 50-task run can consume substantial API credits. Re-run with --confirm-full-run.");
-        }
-
-        prepareBenchmarkDirectories(root);
-        const composeEnvironment = benchmarkEnvironment(root, env);
-        const compose = await runCaptured("docker", ["compose", "--project-name", "easy-code-preflight", "version"], {
-          cwd: packageRoot,
-          env: composeEnvironment,
-        });
-        const composeVersion = extractSemanticVersion(`${compose.stdout}\n${compose.stderr}`);
-        if (compose.code !== 0 || !versionAtLeast(composeVersion, "2.0.0")) {
-          throw new Error(
-            `Docker Compose v2 preflight failed: ${compactProcessError(compose)}. ` +
-              "Run easy-code benchmark swe-bench doctor before retrying.",
-          );
-        }
-        const packagePath = options.package
-          ? validatePackagePath(options.package)
-          : await packEasyCode(packageRoot, root, env, platform);
-        const embeddingModel = await runCaptured(
-          process.execPath,
-          [path.join(packageRoot, "scripts", "embedding-model.cjs"), "verify"],
-          {
-            cwd: packageRoot,
-            env: {
-              ...composeEnvironment,
-              EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
-            },
-          },
-        );
-        if (embeddingModel.code !== 0) {
-          throw new Error(
-            `Pinned benchmark embedding model preflight failed: ${compactProcessError(embeddingModel)}. ` +
-              "Run easy-code benchmark swe-bench setup before retrying.",
-          );
-        }
-        const apiKey = await credentialStore.get(
-          SWE_BENCH_MODEL_PROFILE.credentialSlot,
-          SWE_BENCH_MODEL_PROFILE.baseUrl,
-        );
-        if (!apiKey) {
-          throw new Error(
-            `No EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key is available for this endpoint. ` +
-              `Run easy-code benchmark credential set ${SWE_BENCH_MODEL_PROFILE.credentialSlot} first.`,
-          );
-        }
-        const stagedCredential = await stageBenchmarkCredential(root, apiKey, {
-          platform,
-          env,
-        });
-        const cleanupOnExit = () => stagedCredential.cleanup();
-        process.once("exit", cleanupOnExit);
-        try {
-          const childEnv = benchmarkEnvironment(root, env, {
-            EASY_CODE_PROVIDER_KEY_FILE: stagedCredential.filename,
-            EASY_CODE_MODEL_REGISTRY_PATH: USER_MODEL_REGISTRY_PATH,
-            [EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV]: path.join(root, "checkpoints"),
-            [EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV]: benchmarkEmbeddingModelDirectory(root),
-            EASY_CODE_PACKAGE_PATH: packagePath,
-            PYTHONPATH: prependPath(packageRoot, env.PYTHONPATH),
-          });
-          writeLine(
-            "Starting Harbor. It receives only an ACL-protected credential-file path; the key is never printed.",
-          );
-          let harborCompleted = false;
-          try {
-            await runInherited(benchmarkHarbor(root, platform), args, {
-              cwd: root,
-              env: childEnv,
-            });
-            harborCompleted = true;
-          } finally {
-            try {
-              const contextSummary = summarizeSweBenchContextMetrics(root, options.runId);
-              const contextSummaryPath = path.join(root, "jobs", options.runId, "easy-code-context-summary.json");
-              mkdirSync(path.dirname(contextSummaryPath), { recursive: true });
-              writeFileSync(
-                contextSummaryPath,
-                `${JSON.stringify({ ...contextSummary, harborCompleted }, null, 2)}\n`,
-                { encoding: "utf8", mode: 0o600 },
-              );
-              writeLine(
-                `Context metrics: ${String(contextSummary.trialsWithMetrics)} trial(s), ` +
-                  `${String(contextSummary.checkpointedTrials)} checkpointed, ` +
-                  `${String(contextSummary.hybridTrials)} hybrid / ` +
-                  `${String(contextSummary.fts5Trials)} FTS5 fallback.`,
-              );
-              writeLine(`Context summary: ${contextSummaryPath}`);
-            } catch (error) {
-              const detail = error instanceof Error ? error.message : String(error);
-              stderr.write(`Unable to write benchmark context summary: ${detail}\n`);
-              if (harborCompleted) throw error;
-            }
-          }
-        } finally {
-          process.off("exit", cleanupOnExit);
-          stagedCredential.cleanup();
-        }
+async function diagnoseSweBench(cli: SweBenchCli, options: { root: string }): Promise<void> {
+  const { credentialStore, env, packageRoot, platform, writeLine } = cli;
+  const root = validateSweBenchRoot(options.root, platform);
+  const childEnv = benchmarkEnvironment(root, env, {
+    PYTHONPATH: prependPath(packageRoot, env.PYTHONPATH),
+  });
+  const checks: BenchmarkDoctorCheck[] = [
+    ...(await dockerDoctorChecks(packageRoot, childEnv)),
+    ...(await pythonToolchainDoctorChecks(cli, root, childEnv)),
+  ];
+  const embeddingModel = await runCaptured(
+    process.execPath,
+    [path.join(packageRoot, "scripts", "embedding-model.cjs"), "verify"],
+    {
+      cwd: packageRoot,
+      env: {
+        ...childEnv,
+        EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
       },
+    },
+  );
+  checks.push({
+    label: "Pinned hybrid-retrieval embedding model",
+    status: embeddingModel.code === 0 ? "ok" : "fail",
+    detail:
+      embeddingModel.code === 0
+        ? embeddingModel.stdout.trim() || benchmarkEmbeddingModelDirectory(root)
+        : `${compactProcessError(embeddingModel)} Run easy-code benchmark swe-bench setup to prepare it.`,
+  });
+  const manifest = readPinnedManifest(packageRoot);
+  checks.push({
+    label: "Pinned 50-task manifest",
+    status: manifest.ok ? "ok" : "fail",
+    detail: manifest.detail,
+  });
+  checks.push(...inspectBenchmarkStorage(root, platform, env));
+  checks.push(inspectCredentialStaging(root));
+  let hasCredential = false;
+  try {
+    hasCredential = Boolean(
+      await credentialStore.get(SWE_BENCH_MODEL_PROFILE.credentialSlot, SWE_BENCH_MODEL_PROFILE.baseUrl),
     );
+  } catch {
+    /* Doctor reports the missing or unavailable store below. */
+  }
+  checks.push({
+    label: `EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key`,
+    status: hasCredential ? "ok" : "fail",
+    detail: hasCredential ? "configured (value hidden)" : "not available",
+  });
+  writeLine(`Benchmark root: ${root}`);
+  for (const check of checks) {
+    writeLine(`${check.status.toUpperCase()} ${check.label}: ${check.detail}`);
+  }
+  if (checks.some((check) => check.status === "fail")) cli.setExitCode(2);
+}
 
-  sweBench.action(() => sweBench.outputHelp());
-  benchmark.action(() => benchmark.outputHelp());
-  return benchmark;
+/** Docker Engine, its task platform, and the Compose v2 plugin. */
+async function dockerDoctorChecks(packageRoot: string, childEnv: NodeJS.ProcessEnv): Promise<BenchmarkDoctorCheck[]> {
+  const checks: BenchmarkDoctorCheck[] = [];
+  const docker = await runCaptured("docker", ["version", "--format", "{{.Server.Version}}"], {
+    cwd: packageRoot,
+    env: childEnv,
+  });
+  checks.push({
+    label: "Docker Engine",
+    status: docker.code === 0 ? "ok" : "fail",
+    detail: docker.code === 0 ? docker.stdout.trim() || "ready" : compactProcessError(docker),
+  });
+  const dockerPlatform =
+    docker.code === 0
+      ? await runCaptured("docker", ["info", "--format", "{{.OSType}}|{{.Architecture}}|{{.DockerRootDir}}"], {
+          cwd: packageRoot,
+          env: childEnv,
+        })
+      : { code: 1, stdout: "", stderr: "Docker Engine is unavailable." };
+  const dockerParts = dockerPlatform.stdout.trim().split("|");
+  const dockerTargetOk =
+    dockerPlatform.code === 0 &&
+    dockerParts[0]?.toLowerCase() === "linux" &&
+    ["amd64", "x86_64"].includes(dockerParts[1]?.toLowerCase() ?? "");
+  checks.push({
+    label: "Docker task platform",
+    status: dockerTargetOk ? "ok" : "fail",
+    detail: dockerTargetOk
+      ? `${dockerParts[0]}/${dockerParts[1]} (${dockerParts[2] || "storage path unavailable"})`
+      : compactProcessError(dockerPlatform),
+  });
+  // Compose plugin discovery is independent of daemon readiness. Check it
+  // even when the Engine is stopped so doctor reports the actionable cause.
+  const dockerCompose = await runCaptured("docker", ["compose", "--project-name", "easy-code-doctor", "version"], {
+    cwd: packageRoot,
+    env: childEnv,
+  });
+  const dockerComposeVersion = extractSemanticVersion(`${dockerCompose.stdout}\n${dockerCompose.stderr}`);
+  const dockerComposeReady = dockerCompose.code === 0 && versionAtLeast(dockerComposeVersion, "2.0.0");
+  checks.push({
+    label: "Docker Compose >=2",
+    status: dockerComposeReady ? "ok" : "fail",
+    detail: dockerComposeReady ? (dockerComposeVersion ?? "ready") : compactProcessError(dockerCompose),
+  });
+  return checks;
+}
+
+/** Harbor, the benchmark Python, swebench and the EASY CODE Harbor adapter. */
+async function pythonToolchainDoctorChecks(
+  { packageRoot, platform }: SweBenchCli,
+  root: string,
+  childEnv: NodeJS.ProcessEnv,
+): Promise<BenchmarkDoctorCheck[]> {
+  const checks: BenchmarkDoctorCheck[] = [];
+  const harbor = await runCaptured(benchmarkHarbor(root, platform), ["--version"], {
+    cwd: packageRoot,
+    env: childEnv,
+  });
+  const harborVersion = extractSemanticVersion(`${harbor.stdout}\n${harbor.stderr}`);
+  checks.push({
+    label: `Harbor ${HARBOR_VERSION}`,
+    status: harbor.code === 0 && harborVersion === HARBOR_VERSION ? "ok" : "fail",
+    detail: harbor.code === 0 ? (harborVersion ?? "version was not reported") : compactProcessError(harbor),
+  });
+  const python = await runCaptured(benchmarkPython(root, platform), ["--version"], {
+    cwd: packageRoot,
+    env: childEnv,
+  });
+  const pythonVersion = extractSemanticVersion(`${python.stdout}\n${python.stderr}`);
+  const pythonReady = python.code === 0 && versionAtLeast(pythonVersion, "3.12.0");
+  checks.push({
+    label: "Benchmark Python >=3.12",
+    status: pythonReady ? "ok" : "fail",
+    detail: python.code === 0 ? (pythonVersion ?? "version was not reported") : compactProcessError(python),
+  });
+  const swebench = pythonReady
+    ? await runCaptured(
+        benchmarkPython(root, platform),
+        ["-c", "import importlib.metadata as m; print(m.version('swebench'))"],
+        { cwd: packageRoot, env: childEnv },
+      )
+    : { code: 1, stdout: "", stderr: "Benchmark Python is unavailable." };
+  checks.push({
+    label: `swebench ${SWEBENCH_VERSION}`,
+    status: swebench.code === 0 && swebench.stdout.trim() === SWEBENCH_VERSION ? "ok" : "fail",
+    detail: swebench.code === 0 ? swebench.stdout.trim() || "version was not reported" : compactProcessError(swebench),
+  });
+  const adapter = pythonReady
+    ? await runCaptured(
+        benchmarkPython(root, platform),
+        ["-c", "from benchmarks.swebench_verified.easy_code_agent import EasyCodeAgent; print(EasyCodeAgent.name())"],
+        { cwd: packageRoot, env: childEnv },
+      )
+    : { code: 1, stdout: "", stderr: "Benchmark Python is unavailable." };
+  checks.push({
+    label: "EASY CODE Harbor adapter",
+    status: adapter.code === 0 && adapter.stdout.trim() === "easy-code" ? "ok" : "fail",
+    detail:
+      adapter.code === 0 ? adapter.stdout.trim() || "adapter name was not reported" : compactProcessError(adapter),
+  });
+  return checks;
+}
+
+async function runSweBench(cli: SweBenchCli, options: SweBenchRunOptions): Promise<void> {
+  const { platform, writeLine } = cli;
+  const root = validateSweBenchRoot(options.root, platform);
+  const args = buildHarborRunArgs({
+    root,
+    runId: options.runId,
+    concurrency: options.concurrency,
+    offset: options.offset,
+    limit: options.limit,
+    platform,
+  });
+  writeLine(`Benchmark root: ${root}`);
+  const firstPosition = options.offset + 1;
+  const lastPosition = options.offset + options.limit;
+  writeLine(
+    `Tasks: ${String(options.limit)} / 50; offset: ${String(options.offset)} ` +
+      `(positions ${String(firstPosition)}-${String(lastPosition)}); ` +
+      `concurrency: ${String(options.concurrency)}`,
+  );
+  writeLine(`Harbor argv: ${JSON.stringify(args)}`);
+  if (options.dryRun) {
+    writeLine("Dry run only; no package was built, no API key was read, and no task was started.");
+    return;
+  }
+  if (options.offset === 0 && options.limit === INSTANCE_IDS.length && !options.confirmFullRun) {
+    throw new Error("A 50-task run can consume substantial API credits. Re-run with --confirm-full-run.");
+  }
+  const { packagePath, apiKey } = await preflightSweBenchRun(cli, root, options);
+  await runHarborWithStagedCredential(cli, root, options.runId, args, packagePath, apiKey);
+}
+
+/** Check Compose and the embedding model, build or validate the package, and read the provider key. */
+async function preflightSweBenchRun(
+  cli: SweBenchCli,
+  root: string,
+  options: SweBenchRunOptions,
+): Promise<{ packagePath: string; apiKey: string }> {
+  const { credentialStore, env, packageRoot, platform } = cli;
+  prepareBenchmarkDirectories(root);
+  const composeEnvironment = benchmarkEnvironment(root, env);
+  const compose = await runCaptured("docker", ["compose", "--project-name", "easy-code-preflight", "version"], {
+    cwd: packageRoot,
+    env: composeEnvironment,
+  });
+  const composeVersion = extractSemanticVersion(`${compose.stdout}\n${compose.stderr}`);
+  if (compose.code !== 0 || !versionAtLeast(composeVersion, "2.0.0")) {
+    throw new Error(
+      `Docker Compose v2 preflight failed: ${compactProcessError(compose)}. ` +
+        "Run easy-code benchmark swe-bench doctor before retrying.",
+    );
+  }
+  const packagePath = options.package
+    ? validatePackagePath(options.package)
+    : await packEasyCode(packageRoot, root, env, platform);
+  const embeddingModel = await runCaptured(
+    process.execPath,
+    [path.join(packageRoot, "scripts", "embedding-model.cjs"), "verify"],
+    {
+      cwd: packageRoot,
+      env: {
+        ...composeEnvironment,
+        EASY_CODE_CACHE_DIR: benchmarkEasyCodeCache(root),
+      },
+    },
+  );
+  if (embeddingModel.code !== 0) {
+    throw new Error(
+      `Pinned benchmark embedding model preflight failed: ${compactProcessError(embeddingModel)}. ` +
+        "Run easy-code benchmark swe-bench setup before retrying.",
+    );
+  }
+  const apiKey = await credentialStore.get(SWE_BENCH_MODEL_PROFILE.credentialSlot, SWE_BENCH_MODEL_PROFILE.baseUrl);
+  if (!apiKey) {
+    throw new Error(
+      `No EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key is available for this endpoint. ` +
+        `Run easy-code benchmark credential set ${SWE_BENCH_MODEL_PROFILE.credentialSlot} first.`,
+    );
+  }
+  return { packagePath, apiKey };
+}
+
+/** Run Harbor with the key staged in an owner-only file, then write the run's context summary and remove the key. */
+async function runHarborWithStagedCredential(
+  cli: SweBenchCli,
+  root: string,
+  runId: string,
+  args: string[],
+  packagePath: string,
+  apiKey: string,
+): Promise<void> {
+  const { env, packageRoot, platform, writeLine } = cli;
+  const stagedCredential = await stageBenchmarkCredential(root, apiKey, {
+    platform,
+    env,
+  });
+  const cleanupOnExit = () => stagedCredential.cleanup();
+  process.once("exit", cleanupOnExit);
+  try {
+    const childEnv = benchmarkEnvironment(root, env, {
+      EASY_CODE_PROVIDER_KEY_FILE: stagedCredential.filename,
+      EASY_CODE_MODEL_REGISTRY_PATH: USER_MODEL_REGISTRY_PATH,
+      [EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV]: path.join(root, "checkpoints"),
+      [EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV]: benchmarkEmbeddingModelDirectory(root),
+      EASY_CODE_PACKAGE_PATH: packagePath,
+      PYTHONPATH: prependPath(packageRoot, env.PYTHONPATH),
+    });
+    writeLine("Starting Harbor. It receives only an ACL-protected credential-file path; the key is never printed.");
+    let harborCompleted = false;
+    try {
+      await runInherited(benchmarkHarbor(root, platform), args, {
+        cwd: root,
+        env: childEnv,
+      });
+      harborCompleted = true;
+    } finally {
+      try {
+        const contextSummary = summarizeSweBenchContextMetrics(root, runId);
+        const contextSummaryPath = path.join(root, "jobs", runId, "easy-code-context-summary.json");
+        mkdirSync(path.dirname(contextSummaryPath), { recursive: true });
+        writeFileSync(contextSummaryPath, `${JSON.stringify({ ...contextSummary, harborCompleted }, null, 2)}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        writeLine(
+          `Context metrics: ${String(contextSummary.trialsWithMetrics)} trial(s), ` +
+            `${String(contextSummary.checkpointedTrials)} checkpointed, ` +
+            `${String(contextSummary.hybridTrials)} hybrid / ` +
+            `${String(contextSummary.fts5Trials)} FTS5 fallback.`,
+        );
+        writeLine(`Context summary: ${contextSummaryPath}`);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        cli.stderr.write(`Unable to write benchmark context summary: ${detail}\n`);
+        if (harborCompleted) throw error;
+      }
+    }
+  } finally {
+    process.off("exit", cleanupOnExit);
+    stagedCredential.cleanup();
+  }
 }
 
 function requirePositiveInteger(value: number, name: string): number {

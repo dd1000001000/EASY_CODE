@@ -1,6 +1,5 @@
 {
   "src/app.ts": 3162,
-  "src/benchmarks/swebench.ts#registerSweBenchCommands": 433,
   "src/cli/terminal.ts": 3328,
   "src/runtime/agent.ts": 4114
 }
