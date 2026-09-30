@@ -139,6 +139,7 @@ export class EasyCodeApp {
   private pendingImages: ImageAttachment[] = [];
   private pendingResumeRecovery?: ResumeRecoverySummary;
   private closed = false;
+  private closeAsyncWork?: Promise<void>;
   private dirty = false;
   private commandExecutionMode: CommandExecutionMode;
   private hostAccessEpoch = 0;
@@ -802,9 +803,9 @@ export class EasyCodeApp {
     if (this.closed) return;
     this.closed = true;
     const cleanupErrors: unknown[] = [];
-    this.localLayaClient?.close();
-    this.localLayaClient = undefined;
     try {
+      this.localLayaClient?.close();
+      this.localLayaClient = undefined;
       this.save();
     } catch (error) {
       cleanupErrors.push(error);
@@ -836,14 +837,23 @@ export class EasyCodeApp {
       cleanupErrors.push(error);
     }
     this.commandRuntimes?.clear();
+    // Stay closed even when a step failed: the database is already closed, so a
+    // retry could not repeat the checkpoint or lease release and would only fail.
     if (cleanupErrors.length === 1) throw cleanupErrors[0];
-    if (cleanupErrors.length > 1) {
-      throw new AggregateError(cleanupErrors, "Failed to close EASY CODE cleanly");
-    }
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Failed to close EASY CODE cleanly");
   }
 
-  async closeAsync(): Promise<void> {
-    if (this.closed) return;
+  closeAsync(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.closeAsyncWork ??= this.performCloseAsync().catch((error: unknown) => {
+      // A failure that stopped before closeResources() left the app open; let a later call try again.
+      this.closeAsyncWork = undefined;
+      throw error;
+    });
+    return this.closeAsyncWork;
+  }
+
+  private async performCloseAsync(): Promise<void> {
     const cleanupErrors: unknown[] = [];
     if (this.memoryMaintenanceTimer) clearInterval(this.memoryMaintenanceTimer);
     this.memoryMaintenanceTimer = undefined;
@@ -883,11 +893,8 @@ export class EasyCodeApp {
       cleanupErrors.push(error);
     }
     if (cleanupErrors.length === 1) throw cleanupErrors[0];
-    if (cleanupErrors.length > 1) {
-      throw new AggregateError(cleanupErrors, "Failed to close EASY CODE cleanly");
-    }
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Failed to close EASY CODE cleanly");
   }
-
   private async processPendingPlanReview(showPlan: boolean, suppliedDecision?: PlanReviewDecision): Promise<boolean> {
     return this.turnExecution.processPendingPlanReview(showPlan, suppliedDecision);
   }
