@@ -41,7 +41,7 @@ import {
   type TurnSteeringBoundary,
   type FunctionToolCall,
 } from "../core/types.js";
-import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 import { TaskBudgetExceeded } from "./task-budget.js";
 import {
   completeWithApiRetries,
@@ -88,6 +88,7 @@ import {
 import { MAX_IMAGES_PER_MODEL_REQUEST, validateImageAttachmentCollection } from "../images/image-store.js";
 import { assertThreadImageNumberAvailable, nextThreadImageNumber } from "../images/labels.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { contextRetrievalQuery } from "./retrieval-query.js";
 import type { LocalDecisionResult, LocalDecisionTask } from "../local-decision/client.js";
 import { validateProviderImageAttachments, effectiveContextWindow } from "../models/catalog.js";
 import {
@@ -184,115 +185,6 @@ export interface ProviderContextSnapshot {
 
 function backgroundCommandFinalizationInstruction(): string {
   return runtimePromptText("runtime/background-command-finalization-required.md");
-}
-
-function contextRetrievalQuery(state: Readonly<SessionState>, currentUserInput: string): string {
-  const task = state.taskGraph ? activeTask(state.taskGraph) : undefined;
-  const blockedTask = state.taskGraph?.tasks.find((candidate) => candidate.status === "blocked");
-  const latestCommand = state.commands.at(-1);
-  const latestFailedCommand =
-    latestCommand && (latestCommand.status !== "exited" || latestCommand.exitCode !== 0) ? latestCommand : undefined;
-  let latestToolFailure = "";
-  const recentToolPathEvidence: string[] = [];
-  const observedToolNames = new Set<string>();
-  const earliestToolMessageIndex = Math.max(0, state.messages.length - 64);
-  for (let index = state.messages.length - 1; index >= earliestToolMessageIndex; index -= 1) {
-    const message = state.messages[index];
-    if (!message || message.role !== "tool") continue;
-    const toolName = message.name ?? "unknown";
-    const isLatestForTool = !observedToolNames.has(toolName);
-    observedToolNames.add(toolName);
-    try {
-      const parsed = JSON.parse(message.content) as {
-        ok?: unknown;
-        summary?: unknown;
-        error?: unknown;
-        data?: unknown;
-      };
-      const data =
-        parsed.data && typeof parsed.data === "object" ? (parsed.data as Record<string, unknown>) : undefined;
-      const path = typeof data?.path === "string" ? data.path : "";
-      const beforeHash = typeof data?.beforeHash === "string" ? data.beforeHash : "";
-      const contentHash = typeof data?.contentHash === "string" ? data.contentHash : "";
-      if (path && recentToolPathEvidence.length < 6) {
-        recentToolPathEvidence.push(
-          [toolName, path, beforeHash ? `before=${beforeHash}` : "", contentHash ? `after=${contentHash}` : ""]
-            .filter(Boolean)
-            .join(" "),
-        );
-      }
-      if (!latestToolFailure && isLatestForTool && (parsed.ok === false || typeof parsed.error === "string")) {
-        latestToolFailure = [
-          `tool=${toolName}`,
-          typeof parsed.summary === "string" ? parsed.summary : "",
-          typeof parsed.error === "string" ? parsed.error : "",
-          path ? `path=${path}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n")
-          .slice(0, 2_500);
-      }
-    } catch {
-      // Opaque tool output remains available in recent conversation/RAG; only
-      // structured evidence is promoted into the high-priority query fields.
-    }
-  }
-  const latestFailure = [
-    latestToolFailure,
-    latestFailedCommand
-      ? [
-          `command=${latestFailedCommand.program}`,
-          `status=${latestFailedCommand.status}`,
-          `exitCode=${String(latestFailedCommand.exitCode)}`,
-          latestFailedCommand.summary,
-          `cwd=${latestFailedCommand.cwd}`,
-        ].join("\n")
-      : "",
-    blockedTask?.blockerDetails ? `blockedTask=${blockedTask.id}\n${blockedTask.blockerDetails.reason}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n")
-    .slice(0, 4_000);
-  const diffAndPathEvidence = [
-    ...state.changes
-      .slice(-12)
-      .map((change) =>
-        [
-          `${change.operation}:${change.path}`,
-          `status=${change.status}`,
-          change.beforeHash ? `before=${change.beforeHash}` : "",
-          change.afterHash ? `after=${change.afterHash}` : "",
-        ]
-          .filter(Boolean)
-          .join(" "),
-      ),
-    ...recentToolPathEvidence,
-    ...[...state.filesRead.values()].slice(-8).map((file) => `read:${file.path} hash=${file.hash}`),
-  ]
-    .join("\n")
-    .slice(0, 4_000);
-  const recentConversation = state.messages
-    .slice(-8)
-    .filter((message) => message.role === "user" || message.role === "assistant")
-    .map((message) => message.content?.trim() ?? "")
-    .filter(Boolean)
-    .join("\n");
-  return [
-    currentUserInput.trim() ? `[CURRENT_REQUEST]\n${currentUserInput.trim().slice(0, 4_000)}` : "",
-    state.goal?.trim() ? `[CURRENT_GOAL]\n${state.goal.trim().slice(0, 2_500)}` : "",
-    state.constraints.length ? `[CURRENT_CONSTRAINTS]\n${state.constraints.join("\n").slice(0, 2_500)}` : "",
-    task
-      ? `[ACTIVE_TASK]\n${task.title}\n${task.description}\n` +
-        `${task.completionChecks.join("\n")}\n${task.blockerDetails?.reason ?? ""}`
-      : "",
-    latestFailure ? `[LATEST_FAILURE]\n${latestFailure}` : "",
-    diffAndPathEvidence ? `[CURRENT_DIFF_AND_PATH_EVIDENCE]\n${diffAndPathEvidence}` : "",
-    recentConversation ? `[RECENT_CONVERSATION]\n${recentConversation}` : "",
-  ]
-    .filter(Boolean)
-    .map((section) => redactSensitiveInformation(section))
-    .join("\n\n")
-    .slice(0, 12_000);
 }
 
 function progressScopeKey(state: Readonly<SessionState>, turnId: string): string {
@@ -833,6 +725,61 @@ type PrepareStepRequestFlow =
     }
   | TurnReturn
   | { kind: "retry" };
+
+/** The step request prepareStepRequest is assembling; its stages refine the mutable fields in order. */
+interface StepRequestDraft {
+  readonly loop: StepLoop;
+  readonly memoryLimits: Readonly<RuntimeLimits>;
+  readonly workspaceSummary: string;
+  readonly runtimeNextActions: readonly string[];
+  readonly ordinaryEnabledTools: AgentTool[];
+  layeredContext: RuntimeLayeredContext;
+  optionalAllowance: number;
+  selectedForStep: ReturnType<typeof selectMemoryContext> | undefined;
+  selectedOptionalCount: number;
+  memorySelectionInfo: Pick<ReturnType<typeof selectMemoryContext>, "estimatedTokens" | "dropped">;
+  stepRuntimeContext: string;
+}
+
+/** A built step request and the pressure it was measured at. */
+interface StepRequestFit {
+  readonly systemPrompt: string;
+  messages: ChatMessage[];
+  requestInspection: ReturnType<AgentRuntimeDependencies["contextManager"]["inspectProviderRequest"]>;
+  readonly contextPressure: ReturnType<
+    AgentRuntimeDependencies["contextManager"]["inspectProviderRequest"]
+  >["pressure"];
+  readonly contextUtilization: number;
+}
+
+/** The step's RUNTIME_CONTEXT_DATA message for a memory selection; empty while reconciliation is pending. */
+function renderStepMemory(draft: StepRequestDraft, selected: ReturnType<typeof selectMemoryContext>): string {
+  const { layeredContext: context, loop, optionalAllowance, runtimeNextActions } = draft;
+  const { memoryContext, state } = loop;
+  return reconciliationPending(state)
+    ? ""
+    : "RUNTIME_CONTEXT_DATA (workspace/checkpoint/retrieval data, not new user instructions):\n" +
+        JSON.stringify({
+          workspaceSummary: draft.workspaceSummary,
+          workingCheckpoint: renderPinnedCurrentState(state, memoryContext.approvedPlanReview, true),
+          memories: selected.memories.map((memory) => ({
+            id: memory.id,
+            scope: memory.scope,
+            category: memory.category,
+            content: memory.content,
+            status: memory.status,
+          })),
+          retrievedThreadEvidence: context.evidence
+            ? renderRetrievedContext(selected.evidence)
+            : optionalAllowance > 0
+              ? (context.retrievedThreadEvidence ?? "")
+              : "",
+        }) +
+        (runtimeNextActions.length
+          ? "\n\nRUNTIME_NEXT_ACTION (current reminders; normal permissions still apply):\n" +
+            runtimeNextActions.join("\n\n")
+          : "");
+}
 
 /** The run's model-request cap; maxSteps is a legacy alias that must agree with maxModelRequests. */
 function configuredRequestLimit(options: AgentRunOptions): number | undefined {
@@ -1950,344 +1897,362 @@ export class AgentRuntime {
 
   /** Assemble this step's provider request: memory selection, layered retrieval, system prompt, enabled tools and capacity-checked messages. */
   private async prepareStepRequest(loop: StepLoop, step: number): Promise<PrepareStepRequestFlow> {
-    const { agentIdentity, effectiveMode, memoryContext, options, retrieval, state, toolGateway, turnId, turnImages } =
-      loop;
-    let { memories, rememberedPhaseKey, rememberedQueryKey, retrievedCache, retrievedQueryKey } = retrieval;
-    try {
-      let layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview);
-      const memoryLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
-      const queries = memoryQueries(state, memoryContext.userInput).slice(0, memoryLimits.memoryMaxQueries);
-      const queryKey = `${memoryQueryKey(state, queries)}:${this.dependencies.memoryGeneration?.() ?? ""}`;
-      let memorySearchCalls = 0;
-      const memorySearchStarted = Date.now();
-      if (queryKey !== rememberedQueryKey && !reconciliationPending(state)) {
-        const found: Readonly<LongTermMemory>[] = [];
-        for (const [index, query] of queries.entries()) {
-          memorySearchCalls += 1;
-          found.push(
-            ...(await this.dependencies.searchMemories(
-              query,
-              index === 0 || query === memoryContext.userInput ? undefined : { scope: "project" },
-            )),
-          );
-        }
-        memories = [...new Map(found.map((memory) => [memory.id, memory])).values()];
-        rememberedQueryKey = queryKey;
-      }
-      const memorySearchDurationMs = Date.now() - memorySearchStarted;
-      const workspaceSummary = await this.dependencies.getWorkspaceSummary();
-      const ordinaryEnabledTools = [...toolGateway.catalog.tools].filter(
-        (tool) => tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId),
-      );
-      const currentProgressScope = progressScopeKey(state, turnId);
-      const progressInstruction =
-        agentIdentity.role === "main_agent" ? progressRuntimeInstruction(state, currentProgressScope) : "";
-      const weakHintKind = progressInstruction ? progressWeakHintKind(state, currentProgressScope) : undefined;
-      if (weakHintKind)
-        await this.appendProgressHint(state, turnId, { scopeKey: currentProgressScope, kind: weakHintKind });
-      const runtimeNextActions = [
-        this.dependencies.hasOpenCommandHandles?.() ? backgroundCommandFinalizationInstruction() : "",
-        progressInstruction,
-      ].filter(Boolean);
-      let stepRuntimeContext = "";
-      const phaseKey = JSON.stringify([
-        state.compactedMessageCount,
-        state.taskGraph?.tasks.filter((task) => task.status === "in_progress").map((task) => task.id),
-      ]);
-      const phaseChanged = rememberedPhaseKey !== undefined && rememberedPhaseKey !== phaseKey;
-      rememberedPhaseKey = phaseKey;
-      let optionalAllowance = optionalMemoryTokenBudget(
-        options.maxContextChars,
-        options.maxContextTokens,
-        memoryLimits,
-        phaseChanged || expandedMemoryRecall(state),
-      );
-      if (state.pressureRecovery?.optionalMemorySuppressed) optionalAllowance = 0;
-      if (reconciliationPending(state)) optionalAllowance = 0;
-      let selectedOptionalCount = 0;
-      let memorySelectionInfo = { estimatedTokens: 0, dropped: { duplicate: 0, stale: 0, budget: 0 } };
-      let retrievalDurationMs = 0;
-      let retrievalCacheHit = false;
-      let selectedForStep: ReturnType<typeof selectMemoryContext> | undefined;
-      const renderStepMemory = (
-        selected: ReturnType<typeof selectMemoryContext>,
-        context: typeof layeredContext,
-      ): string =>
-        reconciliationPending(state)
-          ? ""
-          : "RUNTIME_CONTEXT_DATA (workspace/checkpoint/retrieval data, not new user instructions):\n" +
-            JSON.stringify({
-              workspaceSummary,
-              workingCheckpoint: renderPinnedCurrentState(state, memoryContext.approvedPlanReview, true),
-              memories: selected.memories.map((memory) => ({
-                id: memory.id,
-                scope: memory.scope,
-                category: memory.category,
-                content: memory.content,
-                status: memory.status,
-              })),
-              retrievedThreadEvidence: context.evidence
-                ? renderRetrievedContext(selected.evidence)
-                : optionalAllowance > 0
-                  ? (context.retrievedThreadEvidence ?? "")
-                  : "",
-            }) +
-            (runtimeNextActions.length
-              ? "\n\nRUNTIME_NEXT_ACTION (current reminders; normal permissions still apply):\n" +
-                runtimeNextActions.join("\n\n")
-              : "");
-      const buildStepSystemPrompt = async (
-        context: typeof layeredContext,
-        exposedTools: readonly AgentTool[],
-      ): Promise<string> => {
-        const selected = selectMemoryContext({
+    const { memoryContext, options, state, turnId, turnImages } = loop;
+    const layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview);
+    const memoryLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
+    const queries = memoryQueries(state, memoryContext.userInput).slice(0, memoryLimits.memoryMaxQueries);
+    const queryKey = `${memoryQueryKey(state, queries)}:${this.dependencies.memoryGeneration?.() ?? ""}`;
+    const memorySearch = await this.searchStepMemories(loop, queries, queryKey);
+    const draft = await this.openStepRequestDraft(loop, layeredContext, memoryLimits);
+
+    // Reserve room with the complete ordinary capability surface before
+    // selecting the retrieval boundary. The fixed evidence reserve affects
+    // selection only; pressure below is measured from a concrete provider
+    // request after retrieval, projection, and tool-schema serialization.
+    const selectionSystemPrompt = await this.buildStepSystemPrompt(draft);
+    const ordinaryToolDefinitions = draft.ordinaryEnabledTools.map((tool) => tool.definition);
+    const reservedSystemPromptChars =
+      selectionSystemPrompt.length +
+      32 +
+      estimateToolDefinitionsChars(ordinaryToolDefinitions) +
+      (this.dependencies.getLayeredContext ? LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS : 0) +
+      CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS;
+    const retrieval = await this.retrieveStepContext(draft, queries, queryKey);
+    const request = await this.fitStepRequest(
+      draft,
+      retrieval.contextChanged ? await this.buildStepSystemPrompt(draft) : selectionSystemPrompt,
+      reservedSystemPromptChars,
+      ordinaryToolDefinitions,
+    );
+
+    // One isolated transaction for token/character capacity and explicit requests.
+    // Also enforce the aggregate tool-output budget below the pressure trigger.
+    const compacted = await this.maintainContext(
+      state,
+      turnId,
+      turnImages,
+      memoryContext,
+      options,
+      {
+        systemPrompt: request.systemPrompt,
+        runtimeContext: draft.stepRuntimeContext,
+        tools: ordinaryToolDefinitions,
+        reservedTokens: Math.max(0, draft.optionalAllowance - draft.memorySelectionInfo.estimatedTokens),
+      },
+      request.contextUtilization >= memoryLimits.contextCompactionTriggerRatio,
+      this.remainingRequestAllowance(),
+    );
+    if (compacted.paused)
+      return {
+        kind: "return",
+        value: this.finish(
           state,
-          memories,
-          evidence: context.evidence ?? [],
-          tokenBudget: optionalAllowance,
-          limits: memoryLimits,
-          presentText: [state.workingSummary, ...state.constraints],
-        });
-        selectedForStep = selected;
-        selectedOptionalCount =
-          selected.memories.length +
-          selected.evidence.length +
-          (context.evidence === undefined && optionalAllowance > 0 && context.retrievedThreadEvidence ? 1 : 0);
-        memorySelectionInfo = { estimatedTokens: selected.estimatedTokens, dropped: selected.dropped };
-        stepRuntimeContext = renderStepMemory(selected, context);
-        return this.dependencies.buildSystemPrompt({
-          mode: effectiveMode,
-          workspaceSummary: "Current workspace and task state are provided in Runtime context after the conversation.",
-          memories: [],
-          toolNames: exposedTools.map((tool) => tool.name),
-        });
+          turnId,
+          `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History, files and pending operations are preserved. Reduce required input or use a larger supported window to resume.`,
+          "limit_reached",
+          step,
+          memoryContext,
+          undefined,
+          undefined,
+          {
+            code: "context_capacity_exhausted",
+            tool: "runtime",
+            attempts: state.compactionControl?.transaction?.attempts ?? 0,
+            recoverable: true,
+          },
+        ),
       };
+    if (compacted.committed || compacted.requests > 0) return { kind: "retry" };
+    const enabledTools = draft.ordinaryEnabledTools;
+    this.dropDuplicateStepMemory(draft, request, enabledTools);
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      stepId: `step_${step}`,
+      type: "context.memory.selected",
+      phase: "completed",
+      payload: {
+        estimatedTokens: draft.memorySelectionInfo.estimatedTokens,
+        dropped: draft.memorySelectionInfo.dropped,
+        memorySearchCalls: memorySearch.calls,
+        memorySearchDurationMs: memorySearch.durationMs,
+        retrievalCacheHit: retrieval.cacheHit,
+        optionalAllowance: draft.optionalAllowance,
+        retrievalDurationMs: retrieval.durationMs,
+        selectedOptionalCount: draft.selectedOptionalCount,
+        tokenCapacityEnabled: options.maxContextTokens !== undefined,
+      },
+    });
+    this.observeProviderContext({
+      state,
+      turnId,
+      step,
+      attempt: 1,
+      purpose: "agent_step",
+      messages: request.messages,
+      tools: enabledTools.map((tool) => tool.definition),
+      enforcedPressure: request.contextPressure,
+      enforcedUtilization: request.contextUtilization,
+      maxContextChars: options.maxContextChars,
+      actualRequest: request.requestInspection,
+    });
+    this.dependencies.onStatus?.(
+      `Step ${step}${this.requestLimit === undefined ? "" : `/${this.requestLimit}`}: requesting ${this.dependencies.provider.model}`,
+    );
+    return {
+      kind: "next",
+      outputs: {
+        stepRuntimeContext: draft.stepRuntimeContext,
+        selectedForStep: draft.selectedForStep,
+        ordinaryToolDefinitions,
+        enabledTools,
+        messages: request.messages,
+      },
+    };
+  }
 
-      // Reserve room with the complete ordinary capability surface before
-      // selecting the retrieval boundary. The fixed evidence reserve affects
-      // selection only; pressure below is measured from a concrete provider
-      // request after retrieval, projection, and tool-schema serialization.
-      const selectionSystemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools);
-      const ordinaryToolDefinitions = ordinaryEnabledTools.map((tool) => tool.definition);
-      const reservedSystemPromptChars =
-        selectionSystemPrompt.length +
-        32 +
-        estimateToolDefinitionsChars(ordinaryToolDefinitions) +
-        (this.dependencies.getLayeredContext ? LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS : 0) +
-        CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS;
-      let retrievalContextChanged = false;
-      if (this.dependencies.getLayeredContext && !reconciliationPending(state)) {
-        try {
-          const boundary = this.dependencies.contextManager.retrievalBoundary(state);
-          const cacheKey = `${queryKey}:${boundary}`;
-          const retrievalStarted = Date.now();
-          retrievalCacheHit = retrievedQueryKey === cacheKey && retrievedCache !== undefined;
-          const derived =
-            retrievedQueryKey === cacheKey && retrievedCache
-              ? retrievedCache
-              : await this.dependencies.getLayeredContext({
-                  state,
-                  query: contextRetrievalQuery(state, memoryContext.userInput),
-                  queries,
-                  beforeMessageIndex: boundary,
-                });
-          retrievedQueryKey = cacheKey;
-          retrievedCache = derived;
-          retrievalDurationMs = Date.now() - retrievalStarted;
-          layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview, derived);
-          retrievalContextChanged = true;
-        } catch {
-          // Continue with the pinned checkpoint. Retrieval diagnostics belong
-          // in durable internals, not the user-visible activity stream.
-        }
+  /** Search long-term memory unless the query set is unchanged since the last step or reconciliation is pending. */
+  private async searchStepMemories(
+    loop: StepLoop,
+    queries: readonly string[],
+    queryKey: string,
+  ): Promise<{ calls: number; durationMs: number }> {
+    const { memoryContext, retrieval, state } = loop;
+    let calls = 0;
+    const started = Date.now();
+    if (queryKey !== retrieval.rememberedQueryKey && !reconciliationPending(state)) {
+      const found: Readonly<LongTermMemory>[] = [];
+      for (const [index, query] of queries.entries()) {
+        calls += 1;
+        found.push(
+          ...(await this.dependencies.searchMemories(
+            query,
+            index === 0 || query === memoryContext.userInput ? undefined : { scope: "project" },
+          )),
+        );
       }
+      retrieval.memories = [...new Map(found.map((memory) => [memory.id, memory])).values()];
+      retrieval.rememberedQueryKey = queryKey;
+    }
+    return { calls, durationMs: Date.now() - started };
+  }
 
-      let systemPrompt = retrievalContextChanged
-        ? await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools)
-        : selectionSystemPrompt;
-      let enabledTools = ordinaryEnabledTools;
-      let messages = this.dependencies.contextManager.build({
-        systemPrompt,
-        runtimeContext: stepRuntimeContext,
+  /** Gather the step's fixed inputs (workspace summary, tools, runtime reminders) and its optional-memory allowance. */
+  private async openStepRequestDraft(
+    loop: StepLoop,
+    layeredContext: RuntimeLayeredContext,
+    memoryLimits: RuntimeLimits,
+  ): Promise<StepRequestDraft> {
+    const { agentIdentity, options, retrieval, state, toolGateway, turnId } = loop;
+    const workspaceSummary = await this.dependencies.getWorkspaceSummary();
+    const ordinaryEnabledTools = [...toolGateway.catalog.tools].filter(
+      (tool) => tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId),
+    );
+    const currentProgressScope = progressScopeKey(state, turnId);
+    const progressInstruction =
+      agentIdentity.role === "main_agent" ? progressRuntimeInstruction(state, currentProgressScope) : "";
+    const weakHintKind = progressInstruction ? progressWeakHintKind(state, currentProgressScope) : undefined;
+    if (weakHintKind)
+      await this.appendProgressHint(state, turnId, { scopeKey: currentProgressScope, kind: weakHintKind });
+    const runtimeNextActions = [
+      this.dependencies.hasOpenCommandHandles?.() ? backgroundCommandFinalizationInstruction() : "",
+      progressInstruction,
+    ].filter(Boolean);
+    const phaseKey = JSON.stringify([
+      state.compactedMessageCount,
+      state.taskGraph?.tasks.filter((task) => task.status === "in_progress").map((task) => task.id),
+    ]);
+    const phaseChanged = retrieval.rememberedPhaseKey !== undefined && retrieval.rememberedPhaseKey !== phaseKey;
+    retrieval.rememberedPhaseKey = phaseKey;
+    let optionalAllowance = optionalMemoryTokenBudget(
+      options.maxContextChars,
+      options.maxContextTokens,
+      memoryLimits,
+      phaseChanged || expandedMemoryRecall(state),
+    );
+    if (state.pressureRecovery?.optionalMemorySuppressed) optionalAllowance = 0;
+    if (reconciliationPending(state)) optionalAllowance = 0;
+    return {
+      loop,
+      memoryLimits,
+      workspaceSummary,
+      runtimeNextActions,
+      ordinaryEnabledTools,
+      layeredContext,
+      optionalAllowance,
+      selectedForStep: undefined,
+      selectedOptionalCount: 0,
+      memorySelectionInfo: { estimatedTokens: 0, dropped: { duplicate: 0, stale: 0, budget: 0 } },
+      stepRuntimeContext: "",
+    };
+  }
+
+  /** Select optional memory for the draft's current context and allowance, render its runtime context and build the system prompt. */
+  private async buildStepSystemPrompt(draft: StepRequestDraft): Promise<string> {
+    const { layeredContext: context, loop, optionalAllowance } = draft;
+    const { state } = loop;
+    const selected = selectMemoryContext({
+      state,
+      memories: loop.retrieval.memories,
+      evidence: context.evidence ?? [],
+      tokenBudget: optionalAllowance,
+      limits: draft.memoryLimits,
+      presentText: [state.workingSummary, ...state.constraints],
+    });
+    draft.selectedForStep = selected;
+    draft.selectedOptionalCount =
+      selected.memories.length +
+      selected.evidence.length +
+      (context.evidence === undefined && optionalAllowance > 0 && context.retrievedThreadEvidence ? 1 : 0);
+    draft.memorySelectionInfo = { estimatedTokens: selected.estimatedTokens, dropped: selected.dropped };
+    draft.stepRuntimeContext = renderStepMemory(draft, selected);
+    return this.dependencies.buildSystemPrompt({
+      mode: loop.effectiveMode,
+      workspaceSummary: "Current workspace and task state are provided in Runtime context after the conversation.",
+      memories: [],
+      toolNames: draft.ordinaryEnabledTools.map((tool) => tool.name),
+    });
+  }
+
+  /** Layered retrieval up to the context boundary, cached by query and boundary; failures keep the pinned checkpoint. */
+  private async retrieveStepContext(
+    draft: StepRequestDraft,
+    queries: readonly string[],
+    queryKey: string,
+  ): Promise<{ contextChanged: boolean; cacheHit: boolean; durationMs: number }> {
+    const { memoryContext, retrieval, state } = draft.loop;
+    const outcome = { contextChanged: false, cacheHit: false, durationMs: 0 };
+    if (!this.dependencies.getLayeredContext || reconciliationPending(state)) return outcome;
+    try {
+      const boundary = this.dependencies.contextManager.retrievalBoundary(state);
+      const cacheKey = `${queryKey}:${boundary}`;
+      const retrievalStarted = Date.now();
+      outcome.cacheHit = retrieval.retrievedQueryKey === cacheKey && retrieval.retrievedCache !== undefined;
+      const derived =
+        retrieval.retrievedQueryKey === cacheKey && retrieval.retrievedCache
+          ? retrieval.retrievedCache
+          : await this.dependencies.getLayeredContext({
+              state,
+              query: contextRetrievalQuery(state, memoryContext.userInput),
+              queries,
+              beforeMessageIndex: boundary,
+            });
+      retrieval.retrievedQueryKey = cacheKey;
+      retrieval.retrievedCache = derived;
+      outcome.durationMs = Date.now() - retrievalStarted;
+      draft.layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview, derived);
+      outcome.contextChanged = true;
+    } catch {
+      // Continue with the pinned checkpoint. Retrieval diagnostics belong
+      // in durable internals, not the user-visible activity stream.
+    }
+    return outcome;
+  }
+
+  /** Build and measure the request, gate optional memory on pressure, and drop optional memory entirely if it would force eviction. */
+  private async fitStepRequest(
+    draft: StepRequestDraft,
+    systemPrompt: string,
+    reservedSystemPromptChars: number,
+    ordinaryToolDefinitions: ToolDefinition[],
+  ): Promise<StepRequestFit> {
+    const { options, state, turnId } = draft.loop;
+    const measure = (prompt: string): StepRequestFit => {
+      const messages = this.dependencies.contextManager.build({
+        systemPrompt: prompt,
+        runtimeContext: draft.stepRuntimeContext,
         state,
         maxContextChars: options.maxContextChars,
         reservedSystemPromptChars,
       });
-      let requestInspection = this.dependencies.contextManager.inspectProviderRequest({
+      const requestInspection = this.dependencies.contextManager.inspectProviderRequest({
         state,
         maxContextChars: options.maxContextChars,
         messages,
         tools: ordinaryToolDefinitions,
       });
-      let contextPressure = requestInspection.pressure;
-      let contextUtilization = requestInspection.utilization;
-      const setMemoryGate = async (suppressed: boolean) => {
-        if (Boolean(state.pressureRecovery?.optionalMemorySuppressed) === suppressed) return;
-        const payload = { suppressed };
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
-          turnId,
-          type: "context.memory.gated",
-          phase: "completed",
-          payload,
-        });
-        foldMemoryGate(state, payload);
+      return {
+        systemPrompt: prompt,
+        messages,
+        requestInspection,
+        contextPressure: requestInspection.pressure,
+        contextUtilization: requestInspection.utilization,
       };
-      if (contextUtilization >= memoryLimits.contextReferenceTriggerRatio) await setMemoryGate(true);
-      else if (contextUtilization <= memoryLimits.contextMemoryResumeRatio) await setMemoryGate(false);
-
-      // Optional recall must not force eviction of the live working chain.
-      // First remove optional memory as whole records, then reassess pressure.
-      if (selectedOptionalCount > 0 && contextPressure !== "normal") {
-        optionalAllowance = 0;
-        systemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools);
-        messages = this.dependencies.contextManager.build({
-          systemPrompt,
-          runtimeContext: stepRuntimeContext,
-          state,
-          maxContextChars: options.maxContextChars,
-          reservedSystemPromptChars,
-        });
-        requestInspection = this.dependencies.contextManager.inspectProviderRequest({
-          state,
-          maxContextChars: options.maxContextChars,
-          messages,
-          tools: ordinaryToolDefinitions,
-        });
-        contextPressure = requestInspection.pressure;
-        contextUtilization = requestInspection.utilization;
-      }
-
-      // One isolated transaction for token/character capacity and explicit requests.
-      {
-        // Also enforce the aggregate tool-output budget below the pressure trigger.
-        const compacted = await this.maintainContext(
-          state,
-          turnId,
-          turnImages,
-          memoryContext,
-          options,
-          {
-            systemPrompt,
-            runtimeContext: stepRuntimeContext,
-            tools: ordinaryToolDefinitions,
-            reservedTokens: Math.max(0, optionalAllowance - memorySelectionInfo.estimatedTokens),
-          },
-          contextUtilization >= memoryLimits.contextCompactionTriggerRatio,
-          this.remainingRequestAllowance(),
-        );
-        if (compacted.paused)
-          return {
-            kind: "return",
-            value: this.finish(
-              state,
-              turnId,
-              `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History, files and pending operations are preserved. Reduce required input or use a larger supported window to resume.`,
-              "limit_reached",
-              step,
-              memoryContext,
-              undefined,
-              undefined,
-              {
-                code: "context_capacity_exhausted",
-                tool: "runtime",
-                attempts: state.compactionControl?.transaction?.attempts ?? 0,
-                recoverable: true,
-              },
-            ),
-          };
-        if (compacted.committed || compacted.requests > 0) return { kind: "retry" };
-      }
-      // Remove only duplicates backed by the FINAL visible message set. Keep
-      // all other messages byte-identical: no re-selection can evict their proof.
-      if (selectedForStep && selectedOptionalCount > 0) {
-        const subset = selectMemoryContext({
-          state,
-          memories: selectedForStep.memories,
-          evidence: selectedForStep.evidence,
-          tokenBudget: optionalAllowance,
-          limits: memoryLimits,
-          presentText: [
-            state.workingSummary,
-            ...state.constraints,
-            ...visibleMemoryText(messages.filter((message) => message.content !== stepRuntimeContext)),
-          ],
-        });
-        const reducedContext = renderStepMemory(subset, layeredContext);
-        if (reducedContext.length <= stepRuntimeContext.length) {
-          messages = messages.map((message) =>
-            message.role === "user" && message.content === stepRuntimeContext
-              ? { ...message, content: reducedContext }
-              : message,
-          );
-          stepRuntimeContext = reducedContext;
-          memorySelectionInfo = {
-            estimatedTokens: subset.estimatedTokens,
-            dropped: {
-              duplicate: selectedForStep.dropped.duplicate + subset.dropped.duplicate,
-              stale: selectedForStep.dropped.stale + subset.dropped.stale,
-              budget: selectedForStep.dropped.budget + subset.dropped.budget,
-            },
-          };
-          selectedOptionalCount -=
-            selectedForStep.memories.length +
-            selectedForStep.evidence.length -
-            subset.memories.length -
-            subset.evidence.length;
-          selectedForStep = subset;
-          requestInspection = this.dependencies.contextManager.inspectProviderRequest({
-            state,
-            maxContextChars: options.maxContextChars,
-            messages,
-            tools: enabledTools.map((tool) => tool.definition),
-          });
-        }
-      }
+    };
+    const fit = measure(systemPrompt);
+    const setMemoryGate = async (suppressed: boolean) => {
+      if (Boolean(state.pressureRecovery?.optionalMemorySuppressed) === suppressed) return;
+      const payload = { suppressed };
       await this.dependencies.appendEvent({
         threadId: state.threadId,
         turnId,
-        stepId: `step_${step}`,
-        type: "context.memory.selected",
+        type: "context.memory.gated",
         phase: "completed",
-        payload: {
-          estimatedTokens: memorySelectionInfo.estimatedTokens,
-          dropped: memorySelectionInfo.dropped,
-          memorySearchCalls,
-          memorySearchDurationMs,
-          retrievalCacheHit,
-          optionalAllowance,
-          retrievalDurationMs,
-          selectedOptionalCount,
-          tokenCapacityEnabled: options.maxContextTokens !== undefined,
-        },
+        payload,
       });
-      this.observeProviderContext({
-        state,
-        turnId,
-        step,
-        attempt: 1,
-        purpose: "agent_step",
-        messages,
-        tools: enabledTools.map((tool) => tool.definition),
-        enforcedPressure: contextPressure,
-        enforcedUtilization: contextUtilization,
-        maxContextChars: options.maxContextChars,
-        actualRequest: requestInspection,
-      });
-      this.dependencies.onStatus?.(
-        `Step ${step}${this.requestLimit === undefined ? "" : `/${this.requestLimit}`}: requesting ${this.dependencies.provider.model}`,
-      );
-      return {
-        kind: "next",
-        outputs: { stepRuntimeContext, selectedForStep, ordinaryToolDefinitions, enabledTools, messages },
-      };
-    } finally {
-      retrieval.memories = memories;
-      retrieval.rememberedPhaseKey = rememberedPhaseKey;
-      retrieval.rememberedQueryKey = rememberedQueryKey;
-      retrieval.retrievedCache = retrievedCache;
-      retrieval.retrievedQueryKey = retrievedQueryKey;
+      foldMemoryGate(state, payload);
+    };
+    if (fit.contextUtilization >= draft.memoryLimits.contextReferenceTriggerRatio) await setMemoryGate(true);
+    else if (fit.contextUtilization <= draft.memoryLimits.contextMemoryResumeRatio) await setMemoryGate(false);
+
+    // Optional recall must not force eviction of the live working chain.
+    // First remove optional memory as whole records, then reassess pressure.
+    if (draft.selectedOptionalCount > 0 && fit.contextPressure !== "normal") {
+      draft.optionalAllowance = 0;
+      return measure(await this.buildStepSystemPrompt(draft));
     }
+    return fit;
+  }
+
+  /**
+   * Remove only duplicates backed by the FINAL visible message set. Keep all other messages byte-identical: no
+   * re-selection can evict their proof. The enforced pressure stays the one measured before this reduction.
+   */
+  private dropDuplicateStepMemory(draft: StepRequestDraft, fit: StepRequestFit, enabledTools: readonly AgentTool[]) {
+    const { options, state } = draft.loop;
+    const selectedForStep = draft.selectedForStep;
+    if (!selectedForStep || draft.selectedOptionalCount === 0) return;
+    const stepRuntimeContext = draft.stepRuntimeContext;
+    const subset = selectMemoryContext({
+      state,
+      memories: selectedForStep.memories,
+      evidence: selectedForStep.evidence,
+      tokenBudget: draft.optionalAllowance,
+      limits: draft.memoryLimits,
+      presentText: [
+        state.workingSummary,
+        ...state.constraints,
+        ...visibleMemoryText(fit.messages.filter((message) => message.content !== stepRuntimeContext)),
+      ],
+    });
+    const reducedContext = renderStepMemory(draft, subset);
+    if (reducedContext.length > stepRuntimeContext.length) return;
+    fit.messages = fit.messages.map((message) =>
+      message.role === "user" && message.content === stepRuntimeContext
+        ? { ...message, content: reducedContext }
+        : message,
+    );
+    draft.stepRuntimeContext = reducedContext;
+    draft.memorySelectionInfo = {
+      estimatedTokens: subset.estimatedTokens,
+      dropped: {
+        duplicate: selectedForStep.dropped.duplicate + subset.dropped.duplicate,
+        stale: selectedForStep.dropped.stale + subset.dropped.stale,
+        budget: selectedForStep.dropped.budget + subset.dropped.budget,
+      },
+    };
+    draft.selectedOptionalCount -=
+      selectedForStep.memories.length +
+      selectedForStep.evidence.length -
+      subset.memories.length -
+      subset.evidence.length;
+    draft.selectedForStep = subset;
+    fit.requestInspection = this.dependencies.contextManager.inspectProviderRequest({
+      state,
+      maxContextChars: options.maxContextChars,
+      messages: fit.messages,
+      tools: enabledTools.map((tool) => tool.definition),
+    });
   }
 
   /** Act on what a tool batch produced: environment faults, protocol exhaustion, rejected finishes, child reports, plan proposals and new image attachments. */

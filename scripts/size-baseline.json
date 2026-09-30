@@ -9,7 +9,6 @@
   "src/command/runtime.ts#CommandRuntime.executeNormalizedCommand": 623,
   "src/memory/memory-manager.ts#MemoryManager.commitModelMutations": 302,
   "src/review/application.ts#runWorkspaceReviewAttempt": 420,
-  "src/runtime/agent.ts": 4149,
-  "src/runtime/agent.ts#AgentRuntime.prepareStepRequest": 340,
+  "src/runtime/agent.ts": 4114,
   "src/threads/event-replay.ts#recoverFromEvents": 306
 }
