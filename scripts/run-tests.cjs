@@ -5,6 +5,11 @@ const path = require("node:path");
 const os = require("node:os");
 const { pathToFileURL } = require("node:url");
 
+// Tests must not inherit a host VS Code terminal's EASY CODE menu bridge. With these set, every
+// Terminal under test connects to the real extension and defers its modal overlays until the host
+// acknowledges, which breaks synchronous UI assertions. Bridge tests pass their own environment.
+for (const name of ["EASY_CODE_VSCODE_BRIDGE_ENDPOINT", "EASY_CODE_VSCODE_BRIDGE_TOKEN"]) delete process.env[name];
+
 async function main() {
   const projectRoot = path.resolve(__dirname, "..");
   const testsDir = path.resolve(__dirname, "..", "dist-test", "tests");
