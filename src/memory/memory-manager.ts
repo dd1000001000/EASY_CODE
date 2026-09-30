@@ -283,7 +283,7 @@ function appendEvidence(existing: string | null, entry: MemoryAuditEntry): strin
 }
 
 function modelEvidence(
-  source: { readonly threadId: string; readonly turnId: string; readonly reason: string },
+  source: ModelMemoryEvidence,
   action: MemoryAuditAction,
   timestamp: string,
   options: {
@@ -331,6 +331,49 @@ function ftsExpression(query: string): string | undefined {
  * Workspace-scoped long-term memory. Durable mutations are explicit model
  * decisions with thread/turn evidence; revision and forgetting retain history.
  */
+/** One transaction of model memory mutations: the turn it belongs to, its prepared statements and what it changed. */
+interface ModelMutationBatch {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly ownerId: (scope: LongTermMemoryScope) => string;
+  readonly statements: ReturnType<typeof prepareMutationStatements>;
+  readonly preparedByContent: ReadonlyMap<string, PreparedMemoryEmbedding> | undefined;
+  readonly memoryIds: string[];
+  readonly affectedScopes: Set<string>;
+  applied: number;
+}
+
+/** The statements commitModelMutations runs inside its transaction. */
+function prepareMutationStatements(db: EasyCodeStorage["db"]) {
+  return {
+    selectById: db.prepare<[string, string], MemoryRow>("SELECT * FROM memories WHERE workspace_id = ? AND id = ?"),
+    selectByContent: db.prepare<[string, string], MemoryRow>(
+      "SELECT * FROM memories WHERE workspace_id = ? AND normalized_content = ?",
+    ),
+    insert: db.prepare(
+      `INSERT INTO memories(
+         id, workspace_id, scope, category, content, normalized_content,
+         status, evidence, source_thread_id, source_turn_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    updateActive: db.prepare(
+      `UPDATE memories
+          SET category = ?, content = ?, normalized_content = ?,
+              status = ?, evidence = ?, source_thread_id = ?,
+              source_turn_id = ?, updated_at = ?
+        WHERE workspace_id = ? AND id = ?`,
+    ),
+    updateStatus: db.prepare(
+      `UPDATE memories SET status = ?, evidence = ?, updated_at = ?
+        WHERE workspace_id = ? AND id = ?`,
+    ),
+    updateScope: db.prepare(
+      "UPDATE memories SET workspace_id = ?, scope = ?, evidence = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
+    ),
+    confirmRevision: db.prepare("UPDATE memories SET last_accessed_at = ? WHERE workspace_id = ? AND id = ?"),
+  };
+}
+
 export class MemoryManager {
   readonly evidenceStore: EvidenceStore;
   readonly limits: Readonly<RuntimeLimits>;
@@ -862,8 +905,6 @@ export class MemoryManager {
     const projectId = assertWorkspaceId(
       input.workspaceId ?? (input.workspaceRoot ? projectMemoryIdFromRoot(input.workspaceRoot) : evidenceWorkspaceId),
     );
-    const ownerId = (scope: LongTermMemoryScope): string =>
-      scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : projectId;
     const threadId = assertContextId(input.threadId, "threadId");
     const turnId = assertContextId(input.turnId, "turnId");
     if (input.outcome !== "success" && input.outcome !== "planned") {
@@ -877,278 +918,273 @@ export class MemoryManager {
       return Object.freeze({ applied: 0, memoryIds: [] });
     }
 
-    const selectById = this.storage.db.prepare<[string, string], MemoryRow>(
-      "SELECT * FROM memories WHERE workspace_id = ? AND id = ?",
-    );
-    const selectByContent = this.storage.db.prepare<[string, string], MemoryRow>(
-      "SELECT * FROM memories WHERE workspace_id = ? AND normalized_content = ?",
-    );
-    const insert = this.storage.db.prepare(
-      `INSERT INTO memories(
-         id, workspace_id, scope, category, content, normalized_content,
-         status, evidence, source_thread_id, source_turn_id, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    const updateActive = this.storage.db.prepare(
-      `UPDATE memories
-          SET category = ?, content = ?, normalized_content = ?,
-              status = ?, evidence = ?, source_thread_id = ?,
-              source_turn_id = ?, updated_at = ?
-        WHERE workspace_id = ? AND id = ?`,
-    );
-    const updateStatus = this.storage.db.prepare(
-      `UPDATE memories SET status = ?, evidence = ?, updated_at = ?
-        WHERE workspace_id = ? AND id = ?`,
-    );
-    const updateScope = this.storage.db.prepare(
-      "UPDATE memories SET workspace_id = ?, scope = ?, evidence = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
-    );
-    const confirmRevision = this.storage.db.prepare(
-      "UPDATE memories SET last_accessed_at = ? WHERE workspace_id = ? AND id = ?",
-    );
-    const memoryIds: string[] = [];
-    let applied = 0;
-    const affectedScopes = new Set<string>();
-
-    const evidenceSource = (reason: string): ModelMemoryEvidence => ({
+    const batch: ModelMutationBatch = {
       threadId,
       turnId,
-      reason,
-    });
-    const recordId = (memoryId: string): void => {
-      if (!memoryIds.includes(memoryId)) memoryIds.push(memoryId);
-      this.appendRevision(memoryId, threadId, turnId);
+      ownerId: (scope) => (scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : projectId),
+      statements: prepareMutationStatements(this.storage.db),
+      preparedByContent,
+      memoryIds: [],
+      affectedScopes: new Set<string>(),
+      applied: 0,
     };
-    const storeEmbedding = (memoryId: string, content: string, updatedAt: string): void => {
-      const prepared = preparedByContent?.get(content);
-      const writePrepared = this.vectorIndex?.writePreparedEmbedding;
-      if (!prepared || !writePrepared) return;
-      try {
-        writePrepared.call(this.vectorIndex, memoryId, prepared, updatedAt);
-      } catch (error) {
-        // Embeddings are a rebuildable projection. A derived-index failure
-        // must not roll back a validated durable memory mutation.
-        this.reportVectorError(error);
-      }
-    };
-
     this.storage.db.transaction(() => {
       for (const mutation of input.mutations) {
         const now = new Date().toISOString();
-        if (mutation.action === "remember") {
-          const scope = mutation.scope ?? "project";
-          const workspaceId = ownerId(scope);
-          const category = assertCategory(mutation.category);
-          const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
-          const normalized = normalizeContent(content);
-          const reason = memoryReason(mutation.reason);
-          const existing = selectByContent.get(workspaceId, normalized);
-          if (existing?.status === "superseded") {
-            throw new Error(`Memory ${existing.id} is superseded; revise its active replacement instead`);
-          }
-          if (existing?.status === "active" && existing.category === category) {
-            // Exact normalized content that is already active is not a durable
-            // state change. Record its use without rewriting the memory,
-            // audit trail, or embedding.
-            this.recordUseInTransaction(threadId, turnId, [existing.id]);
-            continue;
-          }
-          if (existing) {
-            affectedScopes.add(workspaceId);
-            const evidence = appendEvidence(
-              existing.evidence,
-              modelEvidence(evidenceSource(reason), "upsert", now, {
-                previous: snapshot(existing),
-              }),
-            );
-            updateActive.run(
-              category,
-              content,
-              normalized,
-              "active",
-              evidence,
-              threadId,
-              turnId,
-              now,
-              workspaceId,
-              existing.id,
-            );
-            confirmRevision.run(now, workspaceId, existing.id);
-            storeEmbedding(existing.id, content, now);
-            if (!selectById.get(workspaceId, existing.id)) {
-              throw new Error("Memory upsert verification failed");
-            }
-            recordId(existing.id);
-            applied += 1;
-            continue;
-          }
-
-          const memoryId = createId("memory");
-          const evidence = appendEvidence(null, modelEvidence(evidenceSource(reason), "remember", now));
-          insert.run(
-            memoryId,
-            workspaceId,
-            scope,
-            category,
-            content,
-            normalized,
-            "active",
-            evidence,
-            threadId,
-            turnId,
-            now,
-            now,
-          );
-          storeEmbedding(memoryId, content, now);
-          if (!selectById.get(workspaceId, memoryId)) {
-            throw new Error("Memory creation verification failed");
-          }
-          recordId(memoryId);
-          affectedScopes.add(workspaceId);
-          applied += 1;
-          continue;
-        }
-
-        const memoryId = assertMemoryId(mutation.memoryId);
-        const sourceScope =
-          mutation.action === "move"
-            ? mutation.scope === "global"
-              ? "project"
-              : "global"
-            : (mutation.scope ?? "project");
-        const workspaceId = ownerId(sourceScope);
-        const existing = selectById.get(workspaceId, memoryId);
-        if (!existing) {
-          throw new Error("Long-term memory was not found in this workspace");
-        }
-        affectedScopes.add(workspaceId);
-
-        if (mutation.action === "move") {
-          const targetId = ownerId(mutation.scope);
-          if (selectByContent.get(targetId, existing.normalized_content)) {
-            throw new Error("Target scope already contains this memory; revise the existing entry instead");
-          }
-          const reason = memoryReason(mutation.reason);
-          const evidence = appendEvidence(
-            existing.evidence,
-            modelEvidence(evidenceSource(reason), "move", now, { previous: snapshot(existing) }),
-          );
-          updateScope.run(targetId, mutation.scope, evidence, now, workspaceId, memoryId);
-          recordId(memoryId);
-          affectedScopes.add(workspaceId);
-          affectedScopes.add(targetId);
-          applied += 1;
-          continue;
-        }
-
-        if (mutation.action === "forget") {
-          if (existing.status === "expired" || existing.status === "superseded") {
-            continue;
-          }
-          const reason = memoryReason(mutation.reason);
-          const evidence = appendEvidence(
-            existing.evidence,
-            modelEvidence(evidenceSource(reason), "forget", now, {
-              previous: snapshot(existing),
-            }),
-          );
-          updateStatus.run("expired", evidence, now, workspaceId, existing.id);
-          const expired = selectById.get(workspaceId, existing.id);
-          if (expired?.status !== "expired") {
-            throw new Error("Memory expiration verification failed");
-          }
-          recordId(existing.id);
-          applied += 1;
-          continue;
-        }
-
-        if (existing.status !== "active" && existing.status !== "needs_verification") {
-          throw new Error(`Only active memories can be revised; current status is ${existing.status}`);
-        }
-        const category = assertCategory(mutation.category);
-        const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
-        const normalized = normalizeContent(content);
-        const reason = memoryReason(mutation.reason);
-        const conflict = selectByContent.get(workspaceId, normalized);
-        if (conflict && conflict.id !== existing.id) {
-          throw new Error(`Replacement content already belongs to memory ${conflict.id}`);
-        }
-
-        if (normalized === existing.normalized_content) {
-          const evidence = appendEvidence(
-            existing.evidence,
-            modelEvidence(evidenceSource(reason), "revise", now, {
-              previous: snapshot(existing),
-            }),
-          );
-          updateActive.run(
-            category,
-            content,
-            normalized,
-            "active",
-            evidence,
-            threadId,
-            turnId,
-            now,
-            workspaceId,
-            existing.id,
-          );
-          confirmRevision.run(now, workspaceId, existing.id);
-          storeEmbedding(existing.id, content, now);
-          if (!selectById.get(workspaceId, existing.id)) {
-            throw new Error("Memory revision verification failed");
-          }
-          recordId(existing.id);
-          applied += 1;
-          continue;
-        }
-
-        const replacementId = createId("memory");
-        const oldEvidence = appendEvidence(
-          existing.evidence,
-          modelEvidence(evidenceSource(reason), "supersede", now, {
-            relatedMemoryId: replacementId,
-            previous: snapshot(existing),
-          }),
-        );
-        updateStatus.run("superseded", oldEvidence, now, workspaceId, existing.id);
-        this.appendRevision(existing.id, threadId, turnId);
-        const newEvidence = appendEvidence(
-          null,
-          modelEvidence(evidenceSource(reason), "revise", now, {
-            relatedMemoryId: existing.id,
-          }),
-        );
-        insert.run(
-          replacementId,
-          workspaceId,
-          existing.scope,
-          category,
-          content,
-          normalized,
-          "active",
-          newEvidence,
-          threadId,
-          turnId,
-          now,
-          now,
-        );
-        storeEmbedding(replacementId, content, now);
-        const superseded = selectById.get(workspaceId, existing.id);
-        const replacement = selectById.get(workspaceId, replacementId);
-        if (superseded?.status !== "superseded" || !replacement) {
-          throw new Error("Memory supersession verification failed");
-        }
-        recordId(replacementId);
-        applied += 1;
+        if (mutation.action === "remember") this.rememberMemory(batch, mutation, now);
+        else this.changeMemory(batch, mutation, now);
       }
       onCommitted?.();
     })();
 
-    if (applied > 0) {
-      for (const scopeId of affectedScopes) this.vectorIndex?.invalidate?.(scopeId);
+    if (batch.applied > 0) {
+      for (const scopeId of batch.affectedScopes) this.vectorIndex?.invalidate?.(scopeId);
     }
 
-    return Object.freeze({ applied, memoryIds: [...memoryIds] });
+    return Object.freeze({ applied: batch.applied, memoryIds: [...batch.memoryIds] });
+  }
+
+  /** Count a mutation of this memory and record the revision for the turn. */
+  private recordMutation(batch: ModelMutationBatch, memoryId: string): void {
+    if (!batch.memoryIds.includes(memoryId)) batch.memoryIds.push(memoryId);
+    this.appendRevision(memoryId, batch.threadId, batch.turnId);
+    batch.applied += 1;
+  }
+
+  private storeMutationEmbedding(
+    batch: ModelMutationBatch,
+    memoryId: string,
+    content: string,
+    updatedAt: string,
+  ): void {
+    const prepared = batch.preparedByContent?.get(content);
+    const writePrepared = this.vectorIndex?.writePreparedEmbedding;
+    if (!prepared || !writePrepared) return;
+    try {
+      writePrepared.call(this.vectorIndex, memoryId, prepared, updatedAt);
+    } catch (error) {
+      // Embeddings are a rebuildable projection. A derived-index failure
+      // must not roll back a validated durable memory mutation.
+      this.reportVectorError(error);
+    }
+  }
+
+  /** Remember new content, or reactivate the memory that already holds it. */
+  private rememberMemory(
+    batch: ModelMutationBatch,
+    mutation: Extract<MemoryMutationRequest, { action: "remember" }>,
+    now: string,
+  ): void {
+    const { statements, threadId, turnId } = batch;
+    const scope = mutation.scope ?? "project";
+    const workspaceId = batch.ownerId(scope);
+    const category = assertCategory(mutation.category);
+    const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
+    const normalized = normalizeContent(content);
+    const reason = memoryReason(mutation.reason);
+    const existing = statements.selectByContent.get(workspaceId, normalized);
+    if (existing?.status === "superseded") {
+      throw new Error(`Memory ${existing.id} is superseded; revise its active replacement instead`);
+    }
+    if (existing?.status === "active" && existing.category === category) {
+      // Exact normalized content that is already active is not a durable
+      // state change. Record its use without rewriting the memory,
+      // audit trail, or embedding.
+      this.recordUseInTransaction(threadId, turnId, [existing.id]);
+      return;
+    }
+    if (existing) {
+      batch.affectedScopes.add(workspaceId);
+      const evidence = appendEvidence(
+        existing.evidence,
+        modelEvidence({ threadId, turnId, reason }, "upsert", now, {
+          previous: snapshot(existing),
+        }),
+      );
+      statements.updateActive.run(
+        category,
+        content,
+        normalized,
+        "active",
+        evidence,
+        threadId,
+        turnId,
+        now,
+        workspaceId,
+        existing.id,
+      );
+      statements.confirmRevision.run(now, workspaceId, existing.id);
+      this.storeMutationEmbedding(batch, existing.id, content, now);
+      if (!statements.selectById.get(workspaceId, existing.id)) {
+        throw new Error("Memory upsert verification failed");
+      }
+      this.recordMutation(batch, existing.id);
+      return;
+    }
+
+    const memoryId = createId("memory");
+    const evidence = appendEvidence(null, modelEvidence({ threadId, turnId, reason }, "remember", now));
+    statements.insert.run(
+      memoryId,
+      workspaceId,
+      scope,
+      category,
+      content,
+      normalized,
+      "active",
+      evidence,
+      threadId,
+      turnId,
+      now,
+      now,
+    );
+    this.storeMutationEmbedding(batch, memoryId, content, now);
+    if (!statements.selectById.get(workspaceId, memoryId)) {
+      throw new Error("Memory creation verification failed");
+    }
+    batch.affectedScopes.add(workspaceId);
+    this.recordMutation(batch, memoryId);
+  }
+
+  /** Move, forget or revise an existing memory found in its source scope. */
+  private changeMemory(
+    batch: ModelMutationBatch,
+    mutation: Exclude<MemoryMutationRequest, { action: "remember" }>,
+    now: string,
+  ): void {
+    const { statements, threadId, turnId } = batch;
+    const memoryId = assertMemoryId(mutation.memoryId);
+    const sourceScope =
+      mutation.action === "move" ? (mutation.scope === "global" ? "project" : "global") : (mutation.scope ?? "project");
+    const workspaceId = batch.ownerId(sourceScope);
+    const existing = statements.selectById.get(workspaceId, memoryId);
+    if (!existing) {
+      throw new Error("Long-term memory was not found in this workspace");
+    }
+    batch.affectedScopes.add(workspaceId);
+
+    if (mutation.action === "move") {
+      const targetId = batch.ownerId(mutation.scope);
+      if (statements.selectByContent.get(targetId, existing.normalized_content)) {
+        throw new Error("Target scope already contains this memory; revise the existing entry instead");
+      }
+      const reason = memoryReason(mutation.reason);
+      const evidence = appendEvidence(
+        existing.evidence,
+        modelEvidence({ threadId, turnId, reason }, "move", now, { previous: snapshot(existing) }),
+      );
+      statements.updateScope.run(targetId, mutation.scope, evidence, now, workspaceId, memoryId);
+      batch.affectedScopes.add(workspaceId);
+      batch.affectedScopes.add(targetId);
+      this.recordMutation(batch, memoryId);
+      return;
+    }
+
+    if (mutation.action === "forget") {
+      if (existing.status === "expired" || existing.status === "superseded") return;
+      const reason = memoryReason(mutation.reason);
+      const evidence = appendEvidence(
+        existing.evidence,
+        modelEvidence({ threadId, turnId, reason }, "forget", now, {
+          previous: snapshot(existing),
+        }),
+      );
+      statements.updateStatus.run("expired", evidence, now, workspaceId, existing.id);
+      const expired = statements.selectById.get(workspaceId, existing.id);
+      if (expired?.status !== "expired") {
+        throw new Error("Memory expiration verification failed");
+      }
+      this.recordMutation(batch, existing.id);
+      return;
+    }
+    this.reviseMemory(batch, mutation, existing, workspaceId, now);
+  }
+
+  /** Revise an active memory in place when its normalized content is unchanged; otherwise supersede it with a replacement. */
+  private reviseMemory(
+    batch: ModelMutationBatch,
+    mutation: Extract<MemoryMutationRequest, { action: "revise" }>,
+    existing: MemoryRow,
+    workspaceId: string,
+    now: string,
+  ): void {
+    const { statements, threadId, turnId } = batch;
+    if (existing.status !== "active" && existing.status !== "needs_verification") {
+      throw new Error(`Only active memories can be revised; current status is ${existing.status}`);
+    }
+    const category = assertCategory(mutation.category);
+    const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
+    const normalized = normalizeContent(content);
+    const reason = memoryReason(mutation.reason);
+    const conflict = statements.selectByContent.get(workspaceId, normalized);
+    if (conflict && conflict.id !== existing.id) {
+      throw new Error(`Replacement content already belongs to memory ${conflict.id}`);
+    }
+
+    if (normalized === existing.normalized_content) {
+      const evidence = appendEvidence(
+        existing.evidence,
+        modelEvidence({ threadId, turnId, reason }, "revise", now, {
+          previous: snapshot(existing),
+        }),
+      );
+      statements.updateActive.run(
+        category,
+        content,
+        normalized,
+        "active",
+        evidence,
+        threadId,
+        turnId,
+        now,
+        workspaceId,
+        existing.id,
+      );
+      statements.confirmRevision.run(now, workspaceId, existing.id);
+      this.storeMutationEmbedding(batch, existing.id, content, now);
+      if (!statements.selectById.get(workspaceId, existing.id)) {
+        throw new Error("Memory revision verification failed");
+      }
+      this.recordMutation(batch, existing.id);
+      return;
+    }
+
+    const replacementId = createId("memory");
+    const oldEvidence = appendEvidence(
+      existing.evidence,
+      modelEvidence({ threadId, turnId, reason }, "supersede", now, {
+        relatedMemoryId: replacementId,
+        previous: snapshot(existing),
+      }),
+    );
+    statements.updateStatus.run("superseded", oldEvidence, now, workspaceId, existing.id);
+    this.appendRevision(existing.id, threadId, turnId);
+    const newEvidence = appendEvidence(
+      null,
+      modelEvidence({ threadId, turnId, reason }, "revise", now, {
+        relatedMemoryId: existing.id,
+      }),
+    );
+    statements.insert.run(
+      replacementId,
+      workspaceId,
+      existing.scope,
+      category,
+      content,
+      normalized,
+      "active",
+      newEvidence,
+      threadId,
+      turnId,
+      now,
+      now,
+    );
+    this.storeMutationEmbedding(batch, replacementId, content, now);
+    const superseded = statements.selectById.get(workspaceId, existing.id);
+    const replacement = statements.selectById.get(workspaceId, replacementId);
+    if (superseded?.status !== "superseded" || !replacement) {
+      throw new Error("Memory supersession verification failed");
+    }
+    this.recordMutation(batch, replacementId);
   }
 }
