@@ -21,21 +21,11 @@ import {
   validateProviderImageAttachments,
 } from "../models/catalog.js";
 import { thinkingEffortBufferedTimeoutMs, thinkingEffortStreamIdleTimeoutMs } from "../models/thinking.js";
-import {
-  ProviderError,
-  redactImageDataUrls,
-  redactSensitiveText,
-  streamProviderError,
-  type ProviderProgress,
-} from "./errors.js";
-import {
-  describeTransportTimeout,
-  HttpTransportError,
-  postJsonWithNode,
-  type JsonPostResponse,
-} from "./http-transport.js";
+import { ProviderError, redactImageDataUrls, streamProviderError, type ProviderProgress } from "./errors.js";
+import { postJsonWithNode, type JsonPostResponse } from "./http-transport.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
-import { ServerSentEventDecoder, SseDecodingError, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
+import { abortableSleep, retryableStatus, runWithRetries } from "./retry-loop.js";
+import { ServerSentEventDecoder, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS = 600;
@@ -153,89 +143,88 @@ export class ResponsesProvider implements ModelProvider {
     if (!Number.isSafeInteger(requestedRetries) || requestedRetries < 0 || requestedRetries > 10)
       throw this.error("Request maxRetries must be between 0 and 10", "invalid_request");
     const maxRetries = Math.min(this.config.maxRetries, requestedRetries);
-    let lastError: ProviderError | undefined;
-    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      let streamStarted = false;
-      let streamSequence = 0;
-      const streamId = `${this.name}-${randomUUID()}`;
-      const decoder = new ServerSentEventDecoder();
-      const streamState: ResponsesStreamState = {
-        content: "",
-        reasoning: "",
-        done: false,
-        toolItems: new Map(),
-      };
-      const emit = (event: StreamEventPayload): void => {
-        if (!request.onStreamEvent) return;
-        try {
-          request.onStreamEvent({ ...event, streamId, sequence: ++streamSequence } as ProviderStreamEvent);
-        } catch {
-          // Presentation observers are isolated from provider I/O.
-        }
-      };
-      const consume = (event: ServerSentEvent): boolean => this.consumeStreamEvent(streamState, event, emit);
-      try {
-        const response = await (this.runtime.transport ?? postJsonWithNode)({
-          url: this.endpoint,
-          headers: {
-            authorization: `Bearer ${this.config.apiKey}`,
-            accept: streamResponse ? "text/event-stream" : "application/json",
-            "content-type": "application/json",
-            "user-agent": "easy-code-agent/0.1",
+    return runWithRetries(
+      {
+        provider: this.name,
+        apiKey: this.config.apiKey,
+        maxRetries,
+        signal: request.signal,
+        deadlines: { streamIdleTimeoutMs, bufferedTimeoutMs },
+        sleep: this.runtime.sleep ?? abortableSleep,
+        random: this.runtime.random ?? Math.random,
+      },
+      () => {
+        let streamStarted = false;
+        let streamSequence = 0;
+        const streamId = `${this.name}-${randomUUID()}`;
+        const decoder = new ServerSentEventDecoder();
+        const streamState: ResponsesStreamState = {
+          content: "",
+          reasoning: "",
+          done: false,
+          toolItems: new Map(),
+        };
+        const emit = (event: StreamEventPayload): void => {
+          if (!request.onStreamEvent) return;
+          try {
+            request.onStreamEvent({ ...event, streamId, sequence: ++streamSequence } as ProviderStreamEvent);
+          } catch {
+            // Presentation observers are isolated from provider I/O.
+          }
+        };
+        const consume = (event: ServerSentEvent): boolean => this.consumeStreamEvent(streamState, event, emit);
+        return {
+          run: async () => {
+            const response = await (this.runtime.transport ?? postJsonWithNode)({
+              url: this.endpoint,
+              headers: {
+                authorization: `Bearer ${this.config.apiKey}`,
+                accept: streamResponse ? "text/event-stream" : "application/json",
+                "content-type": "application/json",
+                "user-agent": "easy-code-agent/0.1",
+              },
+              body: serialized,
+              timeoutMs,
+              timeoutMode,
+              ...(streamResponse ? { bufferedTimeoutMs } : {}),
+              maxResponseBytes: this.maxResponseBytes,
+              signal: request.signal,
+              ...(streamResponse
+                ? {
+                    onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
+                      streamStarted =
+                        statusCode >= 200 && statusCode < 300 && isEventStreamContentType(headers["content-type"]);
+                      if (streamStarted) emit({ kind: "started" });
+                      return streamStarted ? ("stream" as const) : ("buffered" as const);
+                    },
+                    onResponseChunk: (chunk: Buffer) => {
+                      if (!streamStarted) return false;
+                      let progressed = false;
+                      for (const event of decoder.push(chunk)) progressed = consume(event) || progressed;
+                      return progressed;
+                    },
+                  }
+                : {}),
+            });
+            request.signal?.throwIfAborted();
+            if (streamStarted) {
+              for (const event of decoder.finish()) consume(event);
+              const result = this.finishStream(streamState);
+              if (result.usage) emit({ kind: "usage", usage: result.usage });
+              emit({ kind: "completed", finishReason: result.finishReason ?? null });
+              return result;
+            }
+            return this.parse(response);
           },
-          body: serialized,
-          timeoutMs,
-          timeoutMode,
-          ...(streamResponse ? { bufferedTimeoutMs } : {}),
-          maxResponseBytes: this.maxResponseBytes,
-          signal: request.signal,
-          ...(streamResponse
-            ? {
-                onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
-                  streamStarted =
-                    statusCode >= 200 && statusCode < 300 && isEventStreamContentType(headers["content-type"]);
-                  if (streamStarted) emit({ kind: "started" });
-                  return streamStarted ? ("stream" as const) : ("buffered" as const);
-                },
-                onResponseChunk: (chunk: Buffer) => {
-                  if (!streamStarted) return false;
-                  let progressed = false;
-                  for (const event of decoder.push(chunk)) progressed = consume(event) || progressed;
-                  return progressed;
-                },
-              }
-            : {}),
-        });
-        request.signal?.throwIfAborted();
-        if (streamStarted) {
-          for (const event of decoder.finish()) consume(event);
-          const result = this.finishStream(streamState);
-          if (result.usage) emit({ kind: "usage", usage: result.usage });
-          emit({ kind: "completed", finishReason: result.finishReason ?? null });
-          return result;
-        }
-        return this.parse(response);
-      } catch (error) {
-        const normalized = this.normalizeError(error, request.signal, this.streamProgress(streamState), {
-          streamIdleTimeoutMs,
-          bufferedTimeoutMs,
-        });
-        lastError = normalized;
-        if (streamStarted) {
-          emit({ kind: "interrupted" });
-        }
-        if (!normalized.retryable || attempt >= maxRetries) throw normalized;
-        try {
-          await (this.runtime.sleep ?? sleep)(
-            normalized.retryAfterMs ?? retryDelay(attempt, this.runtime.random?.() ?? Math.random()),
-            request.signal,
-          );
-        } catch (sleepError) {
-          throw this.normalizeError(sleepError, request.signal);
-        }
-      }
-    }
-    throw lastError ?? this.error("Provider request failed", "request_failed");
+          progress: () => this.streamProgress(streamState),
+          onFailure: () => {
+            if (streamStarted) {
+              emit({ kind: "interrupted" });
+            }
+          },
+        };
+      },
+    );
   }
 
   private consumeStreamEvent(
@@ -539,53 +528,6 @@ export class ResponsesProvider implements ModelProvider {
     return result;
   }
 
-  private normalizeError(
-    error: unknown,
-    signal: AbortSignal | undefined,
-    progress?: ProviderProgress,
-    deadlines?: { streamIdleTimeoutMs: number; bufferedTimeoutMs: number },
-  ): ProviderError {
-    if (error instanceof ProviderError) return error;
-    if (error instanceof SseDecodingError) return this.error(error.message, "invalid_response");
-    if (signal?.aborted) return this.error("Request was canceled", "aborted");
-    if (error instanceof HttpTransportError) {
-      if (error.kind === "aborted") return this.error("Request was canceled", "aborted");
-      if (error.kind === "stream_header_timeout")
-        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
-          provider: this.name,
-          code: "stream_header_timeout",
-          retryable: true,
-          progress,
-        });
-      if (error.kind === "stream_semantic_idle_timeout")
-        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
-          provider: this.name,
-          code: "stream_semantic_idle_timeout",
-          retryable: true,
-          progress,
-        });
-      if (error.kind === "buffered_total_timeout")
-        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
-          provider: this.name,
-          code: "buffered_total_timeout",
-          retryable: true,
-          progress,
-        });
-      if (error.kind === "response_too_large") return this.error(error.message, "response_too_large");
-      return new ProviderError(`Provider network error: ${error.message}`, {
-        provider: this.name,
-        code: "network_error",
-        retryable: true,
-        secrets: [this.config.apiKey],
-      });
-    }
-    return new ProviderError(`Provider request failed: ${redactSensitiveText(error, [this.config.apiKey])}`, {
-      provider: this.name,
-      code: "request_failed",
-      retryable: true,
-      secrets: [this.config.apiKey],
-    });
-  }
   private error(message: string, code: string): ProviderError {
     return new ProviderError(message, { provider: this.name, code, secrets: [this.config.apiKey] });
   }
@@ -606,9 +548,6 @@ function endpoint(baseUrl: string, provider: string): URL {
   url.search = "";
   url.hash = "";
   return url;
-}
-function retryableStatus(code: number): boolean {
-  return code === 408 || code === 409 || code === 425 || code === 429 || code >= 500;
 }
 function apiError(body: string): string {
   try {
@@ -635,24 +574,4 @@ function appendHistoricalImageOmissionNote(
   const available = MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS - prefix.length - suffix.length;
   const bounded = details.length <= available ? details : `${details.slice(0, Math.max(0, available - 1))}…`;
   return [content, `${prefix}${bounded}${suffix}`].filter(Boolean).join("\n\n");
-}
-function retryDelay(attempt: number, random: number): number {
-  return Math.round(Math.min(500 * 2 ** attempt, 5_000) * (0.8 + random * 0.4));
-}
-function sleep(delayMs: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new HttpTransportError("aborted", "Request was canceled"));
-      return;
-    }
-    const timer = setTimeout(resolve, delayMs);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new HttpTransportError("aborted", "Request was canceled"));
-      },
-      { once: true },
-    );
-  });
 }

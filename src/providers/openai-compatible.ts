@@ -17,21 +17,10 @@ import { projectModelInputMessages } from "../context/micro-compaction.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
 import { providerImageCompatibilityIssue, validateProviderImageAttachments } from "../models/catalog.js";
 import { thinkingEffortBufferedTimeoutMs, thinkingEffortStreamIdleTimeoutMs } from "../models/thinking.js";
-import {
-  ProviderError,
-  redactImageDataUrls,
-  redactSensitiveText,
-  streamProviderError,
-  type ProviderProgress,
-} from "./errors.js";
-import {
-  describeTransportTimeout,
-  HttpTransportError,
-  postJsonWithNode,
-  type JsonPostResponse,
-  type JsonPostTransport,
-} from "./http-transport.js";
-import { ServerSentEventDecoder, SseDecodingError, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
+import { ProviderError, redactImageDataUrls, streamProviderError, type ProviderProgress } from "./errors.js";
+import { postJsonWithNode, type JsonPostResponse, type JsonPostTransport } from "./http-transport.js";
+import { abortableSleep, parseRetryAfter, retryableStatus, runWithRetries } from "./retry-loop.js";
+import { ServerSentEventDecoder, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS = 600;
@@ -294,121 +283,115 @@ export class OpenAICompatibleProvider implements ModelProvider {
       });
     }
 
-    let lastError: ProviderError | undefined;
-    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      if (request.signal?.aborted) {
-        throw this.error("Request was canceled", "aborted");
-      }
+    return runWithRetries(
+      {
+        provider: this.name,
+        apiKey: this.config.apiKey,
+        maxRetries,
+        signal: request.signal,
+        deadlines: { streamIdleTimeoutMs, bufferedTimeoutMs },
+        sleep: this.sleep,
+        random: this.random,
+      },
+      () => {
+        let streamStarted = false;
+        let streamSequence = 0;
+        const streamId = `${this.name}-${randomUUID()}`;
+        const decoder = new ServerSentEventDecoder();
+        const streamState: ChatStreamState = {
+          content: "",
+          reasoning: "",
+          toolCalls: new Map(),
+          done: false,
+        };
+        const emit = (event: StreamEventPayload): void => {
+          if (!request.onStreamEvent) return;
+          try {
+            request.onStreamEvent({
+              ...event,
+              streamId,
+              sequence: ++streamSequence,
+            } as ProviderStreamEvent);
+          } catch {
+            // Presentation observers are deliberately isolated from provider I/O.
+          }
+        };
+        const consume = (event: ServerSentEvent): boolean => {
+          if (event.data.trim() === "[DONE]") {
+            const progressed = !streamState.done;
+            streamState.done = true;
+            return progressed;
+          }
+          let decoded: unknown;
+          try {
+            decoded = JSON.parse(event.data) as unknown;
+          } catch {
+            throw this.error("Provider returned an invalid Chat Completions SSE event", "invalid_response");
+          }
+          if (decoded && typeof decoded === "object" && ("error" in decoded || event.event === "error")) {
+            throw streamProviderError(this.name, decoded, this.config.apiKey);
+          }
+          if (streamState.done) throw this.error("Provider sent data after [DONE]", "invalid_response");
+          const parsed = chatCompletionChunkSchema.safeParse(decoded);
+          if (!parsed.success)
+            throw this.error("Provider returned an unsupported Chat Completions SSE event", "invalid_response");
+          return this.consumeStreamChunk(streamState, parsed.data, emit);
+        };
 
-      let streamStarted = false;
-      let streamSequence = 0;
-      const streamId = `${this.name}-${randomUUID()}`;
-      const decoder = new ServerSentEventDecoder();
-      const streamState: ChatStreamState = {
-        content: "",
-        reasoning: "",
-        toolCalls: new Map(),
-        done: false,
-      };
-      const emit = (event: StreamEventPayload): void => {
-        if (!request.onStreamEvent) return;
-        try {
-          request.onStreamEvent({
-            ...event,
-            streamId,
-            sequence: ++streamSequence,
-          } as ProviderStreamEvent);
-        } catch {
-          // Presentation observers are deliberately isolated from provider I/O.
-        }
-      };
-      const consume = (event: ServerSentEvent): boolean => {
-        if (event.data.trim() === "[DONE]") {
-          const progressed = !streamState.done;
-          streamState.done = true;
-          return progressed;
-        }
-        let decoded: unknown;
-        try {
-          decoded = JSON.parse(event.data) as unknown;
-        } catch {
-          throw this.error("Provider returned an invalid Chat Completions SSE event", "invalid_response");
-        }
-        if (decoded && typeof decoded === "object" && ("error" in decoded || event.event === "error")) {
-          throw streamProviderError(this.name, decoded, this.config.apiKey);
-        }
-        if (streamState.done) throw this.error("Provider sent data after [DONE]", "invalid_response");
-        const parsed = chatCompletionChunkSchema.safeParse(decoded);
-        if (!parsed.success)
-          throw this.error("Provider returned an unsupported Chat Completions SSE event", "invalid_response");
-        return this.consumeStreamChunk(streamState, parsed.data, emit);
-      };
-
-      try {
-        const response = await this.transport({
-          url: this.endpoint,
-          headers: {
-            authorization: `Bearer ${this.config.apiKey}`,
-            accept: streamResponse ? "text/event-stream" : "application/json",
-            "content-type": "application/json",
-            "user-agent": "easy-code-agent/0.1",
+        return {
+          run: async () => {
+            const response = await this.transport({
+              url: this.endpoint,
+              headers: {
+                authorization: `Bearer ${this.config.apiKey}`,
+                accept: streamResponse ? "text/event-stream" : "application/json",
+                "content-type": "application/json",
+                "user-agent": "easy-code-agent/0.1",
+              },
+              body: serialized,
+              timeoutMs,
+              timeoutMode,
+              ...(streamResponse ? { bufferedTimeoutMs } : {}),
+              maxResponseBytes: this.maxResponseBytes,
+              signal: request.signal,
+              ...(streamResponse
+                ? {
+                    onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
+                      streamStarted =
+                        statusCode >= 200 && statusCode < 300 && isEventStreamContentType(headers["content-type"]);
+                      if (streamStarted) emit({ kind: "started" });
+                      return streamStarted ? ("stream" as const) : ("buffered" as const);
+                    },
+                    onResponseChunk: (chunk: Buffer) => {
+                      if (!streamStarted) return false;
+                      let progressed = false;
+                      for (const event of decoder.push(chunk)) progressed = consume(event) || progressed;
+                      return progressed;
+                    },
+                  }
+                : {}),
+            });
+            request.signal?.throwIfAborted();
+            if (streamStarted) {
+              for (const event of decoder.finish()) consume(event);
+              const result = this.finishStream(streamState);
+              if (result.usage) emit({ kind: "usage", usage: result.usage });
+              emit({ kind: "completed", finishReason: result.finishReason ?? null });
+              return result;
+            }
+            return this.parseResponse(response);
           },
-          body: serialized,
-          timeoutMs,
-          timeoutMode,
-          ...(streamResponse ? { bufferedTimeoutMs } : {}),
-          maxResponseBytes: this.maxResponseBytes,
-          signal: request.signal,
-          ...(streamResponse
-            ? {
-                onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
-                  streamStarted =
-                    statusCode >= 200 && statusCode < 300 && isEventStreamContentType(headers["content-type"]);
-                  if (streamStarted) emit({ kind: "started" });
-                  return streamStarted ? ("stream" as const) : ("buffered" as const);
-                },
-                onResponseChunk: (chunk: Buffer) => {
-                  if (!streamStarted) return false;
-                  let progressed = false;
-                  for (const event of decoder.push(chunk)) progressed = consume(event) || progressed;
-                  return progressed;
-                },
-              }
-            : {}),
-        });
-        request.signal?.throwIfAborted();
-        if (streamStarted) {
-          for (const event of decoder.finish()) consume(event);
-          const result = this.finishStream(streamState);
-          if (result.usage) emit({ kind: "usage", usage: result.usage });
-          emit({ kind: "completed", finishReason: result.finishReason ?? null });
-          return result;
-        }
-        return this.parseResponse(response);
-      } catch (error) {
-        const providerError = this.normalizeError(error, request.signal, this.streamProgress(streamState), {
-          streamIdleTimeoutMs,
-          bufferedTimeoutMs,
-        });
-        lastError = providerError;
-        if (streamStarted) {
-          emit({ kind: "interrupted" });
-          // Nothing has been submitted to Runtime or executed. The shared API
-          // retry owner may retry; each attempt gets fresh state and identity.
-        }
-        if (!providerError.retryable || attempt >= maxRetries) {
-          throw providerError;
-        }
-        const delay = providerError.retryAfterMs ?? this.retryDelayMs(attempt);
-        try {
-          await this.sleep(delay, request.signal);
-        } catch (sleepError) {
-          throw this.normalizeError(sleepError, request.signal);
-        }
-      }
-    }
-
-    throw lastError ?? this.error("Provider request failed", "request_failed");
+          progress: () => this.streamProgress(streamState),
+          onFailure: () => {
+            if (streamStarted) {
+              emit({ kind: "interrupted" });
+              // Nothing has been submitted to Runtime or executed. The shared API
+              // retry owner may retry; each attempt gets fresh state and identity.
+            }
+          },
+        };
+      },
+    );
   }
 
   private consumeStreamChunk(
@@ -711,72 +694,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return result;
   }
 
-  private normalizeError(
-    error: unknown,
-    signal: AbortSignal | undefined,
-    progress?: ProviderProgress,
-    deadlines?: { streamIdleTimeoutMs: number; bufferedTimeoutMs: number },
-  ): ProviderError {
-    if (error instanceof ProviderError) return error;
-    if (error instanceof SseDecodingError) return this.error(error.message, "invalid_response");
-    if (signal?.aborted) return this.error("Request was canceled", "aborted");
-    if (error instanceof HttpTransportError) {
-      if (error.kind === "aborted") {
-        return this.error("Request was canceled", "aborted");
-      }
-      if (error.kind === "stream_header_timeout") {
-        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
-          provider: this.name,
-          code: "stream_header_timeout",
-          retryable: true,
-          progress,
-        });
-      }
-      if (error.kind === "stream_semantic_idle_timeout") {
-        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
-          provider: this.name,
-          code: "stream_semantic_idle_timeout",
-          retryable: true,
-          progress,
-        });
-      }
-      if (error.kind === "buffered_total_timeout") {
-        return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message, {
-          provider: this.name,
-          code: "buffered_total_timeout",
-          retryable: true,
-          progress,
-        });
-      }
-      if (error.kind === "response_too_large") {
-        return this.error(error.message, "response_too_large");
-      }
-      return new ProviderError(`Provider network error: ${error.message}`, {
-        provider: this.name,
-        code: "network_error",
-        retryable: true,
-        secrets: [this.config.apiKey],
-      });
-    }
-    return new ProviderError(`Provider request failed: ${redactSensitiveText(error, [this.config.apiKey])}`, {
-      provider: this.name,
-      code: "request_failed",
-      retryable: true,
-      secrets: [this.config.apiKey],
-    });
-  }
-
   private error(message: string, code: string): ProviderError {
     return new ProviderError(message, {
       provider: this.name,
       code,
       secrets: [this.config.apiKey],
     });
-  }
-
-  private retryDelayMs(attempt: number): number {
-    const base = Math.min(500 * 2 ** attempt, 5_000);
-    return Math.round(base * (0.8 + this.random() * 0.4));
   }
 }
 
@@ -842,10 +765,6 @@ function chatCompletionsEndpoint(baseUrl: string, provider: ProviderName): URL {
   return url;
 }
 
-function retryableStatus(statusCode: number): boolean {
-  return statusCode === 408 || statusCode === 409 || statusCode === 425 || statusCode === 429 || statusCode >= 500;
-}
-
 function extractApiErrorMessage(body: string): string {
   try {
     const value = JSON.parse(body) as unknown;
@@ -869,37 +788,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function headerValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-function parseRetryAfter(value: string | string[] | undefined): number | undefined {
-  const raw = headerValue(value);
-  if (!raw) return undefined;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(seconds * 1_000, 30_000);
-  }
-  const date = Date.parse(raw);
-  if (!Number.isNaN(date)) {
-    return Math.max(0, Math.min(date - Date.now(), 30_000));
-  }
-  return undefined;
-}
-
-function abortableSleep(delayMs: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new HttpTransportError("aborted", "Request was canceled"));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      reject(new HttpTransportError("aborted", "Request was canceled"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
