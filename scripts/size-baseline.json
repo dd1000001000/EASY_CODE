@@ -3,7 +3,6 @@
   "src/benchmarks/swebench.ts#registerSweBenchCommands": 433,
   "src/cli/menu-selector.ts#selectMenuIndex": 365,
   "src/cli/menu-selector.ts#selectMenuIndex.<anonymous>": 331,
-  "src/cli/prompt-input.ts#readPrompt": 817,
   "src/cli/terminal.ts": 4025,
   "src/command/runtime.ts": 2073,
   "src/command/runtime.ts#CommandRuntime.authorizeCommand": 314,

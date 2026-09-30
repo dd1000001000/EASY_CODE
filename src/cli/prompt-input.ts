@@ -878,147 +878,306 @@ export function readPrompt(options: ReadPromptOptions): Promise<PromptSubmission
   if (options.keepOpen && !options.onSubmit) {
     throw new Error("A persistent prompt requires an onSubmit callback.");
   }
+  return new PromptEditor(options, initialImageCount).run();
+}
 
-  const input = options.input;
-  const wasRaw = Boolean(input.isRaw);
-  const wasFlowing = input.readableFlowing === true;
-  const captureController = new AbortController();
-  let promptActive = true;
-  let sessionReady = false;
-  let promptSuspensionDepth = 0;
-  let suspendedLine = "";
-  let suspendedCursor = 0;
-  let belowRendered = false;
-  let resizeInProgress = false;
-  let suspendedPromptVisibleAfterResize = false;
-  let scheduledBelowDraw: ReturnType<typeof setImmediate> | undefined;
-  let renderedCursorPosition: { rows: number; cols: number } | undefined;
-  let renderedEndPosition: { rows: number; cols: number } | undefined;
-  let latestPromptEndPosition: { rows: number; cols: number } | undefined;
-  let bracketedPasteEnabled = false;
-  let inputConnected = false;
-  let inputSuspended = false;
-  let inputSuspendedWithPreservedDisplay = false;
-  let startupSuspensionPending = false;
-  let startupSuspensionClaimed = false;
-  let readlineOutputMuted = false;
-  let connectInput = (): void => undefined;
-  let disconnectInput = (): void => undefined;
-  let renderedPrompt = options.prompt;
-  let rl!: readline.Interface;
+type TerminalPosition = { rows: number; cols: number };
 
-  // readline remains the canonical editor while a full-screen disclosure UI
-  // owns the terminal. Proxying only readline's output lets its state machine
-  // continue processing injected bytes without letting its prompt repaint over
-  // the alternate-screen renderer. All ordinary output still uses the real
-  // stream in `options.output`.
-  const writeReadlineOutput = (...args: unknown[]): boolean => {
-    if (readlineOutputMuted) {
-      const callback = args.at(-1);
-      if (typeof callback === "function") {
-        queueMicrotask(() => {
-          try {
-            (callback as () => void)();
-          } catch {
-            // Writable callbacks are observational; a consumer callback must
-            // not break the canonical editor while its output is muted.
-          }
-        });
+/**
+ * One readPrompt session. readline stays the canonical line editor; this class owns what surrounds
+ * it: the dynamic prefix and live rows below the buffer, suspension while other output or a
+ * full-screen UI owns the terminal, atomic paste markers, submissions, and restoring the terminal.
+ */
+class PromptEditor {
+  private readonly input: PromptInput;
+  private readonly wasRaw: boolean;
+  private readonly wasFlowing: boolean;
+  private readonly captureController = new AbortController();
+  private readonly readlineOutput: PromptOutput;
+  private readonly proxy: ImagePasteInputProxy;
+  private readonly rl: readline.Interface;
+  private readonly startSuspended: boolean;
+  private readonly promptSession: PromptInputSession;
+
+  private promptActive = true;
+  private sessionReady = false;
+  private settled = false;
+  private promptSuspensionDepth = 0;
+  private suspendedLine = "";
+  private suspendedCursor = 0;
+  private belowRendered = false;
+  private resizeInProgress = false;
+  private suspendedPromptVisibleAfterResize = false;
+  private scheduledBelowDraw: ReturnType<typeof setImmediate> | undefined;
+  private renderedCursorPosition: TerminalPosition | undefined;
+  private renderedEndPosition: TerminalPosition | undefined;
+  private latestPromptEndPosition: TerminalPosition | undefined;
+  private bracketedPasteEnabled = false;
+  private inputConnected = false;
+  private inputSuspended = false;
+  private inputSuspendedWithPreservedDisplay = false;
+  private startupSuspensionPending = false;
+  private startupSuspensionClaimed = false;
+  private readlineOutputMuted = false;
+  private renderedPrompt: string;
+  private submissionQueue: Promise<void> = Promise.resolve();
+  private resolve!: (value: PromptSubmission | null) => void;
+  private reject!: (error: Error) => void;
+
+  constructor(
+    private readonly options: ReadPromptOptions,
+    initialImageCount: number,
+  ) {
+    this.input = options.input;
+    this.wasRaw = Boolean(this.input.isRaw);
+    this.wasFlowing = this.input.readableFlowing === true;
+    this.renderedPrompt = options.prompt;
+
+    // readline remains the canonical editor while a full-screen disclosure UI
+    // owns the terminal. Proxying only readline's output lets its state machine
+    // continue processing injected bytes without letting its prompt repaint over
+    // the alternate-screen renderer. All ordinary output still uses the real
+    // stream in `options.output`.
+    const writeReadlineOutput = (...args: unknown[]): boolean => {
+      if (this.readlineOutputMuted) {
+        const callback = args.at(-1);
+        if (typeof callback === "function") {
+          queueMicrotask(() => {
+            try {
+              (callback as () => void)();
+            } catch {
+              // Writable callbacks are observational; a consumer callback must
+              // not break the canonical editor while its output is muted.
+            }
+          });
+        }
+        return true;
       }
-      return true;
-    }
-    return (options.output.write as unknown as (...values: unknown[]) => boolean).apply(options.output, args);
-  };
-  const readlineOutput = new Proxy(options.output, {
-    get(target, property): unknown {
-      if (property === "write") return writeReadlineOutput;
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  }) as PromptOutput;
+      return (options.output.write as unknown as (...values: unknown[]) => boolean).apply(options.output, args);
+    };
+    this.readlineOutput = new Proxy(options.output, {
+      get(target, property): unknown {
+        if (property === "write") return writeReadlineOutput;
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as PromptOutput;
 
-  const resolvePrompt = (): string => {
-    if (!options.renderPrompt) return renderedPrompt;
+    this.promptSession = this.createSession();
+    const showThinking = options.onShowThinking
+      ? async (id: number | "last"): Promise<void> => {
+          if (!this.suspendPrompt()) return;
+          try {
+            await options.onShowThinking?.(id);
+          } finally {
+            this.resumePrompt();
+          }
+        }
+      : undefined;
+    this.proxy = new ImagePasteInputProxy(
+      this.input,
+      initialImageCount,
+      options.captureImage,
+      options.captureText,
+      options.textOnlyPaste ?? false,
+      showThinking,
+      () => this.deleteAtomicMarker(),
+      (marker, replacement) => this.replaceAtomicMarker(marker, replacement),
+      Boolean(options.keepOpen && options.onInterrupt),
+      this.captureController.signal,
+      options.bracketedPasteIdleTimeoutMs,
+      options.clipboardCaptureTimeoutMs,
+    );
+    this.startSuspended = Boolean(options.startSuspended && options.onSessionReady);
+    if (this.startSuspended) {
+      // readline configures Raw Mode during createInterface(). Suppress that
+      // physical transition until the lifecycle hook has either transferred
+      // ownership to a full-screen renderer or declined the lease.
+      this.proxy.setTerminalStateForwarding(false);
+      this.inputSuspended = true;
+      this.readlineOutputMuted = true;
+      this.promptSuspensionDepth = 1;
+    }
+    this.rl = readline.createInterface({
+      input: this.proxy,
+      output: this.readlineOutput,
+      terminal: true,
+    });
+  }
+
+  run(): Promise<PromptSubmission | null> {
+    return new Promise((resolve, reject) => {
+      this.resolve = resolve;
+      this.reject = reject;
+      this.start();
+    });
+  }
+
+  private start(): void {
+    const { options } = this;
+    this.rl.once("close", this.onClose);
+    if (options.keepOpen) this.rl.on("line", this.onLine);
+    else this.rl.once("line", this.onLine);
+    this.proxy.once("error", this.onError);
+    options.signal?.addEventListener("abort", this.onAbort, { once: true });
+    if (options.signal?.aborted) {
+      this.finish();
+      return;
+    }
+    if (
+      options.renderBelow ||
+      options.renderPrompt ||
+      options.clearOnSubmit ||
+      options.onDraftChange ||
+      options.completionProvider
+    ) {
+      // readline's own keypress/resize listeners remain the sole owners of the
+      // edit buffer. We only clear decoration immediately before their redraw
+      // and restore it immediately afterward.
+      this.proxy.prependListener("keypress", this.onBeforeKeypress);
+      this.proxy.on("keypress", this.onAfterKeypress);
+      if (options.renderBelow || options.renderPrompt) {
+        options.output.prependListener("resize", this.onBeforeResize);
+        options.output.on("resize", this.onAfterResize);
+      }
+    }
+    if (this.startSuspended) {
+      this.suspendedLine = this.rl.line;
+      this.suspendedCursor = this.rl.cursor;
+      this.startupSuspensionPending = true;
+      this.sessionReady = true;
+      try {
+        options.onSessionReady?.(this.promptSession);
+      } catch (error) {
+        this.startupSuspensionPending = false;
+        this.finish(undefined, error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      this.startupSuspensionPending = false;
+      if (this.settled) return;
+      if (!this.startupSuspensionClaimed && this.inputSuspended) {
+        // Merely observing the early session does not require a caller to
+        // implement terminal ownership.
+        this.promptSession.resumeInput();
+      }
+      this.notifyDraft();
+      return;
+    }
+    this.connectInput();
+    // Observe the source as well as the serialized Transform. A clipboard read
+    // deliberately holds the Transform callback so Enter stays ordered behind
+    // it, but Ctrl+C must still be able to abort that read immediately.
+    this.bracketedPasteEnabled = true;
     try {
-      const next = sanitizeTerminalText(options.renderPrompt(), {
+      options.output.write(ENABLE_BRACKETED_PASTE);
+    } catch (error) {
+      this.finish(undefined, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    // Keep the prompt and submitted line owned by the interface itself so an
+    // inline Thinking expansion can inspect and redraw the current edit buffer.
+    this.updatePrompt();
+    this.rl.prompt();
+    this.drawBelow();
+    this.notifyDraft();
+    if (options.onSessionReady) {
+      this.sessionReady = true;
+      try {
+        options.onSessionReady(this.promptSession);
+      } catch (error) {
+        this.finish(undefined, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  }
+
+  // ---- Prompt prefix and live rows below the edit buffer ----
+
+  private resolvePrompt(): string {
+    if (!this.options.renderPrompt) return this.renderedPrompt;
+    try {
+      const next = sanitizeTerminalText(this.options.renderPrompt(), {
         allowSgr: true,
       });
-      return next || renderedPrompt;
+      return next || this.renderedPrompt;
     } catch {
       // A dynamic prefix is decorative. Keep the last valid prompt if its
       // renderer fails so the user never loses the active edit buffer.
-      return renderedPrompt;
+      return this.renderedPrompt;
     }
-  };
-  const updatePrompt = (): string => {
-    renderedPrompt = resolvePrompt();
-    rl.setPrompt(renderedPrompt);
-    return renderedPrompt;
-  };
+  }
 
-  const promptGeometry = (
-    line = rl.line,
-    cursor = rl.cursor,
+  private updatePrompt(): string {
+    this.renderedPrompt = this.resolvePrompt();
+    this.rl.setPrompt(this.renderedPrompt);
+    return this.renderedPrompt;
+  }
+
+  private promptGeometry(
+    line = this.rl.line,
+    cursor = this.rl.cursor,
   ): {
-    cursorPosition: { rows: number; cols: number };
-    endPosition: { rows: number; cols: number };
-  } => {
-    const mutableReadline = rl as unknown as { cursor: number };
-    const originalCursor = rl.cursor;
+    cursorPosition: TerminalPosition;
+    endPosition: TerminalPosition;
+  } {
+    const mutableReadline = this.rl as unknown as { cursor: number };
+    const originalCursor = this.rl.cursor;
     try {
       mutableReadline.cursor = cursor;
-      const cursorPosition = rl.getCursorPos();
+      const cursorPosition = this.rl.getCursorPos();
       mutableReadline.cursor = line.length;
-      const endPosition = rl.getCursorPos();
+      const endPosition = this.rl.getCursorPos();
       return { cursorPosition, endPosition };
     } finally {
       mutableReadline.cursor = originalCursor;
     }
-  };
-  const moveToPromptEnd = (
-    cursorPosition: { rows: number; cols: number },
-    endPosition: { rows: number; cols: number },
-  ): number => {
+  }
+
+  private moveToPromptEnd(cursorPosition: TerminalPosition, endPosition: TerminalPosition): number {
     const rowsDown = Math.max(0, endPosition.rows - cursorPosition.rows);
-    if (rowsDown > 0) readline.moveCursor(options.output, 0, rowsDown);
-    readline.cursorTo(options.output, endPosition.cols);
+    if (rowsDown > 0) readline.moveCursor(this.options.output, 0, rowsDown);
+    readline.cursorTo(this.options.output, endPosition.cols);
     return rowsDown;
-  };
-  const eraseSuspendedResizePrompt = (): void => {
-    if (!suspendedPromptVisibleAfterResize) return;
-    const position = rl.getCursorPos();
+  }
+
+  private eraseSuspendedResizePrompt(): void {
+    if (!this.suspendedPromptVisibleAfterResize) return;
+    const position = this.rl.getCursorPos();
     if (position.rows > 0) {
-      readline.moveCursor(options.output, 0, -position.rows);
+      readline.moveCursor(this.options.output, 0, -position.rows);
     }
-    readline.cursorTo(options.output, 0);
-    readline.clearScreenDown(options.output);
-    (rl as unknown as { prevRows?: number }).prevRows = 0;
-    suspendedPromptVisibleAfterResize = false;
-  };
-  const eraseBelow = (): void => {
-    const cursorPosition = renderedCursorPosition;
-    const endPosition = renderedEndPosition;
-    belowRendered = false;
-    renderedCursorPosition = undefined;
-    renderedEndPosition = undefined;
+    readline.cursorTo(this.options.output, 0);
+    readline.clearScreenDown(this.options.output);
+    (this.rl as unknown as { prevRows?: number }).prevRows = 0;
+    this.suspendedPromptVisibleAfterResize = false;
+  }
+
+  private eraseBelow(): void {
+    const cursorPosition = this.renderedCursorPosition;
+    const endPosition = this.renderedEndPosition;
+    this.belowRendered = false;
+    this.renderedCursorPosition = undefined;
+    this.renderedEndPosition = undefined;
     if (!cursorPosition || !endPosition) return;
 
-    const rowsDown = moveToPromptEnd(cursorPosition, endPosition);
-    readline.moveCursor(options.output, 0, 1);
-    readline.cursorTo(options.output, 0);
-    readline.clearScreenDown(options.output);
-    readline.moveCursor(options.output, 0, -(rowsDown + 1));
-    readline.cursorTo(options.output, cursorPosition.cols);
-  };
-  const drawBelow = (): void => {
-    if (scheduledBelowDraw) {
-      clearImmediate(scheduledBelowDraw);
-      scheduledBelowDraw = undefined;
+    const output = this.options.output;
+    const rowsDown = this.moveToPromptEnd(cursorPosition, endPosition);
+    readline.moveCursor(output, 0, 1);
+    readline.cursorTo(output, 0);
+    readline.clearScreenDown(output);
+    readline.moveCursor(output, 0, -(rowsDown + 1));
+    readline.cursorTo(output, cursorPosition.cols);
+  }
+
+  private drawBelow(): void {
+    if (this.scheduledBelowDraw) {
+      clearImmediate(this.scheduledBelowDraw);
+      this.scheduledBelowDraw = undefined;
     }
-    if (!promptActive || promptSuspensionDepth > 0 || resizeInProgress || !options.renderBelow) {
+    const { options } = this;
+    if (!this.promptActive || this.promptSuspensionDepth > 0 || this.resizeInProgress || !options.renderBelow) {
       return;
     }
-    if (belowRendered) eraseBelow();
+    if (this.belowRendered) this.eraseBelow();
 
     let source = "";
     try {
@@ -1034,268 +1193,269 @@ export function readPrompt(options: ReadPromptOptions): Promise<PromptSubmission
     const lines = wrapToWidth(source, columns, { preserveAnsi: true });
     if (lines.length === 0) return;
 
-    const geometry = promptGeometry();
-    const rowsDown = moveToPromptEnd(geometry.cursorPosition, geometry.endPosition);
+    const geometry = this.promptGeometry();
+    const rowsDown = this.moveToPromptEnd(geometry.cursorPosition, geometry.endPosition);
     options.output.write(`\r\n${lines.join("\r\n")}`);
     readline.moveCursor(options.output, 0, -(rowsDown + lines.length));
     readline.cursorTo(options.output, geometry.cursorPosition.cols);
-    renderedCursorPosition = geometry.cursorPosition;
-    renderedEndPosition = geometry.endPosition;
-    belowRendered = true;
-  };
-  const refreshBelow = (): void => {
-    if (!promptActive) return;
-    if (promptSuspensionDepth > 0 || resizeInProgress) {
+    this.renderedCursorPosition = geometry.cursorPosition;
+    this.renderedEndPosition = geometry.endPosition;
+    this.belowRendered = true;
+  }
+
+  private refreshBelow(): void {
+    if (!this.promptActive) return;
+    if (this.promptSuspensionDepth > 0 || this.resizeInProgress) {
       return;
     }
-    if (resolvePrompt() !== renderedPrompt) {
-      if (suspendPrompt()) resumePrompt();
+    if (this.resolvePrompt() !== this.renderedPrompt) {
+      if (this.suspendPrompt()) this.resumePrompt();
       return;
     }
-    eraseBelow();
-    drawBelow();
-  };
-  const scheduleBelowDraw = (): void => {
-    if (scheduledBelowDraw || !promptActive) return;
-    scheduledBelowDraw = setImmediate(() => {
-      scheduledBelowDraw = undefined;
-      drawBelow();
+    this.eraseBelow();
+    this.drawBelow();
+  }
+
+  private scheduleBelowDraw(): void {
+    if (this.scheduledBelowDraw || !this.promptActive) return;
+    this.scheduledBelowDraw = setImmediate(() => {
+      this.scheduledBelowDraw = undefined;
+      this.drawBelow();
     });
-  };
-  const suspendPrompt = (): boolean => {
-    if (!promptActive) return false;
-    promptSuspensionDepth += 1;
-    if (promptSuspensionDepth > 1) {
+  }
+
+  // ---- Suspending the physical prompt around other output ----
+
+  private suspendPrompt(): boolean {
+    if (!this.promptActive) return false;
+    this.promptSuspensionDepth += 1;
+    if (this.promptSuspensionDepth > 1) {
       // A resize can make readline repaint while an outer async suspension is
       // active. Hide that synchronized repaint before nested stable output.
-      eraseSuspendedResizePrompt();
+      this.eraseSuspendedResizePrompt();
       return true;
     }
 
-    eraseBelow();
-    suspendedLine = rl.line;
-    suspendedCursor = rl.cursor;
-    const savedPosition = rl.getCursorPos();
-
-    // Remove every visual row occupied by the wrapped edit buffer. Stable
-    // output can now be written at the prompt's former first row.
-    if (savedPosition.rows > 0) {
-      readline.moveCursor(options.output, 0, -savedPosition.rows);
-    }
-    readline.cursorTo(options.output, 0);
-    readline.clearScreenDown(options.output);
-    (rl as unknown as { prevRows?: number }).prevRows = 0;
-    suspendedPromptVisibleAfterResize = false;
+    this.eraseBelow();
+    this.suspendedLine = this.rl.line;
+    this.suspendedCursor = this.rl.cursor;
+    this.erasePromptRows();
     return true;
-  };
-  const resumePrompt = (): void => {
-    if (promptSuspensionDepth === 0) return;
-    promptSuspensionDepth -= 1;
-    if (promptSuspensionDepth > 0) return;
-    if (!promptActive) return;
+  }
+
+  /** Remove every visual row occupied by the wrapped edit buffer; output can then start at its first row. */
+  private erasePromptRows(): void {
+    const savedPosition = this.rl.getCursorPos();
+    if (savedPosition.rows > 0) {
+      readline.moveCursor(this.options.output, 0, -savedPosition.rows);
+    }
+    readline.cursorTo(this.options.output, 0);
+    readline.clearScreenDown(this.options.output);
+    (this.rl as unknown as { prevRows?: number }).prevRows = 0;
+    this.suspendedPromptVisibleAfterResize = false;
+  }
+
+  private resumePrompt(): void {
+    if (this.promptSuspensionDepth === 0) return;
+    this.promptSuspensionDepth -= 1;
+    if (this.promptSuspensionDepth > 0) return;
+    if (!this.promptActive) return;
 
     // readline is allowed to remain physically synchronized across any number
     // of resize events during an async suspension. Remove that old repaint once
     // at the latest geometry before drawing the state-derived prefix.
-    eraseSuspendedResizePrompt();
+    this.eraseSuspendedResizePrompt();
 
     // Resolve the prefix after the state-changing callback. readline must know
     // about every added/removed row before getCursorPos() calculates geometry.
-    const prompt = updatePrompt();
+    const prompt = this.updatePrompt();
 
     // Recalculate visual positions in case the terminal was resized while an
     // asynchronous expansion kept the prompt hidden.
-    const mutableReadline = rl as unknown as { cursor: number };
-    mutableReadline.cursor = suspendedCursor;
-    const savedPosition = rl.getCursorPos();
-    mutableReadline.cursor = suspendedLine.length;
-    const endPosition = rl.getCursorPos();
-    mutableReadline.cursor = suspendedCursor;
+    const mutableReadline = this.rl as unknown as { cursor: number };
+    mutableReadline.cursor = this.suspendedCursor;
+    const savedPosition = this.rl.getCursorPos();
+    mutableReadline.cursor = this.suspendedLine.length;
+    const endPosition = this.rl.getCursorPos();
+    mutableReadline.cursor = this.suspendedCursor;
 
     // readline.prompt() does not reliably repaint an existing edit buffer
     // after out-of-band output, so redraw it and restore its visual cursor.
-    options.output.write(`${prompt}${suspendedLine}`);
+    this.options.output.write(`${prompt}${this.suspendedLine}`);
     const rowsUp = Math.max(0, endPosition.rows - savedPosition.rows);
     if (rowsUp > 0) {
-      readline.moveCursor(options.output, 0, -rowsUp);
+      readline.moveCursor(this.options.output, 0, -rowsUp);
     }
-    readline.cursorTo(options.output, savedPosition.cols);
-    (rl as unknown as { prevRows?: number }).prevRows = savedPosition.rows;
-    drawBelow();
-  };
-  let proxy!: ImagePasteInputProxy;
-  let submissionQueue: Promise<void> = Promise.resolve();
-  let notifyDraft = (): void => undefined;
-  const promptSession: PromptInputSession = {
-    writeAbove(text: string): void {
-      if (!text || !suspendPrompt()) return;
-      try {
-        const safe = sanitizeTerminalText(text, { allowSgr: true });
-        const atLineStart = stripTerminalControls(safe).endsWith("\n");
-        options.output.write(atLineStart ? safe : `${safe}\n`);
-      } finally {
-        resumePrompt();
-      }
-    },
-    refreshBelow,
-    suspendInput(suspendOptions): boolean {
-      if (!promptActive) return false;
-      if (inputSuspended) {
-        if (startupSuspensionPending) startupSuspensionClaimed = true;
-        return true;
-      }
-      if (suspendOptions?.preserveDisplay && promptSuspensionDepth === 0) {
-        // Alternate-screen UIs can leave the primary buffer byte-for-byte
-        // untouched. Retain its prompt and decorations so switching back does
-        // not emit a redraw that makes terminal emulators follow the cursor to
-        // the bottom of scrollback.
-        promptSuspensionDepth = 1;
-        suspendedLine = rl.line;
-        suspendedCursor = rl.cursor;
-        inputSuspendedWithPreservedDisplay = true;
-      } else if (!suspendPrompt()) {
-        // A private terminal control path can reach this method from a callback that
-        // has already suspended and erased the editor. Nest that suspension
-        // instead of rejecting the disclosure open; resumeInput() and the
-        // callback's finally block will unwind the two levels in order.
-        return false;
-      }
-      // Mute readline before releasing stdin so feedInput() can edit the same
-      // buffer without drawing over the alternate-screen owner. The ordinary
-      // path erased the prompt; preserveDisplay leaves it hidden in primary.
-      readlineOutputMuted = true;
-      proxy.setTerminalStateForwarding(false);
-      latestPromptEndPosition = undefined;
-      disconnectInput();
-      input.pause();
-      inputSuspended = true;
-      return true;
-    },
-    feedInput(chunk: Buffer | string): boolean {
-      if (!promptActive || !inputSuspended || proxy.destroyed || proxy.writableEnded) {
-        return false;
-      }
-      try {
-        // Writing to the existing proxy preserves bracketed-paste expansion,
-        // image capture, atomic marker deletion, readline cursor movement, and
-        // serialized line submission exactly as physical stdin does.
-        proxy.write(chunk);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    discardLeadingModalControls(): void {
-      if (!promptActive) return;
-      proxy.discardLeadingModalControls();
-    },
-    resumeInput(resumeOptions): void {
-      if (!promptActive || !inputSuspended) return;
-      if (resumeOptions?.discardLeadingModalControls) {
-        proxy.discardLeadingModalControls();
-      }
-      inputSuspended = false;
-      readlineOutputMuted = false;
-      proxy.setTerminalStateForwarding(true);
-      if (resumeOptions?.reacquireTerminalModes) {
-        bracketedPasteEnabled = false;
-      }
-      // readline requested Raw Mode when its interface was created. A
-      // start-suspended editor deliberately suppressed that request, and a
-      // full-screen owner restores its own prior mode before handing control
-      // back, so reassert the editor's terminal modes before reconnecting.
-      try {
-        if (!input.isRaw) input.setRawMode?.(true);
-      } catch {
-        // A disappearing TTY is handled by the normal stream/error lifecycle.
-      }
-      if (!bracketedPasteEnabled) {
-        bracketedPasteEnabled = true;
+    readline.cursorTo(this.options.output, savedPosition.cols);
+    (this.rl as unknown as { prevRows?: number }).prevRows = savedPosition.rows;
+    this.drawBelow();
+  }
+
+  // ---- The session handed to the caller ----
+
+  private createSession(): PromptInputSession {
+    return {
+      writeAbove: (text: string): void => {
+        if (!text || !this.suspendPrompt()) return;
         try {
-          options.output.write(ENABLE_BRACKETED_PASTE);
-        } catch {
-          // Keep the logical editor recoverable even if the terminal vanished.
-        }
-      }
-      const canReusePreservedDisplay = Boolean(
-        resumeOptions?.preserveDisplay &&
-        inputSuspendedWithPreservedDisplay &&
-        rl.line === suspendedLine &&
-        rl.cursor === suspendedCursor,
-      );
-      if (canReusePreservedDisplay) {
-        // Nothing was erased and nothing changed. Dropping the logical
-        // suspension is sufficient; any output here would force VS Code's
-        // terminal viewport to jump to the active cursor at the bottom.
-        promptSuspensionDepth = Math.max(0, promptSuspensionDepth - 1);
-      } else {
-        if (inputSuspendedWithPreservedDisplay) {
-          // The primary prompt was deliberately retained, but its state is now
-          // stale. Erase that old copy before using the ordinary state-derived
-          // resume path so drafts never appear twice.
-          eraseBelow();
-          const savedPosition = rl.getCursorPos();
-          if (savedPosition.rows > 0) {
-            readline.moveCursor(options.output, 0, -savedPosition.rows);
-          }
-          readline.cursorTo(options.output, 0);
-          readline.clearScreenDown(options.output);
-          (rl as unknown as { prevRows?: number }).prevRows = 0;
-          suspendedPromptVisibleAfterResize = false;
-        }
-        resumePrompt();
-      }
-      inputSuspendedWithPreservedDisplay = false;
-      // Reconnect only after the preserved prompt is visible. pipe() can make
-      // an already-buffered TTY flow synchronously, so connecting first could
-      // echo keys into a prompt that is still suspended.
-      connectInput();
-    },
-    async flushSubmissions(): Promise<void> {
-      await proxy.flushPendingInput();
-      // onLine serializes callbacks so multiline/image submissions cannot
-      // overtake one another. Loop because a delayed image Enter may append a
-      // callback while the previous queue is settling.
-      while (true) {
-        const pending = submissionQueue;
-        await pending.catch(() => undefined);
-        await Promise.resolve();
-        if (pending === submissionQueue) return;
-      }
-    },
-  };
-  const showThinking = options.onShowThinking
-    ? async (id: number | "last"): Promise<void> => {
-        if (!suspendPrompt()) return;
-        try {
-          await options.onShowThinking?.(id);
+          const safe = sanitizeTerminalText(text, { allowSgr: true });
+          const atLineStart = stripTerminalControls(safe).endsWith("\n");
+          this.options.output.write(atLineStart ? safe : `${safe}\n`);
         } finally {
-          resumePrompt();
+          this.resumePrompt();
         }
+      },
+      refreshBelow: () => this.refreshBelow(),
+      suspendInput: (suspendOptions) => this.suspendInput(suspendOptions),
+      feedInput: (chunk: Buffer | string): boolean => {
+        if (!this.promptActive || !this.inputSuspended || this.proxy.destroyed || this.proxy.writableEnded) {
+          return false;
+        }
+        try {
+          // Writing to the existing proxy preserves bracketed-paste expansion,
+          // image capture, atomic marker deletion, readline cursor movement, and
+          // serialized line submission exactly as physical stdin does.
+          this.proxy.write(chunk);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      discardLeadingModalControls: (): void => {
+        if (!this.promptActive) return;
+        this.proxy.discardLeadingModalControls();
+      },
+      resumeInput: (resumeOptions) => this.resumeInput(resumeOptions),
+      flushSubmissions: async (): Promise<void> => {
+        await this.proxy.flushPendingInput();
+        // onLine serializes callbacks so multiline/image submissions cannot
+        // overtake one another. Loop because a delayed image Enter may append a
+        // callback while the previous queue is settling.
+        while (true) {
+          const pending = this.submissionQueue;
+          await pending.catch(() => undefined);
+          await Promise.resolve();
+          if (pending === this.submissionQueue) return;
+        }
+      },
+    };
+  }
+
+  private suspendInput(suspendOptions: Parameters<PromptInputSession["suspendInput"]>[0]): boolean {
+    if (!this.promptActive) return false;
+    if (this.inputSuspended) {
+      if (this.startupSuspensionPending) this.startupSuspensionClaimed = true;
+      return true;
+    }
+    if (suspendOptions?.preserveDisplay && this.promptSuspensionDepth === 0) {
+      // Alternate-screen UIs can leave the primary buffer byte-for-byte
+      // untouched. Retain its prompt and decorations so switching back does
+      // not emit a redraw that makes terminal emulators follow the cursor to
+      // the bottom of scrollback.
+      this.promptSuspensionDepth = 1;
+      this.suspendedLine = this.rl.line;
+      this.suspendedCursor = this.rl.cursor;
+      this.inputSuspendedWithPreservedDisplay = true;
+    } else if (!this.suspendPrompt()) {
+      // A private terminal control path can reach this method from a callback that
+      // has already suspended and erased the editor. Nest that suspension
+      // instead of rejecting the disclosure open; resumeInput() and the
+      // callback's finally block will unwind the two levels in order.
+      return false;
+    }
+    // Mute readline before releasing stdin so feedInput() can edit the same
+    // buffer without drawing over the alternate-screen owner. The ordinary
+    // path erased the prompt; preserveDisplay leaves it hidden in primary.
+    this.readlineOutputMuted = true;
+    this.proxy.setTerminalStateForwarding(false);
+    this.latestPromptEndPosition = undefined;
+    this.disconnectInput();
+    this.input.pause();
+    this.inputSuspended = true;
+    return true;
+  }
+
+  private resumeInput(resumeOptions: Parameters<PromptInputSession["resumeInput"]>[0]): void {
+    if (!this.promptActive || !this.inputSuspended) return;
+    if (resumeOptions?.discardLeadingModalControls) {
+      this.proxy.discardLeadingModalControls();
+    }
+    this.inputSuspended = false;
+    this.readlineOutputMuted = false;
+    this.proxy.setTerminalStateForwarding(true);
+    if (resumeOptions?.reacquireTerminalModes) {
+      this.bracketedPasteEnabled = false;
+    }
+    // readline requested Raw Mode when its interface was created. A
+    // start-suspended editor deliberately suppressed that request, and a
+    // full-screen owner restores its own prior mode before handing control
+    // back, so reassert the editor's terminal modes before reconnecting.
+    try {
+      if (!this.input.isRaw) this.input.setRawMode?.(true);
+    } catch {
+      // A disappearing TTY is handled by the normal stream/error lifecycle.
+    }
+    if (!this.bracketedPasteEnabled) {
+      this.bracketedPasteEnabled = true;
+      try {
+        this.options.output.write(ENABLE_BRACKETED_PASTE);
+      } catch {
+        // Keep the logical editor recoverable even if the terminal vanished.
       }
-    : undefined;
-  const deleteAtomicMarker = (): boolean => {
-    const collapsed = proxy.collapseMarkerBefore(rl.line, rl.cursor);
-    if (!collapsed || !suspendPrompt()) return false;
-    const mutableReadline = rl as unknown as {
+    }
+    const canReusePreservedDisplay = Boolean(
+      resumeOptions?.preserveDisplay &&
+      this.inputSuspendedWithPreservedDisplay &&
+      this.rl.line === this.suspendedLine &&
+      this.rl.cursor === this.suspendedCursor,
+    );
+    if (canReusePreservedDisplay) {
+      // Nothing was erased and nothing changed. Dropping the logical
+      // suspension is sufficient; any output here would force VS Code's
+      // terminal viewport to jump to the active cursor at the bottom.
+      this.promptSuspensionDepth = Math.max(0, this.promptSuspensionDepth - 1);
+    } else {
+      if (this.inputSuspendedWithPreservedDisplay) {
+        // The primary prompt was deliberately retained, but its state is now
+        // stale. Erase that old copy before using the ordinary state-derived
+        // resume path so drafts never appear twice.
+        this.eraseBelow();
+        this.erasePromptRows();
+      }
+      this.resumePrompt();
+    }
+    this.inputSuspendedWithPreservedDisplay = false;
+    // Reconnect only after the preserved prompt is visible. pipe() can make
+    // an already-buffered TTY flow synchronously, so connecting first could
+    // echo keys into a prompt that is still suspended.
+    this.connectInput();
+  }
+
+  // ---- Atomic paste and image markers ----
+
+  private deleteAtomicMarker(): boolean {
+    const collapsed = this.proxy.collapseMarkerBefore(this.rl.line, this.rl.cursor);
+    if (!collapsed || !this.suspendPrompt()) return false;
+    const mutableReadline = this.rl as unknown as {
       line: string;
       cursor: number;
     };
     mutableReadline.line = collapsed.line;
     mutableReadline.cursor = collapsed.cursor;
-    suspendedLine = collapsed.line;
-    suspendedCursor = collapsed.cursor;
-    resumePrompt();
-    notifyDraft();
+    this.suspendedLine = collapsed.line;
+    this.suspendedCursor = collapsed.cursor;
+    this.resumePrompt();
+    this.notifyDraft();
     return true;
-  };
-  const replaceAtomicMarker = (marker: string, replacement: string): boolean => {
-    const markerStart = rl.line.indexOf(marker);
-    if (markerStart < 0 || !suspendPrompt()) return false;
+  }
+
+  private replaceAtomicMarker(marker: string, replacement: string): boolean {
+    const markerStart = this.rl.line.indexOf(marker);
+    if (markerStart < 0 || !this.suspendPrompt()) return false;
     try {
       const markerEnd = markerStart + marker.length;
-      const previousLine = suspendedLine;
-      const previousCursor = suspendedCursor;
+      const previousLine = this.suspendedLine;
+      const previousCursor = this.suspendedCursor;
       const nextLine = `${previousLine.slice(0, markerStart)}${replacement}${previousLine.slice(markerEnd)}`;
       let nextCursor = previousCursor;
       if (previousCursor > markerStart) {
@@ -1304,52 +1464,31 @@ export function readPrompt(options: ReadPromptOptions): Promise<PromptSubmission
             ? markerStart + replacement.length
             : previousCursor + replacement.length - marker.length;
       }
-      const mutableReadline = rl as unknown as {
+      const mutableReadline = this.rl as unknown as {
         line: string;
         cursor: number;
       };
       mutableReadline.line = nextLine;
       mutableReadline.cursor = nextCursor;
-      suspendedLine = nextLine;
-      suspendedCursor = nextCursor;
+      this.suspendedLine = nextLine;
+      this.suspendedCursor = nextCursor;
       return true;
     } finally {
-      resumePrompt();
-      notifyDraft();
+      this.resumePrompt();
+      this.notifyDraft();
     }
-  };
-  proxy = new ImagePasteInputProxy(
-    input,
-    initialImageCount,
-    options.captureImage,
-    options.captureText,
-    options.textOnlyPaste ?? false,
-    showThinking,
-    deleteAtomicMarker,
-    replaceAtomicMarker,
-    Boolean(options.keepOpen && options.onInterrupt),
-    captureController.signal,
-    options.bracketedPasteIdleTimeoutMs,
-    options.clipboardCaptureTimeoutMs,
-  );
-  const startSuspended = Boolean(options.startSuspended && options.onSessionReady);
-  if (startSuspended) {
-    // readline configures Raw Mode during createInterface(). Suppress that
-    // physical transition until the lifecycle hook has either transferred
-    // ownership to a full-screen renderer or declined the lease.
-    proxy.setTerminalStateForwarding(false);
-    inputSuspended = true;
-    readlineOutputMuted = true;
-    promptSuspensionDepth = 1;
   }
-  const completionFor = (
+
+  // ---- Drafts and completion ----
+
+  private completionFor(
     text: string,
     cursor: number,
     images: readonly Readonly<ImageAttachment>[],
-  ): PromptCompletion | undefined => {
-    if (!options.completionProvider) return undefined;
+  ): PromptCompletion | undefined {
+    if (!this.options.completionProvider) return undefined;
     try {
-      const completion = options.completionProvider({ text, cursor, images });
+      const completion = this.options.completionProvider({ text, cursor, images });
       if (
         !completion ||
         cursor !== text.length ||
@@ -1365,19 +1504,15 @@ export function readPrompt(options: ReadPromptOptions): Promise<PromptSubmission
     } catch {
       return undefined;
     }
-  };
-  rl = readline.createInterface({
-    input: proxy,
-    output: readlineOutput,
-    terminal: true,
-  });
-  notifyDraft = (): void => {
+  }
+
+  private notifyDraft(): void {
     try {
-      const visibleText = stripInternalPasteNonce(rl.line);
-      const visibleCursor = stripInternalPasteNonce(rl.line.slice(0, rl.cursor)).length;
-      const images = proxy.referencedImages(rl.line);
-      const completion = completionFor(visibleText, visibleCursor, images);
-      options.onDraftChange?.({
+      const visibleText = stripInternalPasteNonce(this.rl.line);
+      const visibleCursor = stripInternalPasteNonce(this.rl.line.slice(0, this.rl.cursor)).length;
+      const images = this.proxy.referencedImages(this.rl.line);
+      const completion = this.completionFor(visibleText, visibleCursor, images);
+      this.options.onDraftChange?.({
         text: visibleText,
         cursor: visibleCursor,
         images,
@@ -1386,302 +1521,245 @@ export function readPrompt(options: ReadPromptOptions): Promise<PromptSubmission
     } catch {
       // A presentation callback cannot own the editor lifecycle.
     }
+  }
+
+  // ---- Physical input and lifecycle ----
+
+  private connectInput(): void {
+    if (this.inputConnected || this.settled) return;
+    this.input.pipe(this.proxy);
+    this.input.on("data", this.onRawInput);
+    this.inputConnected = true;
+    this.input.resume();
+  }
+
+  private disconnectInput(): void {
+    if (!this.inputConnected) return;
+    this.input.removeListener("data", this.onRawInput);
+    this.input.unpipe(this.proxy);
+    this.inputConnected = false;
+  }
+
+  private discardImages(images: readonly Readonly<ImageAttachment>[]): void {
+    if (images.length === 0 || !this.options.onDiscardImages) return;
+    void Promise.resolve(this.options.onDiscardImages(images)).catch(() => undefined);
+  }
+
+  private cleanup(): void {
+    const { options, input, proxy } = this;
+    // While suspended, the prompt has handed both pixels and terminal modes
+    // to the persistent full-screen renderer. Cleanup must only detach its
+    // logical editor state; writing control sequences or restoring the
+    // pre-prompt raw/flow state would corrupt the renderer behind it.
+    const suspendedAtCleanup = this.inputSuspended;
+    if (this.scheduledBelowDraw) clearImmediate(this.scheduledBelowDraw);
+    this.scheduledBelowDraw = undefined;
+    if (!suspendedAtCleanup) {
+      try {
+        this.eraseBelow();
+        this.eraseSuspendedResizePrompt();
+      } catch {
+        // Raw-mode and stream cleanup still matter if the TTY disappeared.
+      }
+    }
+    this.promptActive = false;
+    this.promptSuspensionDepth = 0;
+    if (this.sessionReady) {
+      this.sessionReady = false;
+      try {
+        options.onSessionReady?.(undefined);
+      } catch {
+        // Cleanup and raw-mode restoration must not depend on a lifecycle hook.
+      }
+    }
+    this.captureController.abort();
+    if (this.bracketedPasteEnabled) {
+      this.bracketedPasteEnabled = false;
+      if (!suspendedAtCleanup) {
+        try {
+          options.output.write(DISABLE_BRACKETED_PASTE);
+        } catch {
+          // The terminal may have disappeared while the prompt was active.
+        }
+      }
+    }
+    this.rl.removeListener("close", this.onClose);
+    this.rl.removeListener("line", this.onLine);
+    proxy.removeListener("error", this.onError);
+    options.signal?.removeEventListener("abort", this.onAbort);
+    proxy.removeListener("keypress", this.onBeforeKeypress);
+    proxy.removeListener("keypress", this.onAfterKeypress);
+    options.output.removeListener("resize", this.onBeforeResize);
+    options.output.removeListener("resize", this.onAfterResize);
+    this.disconnectInput();
+    this.discardImages(proxy.consumeUnsubmittedImages());
+    if (!proxy.destroyed) proxy.destroy();
+    if (!suspendedAtCleanup) {
+      try {
+        input.setRawMode?.(this.wasRaw);
+      } catch {
+        // The TTY may have disappeared while the prompt was active.
+      }
+      if (this.wasFlowing) input.resume();
+      else input.pause();
+    }
+    this.inputSuspended = false;
+    this.readlineOutputMuted = false;
+    try {
+      options.onDraftChange?.({ text: "", cursor: 0, images: [] });
+    } catch {
+      // Cleanup must not depend on a presentation callback.
+    }
+  }
+
+  private finish(answer?: string, error?: Error, closeInterface = true): void {
+    if (this.settled) return;
+    this.settled = true;
+    const consumed = answer === undefined ? undefined : this.proxy.consumeSubmission(answer);
+    if (consumed) this.discardImages(consumed.discardedImages);
+    this.rl.removeListener("close", this.onClose);
+    if (closeInterface) {
+      if (!this.inputSuspended) {
+        try {
+          this.eraseBelow();
+        } catch {
+          // Closing the interface must not depend on decorative output.
+        }
+      }
+      this.rl.close();
+    }
+    this.cleanup();
+    if (error) {
+      this.reject(error);
+      return;
+    }
+    if (answer === undefined) {
+      this.resolve(null);
+      return;
+    }
+    this.resolve(consumed?.submission ?? { text: answer, images: [], pasteErrors: [] });
+  }
+
+  private eraseSubmittedPrompt(): void {
+    if (!this.options.clearOnSubmit || !this.latestPromptEndPosition) return;
+    readline.cursorTo(this.options.output, 0);
+    readline.moveCursor(this.options.output, 0, -(this.latestPromptEndPosition.rows + 1));
+    readline.clearScreenDown(this.options.output);
+    this.latestPromptEndPosition = undefined;
+  }
+
+  // ---- Event listeners (stable references so cleanup can remove them) ----
+
+  private readonly onClose = (): void => this.finish(undefined, undefined, false);
+
+  private readonly onLine = (answer: string): void => {
+    const { options } = this;
+    // During alternate-screen editing there is no physical readline prompt
+    // to erase. Its last pre-suspension geometry is intentionally discarded
+    // by suspendInput().
+    if (!this.inputSuspended) this.eraseSubmittedPrompt();
+    if (!options.keepOpen || !options.onSubmit) {
+      this.finish(answer);
+      return;
+    }
+
+    const consumed = this.proxy.consumeSubmission(answer);
+    this.discardImages(consumed.discardedImages);
+    const submission = consumed.submission;
+    const hasContent =
+      submission.text.trim().length > 0 || submission.images.length > 0 || submission.pasteErrors.length > 0;
+    if (hasContent) {
+      this.submissionQueue = this.submissionQueue
+        .then(() => options.onSubmit?.(submission))
+        .then(() => undefined)
+        .catch(() => undefined);
+    }
+    if (this.inputSuspended) {
+      this.suspendedLine = this.rl.line;
+      this.suspendedCursor = this.rl.cursor;
+    }
+    this.notifyDraft();
+    if (!this.promptActive || this.inputSuspended) return;
+    this.updatePrompt();
+    this.rl.prompt();
+    this.drawBelow();
   };
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
+  private readonly onError = (): void => this.finish(undefined, new Error("Unable to read terminal input."));
 
-    const discardImages = (images: readonly Readonly<ImageAttachment>[]): void => {
-      if (images.length === 0 || !options.onDiscardImages) return;
-      void Promise.resolve(options.onDiscardImages(images)).catch(() => undefined);
-    };
+  private readonly onAbort = (): void => this.finish();
 
-    const cleanup = (): void => {
-      // While suspended, the prompt has handed both pixels and terminal modes
-      // to the persistent full-screen renderer. Cleanup must only detach its
-      // logical editor state; writing control sequences or restoring the
-      // pre-prompt raw/flow state would corrupt the renderer behind it.
-      const suspendedAtCleanup = inputSuspended;
-      if (scheduledBelowDraw) clearImmediate(scheduledBelowDraw);
-      scheduledBelowDraw = undefined;
-      if (!suspendedAtCleanup) {
-        try {
-          eraseBelow();
-          eraseSuspendedResizePrompt();
-        } catch {
-          // Raw-mode and stream cleanup still matter if the TTY disappeared.
-        }
-      }
-      promptActive = false;
-      promptSuspensionDepth = 0;
-      if (sessionReady) {
-        sessionReady = false;
-        try {
-          options.onSessionReady?.(undefined);
-        } catch {
-          // Cleanup and raw-mode restoration must not depend on a lifecycle hook.
-        }
-      }
-      captureController.abort();
-      if (bracketedPasteEnabled) {
-        bracketedPasteEnabled = false;
-        if (!suspendedAtCleanup) {
-          try {
-            options.output.write(DISABLE_BRACKETED_PASTE);
-          } catch {
-            // The terminal may have disappeared while the prompt was active.
-          }
-        }
-      }
-      rl.removeListener("close", onClose);
-      rl.removeListener("line", onLine);
-      proxy.removeListener("error", onError);
-      options.signal?.removeEventListener("abort", onAbort);
-      proxy.removeListener("keypress", onBeforeKeypress);
-      proxy.removeListener("keypress", onAfterKeypress);
-      options.output.removeListener("resize", onBeforeResize);
-      options.output.removeListener("resize", onAfterResize);
-      disconnectInput();
-      discardImages(proxy.consumeUnsubmittedImages());
-      if (!proxy.destroyed) proxy.destroy();
-      if (!suspendedAtCleanup) {
-        try {
-          input.setRawMode?.(wasRaw);
-        } catch {
-          // The TTY may have disappeared while the prompt was active.
-        }
-        if (wasFlowing) input.resume();
-        else input.pause();
-      }
-      inputSuspended = false;
-      readlineOutputMuted = false;
+  private readonly onRawInput = (chunk: Buffer | string): void => {
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (!data.includes(CTRL_C)) return;
+    if (this.options.keepOpen && this.options.onInterrupt) {
       try {
-        options.onDraftChange?.({ text: "", cursor: 0, images: [] });
+        this.options.onInterrupt();
       } catch {
-        // Cleanup must not depend on a presentation callback.
+        // Runtime cancellation remains best effort at the presentation edge.
       }
-    };
-    const finish = (answer?: string, error?: Error, closeInterface = true): void => {
-      if (settled) return;
-      settled = true;
-      const consumed = answer === undefined ? undefined : proxy.consumeSubmission(answer);
-      if (consumed) discardImages(consumed.discardedImages);
-      rl.removeListener("close", onClose);
-      if (closeInterface) {
-        if (!inputSuspended) {
-          try {
-            eraseBelow();
-          } catch {
-            // Closing the interface must not depend on decorative output.
-          }
-        }
-        rl.close();
-      }
-      cleanup();
-      if (error) {
-        reject(error);
-        return;
-      }
-      if (answer === undefined) {
-        resolve(null);
-        return;
-      }
-      resolve(consumed?.submission ?? { text: answer, images: [], pasteErrors: [] });
-    };
-    const onClose = (): void => finish(undefined, undefined, false);
-    const eraseSubmittedPrompt = (): void => {
-      if (!options.clearOnSubmit || !latestPromptEndPosition) return;
-      readline.cursorTo(options.output, 0);
-      readline.moveCursor(options.output, 0, -(latestPromptEndPosition.rows + 1));
-      readline.clearScreenDown(options.output);
-      latestPromptEndPosition = undefined;
-    };
-    const onLine = (answer: string): void => {
-      // During alternate-screen editing there is no physical readline prompt
-      // to erase. Its last pre-suspension geometry is intentionally discarded
-      // by suspendInput().
-      if (!inputSuspended) eraseSubmittedPrompt();
-      if (!options.keepOpen || !options.onSubmit) {
-        finish(answer);
-        return;
-      }
+      return;
+    }
+    this.finish();
+  };
 
-      const consumed = proxy.consumeSubmission(answer);
-      discardImages(consumed.discardedImages);
-      const submission = consumed.submission;
-      const hasContent =
-        submission.text.trim().length > 0 || submission.images.length > 0 || submission.pasteErrors.length > 0;
-      if (hasContent) {
-        submissionQueue = submissionQueue
-          .then(() => options.onSubmit?.(submission))
-          .then(() => undefined)
-          .catch(() => undefined);
-      }
-      if (inputSuspended) {
-        suspendedLine = rl.line;
-        suspendedCursor = rl.cursor;
-      }
-      notifyDraft();
-      if (!promptActive || inputSuspended) return;
-      updatePrompt();
-      rl.prompt();
-      drawBelow();
-    };
-    const onError = (): void => finish(undefined, new Error("Unable to read terminal input."));
-    const onAbort = (): void => finish();
-    const onRawInput = (chunk: Buffer | string): void => {
-      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (!data.includes(CTRL_C)) return;
-      if (options.keepOpen && options.onInterrupt) {
-        try {
-          options.onInterrupt();
-        } catch {
-          // Runtime cancellation remains best effort at the presentation edge.
-        }
-        return;
-      }
-      finish();
-    };
-    const onBeforeKeypress = (): void => {
-      if (inputSuspended) return;
-      eraseBelow();
-      if (options.clearOnSubmit) {
-        latestPromptEndPosition = promptGeometry().endPosition;
-      }
-    };
-    const onAfterKeypress = (_text?: string, key?: Readonly<{ name?: string }>): void => {
-      if (key?.name === "tab" && options.completionProvider) {
-        const mutableReadline = rl as unknown as {
-          line: string;
-          cursor: number;
-          _refreshLine?: () => void;
-        };
-        const insertedTab = mutableReadline.line.lastIndexOf("\t", Math.max(0, mutableReadline.cursor - 1));
-        if (insertedTab >= 0) {
-          const lineWithoutTab = `${mutableReadline.line.slice(0, insertedTab)}${mutableReadline.line.slice(insertedTab + 1)}`;
-          const visibleText = stripInternalPasteNonce(lineWithoutTab);
-          const visibleCursor = stripInternalPasteNonce(lineWithoutTab.slice(0, insertedTab)).length;
-          const completion = completionFor(visibleText, visibleCursor, proxy.referencedImages(lineWithoutTab));
-          mutableReadline.line = completion?.replacement ?? lineWithoutTab;
-          mutableReadline.cursor = completion ? completion.replacement.length : insertedTab;
-          mutableReadline._refreshLine?.();
-        }
-      }
-      // One input chunk can contain a large paste. Redraw once after readline
-      // consumes the burst instead of once for every decoded character.
-      if (inputSuspended) {
-        suspendedLine = rl.line;
-        suspendedCursor = rl.cursor;
-      }
-      notifyDraft();
-      if (!inputSuspended) scheduleBelowDraw();
-    };
-    const onBeforeResize = (): void => {
-      resizeInProgress = true;
-      eraseBelow();
-      if (promptSuspensionDepth === 0) updatePrompt();
-    };
-    const onAfterResize = (): void => {
-      resizeInProgress = false;
-      if (promptSuspensionDepth > 0) {
-        // Leave readline's repaint visible and internally synchronized. A
-        // later resize can now replace it without walking into stable output;
-        // resumePrompt() removes it once when the async action settles.
-        // readline receives the resize event through its proxied output, but
-        // cannot have repainted while the alternate-screen owner muted it.
-        suspendedPromptVisibleAfterResize = !readlineOutputMuted;
-        return;
-      }
-      drawBelow();
-    };
+  private readonly onBeforeKeypress = (): void => {
+    if (this.inputSuspended) return;
+    this.eraseBelow();
+    if (this.options.clearOnSubmit) {
+      this.latestPromptEndPosition = this.promptGeometry().endPosition;
+    }
+  };
 
-    rl.once("close", onClose);
-    if (options.keepOpen) rl.on("line", onLine);
-    else rl.once("line", onLine);
-    proxy.once("error", onError);
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-    if (options.signal?.aborted) {
-      finish();
-      return;
+  private readonly onAfterKeypress = (_text?: string, key?: Readonly<{ name?: string }>): void => {
+    if (key?.name === "tab" && this.options.completionProvider) this.acceptCompletion();
+    // One input chunk can contain a large paste. Redraw once after readline
+    // consumes the burst instead of once for every decoded character.
+    if (this.inputSuspended) {
+      this.suspendedLine = this.rl.line;
+      this.suspendedCursor = this.rl.cursor;
     }
-    if (
-      options.renderBelow ||
-      options.renderPrompt ||
-      options.clearOnSubmit ||
-      options.onDraftChange ||
-      options.completionProvider
-    ) {
-      // readline's own keypress/resize listeners remain the sole owners of the
-      // edit buffer. We only clear decoration immediately before their redraw
-      // and restore it immediately afterward.
-      proxy.prependListener("keypress", onBeforeKeypress);
-      proxy.on("keypress", onAfterKeypress);
-      if (options.renderBelow || options.renderPrompt) {
-        options.output.prependListener("resize", onBeforeResize);
-        options.output.on("resize", onAfterResize);
-      }
-    }
-    connectInput = (): void => {
-      if (inputConnected || settled) return;
-      input.pipe(proxy);
-      input.on("data", onRawInput);
-      inputConnected = true;
-      input.resume();
+    this.notifyDraft();
+    if (!this.inputSuspended) this.scheduleBelowDraw();
+  };
+
+  /** Replace the tab readline just inserted with the offered completion, if any. */
+  private acceptCompletion(): void {
+    const mutableReadline = this.rl as unknown as {
+      line: string;
+      cursor: number;
+      _refreshLine?: () => void;
     };
-    disconnectInput = (): void => {
-      if (!inputConnected) return;
-      input.removeListener("data", onRawInput);
-      input.unpipe(proxy);
-      inputConnected = false;
-    };
-    if (startSuspended) {
-      suspendedLine = rl.line;
-      suspendedCursor = rl.cursor;
-      startupSuspensionPending = true;
-      sessionReady = true;
-      try {
-        options.onSessionReady?.(promptSession);
-      } catch (error) {
-        startupSuspensionPending = false;
-        finish(undefined, error instanceof Error ? error : new Error(String(error)));
-        return;
-      }
-      startupSuspensionPending = false;
-      if (settled) return;
-      if (!startupSuspensionClaimed && inputSuspended) {
-        // Merely observing the early session does not require a caller to
-        // implement terminal ownership.
-        promptSession.resumeInput();
-      }
-      notifyDraft();
+    const insertedTab = mutableReadline.line.lastIndexOf("\t", Math.max(0, mutableReadline.cursor - 1));
+    if (insertedTab < 0) return;
+    const lineWithoutTab = `${mutableReadline.line.slice(0, insertedTab)}${mutableReadline.line.slice(insertedTab + 1)}`;
+    const visibleText = stripInternalPasteNonce(lineWithoutTab);
+    const visibleCursor = stripInternalPasteNonce(lineWithoutTab.slice(0, insertedTab)).length;
+    const completion = this.completionFor(visibleText, visibleCursor, this.proxy.referencedImages(lineWithoutTab));
+    mutableReadline.line = completion?.replacement ?? lineWithoutTab;
+    mutableReadline.cursor = completion ? completion.replacement.length : insertedTab;
+    mutableReadline._refreshLine?.();
+  }
+
+  private readonly onBeforeResize = (): void => {
+    this.resizeInProgress = true;
+    this.eraseBelow();
+    if (this.promptSuspensionDepth === 0) this.updatePrompt();
+  };
+
+  private readonly onAfterResize = (): void => {
+    this.resizeInProgress = false;
+    if (this.promptSuspensionDepth > 0) {
+      // Leave readline's repaint visible and internally synchronized. A
+      // later resize can now replace it without walking into stable output;
+      // resumePrompt() removes it once when the async action settles.
+      // readline receives the resize event through its proxied output, but
+      // cannot have repainted while the alternate-screen owner muted it.
+      this.suspendedPromptVisibleAfterResize = !this.readlineOutputMuted;
       return;
     }
-    connectInput();
-    // Observe the source as well as the serialized Transform. A clipboard read
-    // deliberately holds the Transform callback so Enter stays ordered behind
-    // it, but Ctrl+C must still be able to abort that read immediately.
-    bracketedPasteEnabled = true;
-    try {
-      options.output.write(ENABLE_BRACKETED_PASTE);
-    } catch (error) {
-      finish(undefined, error instanceof Error ? error : new Error(String(error)));
-      return;
-    }
-    // Keep the prompt and submitted line owned by the interface itself so an
-    // inline Thinking expansion can inspect and redraw the current edit buffer.
-    updatePrompt();
-    rl.prompt();
-    drawBelow();
-    notifyDraft();
-    if (options.onSessionReady) {
-      sessionReady = true;
-      try {
-        options.onSessionReady(promptSession);
-      } catch (error) {
-        finish(undefined, error instanceof Error ? error : new Error(String(error)));
-      }
-    }
-  });
+    this.drawBelow();
+  };
 }
 
 function invisiblePasteNonce(): string {
