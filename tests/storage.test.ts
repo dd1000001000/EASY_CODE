@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
@@ -96,6 +97,35 @@ describe("storage", () => {
         /Invalid Auto mode selection/u,
       );
       assert.equal(threads.recover(thread.threadId).mode, "plan");
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+  it("rejects an invalid creation snapshot before the journal makes it durable", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      const base = {
+        threadId: "thread_invalid_snapshot",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "code",
+        provider: "qwen",
+        model: "qwen3.7-plus",
+      } as const;
+      // The serializer is more permissive than the deserializer: an empty folder
+      // list or a malformed registry hash only fails the reader's round-trip.
+      assert.throws(() => threads.create({ ...base, workspaceFolders: [] }), /Invalid serialized session state/u);
+      assert.throws(
+        () => threads.create({ ...base, modelRegistryHash: "not-a-registry-hash" }),
+        /Invalid serialized session state/u,
+      );
+      assert.deepEqual(threads.journal(base.threadId).read(), []);
+      assert.equal(
+        threads.list().some((item) => item.threadId === base.threadId),
+        false,
+      );
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -503,6 +533,39 @@ describe("storage", () => {
       } finally {
         rmSync(dataDir, { recursive: true, force: true });
       }
+    }
+  });
+
+  it("rejects invalid serialized events without changing or repairing the journal", () => {
+    const dataDir = temporaryDataDir();
+    try {
+      const journal = new EventJournal(dataDir, "thread_invalid_payload");
+      journal.append({ type: "reasoning", payload: null });
+      for (const damaged of [false, true]) {
+        if (damaged) appendFileSync(journal.filePath, '{"broken":', "utf8");
+        const before = readFileSync(journal.filePath);
+        for (const payload of [() => undefined, Symbol("payload"), { toJSON: () => undefined }, 1n]) {
+          assert.throws(() => journal.append({ type: "reasoning", payload }));
+          assert.deepEqual(readFileSync(journal.filePath), before);
+        }
+        assert.throws(() => journal.append({ type: "reasoning", payload: null, eventId: 1 as unknown as string }));
+        assert.deepEqual(readFileSync(journal.filePath), before);
+      }
+      assert.equal(journal.append({ type: "reasoning", payload: null }).sequence, 2);
+      assert.equal(new EventJournal(dataDir, "thread_invalid_payload").read().length, 2);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects dot-segment thread IDs before creating journal directories", () => {
+    const dataDir = temporaryDataDir();
+    try {
+      for (const threadId of [".", ".."])
+        assert.throws(() => new EventJournal(dataDir, threadId), /Invalid thread id/u);
+      assert.equal(existsSync(path.join(dataDir, "threads")), false);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 

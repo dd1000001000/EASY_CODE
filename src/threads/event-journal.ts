@@ -54,7 +54,7 @@ interface CachedJournalScan {
 const MAX_STABLE_SCAN_ATTEMPTS = 3;
 
 function assertSafeThreadId(threadId: string): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(threadId)) {
+  if (!/^[A-Za-z0-9._-]+$/.test(threadId) || threadId === "." || threadId === "..") {
     throw new Error(`Invalid thread id: ${threadId}`);
   }
 }
@@ -165,11 +165,6 @@ export class EventJournal {
     }
 
     const scan = this.scan();
-    if (scan.damagedTail) {
-      truncateSync(this.filePath, scan.validLength);
-      this.cachedScan = undefined;
-      this.cachedEventIds = undefined;
-    }
     const previous = scan.events[scan.events.length - 1];
     const eventId = input.eventId ?? createId("event");
     const eventIds = this.cachedEventIds ?? new Set(scan.events.map((event) => event.eventId));
@@ -197,6 +192,14 @@ export class EventJournal {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Event payload is not JSON-serializable: ${message}`);
     }
+    // Validate the serialized representation before repairing or writing the
+    // journal. Functions, symbols, or toJSON() can omit a required payload.
+    const cachedRecord = immutableEvent(parseEvent(serialized, this.threadId));
+    if (scan.damagedTail) {
+      truncateSync(this.filePath, scan.validLength);
+      this.cachedScan = undefined;
+      this.cachedEventIds = undefined;
+    }
     const separator = scan.needsNewline ? "\n" : "";
     const appendedText = `${separator}${serialized}\n`;
     appendFileSync(this.filePath, appendedText, {
@@ -210,7 +213,6 @@ export class EventJournal {
       // Cache a parsed, detached record. The input payload and append() return
       // value retain their historical mutability without being able to poison
       // sequence or duplicate-ID validation in this trusted cache.
-      const cachedRecord = immutableEvent(parseEvent(serialized, this.threadId));
       scan.events.push(cachedRecord);
       eventIds.add(cachedRecord.eventId);
       this.cachedScan = {

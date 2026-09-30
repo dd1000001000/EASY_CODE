@@ -251,6 +251,13 @@ export class ThreadStore {
       updatedAt: now,
     };
 
+    const persistedState = serializeSessionState(state);
+    // Round-trip with the reader's rules before anything is durable: the
+    // serializer is more permissive than the deserializer, and a thread.created
+    // payload the deserializer rejects would make the Thread unrecoverable.
+    const detached = deserializeSessionState(JSON.parse(JSON.stringify(persistedState)));
+    detached.progressGuard = createProgressGuardState();
+
     let event!: EventRecord;
     this.storage.db.transaction(() => {
       if (journal.read().length > 0 || this.threadExists(threadId)) {
@@ -258,13 +265,11 @@ export class ThreadStore {
       }
       event = journal.append({
         type: "thread.created",
-        payload: { state: serializeSessionState(state) },
+        payload: { state: persistedState },
       });
       this.projection.projectState(state, "active");
       this.projection.projectEvent(event, journal.filePath);
     })();
-    const detached = deserializeSessionState(serializeSessionState(state));
-    detached.progressGuard = createProgressGuardState();
     return detached;
   }
 
