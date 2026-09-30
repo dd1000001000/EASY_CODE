@@ -2270,28 +2270,25 @@ export class EasyCodeApp {
       promptBundle: activePromptBundleBinding(),
       modelRegistryHash: this.state.modelRegistryHash,
     });
-    let nextLease: ThreadLease | undefined = this.threadStore.acquireThreadLease(nextState.threadId);
-    let currentChildrenPaused = false;
+    const nextLease = this.threadStore.acquireThreadLease(nextState.threadId);
     try {
-      currentChildrenPaused = true;
       await this.subagentHost.pauseSubagentsForResume();
       await this.cancelRunningCommands();
       this.threadStore.releaseThreadLease(previousLease);
     } catch (error) {
       const recoveryErrors: unknown[] = [error];
-      if (nextLease) {
-        try {
-          this.threadStore.releaseThreadLease(nextLease);
-        } catch (cleanupError) {
-          recoveryErrors.push(cleanupError);
-        }
+      try {
+        // The new thread was never shown; remove it rather than leave an empty conversation behind.
+        this.threadStore.releaseThreadLease(nextLease);
+        deleteThreadTree(this.storage, this.threadStore, nextState.threadId);
+      } catch (cleanupError) {
+        recoveryErrors.push(cleanupError);
       }
-      if (currentChildrenPaused) {
-        try {
-          this.subagentHost.restorePausedCurrentThread(previousThreadId);
-        } catch (restoreError) {
-          recoveryErrors.push(restoreError);
-        }
+      // Pausing may fail after stopping only some children, so always re-arm; restoring is idempotent.
+      try {
+        this.subagentHost.restorePausedCurrentThread(previousThreadId);
+      } catch (restoreError) {
+        recoveryErrors.push(restoreError);
       }
       if (recoveryErrors.length > 1) {
         throw new AggregateError(
@@ -2398,9 +2395,7 @@ export class EasyCodeApp {
       throw error;
     }
 
-    let currentChildrenPaused = false;
     try {
-      currentChildrenPaused = true;
       await this.subagentHost.pauseSubagentsForResume();
       await this.cancelRunningCommands();
       this.save();
@@ -2416,12 +2411,11 @@ export class EasyCodeApp {
           recoveryErrors.push(cleanupError);
         }
       }
-      if (currentChildrenPaused) {
-        try {
-          this.subagentHost.restorePausedCurrentThread(previousThreadId);
-        } catch (restoreError) {
-          recoveryErrors.push(restoreError);
-        }
+      // Pausing may fail after stopping only some children, so always re-arm; restoring is idempotent.
+      try {
+        this.subagentHost.restorePausedCurrentThread(previousThreadId);
+      } catch (restoreError) {
+        recoveryErrors.push(restoreError);
       }
       if (recoveryErrors.length > 1) {
         throw new AggregateError(

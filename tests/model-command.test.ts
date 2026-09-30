@@ -1077,6 +1077,13 @@ describe("thread leases", () => {
       originalRelease(lease as never);
     };
 
+    const threadIds = () =>
+      internals.threadStore
+        .list({ limit: 1000 })
+        .map((thread) => thread.threadId)
+        .sort();
+    const threadsBefore = threadIds();
+
     try {
       await assert.rejects(fixture.app.handleSlashCommand("/new"), /injected previous lease release failure/u);
       assert.equal(internals.state.threadId, parentThreadId);
@@ -1084,6 +1091,18 @@ describe("thread leases", () => {
       assert.equal(discardCalls, 1);
       assert.deepEqual(restored, [assignment.agentId]);
       assert.deepEqual(activated, []); // Manual startup preserves pending children without execution.
+      assert.deepEqual(threadIds(), threadsBefore, "a failed /new must not leave an empty thread behind");
+
+      // A pause that fails partway may already have stopped some children; they must be re-armed too.
+      fakeCoordinator.pause = async () => {
+        pauseCalls += 1;
+        throw new Error("injected partial pause failure");
+      };
+      await assert.rejects(fixture.app.handleSlashCommand("/new"), /injected partial pause failure/u);
+      assert.equal(internals.state.threadId, parentThreadId);
+      assert.equal(pauseCalls, 2);
+      assert.equal(discardCalls, 2);
+      assert.deepEqual(threadIds(), threadsBefore);
     } finally {
       internals.threadStore.releaseThreadLease = originalRelease as never;
       Object.defineProperty(fixture.app, "subagentCoordinator", {
