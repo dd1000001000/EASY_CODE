@@ -219,6 +219,33 @@ describe("command security floor", () => {
     );
   });
 
+  it("classifies an explicit shell by its resolved executable", () => {
+    const policy = new CommandPolicy();
+    const shell = (executablePath: string): ResolvedCommand => ({
+      program: "sh",
+      executablePath,
+      args: ["-c", "echo ok"],
+      cwdAbsolute: process.cwd(),
+      cwdRelative: ".",
+      executableInsideWorkspace: false,
+      trustedExecutable: true,
+      environment: {},
+      environmentKeys: [],
+    });
+    // Debian and Ubuntu resolve /bin/sh to dash.
+    for (const executablePath of ["/usr/bin/dash", "/bin/bash", "cmd.exe", "pwsh.exe"]) {
+      assert.equal(
+        policy.classify({ program: "sh", intent: "run" }, shell(executablePath), "code").capability,
+        "shell_exec",
+        executablePath,
+      );
+    }
+    assert.equal(
+      policy.classify({ program: "sh", intent: "run" }, shell("/usr/bin/python3"), "code").capability,
+      "workspace_exec",
+    );
+  });
+
   it("uses a bounded, monotonic control stream independent of display text", () => {
     const seen: SandboxWorkerControl[] = [];
     const stream = new SandboxControlStream("owned", (event) => seen.push(event), true);

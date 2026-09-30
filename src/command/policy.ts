@@ -3,6 +3,7 @@ import type { AgentMode } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
 import { inspectNetworkOperation } from "./network-policy.js";
+import { explicitShellKind } from "./shell.js";
 import type { CommandPolicyDecision, ResolvedCommand, RunCommandInput } from "./types.js";
 
 /** Risk annotations, not permission rules. Every new command is authorized by
@@ -30,8 +31,10 @@ export class CommandPolicy {
     } else if (["rm", "del", "rmdir", "remove-item", "mkfs", "dd", "shutdown", "kill", "pkill"].includes(name)) {
       capability = "destructive";
       risk = "destructive";
-    } else if (["sh", "bash", "cmd", "powershell", "pwsh"].includes(name)) capability = "shell_exec";
-    else if (
+    } else if (explicitShellKind(name)) {
+      // By resolved executable: /bin/sh is commonly a link to dash.
+      capability = "shell_exec";
+    } else if (
       !command.executableInsideWorkspace &&
       command.trustedExecutable &&
       (["ls", "pwd", "rg", "cat", "head", "tail"].includes(name) ||
