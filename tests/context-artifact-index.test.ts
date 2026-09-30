@@ -5,6 +5,7 @@ import path from "node:path";
 
 import {
   ContextArtifactIndex,
+  boundedIndexText,
   renderContextCheckpoint,
   renderPinnedCurrentState,
   renderRetrievedContext,
@@ -52,6 +53,16 @@ function createState(store: ThreadStore, threadId: string): SessionState {
 }
 
 describe("layered Thread context index", () => {
+  it("never lets bounded index text exceed its limit, even below the omission marker length", () => {
+    const value = "abcdefghij".repeat(20);
+    for (const maximum of [0, 10, 50, 51, 60, 199, 200]) {
+      const bounded = boundedIndexText(value, maximum);
+      assert.ok(bounded.length <= maximum, `limit ${maximum} produced ${bounded.length} characters`);
+    }
+    assert.equal(boundedIndexText(value, 10), "abcdefghij");
+    assert.equal(boundedIndexText(value, 200), value);
+  });
+
   it("indexes the middle of large captured sources in bounded batches and rebuilds after chunk settings change", async () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);

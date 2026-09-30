@@ -246,12 +246,15 @@ function cjkSubstringTerms(query: string): string[] {
   return terms;
 }
 
-function boundedText(value: string, maximum: number): string {
+export function boundedIndexText(value: string, maximum: number): string {
   if (value.length <= maximum) return value;
   const marker = "\n...[content omitted from the retrieval index]...\n";
-  const available = Math.max(0, maximum - marker.length);
+  if (maximum <= marker.length) return value.slice(0, Math.max(0, maximum));
+  const available = maximum - marker.length;
   const head = Math.ceil(available * 0.7);
-  return `${value.slice(0, head)}${marker}${value.slice(-(available - head))}`;
+  // slice(-0) would return the whole value, so an empty tail must be explicit.
+  const tail = available - head > 0 ? value.slice(-(available - head)) : "";
+  return `${value.slice(0, head)}${marker}${tail}`;
 }
 
 function artifactText(
@@ -448,15 +451,15 @@ function taskGraphCheckpoint(state: Readonly<SessionState>): object | undefined 
     tasks: state.taskGraph.tasks.map((task) => ({
       id: task.id,
       title: task.title,
-      description: boundedText(task.description, 2_000),
+      description: boundedIndexText(task.description, 2_000),
       status: task.status,
       owner: task.owner,
       dependencies: [...task.dependencies],
-      inputs: task.inputs.map((input) => boundedText(input, 1_000)),
-      expectedArtifacts: task.expectedArtifacts.map((artifact) => boundedText(artifact, 1_000)),
-      completionChecks: task.completionChecks.map((check) => boundedText(check, 1_000)),
-      failureHandling: boundedText(task.failureHandling, 1_000),
-      ...(task.blockerDetails ? { blocker: boundedText(task.blockerDetails.reason, 2_000) } : {}),
+      inputs: task.inputs.map((input) => boundedIndexText(input, 1_000)),
+      expectedArtifacts: task.expectedArtifacts.map((artifact) => boundedIndexText(artifact, 1_000)),
+      completionChecks: task.completionChecks.map((check) => boundedIndexText(check, 1_000)),
+      failureHandling: boundedIndexText(task.failureHandling, 1_000),
+      ...(task.blockerDetails ? { blocker: boundedIndexText(task.blockerDetails.reason, 2_000) } : {}),
       ...(task.completionEvidence?.length ? { completionEvidence: task.completionEvidence.slice(-4) } : {}),
     })),
   };
@@ -469,16 +472,16 @@ function planCheckpoint(review: Readonly<PlanReviewState>): object {
       id: review.proposal.id,
       revision: review.proposal.revision,
       title: review.proposal.title,
-      overview: boundedText(review.proposal.overview, 4_000),
+      overview: boundedIndexText(review.proposal.overview, 4_000),
       steps: review.proposal.steps.map((step) => ({
-        title: boundedText(step.title, 1_000),
-        description: boundedText(step.description, 2_000),
-        verification: boundedText(step.verification, 2_000),
+        title: boundedIndexText(step.title, 1_000),
+        description: boundedIndexText(step.description, 2_000),
+        verification: boundedIndexText(step.verification, 2_000),
       })),
       proposedByTurnId: review.proposal.proposedByTurnId,
       proposedAt: review.proposal.proposedAt,
     },
-    ...(review.feedback ? { feedback: boundedText(review.feedback, 4_000) } : {}),
+    ...(review.feedback ? { feedback: boundedIndexText(review.feedback, 4_000) } : {}),
     ...(review.approvedAt ? { approvedAt: review.approvedAt } : {}),
   };
 }
@@ -508,9 +511,9 @@ function latestFailureCheckpoint(state: Readonly<SessionState>): Readonly<Record
       toolFailure = {
         messageIndex: index,
         tool: toolName,
-        ...(typeof parsed.summary === "string" ? { summary: boundedText(parsed.summary, 2_000) } : {}),
-        ...(typeof parsed.error === "string" ? { error: boundedText(parsed.error, 2_000) } : {}),
-        ...(typeof data?.path === "string" ? { path: boundedText(data.path, 1_000) } : {}),
+        ...(typeof parsed.summary === "string" ? { summary: boundedIndexText(parsed.summary, 2_000) } : {}),
+        ...(typeof parsed.error === "string" ? { error: boundedIndexText(parsed.error, 2_000) } : {}),
+        ...(typeof data?.path === "string" ? { path: boundedIndexText(data.path, 1_000) } : {}),
       };
       break;
     } catch {
@@ -533,7 +536,7 @@ function latestFailureCheckpoint(state: Readonly<SessionState>): Readonly<Record
             cwd: command.cwd,
             status: command.status,
             exitCode: command.exitCode,
-            summary: boundedText(command.summary, 2_000),
+            summary: boundedIndexText(command.summary, 2_000),
             timestamp: command.timestamp,
           },
         }
@@ -543,7 +546,7 @@ function latestFailureCheckpoint(state: Readonly<SessionState>): Readonly<Record
           task: {
             id: blockedTask.id,
             title: blockedTask.title,
-            blocker: boundedText(blockedTask.blockerDetails?.reason ?? "Task is blocked.", 2_000),
+            blocker: boundedIndexText(blockedTask.blockerDetails?.reason ?? "Task is blocked.", 2_000),
           },
         }
       : {}),
@@ -555,8 +558,8 @@ function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<strin
   const latestFailure = latestFailureCheckpoint(state);
   return {
     version: 2,
-    objective: state.goal ? boundedText(redactSensitiveInformation(state.goal), 12_000) : null,
-    constraints: state.constraints.map((constraint) => boundedText(redactSensitiveInformation(constraint), 2_000)),
+    objective: state.goal ? boundedIndexText(redactSensitiveInformation(state.goal), 12_000) : null,
+    constraints: state.constraints.map((constraint) => boundedIndexText(redactSensitiveInformation(constraint), 2_000)),
     execution: {
       mode: state.mode,
       provider: state.provider,
@@ -591,7 +594,7 @@ function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<strin
       status: command.status,
       exitCode: command.exitCode,
       durationMs: command.durationMs,
-      summary: boundedText(redactSensitiveInformation(command.summary), 2_000),
+      summary: boundedIndexText(redactSensitiveInformation(command.summary), 2_000),
       timestamp: command.timestamp,
       ...(command.sourceAgentId ? { sourceAgentId: command.sourceAgentId } : {}),
       ...(command.sourceTaskId ? { sourceTaskId: command.sourceTaskId } : {}),
