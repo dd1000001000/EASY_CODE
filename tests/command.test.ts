@@ -289,7 +289,8 @@ describe("command runtime", () => {
       assert.equal(result.ok, true);
       const output = result.data as { stdout: { text: string }; executed: { program: string } };
       assert.match(output.stdout.text, /^\d+\.\d+/u);
-      assert.match(output.executed.program, /npm(?:\.cmd)?$/iu);
+      // Windows runs the npm.cmd shim; POSIX resolves the npm symlink, often to npm-cli.js.
+      assert.match(output.executed.program, process.platform === "win32" ? /npm(?:\.cmd)?$/iu : /\/npm(?:-cli\.js)?$/u);
     });
   });
 

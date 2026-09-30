@@ -224,6 +224,7 @@ describe("command usability and boundaries", () => {
   it("reports a masked failure end-to-end and preserves normalized metadata through start/poll/projection", async () =>
     fixture(async (root, manager) => {
       // An actual platform shell pipeline; no network and no host mutation outside fixture.
+      // POSIX systems commonly ship only python3, Windows only python.
       await writeFile(
         path.join(root, "runtests.py"),
         "import sys\nprint('FAIL: test_boundary (tests.Batch)')\nprint('AssertionError: 2 != 3')\nprint('FAILED (failures=1)')\nsys.exit(1)\n",
@@ -236,7 +237,7 @@ describe("command usability and boundaries", () => {
           args:
             process.platform === "win32"
               ? ["/c", "python runtests.py 2>&1 | findstr FAIL"]
-              : ["-c", "python runtests.py 2>&1 | grep -E 'FAIL|Error'"],
+              : ["-c", "python3 runtests.py 2>&1 | grep -E 'FAIL|Error'"],
           intent: "verify",
         },
         context(root),

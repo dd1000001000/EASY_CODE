@@ -402,8 +402,10 @@ describe("sandbox command execution boundary", () => {
 
   it("classifies a timeout before the ready marker as sandbox initialization failure", async () => {
     await withWorkspace(async (root, manager) => {
+      // Long enough for the worker process to start and report its stage on a slow host;
+      // it never reports ready, so this still times out before the ready marker.
       const runtime = new CommandRuntime(manager, new CommandPolicy(), new NeverReadySandboxBackend(), undefined, {
-        sandboxStartupTimeoutMs: 50,
+        sandboxStartupTimeoutMs: 2_000,
       });
 
       const output = await runtime.run(
