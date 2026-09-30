@@ -58,6 +58,7 @@
     "build:test": "npm run bundle:build && npm run clean:build:test && tsc -p tsconfig.test.json",
     "format": "prettier --write \"{src,tests,scripts}/**/*.{ts,vue,js,cjs,mjs,css,html,json}\"",
     "format:check": "prettier --check \"{src,tests,scripts}/**/*.{ts,vue,js,cjs,mjs,css,html,json}\"",
+    "check:size": "node scripts/check-function-size.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && vue-tsc -p src/web/tsconfig.json --noEmit",
     "install:doctor": "node dist/index.js install doctor",
     "postinstall": "node scripts/postinstall.cjs",
