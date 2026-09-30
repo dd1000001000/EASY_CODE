@@ -342,47 +342,7 @@ export function recoverFromEvents(threadId: string, events: readonly EventRecord
       }
       appendMessageIfNew(state, payload.message);
     } else if (event.type === "tool.result" && payload) {
-      foldPendingOperations(state, payload);
-      if ("progressObservation" in payload) {
-        if (typeof payload.callId !== "string" || typeof payload.tool !== "string") {
-          throw new Error(`Missing progress call binding in event ${event.eventId}`);
-        }
-        const observation = parseProgressObservation(payload.progressObservation, {
-          sourceEventId: event.eventId,
-          sourceCallId: payload.callId,
-          tool: payload.tool,
-        });
-        const expectedScope =
-          typeof payload.taskId === "string"
-            ? `thread:${event.threadId}/task:${payload.taskId}`
-            : typeof event.turnId === "string"
-              ? `thread:${event.threadId}/turn:${event.turnId}`
-              : undefined;
-        if (!expectedScope || observation.scopeKey !== expectedScope) {
-          throw new Error(`Invalid progress scope in event ${event.eventId}`);
-        }
-        const progressFold = foldProgressObservation(state.progressGuard, observation);
-        state.progressGuard = progressFold.state;
-      }
-      if ("taskGraph" in payload) {
-        state.taskGraph = replayTaskGraphResult(state, event, payload);
-      }
-      if ("planReview" in payload) {
-        replayPlanReviewEvent(state, event, payload);
-      }
-      if (isChatMessage(payload.message) && payload.message.role === "tool") {
-        appendMessageIfNew(state, payload.message);
-      } else {
-        const callId = payload.callId;
-        const tool = payload.tool;
-        if (typeof callId !== "string" || typeof tool !== "string") continue;
-        appendMessageIfNew(state, {
-          role: "tool",
-          tool_call_id: callId,
-          name: tool,
-          content: JSON.stringify(payload.result ?? null).slice(0, 64_000),
-        });
-      }
+      if (!replayToolResult(state, event, payload)) continue;
     } else if (event.type === "subagent.reconciled" && payload && "taskGraph" in payload) {
       state.taskGraph = replayTaskGraphResult(state, event, payload);
     } else if (event.type === "subagent.artifact" && payload) {
@@ -390,25 +350,7 @@ export function recoverFromEvents(threadId: string, events: readonly EventRecord
       mergeFileChanges(state.changes, artifacts.changes);
       mergeCommandAudits(state.commands, artifacts.commands);
     } else if (event.type === "turn.recovered" && payload && event.turnId) {
-      const interruptedExecution = interruptedPlanExecutions.get(event.turnId);
-      const expectedPlanReview = interruptedExecution
-        ? returnPlanExecutionToReview(interruptedExecution, "interrupted")
-        : undefined;
-      validateInterruptedTurnRecovery(state, event, payload, expectedPlanReview);
-      for (const message of payload.messages as ChatMessage[]) {
-        if (message.role !== "tool" && message.role !== "assistant") {
-          throw new Error(`Invalid recovery message role in event ${event.eventId}`);
-        }
-        appendMessageIfNew(state, message);
-      }
-      if (payload.planReview !== undefined) {
-        if (!isPlanReviewState(payload.planReview)) {
-          throw new Error(`Invalid recovered plan review in event ${event.eventId}`);
-        }
-        state.planReview = clonePlanReviewState(payload.planReview);
-      }
-      interruptedPlanExecutions.delete(event.turnId);
-      state.activeTurnId = undefined;
+      replayRecoveredTurn(state, event, event.turnId, payload, interruptedPlanExecutions);
     } else if (event.type === "plan.execution_returned_to_review" && payload && event.turnId) {
       state.planReview = validatePlanExecutionReturnedToReview(
         state,
@@ -437,78 +379,18 @@ export function recoverFromEvents(threadId: string, events: readonly EventRecord
         appendMessageIfNew(state, payload.message);
       }
     } else if (event.type === "context.compaction.committed" && payload) {
-      const transaction = state.compactionControl?.transaction;
-      if (payload.transactionId !== undefined) {
-        if (!transaction || payload.transactionId !== transaction.id) throw new Error("Unknown compaction commit");
-        if (transaction.status === "committed") continue;
-        if (
-          transaction.start !== state.compactedMessageCount ||
-          payload.compactedMessageCount !== transaction.end ||
-          transaction.sourceHash !== prefixHash(state, transaction.end) ||
-          ((!transaction.candidate || transaction.feedback) && !transaction.fallback) ||
-          (transaction.snapshot && payload.snapshotDigest !== transaction.snapshot.digest) ||
-          (transaction.snapshot && compactionSnapshot(state, transaction.end).digest !== transaction.snapshot.digest) ||
-          asPayloadRecord(payload.contextCompactionMetadata)?.sourceEndMessageIndex !== transaction.end ||
-          asPayloadRecord(payload.contextCompactionMetadata)?.sourceStartMessageIndex !== transaction.start
-        )
-          throw new Error("Stale compaction commit");
-      }
-      const summary = payload.summary;
-      const compactedMessageCount = payload.compactedMessageCount;
-      if (
-        typeof summary === "string" &&
-        typeof compactedMessageCount === "number" &&
-        Number.isInteger(compactedMessageCount) &&
-        compactedMessageCount >= state.compactedMessageCount &&
-        compactedMessageCount <= state.messages.length
-      ) {
-        const replayed = deserializeSessionState({
-          ...serializeSessionState(state),
-          workingSummary: summary,
-          compactedMessageCount,
-          ...(payload.contextIntentLedger === undefined ? {} : { contextIntentLedger: payload.contextIntentLedger }),
-          ...(payload.contextCompactionMetadata === undefined
-            ? {}
-            : { contextCompactionMetadata: payload.contextCompactionMetadata }),
-        });
-        state.workingSummary = replayed.workingSummary;
-        state.compactedMessageCount = replayed.compactedMessageCount;
-        state.contextIntentLedger = replayed.contextIntentLedger;
-        state.contextCompactionMetadata = replayed.contextCompactionMetadata;
-        if (payload.transactionId !== undefined && transaction) {
-          transaction.status = "committed";
-          transaction.candidate = undefined;
-          transaction.feedback = undefined;
-          transaction.semantic = undefined;
-          transaction.fallback = undefined;
-          state.compactionControl!.seed = undefined;
-        }
-      }
+      if (!replayCompactionCommit(state, payload)) continue;
     } else if (event.type === "command.audit.recorded" && payload) {
       const entry = payload.entry as CommandAuditEntry | undefined;
       if (entry && typeof entry.id === "string" && !state.commands.some((command) => command.id === entry.id)) {
         state.commands.push({ ...entry, args: [...entry.args] });
       }
-    } else if (event.type === "command.approval_prefix_granted") {
-      if (event.phase !== "completed" || !payload || typeof payload.commandPrefix !== "string") {
-        throw new Error(`Invalid command approval prefix grant in event ${event.eventId}`);
-      }
-      state.commandApprovalPrefixes = validateCommandApprovalPrefixes([
-        ...state.commandApprovalPrefixes.filter((prefix) => prefix !== payload.commandPrefix),
-        payload.commandPrefix,
-      ]);
-    } else if (event.type === "command.approval_prefix_revoked") {
-      if (event.phase !== "completed" || typeof payload?.commandPrefix !== "string")
-        throw new Error("Invalid prefix revocation event");
-      const prefix = normalizeCommandApprovalPrefix(payload.commandPrefix);
-      state.commandApprovalPrefixes = state.commandApprovalPrefixes.filter(
-        (p) => normalizeCommandApprovalPrefix(p) !== prefix,
-      );
-    } else if (event.type === "approval.tool_granted") {
-      if (event.phase !== "completed" || typeof payload?.key !== "string") {
-        throw new Error(`Invalid tool approval grant in event ${event.eventId}`);
-      }
-      state.toolApprovalGrants = validateToolApprovalGrants([...(state.toolApprovalGrants ?? []), payload.key]);
+    } else if (
+      event.type === "command.approval_prefix_granted" ||
+      event.type === "command.approval_prefix_revoked" ||
+      event.type === "approval.tool_granted"
+    ) {
+      replayApprovalGrant(state, event, payload);
     } else if (event.type === "review.assignment.event") {
       foldReviewEvent(state, event.payload);
     } else if (event.type === "completion.rejected" || event.type === "completion.resolved") {
@@ -524,6 +406,162 @@ export function recoverFromEvents(threadId: string, events: readonly EventRecord
     throw new Error(`Recovered thread id ${state.threadId} does not match ${threadId}`);
   }
   return state;
+}
+
+/** Fold a tool result: pending operations, progress observation, task graph and plan review, then its tool message. Returns false when the result names no call to answer (the event then leaves updatedAt alone). */
+function replayToolResult(state: SessionState, event: EventRecord, payload: Record<string, unknown>): boolean {
+  foldPendingOperations(state, payload);
+  if ("progressObservation" in payload) {
+    if (typeof payload.callId !== "string" || typeof payload.tool !== "string") {
+      throw new Error(`Missing progress call binding in event ${event.eventId}`);
+    }
+    const observation = parseProgressObservation(payload.progressObservation, {
+      sourceEventId: event.eventId,
+      sourceCallId: payload.callId,
+      tool: payload.tool,
+    });
+    const expectedScope =
+      typeof payload.taskId === "string"
+        ? `thread:${event.threadId}/task:${payload.taskId}`
+        : typeof event.turnId === "string"
+          ? `thread:${event.threadId}/turn:${event.turnId}`
+          : undefined;
+    if (!expectedScope || observation.scopeKey !== expectedScope) {
+      throw new Error(`Invalid progress scope in event ${event.eventId}`);
+    }
+    const progressFold = foldProgressObservation(state.progressGuard, observation);
+    state.progressGuard = progressFold.state;
+  }
+  if ("taskGraph" in payload) {
+    state.taskGraph = replayTaskGraphResult(state, event, payload);
+  }
+  if ("planReview" in payload) {
+    replayPlanReviewEvent(state, event, payload);
+  }
+  if (isChatMessage(payload.message) && payload.message.role === "tool") {
+    appendMessageIfNew(state, payload.message);
+  } else {
+    const callId = payload.callId;
+    const tool = payload.tool;
+    if (typeof callId !== "string" || typeof tool !== "string") return false;
+    appendMessageIfNew(state, {
+      role: "tool",
+      tool_call_id: callId,
+      name: tool,
+      content: JSON.stringify(payload.result ?? null).slice(0, 64_000),
+    });
+  }
+  return true;
+}
+
+/** Fold the recovery of an interrupted turn: its closing messages and, for an interrupted plan execution, the review it returns to. */
+function replayRecoveredTurn(
+  state: SessionState,
+  event: EventRecord,
+  turnId: string,
+  payload: Record<string, unknown>,
+  interruptedPlanExecutions: Map<string, PlanReviewState>,
+): void {
+  const interruptedExecution = interruptedPlanExecutions.get(turnId);
+  const expectedPlanReview = interruptedExecution
+    ? returnPlanExecutionToReview(interruptedExecution, "interrupted")
+    : undefined;
+  validateInterruptedTurnRecovery(state, event, payload, expectedPlanReview);
+  for (const message of payload.messages as ChatMessage[]) {
+    if (message.role !== "tool" && message.role !== "assistant") {
+      throw new Error(`Invalid recovery message role in event ${event.eventId}`);
+    }
+    appendMessageIfNew(state, message);
+  }
+  if (payload.planReview !== undefined) {
+    if (!isPlanReviewState(payload.planReview)) {
+      throw new Error(`Invalid recovered plan review in event ${event.eventId}`);
+    }
+    state.planReview = clonePlanReviewState(payload.planReview);
+  }
+  interruptedPlanExecutions.delete(turnId);
+  state.activeTurnId = undefined;
+}
+
+/** Fold a committed compaction after checking it against the open transaction. Returns false for a repeated commit (the event then leaves updatedAt alone). */
+function replayCompactionCommit(state: SessionState, payload: Record<string, unknown>): boolean {
+  const transaction = state.compactionControl?.transaction;
+  if (payload.transactionId !== undefined) {
+    if (!transaction || payload.transactionId !== transaction.id) throw new Error("Unknown compaction commit");
+    if (transaction.status === "committed") return false;
+    if (
+      transaction.start !== state.compactedMessageCount ||
+      payload.compactedMessageCount !== transaction.end ||
+      transaction.sourceHash !== prefixHash(state, transaction.end) ||
+      ((!transaction.candidate || transaction.feedback) && !transaction.fallback) ||
+      (transaction.snapshot && payload.snapshotDigest !== transaction.snapshot.digest) ||
+      (transaction.snapshot && compactionSnapshot(state, transaction.end).digest !== transaction.snapshot.digest) ||
+      asPayloadRecord(payload.contextCompactionMetadata)?.sourceEndMessageIndex !== transaction.end ||
+      asPayloadRecord(payload.contextCompactionMetadata)?.sourceStartMessageIndex !== transaction.start
+    )
+      throw new Error("Stale compaction commit");
+  }
+  const summary = payload.summary;
+  const compactedMessageCount = payload.compactedMessageCount;
+  if (
+    typeof summary === "string" &&
+    typeof compactedMessageCount === "number" &&
+    Number.isInteger(compactedMessageCount) &&
+    compactedMessageCount >= state.compactedMessageCount &&
+    compactedMessageCount <= state.messages.length
+  ) {
+    const replayed = deserializeSessionState({
+      ...serializeSessionState(state),
+      workingSummary: summary,
+      compactedMessageCount,
+      ...(payload.contextIntentLedger === undefined ? {} : { contextIntentLedger: payload.contextIntentLedger }),
+      ...(payload.contextCompactionMetadata === undefined
+        ? {}
+        : { contextCompactionMetadata: payload.contextCompactionMetadata }),
+    });
+    state.workingSummary = replayed.workingSummary;
+    state.compactedMessageCount = replayed.compactedMessageCount;
+    state.contextIntentLedger = replayed.contextIntentLedger;
+    state.contextCompactionMetadata = replayed.contextCompactionMetadata;
+    if (payload.transactionId !== undefined && transaction) {
+      transaction.status = "committed";
+      transaction.candidate = undefined;
+      transaction.feedback = undefined;
+      transaction.semantic = undefined;
+      transaction.fallback = undefined;
+      state.compactionControl!.seed = undefined;
+    }
+  }
+  return true;
+}
+
+/** Fold a command-prefix grant or revocation, or a tool approval grant. */
+function replayApprovalGrant(
+  state: SessionState,
+  event: EventRecord,
+  payload: Record<string, unknown> | undefined,
+): void {
+  if (event.type === "command.approval_prefix_granted") {
+    if (event.phase !== "completed" || !payload || typeof payload.commandPrefix !== "string") {
+      throw new Error(`Invalid command approval prefix grant in event ${event.eventId}`);
+    }
+    state.commandApprovalPrefixes = validateCommandApprovalPrefixes([
+      ...state.commandApprovalPrefixes.filter((prefix) => prefix !== payload.commandPrefix),
+      payload.commandPrefix,
+    ]);
+  } else if (event.type === "command.approval_prefix_revoked") {
+    if (event.phase !== "completed" || typeof payload?.commandPrefix !== "string")
+      throw new Error("Invalid prefix revocation event");
+    const prefix = normalizeCommandApprovalPrefix(payload.commandPrefix);
+    state.commandApprovalPrefixes = state.commandApprovalPrefixes.filter(
+      (p) => normalizeCommandApprovalPrefix(p) !== prefix,
+    );
+  } else if (event.type === "approval.tool_granted") {
+    if (event.phase !== "completed" || typeof payload?.key !== "string") {
+      throw new Error(`Invalid tool approval grant in event ${event.eventId}`);
+    }
+    state.toolApprovalGrants = validateToolApprovalGrants([...(state.toolApprovalGrants ?? []), payload.key]);
+  }
 }
 
 export function replaySteeringEvent(
