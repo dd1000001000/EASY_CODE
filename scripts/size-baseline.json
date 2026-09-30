@@ -10,7 +10,6 @@
   "src/command/runtime.ts": 2073,
   "src/command/runtime.ts#CommandRuntime.authorizeCommand": 314,
   "src/command/runtime.ts#CommandRuntime.executeNormalizedCommand": 623,
-  "src/context/compaction-transaction.ts#runCompactionTransaction": 528,
   "src/memory/memory-manager.ts#MemoryManager.commitModelMutations": 302,
   "src/review/application.ts#runWorkspaceReviewAttempt": 420,
   "src/runtime/agent.ts": 4282,
