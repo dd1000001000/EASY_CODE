@@ -1,83 +1,85 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AppImageInputs, type AppImageInputsContext } from "./app/image-inputs.js";
+import { AppShellCommands, type AppShellCommandsContext } from "./app/shell-commands.js";
+import { AppThreadSessions, type AppThreadSessionsContext } from "./app/thread-sessions.js";
+import { AppTurnExecution, type AppTurnExecutionContext } from "./app/turn-execution.js";
+import type { ActiveTurnSteering, EasyCodeAppOptions, ToolSourceFactory } from "./app/types.js";
+import type { ProjectWorkspace } from "./projects/types.js";
 import { TaskBudget } from "./runtime/task-budget.js";
 import { BenchmarkContainerBackend } from "./sandbox/benchmark-backend.js";
 
-import chalk from "chalk";
-
+import { ApprovalFlow, type ApprovalFlowContext } from "./app/approval-flow.js";
+import { ApprovalReviewer, type ApprovalReviewerContext } from "./app/approval-reviewer.js";
+import { InfoCommands, type InfoCommandsContext } from "./app/info-commands.js";
+import { McpServerController, type McpServerControllerContext } from "./app/mcp-servers.js";
+import { ModelSelection, type ModelSelectionContext } from "./app/model-selection.js";
+import { RuntimeAssembly, type RuntimeAssemblyContext } from "./app/runtime-assembly.js";
+import { SubagentHost, type SubagentHostContext } from "./app/subagent-host.js";
+import {
+  releaseOrphanedSubagentTasks,
+  repairInterruptedTurn,
+  resumeRecoverySummary,
+  type ResumeRecoverySummary,
+} from "./app/thread-recovery.js";
 import { consumeHarborProviderApiKeyFile, resolveHarborOuterSandbox } from "./benchmarks/swebench.js";
-import { Terminal, printBanner } from "./cli/terminal.js";
-import { formatTokenCount } from "./cli/token-count.js";
-import type { AppInteractionPort, UserSubmission } from "./ui/interaction-port.js";
-import { helpText, parseModelCommand, parseSlashCommand } from "./cli/slash-command.js";
-import { SystemKeyringCredentialStore, type ApiKeyCredentialStore } from "./config/credentials.js";
-import { loadEasyCodeConfig } from "./config/loader.js";
-import { readLastModel } from "./config/last-model.js";
-import { executeLanguageCommand, readLanguage } from "./i18n/language.js";
-import { languageName, translate } from "./i18n/catalog.js";
-import { McpConfigStore, USER_MCP_CONFIG_PATH } from "./mcp/config.js";
-import { McpConnections, McpToolSource } from "./mcp/source.js";
-import { MCP_SERVER_ACTION_IDS } from "./mcp/menu.js";
-import { SkillStore } from "./skills/store.js";
+import { Terminal } from "./cli/terminal.js";
 import { ApprovalQueue, type ApprovalReview } from "./command/approval-agent.js";
 import { CommandRuntime } from "./command/runtime.js";
+import { SystemKeyringCredentialStore, type ApiKeyCredentialStore } from "./config/credentials.js";
+import { readLastModel } from "./config/last-model.js";
+import { loadEasyCodeConfig } from "./config/loader.js";
 import { ContextArtifactIndex } from "./context/artifact-index.js";
 import { ContextManager } from "./context/manager.js";
+import { WorkspaceToolObserver } from "./coordination/observer.js";
 import type {
-  AgentMode,
   AgentRunResult,
   ApprovalRequest,
-  ApprovalPolicyName,
-  ChatMessage,
   CommandExecutionMode,
   EasyCodeConfig,
   EventRecord,
   ImageAttachment,
   PlanProposal,
-  ProviderName,
   SessionState,
-  ThinkingEffort,
-  TurnSteeringEntry,
 } from "./core/types.js";
+import { DownloadBroker } from "./downloads/broker.js";
+import { translate } from "./i18n/catalog.js";
+import { readLanguage } from "./i18n/language.js";
 import {
   ImageStore,
-  MAX_IMAGES_PER_MODEL_REQUEST,
   SystemClipboardImageReader,
-  assertThreadImageNumberAvailable,
-  nextThreadImageNumber,
   assertDataDirectoryOutsideWorkspace,
   prepareDataDirectoryOutsideWorkspace,
-  validateImageAttachmentCollection,
   type ClipboardImageReader,
 } from "./images/index.js";
+import { LocalLayaClient } from "./local-decision/client.js";
+import { McpConfigStore, USER_MCP_CONFIG_PATH } from "./mcp/config.js";
+import { McpConnections, McpToolSource } from "./mcp/source.js";
 import { LocalEmbeddingModel } from "./memory/embedding-model.js";
-import { GLOBAL_MEMORY_WORKSPACE_ID, MemoryManager, projectMemoryIdFromRoot } from "./memory/memory-manager.js";
 import { MemoryMaintenance } from "./memory/maintenance.js";
+import { GLOBAL_MEMORY_WORKSPACE_ID, MemoryManager, projectMemoryIdFromRoot } from "./memory/memory-manager.js";
 import { MemoryVectorIndex } from "./memory/vector-index.js";
-import { formatPlanProposal } from "./plans/plan.js";
-import { activePromptBundleBinding, ensurePromptBundle } from "./prompt-bundle/index.js";
-import { deleteThreadTree } from "./threads/delete-thread.js";
-import { ThreadTitleStore } from "./threads/thread-title.js";
 import {
-  PROVIDER_CATALOG,
-  providerLabel,
-  requireCatalogModel,
-  requireVisionModel,
-  resolveCatalogModel,
-  effectiveContextWindow,
-  validateProviderImageAttachments,
   USER_MODEL_REGISTRY_PATH,
+  effectiveContextWindow,
+  requireCatalogModel,
+  resolveCatalogModel,
   sweBenchVerified50Profile,
 } from "./models/catalog.js";
-import { thinkingEffortIsApplied } from "./models/thinking.js";
+import { activePromptBundleBinding, ensurePromptBundle } from "./prompt-bundle/index.js";
 import { createProvider } from "./providers/factory.js";
+import {
+  DocumentConverter,
+  ThreadDocumentService,
+  ThreadResourceStore,
+  type ThreadResourceAttachment,
+} from "./resources/index.js";
 import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
-import { LocalLayaClient } from "./local-decision/client.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
-import { WorkspaceToolObserver } from "./coordination/observer.js";
 import { NativeSandboxBackend } from "./sandbox/native-backend.js";
 import { NativeSandboxStartupService } from "./sandbox/native-startup.js";
-import { runSandboxStartupGuide, type SandboxStartupService } from "./sandbox/startup.js";
+import { type SandboxStartupService } from "./sandbox/startup.js";
+import { SkillStore } from "./skills/store.js";
 import { createStorage, workspaceIdFromRoot, type EasyCodeStorage } from "./storage/database.js";
 import {
   SubagentCoordinator,
@@ -86,114 +88,28 @@ import {
 } from "./subagents/coordinator.js";
 import { SubagentMessageMailbox } from "./subagents/messages.js";
 import { WorkspaceMutationLock } from "./subagents/workspace-mutation-lock.js";
-import { BuiltinToolSource } from "./tools/builtin-source.js";
-import { ToolCatalog, type ToolCatalogSnapshot, type ToolSource } from "./tools/catalog.js";
-import type { ToolExecutionAuthorizer, ToolExecutionAuthorizationRequest } from "./tools/execution-gateway.js";
-import { type ToolApprovalIdentity } from "./tools/approval.js";
-import { type ToolApprovalReview } from "./tools/approval-agent.js";
-import { DownloadBroker } from "./downloads/broker.js";
+import { deleteThreadTree } from "./threads/delete-thread.js";
 import { ThreadStore, peekThreadWorkspaceRoot, type ThreadLease, type ThreadSummary } from "./threads/thread-store.js";
+import { ThreadTitleStore } from "./threads/thread-title.js";
+import { type ToolApprovalReview } from "./tools/approval-agent.js";
+import { type ToolApprovalIdentity } from "./tools/approval.js";
+import { BuiltinToolSource } from "./tools/builtin-source.js";
+import { ToolCatalog, type ToolCatalogSnapshot } from "./tools/catalog.js";
+import type { ToolExecutionAuthorizationRequest, ToolExecutionAuthorizer } from "./tools/execution-gateway.js";
 import type { UISessionInfo } from "./ui/contracts.js";
-import type { PlanReviewDecision } from "./ui/interaction-port.js";
-import { taskGraphView } from "./tasks/task-graph.js";
-import { createId } from "./utils/ids.js";
-import { WorkspaceManager, type WorkspaceRestoreSummary } from "./workspace/manager.js";
-import { ExecutionEnvironmentManager } from "./workspace/execution-environment.js";
-import type { ProjectWorkspace } from "./projects/types.js";
-import { ProjectIndex } from "./web-server/projects.js";
-import {
-  DocumentConverter,
-  ThreadDocumentService,
-  ThreadResourceStore,
-  type ThreadResourceAttachment,
-} from "./resources/index.js";
-import {
-  type ResumeRecoverySummary,
-  releaseOrphanedSubagentTasks,
-  repairInterruptedTurn,
-  resumeRecoverySummary,
-} from "./app/thread-recovery.js";
-import {
-  json,
-  stripPasteFailureMarkers,
-  stripImageMarkers,
-  renderPromptBundleText,
-  parseQuotedArguments,
-} from "./app/text.js";
+import type { AppInteractionPort, PlanReviewDecision } from "./ui/interaction-port.js";
 import { samePath } from "./utils/paths.js";
-import { McpServerController, type McpServerControllerContext } from "./app/mcp-servers.js";
-import { ModelSelection, type ModelSelectionContext } from "./app/model-selection.js";
-import { ApprovalReviewer, type ApprovalReviewerContext } from "./app/approval-reviewer.js";
-import { ApprovalFlow, type ApprovalFlowContext } from "./app/approval-flow.js";
-import { InfoCommands, type InfoCommandsContext } from "./app/info-commands.js";
-import { SubagentHost, type SubagentHostContext } from "./app/subagent-host.js";
-import { RuntimeAssembly, type RuntimeAssemblyContext } from "./app/runtime-assembly.js";
+import { ProjectIndex } from "./web-server/projects.js";
+import { ExecutionEnvironmentManager } from "./workspace/execution-environment.js";
+import { WorkspaceManager } from "./workspace/manager.js";
 
 // Re-exported so the package entry (src/index.ts `export *`) keeps its public API.
+export { attributeSubagentCommandAudit } from "./app/subagent-host.js";
 export {
   releaseOrphanedSubagentTasks,
   repairInterruptedTurn,
   type ResumeRecoverySummary,
 } from "./app/thread-recovery.js";
-export { attributeSubagentCommandAudit } from "./app/subagent-host.js";
-
-export interface EasyCodeAppOptions {
-  workspaceRoot?: string;
-  /** Host-owned logical project identity and active folder membership. */
-  projectWorkspace?: ProjectWorkspace;
-  provider?: ProviderName;
-  model?: string;
-  mode?: AgentMode;
-  approvalPolicy?: ApprovalPolicyName;
-  thinkingEffort?: ThinkingEffort;
-  assumeYes?: boolean;
-  /** Optional aggregate model-request limit for one non-interactive task. */
-  maxModelRequests?: number;
-  resumeThreadId?: string;
-  startupInteraction?: "none" | "select-model" | "ensure-api-key";
-  /** Run the retained-UI sandbox readiness guide before model selection. */
-  sandboxStartup?: boolean;
-  /** Dependency injection for sandbox startup tests. */
-  sandboxStartupService?: SandboxStartupService;
-  terminal?: AppInteractionPort;
-  /** Share this lock between concurrent hosted Threads in one workspace. */
-  workspaceMutationLock?: WorkspaceMutationLock;
-  /** Web hosts reuse one interaction stream while switching workspace sessions. */
-  keepInteractionOpen?: boolean;
-  /** Dependency injection for isolated tests; false disables keyring reads. */
-  credentialStore?: ApiKeyCredentialStore | false;
-  /** Images queued before the first prompt; the option may be repeated by the CLI. */
-  imagePaths?: readonly string[];
-  /** Internal composition seam for future managed tool adapters such as MCP. */
-  toolSourceFactories?: readonly ToolSourceFactory[];
-  /** Host-owned approval bridge for effectful tools from those sources. */
-  authorizeToolExecution?: ToolExecutionAuthorizer;
-  /** Dependency injection for clipboard tests. */
-  clipboardImageReader?: ClipboardImageReader;
-}
-
-export interface ToolSourceFactoryContext {
-  readonly workspaceRoot: string;
-  readonly threadId: string;
-  readonly role: "main_agent" | "subagent";
-  readonly agentId?: string;
-  readonly assignedTaskId?: string;
-}
-
-export type ToolSourceFactory = (context: Readonly<ToolSourceFactoryContext>) => ToolSource | Promise<ToolSource>;
-
-interface ExecutePromptOptions {
-  modeOverride?: "plan" | "code";
-  approvedPlan?: Pick<PlanProposal, "id" | "revision">;
-}
-
-interface ActiveTurnSteering {
-  readonly threadId: string;
-  readonly controller: AbortController;
-  readonly notifier: TurnSteeringAttemptNotifier;
-  readonly requestImages: readonly ImageAttachment[];
-  readonly draftImages: Map<string, ImageAttachment>;
-}
 
 export class EasyCodeApp {
   private readonly taskBudgets = new Map<string, TaskBudget>();
@@ -781,9 +697,7 @@ export class EasyCodeApp {
     return this.state.planReview?.proposal;
   }
   nextHostedImageLabel(stagedCount = 0): string {
-    const number = nextThreadImageNumber(this.state.messages, this.pendingImages) + stagedCount;
-    assertThreadImageNumberAvailable(number);
-    return `Image #${number}`;
+    return this.imageInputs.nextHostedImageLabel(stagedCount);
   }
 
   async startNewHostedThread(): Promise<void> {
@@ -802,38 +716,24 @@ export class EasyCodeApp {
     this.syncTerminalView();
     this.announceResumeRecovery();
   }
-
   async importHostedImage(data: Buffer, label: string, sourceName?: string): Promise<ImageAttachment> {
-    this.requireCurrentModelVision();
-    const image = await this.imageStore.importBuffer(this.state.threadId, label, data, sourceName);
-    try {
-      validateProviderImageAttachments(this.state.provider, [image]);
-      return image;
-    } catch (error) {
-      await this.imageStore.remove(this.state.threadId, image).catch(() => undefined);
-      throw error;
-    }
+    return this.imageInputs.importHostedImage(data, label, sourceName);
   }
 
   discardHostedImage(image: ImageAttachment): Promise<void> {
-    return this.imageStore.remove(this.state.threadId, image);
+    return this.imageInputs.discardHostedImage(image);
   }
 
   async importHostedDocument(data: Buffer, filename: string, mediaType: string): Promise<ThreadResourceAttachment> {
-    return this.threadDocumentService.import({
-      threadId: this.state.threadId,
-      filename,
-      mediaType,
-      data,
-    });
+    return this.imageInputs.importHostedDocument(data, filename, mediaType);
   }
 
   hostedDocumentMaxBytes(): number {
-    return this.threadDocumentService.maxBytes;
+    return this.imageInputs.hostedDocumentMaxBytes();
   }
 
   discardHostedResource(resource: ThreadResourceAttachment): Promise<void> {
-    return this.threadResourceStore.remove(this.state.threadId, resource.id);
+    return this.imageInputs.discardHostedResource(resource);
   }
 
   /** A browser supplies the decision, while the existing Journal transition remains authoritative. */
@@ -842,168 +742,18 @@ export class EasyCodeApp {
     if (!this.state.planReview) throw new Error("This Thread has no pending plan.");
     await this.processPendingPlanReview(true, decision);
   }
-
   async runInteractive(): Promise<void> {
-    if (!this.terminal.isInteractive()) {
-      throw new Error('Interactive mode requires a TTY; use `easy-code run "<task>"` for non-interactive use.');
-    }
-    // Start the retained shell before startup selection so the initial
-    // provider/model/effort flow uses the same modal overlays as /model.
-    this.terminal.beginShell(this.terminalSessionInfo());
-    if (this.sandboxStartupService) {
-      this.sandboxSetupDeferred = false;
-      if (
-        !(await runSandboxStartupGuide(this.sandboxStartupService, this.terminal, true, () => {
-          this.sandboxSetupDeferred = true;
-        }))
-      )
-        return;
-    }
-    if (!(await this.prepareInteractiveStartup())) return;
-    this.syncTerminalView();
-    printBanner(this.terminal, readLanguage(this.storage));
-    if (!this.terminal.isInlineShell()) this.infoCommands.printStatus();
-    this.announceResumeRecovery();
-    this.startMemoryMaintenance();
-
-    while (!this.closed && !this.uninstallRequested) {
-      this.syncTerminalView();
-      if (this.state.planReview) {
-        try {
-          if (!(await this.processPendingPlanReview(true))) return;
-        } catch (error) {
-          this.terminal.error(error instanceof Error ? error.message : String(error));
-          // A failed adjustment leaves the previous proposal pending, so keep
-          // the review gate active instead of accepting an unrelated prompt.
-          if (this.state.planReview) continue;
-        }
-      }
-
-      const promptImages: ImageAttachment[] = [];
-      let promptOpen = true;
-      let response: UserSubmission | null;
-      try {
-        response = await this.terminal.readPrompt(this.prompt(), {
-          initialImageCount: nextThreadImageNumber(this.state.messages, this.pendingImages) - 1,
-          captureImage: async (index, signal) => {
-            const attachment = await this.captureClipboardImage(
-              index,
-              [...this.pendingImages, ...promptImages],
-              signal,
-            );
-            if (!promptOpen) {
-              await this.imageStore.remove(this.state.threadId, attachment).catch(() => undefined);
-              throw new Error("The prompt was closed before the clipboard image finished loading.");
-            }
-            promptImages.push(attachment);
-            return attachment;
-          },
-          captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
-        });
-      } catch (error) {
-        await this.discardImages(promptImages);
-        throw error;
-      } finally {
-        promptOpen = false;
-      }
-      if (response === null) {
-        await this.discardImages(promptImages);
-        await this.clearPendingImages();
-        return;
-      }
-      const referencedImageIds = new Set(response.images.map((image) => image.id));
-      await this.discardImages(promptImages.filter((image) => !referencedImageIds.has(image.id)));
-      for (const error of response.pasteErrors) {
-        this.terminal.error(`Image paste failed: ${error}`);
-      }
-      const input = stripPasteFailureMarkers(response.text);
-      const images = [...this.pendingImages, ...response.images];
-      if (!input && images.length === 0) continue;
-
-      // Image markers are removed only while recognizing slash commands. They
-      // remain in normal prompts so the provider can preserve the user's
-      // intended ordering when several screenshots are referenced.
-      const commandInput = stripImageMarkers(input, response.images);
-      const slash = parseSlashCommand(commandInput);
-      if (slash) {
-        if (response.images.length) {
-          this.pendingImages.push(...response.images);
-          this.terminal.info(`Queued ${response.images.map((image) => image.label).join(", ")} for the next task.`);
-        }
-        try {
-          const shouldExit = await this.handleSlashCommand(commandInput);
-          if (shouldExit) return;
-        } catch (error) {
-          this.terminal.error(error instanceof Error ? error.message : String(error));
-        }
-        continue;
-      }
-
-      let result: AgentRunResult;
-      try {
-        result = await this.submitUserMessage(input || "Analyze the attached image(s).", images);
-        this.pendingImages = [];
-      } catch (error) {
-        this.pendingImages = images;
-        this.terminal.error(error instanceof Error ? error.message : String(error));
-        continue;
-      }
-      if (result.planProposal) {
-        try {
-          if (!(await this.processPendingPlanReview(false))) return;
-        } catch (error) {
-          this.terminal.error(error instanceof Error ? error.message : String(error));
-        }
-      }
-    }
+    return this.shellCommands.runInteractive();
   }
-
   async runOnce(prompt: string): Promise<AgentRunResult> {
-    this.announceResumeRecovery();
-    if (this.state.planReview) {
-      throw new Error(
-        `Thread ${this.state.threadId} has a ${this.state.planReview.status.replace(/_/gu, " ")} ` +
-          `plan (${this.state.planReview.proposal.id} revision ` +
-          `${this.state.planReview.proposal.revision}). Resume it interactively to review or execute the plan.`,
-      );
-    }
-    const normalized = prompt.trim();
-    if (!normalized && this.pendingImages.length === 0) {
-      throw new Error("A non-empty prompt or at least one image is required");
-    }
-    const result = await this.executePrompt(normalized || "Analyze the attached image(s).", this.pendingImages);
-    this.pendingImages = [];
-    if (result.planProposal) {
-      this.terminal.info(`Resume thread ${result.threadId} interactively to approve, reject, or adjust this plan.`);
-    }
-    return result;
+    return this.turnExecution.runOnce(prompt);
   }
-
-  /** Submit a user turn without depending on the CLI prompt-reading loop. */
   async submitUserMessage(
     text: string,
     images: readonly ImageAttachment[] = [],
     resources: readonly ThreadResourceAttachment[] = [],
   ): Promise<AgentRunResult> {
-    if (this.compacting) throw new Error("Wait for context compaction to finish before sending a message.");
-    if (this.state.planReview) {
-      throw new Error("Review the pending plan before starting another request.");
-    }
-    if (!text.trim() && images.length === 0 && resources.length === 0) {
-      throw new Error("A non-empty prompt or at least one attachment is required");
-    }
-    for (const resource of resources) {
-      const stored = await this.threadResourceStore.get(this.state.threadId, resource.uri);
-      if (stored.id !== resource.id || stored.filename !== resource.filename) {
-        throw new Error("A Thread resource no longer matches its stored metadata.");
-      }
-    }
-    const resourceNotice = resources.length
-      ? `\n\nAttached read-only Thread resources:\n${resources
-          .map((resource) => `- ${resource.filename}: ${resource.uri}`)
-          .join("\n")}\nUse read_file with these exact paths to inspect their contents.`
-      : "";
-    return this.executePrompt(`${text.trim()}${resourceNotice}`.trim(), images, true);
+    return this.turnExecution.submitUserMessage(text, images, resources);
   }
 
   /** Cancel only the currently active turn; presentation hosts choose their own cancel gesture. */
@@ -1013,253 +763,11 @@ export class EasyCodeApp {
     controller.abort();
     return true;
   }
-
-  /** Queue an adjustment for the running turn; the Journal owns it after enqueue succeeds. */
   async submitAdjustment(text: string, images: readonly ImageAttachment[] = []): Promise<number> {
-    if (this.isCompacting()) throw new Error("Adjustments are unavailable during context compaction.");
-    if (parseSlashCommand(text)?.name === "compact")
-      throw new Error("/compact is only available when the conversation is idle.");
-    const active = this.activeTurnSteering;
-    const turnId = this.state.activeTurnId;
-    if (!active || !turnId || active.threadId !== this.state.threadId || active.controller.signal.aborted) {
-      throw new Error("The active task finished before this adjustment could be queued.");
-    }
-    if (!text.trim() && images.length === 0) throw new Error("An adjustment needs text or an image.");
-    if (images.length > 0) this.requireCurrentModelVision();
-    const unique = new Map<string, ImageAttachment>();
-    for (const image of active.requestImages) unique.set(image.id, image);
-    for (const entry of this.threadStore.pendingTurnSteering(active.threadId)) {
-      for (const image of entry.message.images ?? []) unique.set(image.id, image);
-    }
-    for (const image of active.draftImages.values()) unique.set(image.id, image);
-    for (const image of images) unique.set(image.id, image);
-    validateImageAttachmentCollection([...unique.values()]);
-    validateProviderImageAttachments(this.state.provider, images);
-    const entry: TurnSteeringEntry = this.threadStore.enqueueTurnSteering(active.threadId, turnId, {
-      role: "user",
-      content: text,
-      ...(images.length ? { images: images.map((image) => ({ ...image })) } : {}),
-    });
-    this.dirty = true;
-    // The durable message, not the editor, now owns these attachments.
-    for (const image of images) active.draftImages.delete(image.id);
-    active.notifier.notify(entry.sequence);
-    this.terminal.addQueuedAdjustment(entry.sequence, text, images);
-    try {
-      for (const image of images) await this.imageStore.commit(active.threadId, image);
-    } catch (error) {
-      this.terminal.error(
-        `Adjustment #${entry.sequence} is queued, but attachment finalization failed: ` +
-          (error instanceof Error ? error.message : String(error)),
-      );
-    }
-    return entry.sequence;
+    return this.turnExecution.submitAdjustment(text, images);
   }
-
   async handleSlashCommand(input: string): Promise<boolean> {
-    const command = parseSlashCommand(input);
-    if (!command) return false;
-    if (this.compacting) throw new Error("Wait for context compaction to finish before using commands.");
-
-    switch (command.name) {
-      case "compact":
-        if (command.args.length) throw new Error("Usage: /compact");
-        await this.compactCurrentSession();
-        return false;
-      case "language": {
-        const result = executeLanguageCommand(this.storage, command.args);
-        this.terminal.setLanguage?.(result.language);
-        this.terminal.success(
-          translate(result.language, command.args.length ? "language.changed" : "language.current", {
-            language: languageName(result.language),
-          }),
-        );
-        return false;
-      }
-      case "mode": {
-        this.subagentHost.assertNoRunningSubagents("switch modes");
-        const mode = command.args[0] as AgentMode | undefined;
-        if (!mode || !["plan", "auto", "code"].includes(mode)) {
-          throw new Error("Usage: /mode plan|auto|code");
-        }
-        if (mode !== this.state.mode && this.pendingPlan()) {
-          throw new Error("Resolve the pending plan review before switching modes.");
-        }
-        if (mode !== this.state.mode && this.state.taskGraph && this.state.taskGraph.status !== "completed") {
-          throw new Error("Finish or resolve the active task DAG before switching modes.");
-        }
-        this.state.mode = mode;
-        this.config.mode = mode;
-        this.dirty = true;
-        this.save();
-        this.terminal.setSessionInfo(this.terminalSessionInfo());
-        const language = readLanguage(this.storage);
-        this.terminal.success(
-          translate(language, "cli.modeSwitched", {
-            mode:
-              language === "zh_cn"
-                ? translate(language, mode === "plan" ? "ui.modePlan" : mode === "code" ? "ui.modeCode" : "ui.modeAuto")
-                : mode,
-          }),
-        );
-        return false;
-      }
-      case "provider": {
-        this.subagentHost.assertNoRunningSubagents("switch providers");
-        const provider = command.args[0] as ProviderName | undefined;
-        const supportedProviders = PROVIDER_CATALOG.map((entry) => entry.provider);
-        if (!provider || command.args.length !== 1 || !supportedProviders.includes(provider)) {
-          throw new Error(`Usage: /provider ${supportedProviders.join("|")}`);
-        }
-        this.modelSelection.requireProviderApiKey(provider);
-        const model = requireCatalogModel(provider, this.config.providers[provider]!.model).id;
-        this.modelSelection.commitModelSelection(provider, model, "Provider switched to");
-        return false;
-      }
-      case "model": {
-        this.subagentHost.assertNoRunningSubagents("switch models or thinking effort");
-        const request = parseModelCommand(command.args);
-        if (request.action === "select") {
-          await this.modelSelection.selectModelFromPicker(true);
-          return false;
-        }
-
-        const provider = request.provider ?? this.state.provider;
-        const model = requireCatalogModel(provider, request.model).id;
-        this.modelSelection.requireProviderApiKey(provider);
-        this.modelSelection.commitModelSelection(provider, model, "Model switched to", request.thinkingEffort);
-        return false;
-      }
-      case "orchestration": {
-        await this.updateOrchestration(command.args);
-        return false;
-      }
-      case "approval":
-        if (
-          command.args.length > 1 ||
-          (command.args[0] && !["manual", "auto_approve", "unrestricted"].includes(command.args[0]))
-        )
-          throw new Error("Usage: /approval [manual|auto_approve|unrestricted]");
-        this.assertNoRunningCommands("change command execution mode");
-        await this.selectCommandExecutionMode(true, command.args[0] as CommandExecutionMode | undefined);
-        return false;
-      case "status":
-        this.infoCommands.printStatus();
-        return false;
-      case "workspace": {
-        await this.updateWorkspaceCommand(command.rawArgs);
-        return false;
-      }
-      case "image": {
-        if (!command.rawArgs) throw new Error("Usage: /image <path|clipboard|clear>");
-        if (command.rawArgs.toLowerCase() === "clear") {
-          const count = this.pendingImages.length;
-          await this.clearPendingImages();
-          this.terminal.success(translate(readLanguage(this.storage), "cli.imagesCleared", { count }));
-          return false;
-        }
-        this.requireCurrentModelVision();
-        if (command.rawArgs.toLowerCase() === "clipboard") {
-          const attachment = await this.captureClipboardImage(
-            nextThreadImageNumber(this.state.messages, this.pendingImages),
-          );
-          this.pendingImages.push(attachment);
-          this.terminal.success(translate(readLanguage(this.storage), "cli.imageQueued", { label: attachment.label }));
-          return false;
-        }
-        await this.queueImagePath(command.rawArgs, true);
-        return false;
-      }
-      case "tools":
-        await this.infoCommands.printTools();
-        return false;
-      case "skills":
-        if (command.args.length) throw new Error("Usage: /skills");
-        await this.infoCommands.showSkills();
-        return false;
-      case "mcp":
-        if (command.args.length !== 0 && command.args.length !== 2)
-          throw new Error(`Usage: /mcp [server-id ${MCP_SERVER_ACTION_IDS.join("|")}]`);
-        if (
-          command.args.length === 2 &&
-          (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(command.args[0]!) ||
-            !(MCP_SERVER_ACTION_IDS as readonly string[]).includes(command.args[1]!))
-        )
-          throw new Error("Invalid MCP server or action.");
-        await this.showMcpServers(
-          command.args.length === 2 ? { serverId: command.args[0]!, action: command.args[1]! } : undefined,
-        );
-        return false;
-      case "permissions":
-        this.infoCommands.updatePermissions(command.args);
-        return false;
-      case "context":
-        this.terminal.write(
-          `${json({
-            configuredWindowTokens: this.config.limits.maxContextTokens,
-            effectiveTokenBudget: this.contextManager.tokenCapacity ?? null,
-            thresholds: {
-              reference: this.config.limits.contextReferenceTriggerRatio,
-              summary: this.config.limits.contextCompactionTriggerRatio,
-              force: this.config.limits.contextForceRatio,
-              target: this.config.limits.contextCompactionTargetRatio,
-            },
-            ...this.contextManager.inspect(this.state, this.activeContextCharLimit()),
-            lastProviderRequest:
-              this.lastProviderContext?.threadId === this.state.threadId ? this.lastProviderContext : null,
-            note: "Durable history remains complete locally. projectedActiveChars and lastProviderRequest reflect the lightweight provider projection; null means this process has not sent a request for the current Thread yet.",
-          })}\n`,
-        );
-        return false;
-      case "usage": {
-        if (command.args.length) throw new Error("Usage: /usage");
-        this.terminal.write(
-          `${json({
-            threadId: this.state.threadId,
-            ...this.threadStore.modelUsageSummary(this.state.threadId),
-            note: "Totals include completed provider responses reported by this EASY CODE version. Failed requests and providers that omit usage cannot be assigned exact tokens.",
-          })}\n`,
-        );
-        return false;
-      }
-      case "memory":
-        this.infoCommands.printMemory(command.args);
-        return false;
-      case "sessions":
-        this.infoCommands.printSessions();
-        return false;
-      case "resume": {
-        if (command.args.length > 1) throw new Error("Usage: /resume [thread-id]");
-        const threadId = command.args[0] ?? (await this.selectResumeThread());
-        if (!threadId) {
-          this.terminal.info(translate(readLanguage(this.storage), "cli.resumeCanceled"));
-          return false;
-        }
-        if (!command.args.length) return this.handleSlashCommand(`/resume ${threadId}`);
-        await this.clearPendingImages();
-        await this.resumeThread(threadId);
-        this.syncTerminalView(true);
-        this.announceResumeRecovery();
-        return false;
-      }
-      case "new":
-        if (command.args.length) throw new Error("Usage: /new");
-        await this.clearPendingImages();
-        await this.newThread();
-        this.terminal.resetForNewThread(this.terminalSessionInfo());
-        this.syncTerminalView();
-        this.terminal.success(translate(readLanguage(this.storage), "cli.createdThread", { id: this.state.threadId }));
-        return false;
-      case "clear":
-        this.terminal.clearScreen();
-        return false;
-      case "help":
-        this.terminal.write(`${helpText(readLanguage(this.storage)).trim()}\n`);
-        return false;
-      case "exit":
-        await this.clearPendingImages();
-        return true;
-    }
+    return this.shellCommands.handleSlashCommand(input);
   }
 
   close(): void {
@@ -1381,1153 +889,100 @@ export class EasyCodeApp {
   }
 
   private async processPendingPlanReview(showPlan: boolean, suppliedDecision?: PlanReviewDecision): Promise<boolean> {
-    let shouldShowPlan = showPlan;
-    const oneDecisionOnly = suppliedDecision !== undefined;
-    while (this.state.planReview && !this.closed) {
-      const review = this.state.planReview;
-      const proposal = review.proposal;
-
-      if (review.status === "approved_pending_execution") {
-        this.terminal.info(translate(readLanguage(this.storage), "cli.planExecuting"));
-        const result = await this.executePrompt(
-          renderPromptBundleText("runtime/plan-approved.md", {
-            planId: proposal.id,
-            revision: proposal.revision,
-            plan: formatPlanProposal(proposal),
-          }),
-          [],
-          true,
-          {
-            approvedPlan: {
-              id: proposal.id,
-              revision: proposal.revision,
-            },
-          },
-        );
-        shouldShowPlan = false;
-        if (!result.planProposal || oneDecisionOnly) return true;
-        continue;
-      }
-
-      if (shouldShowPlan) this.terminal.showPlan(proposal);
-      const decision =
-        suppliedDecision ??
-        (await this.terminal.reviewPlan({
-          plan: proposal,
-          captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
-        }));
-      suppliedDecision = undefined;
-      if (decision.action === "defer") {
-        this.dirty = true;
-        this.save();
-        return false;
-      }
-
-      if (decision.action === "approve") {
-        const event = this.threadStore.appendEvent(this.state.threadId, {
-          type: "plan.approved",
-          phase: "completed",
-          payload: {
-            planId: proposal.id,
-            revision: proposal.revision,
-          },
-        });
-        this.state.planReview = {
-          ...review,
-          status: "approved_pending_execution",
-          approvedAt: event.timestamp,
-        };
-        this.state.mode = "code";
-        this.config.mode = "code";
-        this.state.updatedAt = event.timestamp;
-        this.dirty = true;
-        this.save();
-        this.terminal.success(translate(readLanguage(this.storage), "cli.planApprovedCode"));
-        shouldShowPlan = false;
-        continue;
-      }
-
-      if (decision.action === "reject") {
-        const message: Extract<ChatMessage, { role: "user" }> = {
-          role: "user",
-          content: renderPromptBundleText("runtime/plan-rejected.md", {
-            planId: proposal.id,
-            revision: proposal.revision,
-          }),
-        };
-        const event = this.threadStore.appendEvent(this.state.threadId, {
-          type: "plan.rejected",
-          phase: "completed",
-          payload: {
-            planId: proposal.id,
-            revision: proposal.revision,
-            message,
-          },
-        });
-        this.state.planReview = undefined;
-        this.state.messages.push(message);
-        this.state.updatedAt = event.timestamp;
-        this.dirty = true;
-        this.save();
-        this.terminal.info(translate(readLanguage(this.storage), "cli.planRejected"));
-        return true;
-      }
-
-      const event = this.threadStore.appendEvent(this.state.threadId, {
-        type: "plan.feedback_submitted",
-        phase: "completed",
-        payload: {
-          planId: proposal.id,
-          revision: proposal.revision,
-          feedback: decision.feedback,
-        },
-      });
-      this.state.planReview = {
-        ...review,
-        feedback: decision.feedback,
-      };
-      this.state.updatedAt = event.timestamp;
-      this.dirty = true;
-      this.save();
-      const result = await this.executePrompt(
-        renderPromptBundleText("runtime/plan-adjustment.md", {
-          planId: proposal.id,
-          revision: proposal.revision,
-          feedback: decision.feedback,
-        }),
-        [],
-        true,
-        this.state.mode === "auto" ? { modeOverride: "plan" } : {},
-      );
-      shouldShowPlan = !result.planProposal;
-      if (oneDecisionOnly) {
-        if (result.planProposal) this.terminal.showPlan(result.planProposal);
-        return true;
-      }
-    }
-    return true;
+    return this.turnExecution.processPendingPlanReview(showPlan, suppliedDecision);
   }
-
   private async compactCurrentSession(): Promise<void> {
-    if (this.isRequestActive()) throw new Error("/compact is only available when the conversation is idle.");
-    if (
-      this.hasRunningCommands() ||
-      this.subagentCoordinator.hasUnfinished(this.state.threadId) ||
-      this.subagentCoordinator.hasOutstanding(this.state.threadId)
-    ) {
-      throw new Error("Wait for running commands and agents to finish before compacting.");
-    }
-    const controller = new AbortController();
-    this.activeTurnController = controller;
-    this.compacting = true;
-    const operationId = createId("compact");
-    const startedAt = Date.now();
-    const onInterrupt = () => controller.abort();
-    process.on("SIGINT", onInterrupt);
-    try {
-      this.terminal.setCurrentRequest("/compact", [], { onInterrupt });
-      this.terminal.compactionProgress?.({
-        operationId,
-        mode: "manual",
-        startedAt,
-        phase: "preparing",
-        beforeChars: 0,
-      });
-      const runtime = await this.createRuntime(false);
-      const result = await runtime.compactSession(this.state, {
-        maxContextChars: this.activeContextCharLimit(),
-        signal: controller.signal,
-        operationId,
-        startedAt,
-        onProgress: (progress) => this.terminal.compactionProgress?.(progress),
-      });
-      if (result.reason) this.terminal.warning(result.reason);
-      this.dirty = true;
-    } catch (error) {
-      this.terminal.compactionProgress?.({
-        operationId,
-        mode: "manual",
-        startedAt,
-        completedAt: Date.now(),
-        phase: controller.signal.aborted ? "cancelled" : "failed",
-        beforeChars: 0,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    } finally {
-      process.removeListener("SIGINT", onInterrupt);
-      this.compacting = false;
-      if (this.activeTurnController === controller) this.activeTurnController = undefined;
-      this.terminal.clearCurrentRequest();
-      this.save();
-      this.syncTerminalView();
-    }
+    return this.turnExecution.compactCurrentSession();
   }
 
-  private async executePrompt(
-    userInput: string,
-    images: readonly ImageAttachment[] = [],
-    presentReasoning = false,
-    runtimeOptions: ExecutePromptOptions = {},
-  ): Promise<AgentRunResult> {
-    if (this.activeTurnController) {
-      throw new Error("A request is already running in this Thread.");
-    }
-    const controller = new AbortController();
-    this.activeTurnController = controller;
-    try {
-      return await this.executePromptOwned(userInput, images, presentReasoning, runtimeOptions, controller);
-    } finally {
-      if (this.activeTurnController === controller) this.activeTurnController = undefined;
-    }
+  private executePromptOwned(...args: Parameters<AppTurnExecution["executePromptOwned"]>): Promise<AgentRunResult> {
+    return this.turnExecution.executePromptOwned(...args);
   }
-
-  private async executePromptOwned(
-    userInput: string,
-    images: readonly ImageAttachment[],
-    presentReasoning: boolean,
-    runtimeOptions: ExecutePromptOptions,
-    controller: AbortController,
-  ): Promise<AgentRunResult> {
-    await this.pauseMemoryMaintenance();
-    await this.prepareProjectSandbox(this.workspace);
-    if (this.commandExecutionMode === "manual" && this.hasActiveOrchestration()) {
-      throw new Error(
-        "This thread has unfinished DAG/subagent work. Select /approval → Approve for me or Full access before continuing; no child has been started by this request.",
-      );
-    }
-    await this.subagentHost.drainPendingSubagentArtifacts(this.state.threadId);
-    this.modelSelection.requireProviderApiKey(this.state.provider);
-    if (images.length) this.requireCurrentModelVision();
-    validateImageAttachmentCollection(images);
-    validateProviderImageAttachments(this.state.provider, images);
-    this.dirty = true;
-    if (this.uninstallRequested) throw new Error("Task stopped for EASY CODE uninstall.");
-    this.uninstallController = controller;
-    const steeringNotifier = new TurnSteeringAttemptNotifier();
-    const capturedSteeringImages = new Map<string, ImageAttachment>();
-    const pendingSteering = this.threadStore.pendingTurnSteering(this.state.threadId);
-    const pendingSteeringImages = pendingSteering.flatMap((entry) => entry.message.images ?? []);
-    if (pendingSteeringImages.length > 0) this.requireCurrentModelVision();
-    validateImageAttachmentCollection([...images, ...pendingSteeringImages]);
-    validateProviderImageAttachments(this.state.provider, pendingSteeringImages);
-    const latestPendingSteering = pendingSteering.at(-1);
-    if (latestPendingSteering) steeringNotifier.notify(latestPendingSteering.sequence);
-    this.activeTurnSteering = {
-      threadId: this.state.threadId,
-      controller,
-      notifier: steeringNotifier,
-      requestImages: images,
-      draftImages: capturedSteeringImages,
-    };
-    let interruptCount = 0;
-    const onInterrupt = (): void => {
-      interruptCount += 1;
-      if (interruptCount === 1) {
-        this.terminal.info("Interrupting the current task...");
-        this.cancelActiveRequest();
-      } else {
-        process.removeListener("SIGINT", onInterrupt);
-        if (this.uninstallController === controller) this.uninstallController = undefined;
-        this.terminal.emergencyRestore();
-        process.exit(130);
-      }
-    };
-    process.on("SIGINT", onInterrupt);
-
-    try {
-      const steeringImages = (): ImageAttachment[] => {
-        const unique = new Map<string, ImageAttachment>();
-        for (const image of images) unique.set(image.id, image);
-        for (const entry of this.threadStore.pendingTurnSteering(this.state.threadId)) {
-          for (const image of entry.message.images ?? []) unique.set(image.id, image);
-        }
-        for (const image of capturedSteeringImages.values()) unique.set(image.id, image);
-        return [...unique.values()];
-      };
-      const discardCapturedSteeringImages = async (
-        attachments: readonly Readonly<ImageAttachment>[],
-      ): Promise<void> => {
-        const discarded: ImageAttachment[] = [];
-        for (const attachment of attachments) {
-          const owned = capturedSteeringImages.get(attachment.id);
-          if (!owned) continue;
-          capturedSteeringImages.delete(attachment.id);
-          discarded.push(owned);
-        }
-        await this.discardImages(discarded);
-      };
-      this.terminal.setCurrentRequest(userInput, images, {
-        onInterrupt,
-        initialImageCount: nextThreadImageNumber(this.state.messages, [...images, ...pendingSteeringImages]) - 1,
-        captureImage: async (index, signal) => {
-          const attachment = await this.captureClipboardImage(index, steeringImages(), signal);
-          capturedSteeringImages.set(attachment.id, attachment);
-          return attachment;
-        },
-        captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
-        onDiscardImages: discardCapturedSteeringImages,
-        onSteer: async (submission) => {
-          const text = stripPasteFailureMarkers(submission.text);
-          if (!text.trim() && submission.images.length === 0) return;
-          try {
-            await this.submitAdjustment(text, submission.images);
-          } catch (error) {
-            await discardCapturedSteeringImages(submission.images);
-            throw error;
-          }
-        },
-      });
-      const runtime = await this.createRuntime(presentReasoning, steeringNotifier);
-      const result = await runtime.run(
-        this.state,
-        { text: userInput, images },
-        {
-          maxModelRequests: this.maxModelRequests,
-          orchestrationEnabled: this.orchestrationEnabled(),
-          isOrchestrationEnabled: () => this.orchestrationEnabled(),
-          maxContextChars: this.activeContextCharLimit(),
-          maxContextTokens: this.config.limits.maxContextTokens || undefined,
-          maxOutputChars: this.config.limits.maxOutputChars,
-          commandTimeoutMs: this.config.limits.commandTimeoutMs,
-          approvalPolicy: this.config.approvalPolicy,
-          commandExecutionMode: this.commandExecutionMode,
-          isUnrestrictedHostAccessActive: () => this.commandExecutionMode === "unrestricted",
-          unrestrictedHostAccessEpoch: () => this.hostAccessEpoch,
-          signal: controller.signal,
-          ...runtimeOptions,
-        },
-      );
-
-      this.syncWorkspaceState();
-      const turnEvents = this.threadStore
-        .journal(result.threadId)
-        .read()
-        .filter((event) => event.turnId === result.turnId);
-      const startedAt = Date.parse(
-        turnEvents.find((event) => event.type === "turn.started" || event.type === "message.user")?.timestamp ?? "",
-      );
-      const completedAt = Date.parse(
-        [...turnEvents].reverse().find((event) => event.type === "turn.completed")?.timestamp ?? "",
-      );
-      const timing =
-        Number.isFinite(startedAt) && Number.isFinite(completedAt) ? { startedAt, completedAt } : undefined;
-      if (!this.terminal.finalizeStreamedAnswer(result.text, timing)) {
-        this.terminal.write(`\n${result.text.trim()}\n\n`);
-      }
-      return result;
-    } finally {
-      try {
-        this.autoCompacting = false;
-        if (this.activeTurnSteering?.controller === controller) this.activeTurnSteering = undefined;
-        this.terminal.clearCurrentRequest();
-        await this.discardImages([...capturedSteeringImages.values()]);
-        capturedSteeringImages.clear();
-      } finally {
-        process.removeListener("SIGINT", onInterrupt);
-        if (this.uninstallController === controller) this.uninstallController = undefined;
-        this.save();
-        this.syncTerminalView();
-      }
-    }
-  }
-
   private requireCurrentModelVision(): void {
-    requireVisionModel(this.state.provider, this.state.model);
+    return this.imageInputs.requireCurrentModelVision();
   }
-
   private async captureClipboardImage(
     index: number,
     currentImages: readonly ImageAttachment[] = this.pendingImages,
     signal?: AbortSignal,
   ): Promise<ImageAttachment> {
-    this.requireCurrentModelVision();
-    if (currentImages.length >= MAX_IMAGES_PER_MODEL_REQUEST) {
-      throw new Error(`A task can contain at most ${MAX_IMAGES_PER_MODEL_REQUEST} images.`);
-    }
-    assertThreadImageNumberAvailable(index);
-    const data = await this.clipboardImageReader.readImage(signal);
-    const attachment = await this.imageStore.importBuffer(this.state.threadId, `Image #${index}`, data, "clipboard");
-    try {
-      validateImageAttachmentCollection([...currentImages, attachment]);
-      validateProviderImageAttachments(this.state.provider, [attachment]);
-      return attachment;
-    } catch (error) {
-      await this.imageStore.remove(this.state.threadId, attachment).catch(() => undefined);
-      throw error;
-    }
+    return this.imageInputs.captureClipboardImage(index, currentImages, signal);
   }
-
   private async queueImagePath(rawPath: string, announce: boolean): Promise<ImageAttachment> {
-    if (this.pendingImages.length >= MAX_IMAGES_PER_MODEL_REQUEST) {
-      throw new Error(`A task can contain at most ${MAX_IMAGES_PER_MODEL_REQUEST} images.`);
-    }
-    let normalized = rawPath.trim();
-    if (
-      normalized.length >= 2 &&
-      ((normalized.startsWith('"') && normalized.endsWith('"')) ||
-        (normalized.startsWith("'") && normalized.endsWith("'")))
-    ) {
-      normalized = normalized.slice(1, -1);
-    }
-    if (!normalized) throw new Error("Image path must not be empty.");
-    const absolutePath = path.isAbsolute(normalized) ? normalized : path.resolve(this.workspace.root, normalized);
-    const imageNumber = nextThreadImageNumber(this.state.messages, this.pendingImages);
-    assertThreadImageNumberAvailable(imageNumber);
-    const attachment = await this.imageStore.importFile(
-      this.state.threadId,
-      `Image #${imageNumber}`,
-      absolutePath,
-      path.basename(normalized),
-    );
-    try {
-      validateImageAttachmentCollection([...this.pendingImages, attachment]);
-      validateProviderImageAttachments(this.state.provider, [attachment]);
-    } catch (error) {
-      await this.imageStore.remove(this.state.threadId, attachment).catch(() => undefined);
-      throw error;
-    }
-    this.pendingImages.push(attachment);
-    if (announce) {
-      this.terminal.success(
-        translate(readLanguage(this.storage), "cli.queuedImageFile", {
-          label: attachment.label,
-          width: attachment.width,
-          height: attachment.height,
-          mediaType: attachment.mediaType,
-        }),
-      );
-    }
-    return attachment;
+    return this.imageInputs.queueImagePath(rawPath, announce);
   }
-
   private async discardImages(images: readonly ImageAttachment[]): Promise<void> {
-    await Promise.all(images.map((image) => this.imageStore.remove(this.state.threadId, image).catch(() => undefined)));
+    return this.imageInputs.discardImages(images);
   }
-
   private async clearPendingImages(): Promise<void> {
-    const images = this.pendingImages;
-    this.pendingImages = [];
-    await this.discardImages(images);
+    return this.imageInputs.clearPendingImages();
   }
-
-  private async prepareInteractiveStartup(): Promise<boolean> {
-    if (this.startupInteraction === "none") return true;
-
-    let selection = {
-      provider: this.state.provider,
-      model: this.state.model,
-      thinkingEffort: this.state.thinkingEffort,
-    };
-    if (this.startupInteraction === "select-model") {
-      const selected = await this.modelSelection.selectProviderAndModel();
-      if (!selected) {
-        this.terminal.info(translate(readLanguage(this.storage), "cli.startupModelCanceled"));
-        return false;
-      }
-      selection = selected;
-    }
-
-    if (!(await this.modelSelection.ensureProviderApiKey(selection.provider))) return false;
-
-    if (this.startupInteraction === "select-model") {
-      this.modelSelection.commitModelSelection(
-        selection.provider,
-        selection.model,
-        "Selected",
-        selection.thinkingEffort,
-      );
-    } else {
-      const applied = thinkingEffortIsApplied(selection.provider, selection.model, selection.thinkingEffort);
-      const language = readLanguage(this.storage);
-      this.terminal.success(
-        translate(language, "cli.selectedModel", {
-          provider: providerLabel(selection.provider),
-          model: selection.model,
-          effort: selection.thinkingEffort,
-          suffix: applied ? "" : translate(language, "cli.notAppliedSuffix"),
-        }),
-      );
-    }
-    return true;
-  }
-
   private async selectCommandExecutionMode(
     announceCancellation = true,
     requested?: CommandExecutionMode,
   ): Promise<void> {
-    const language = readLanguage(this.storage);
-    const selected =
-      requested ??
-      ((await this.terminal.selectChoice(
-        translate(language, "cli.selectApproval"),
-        [
-          {
-            id: "manual",
-            label: translate(language, "ui.manualApproval"),
-            detail: translate(language, "cli.manualApprovalDetail"),
-          },
-          {
-            id: "auto_approve",
-            label: translate(language, "cli.autoApprove"),
-            detail: translate(language, "cli.autoApproveDetail"),
-          },
-          {
-            id: "unrestricted",
-            label: translate(language, "ui.fullAccess"),
-            detail: translate(language, "cli.fullAccessDetail"),
-          },
-        ],
-        this.commandExecutionMode,
-      )) as CommandExecutionMode | undefined);
-    if (!selected) {
-      if (announceCancellation) this.terminal.info(translate(language, "cli.approvalCanceled"));
-      return;
-    }
-    if (!requested) {
-      await this.handleSlashCommand(`/approval ${selected}`);
-      return;
-    }
-
-    if (this.trustedOuterSandbox === "harbor") {
-      this.terminal.info(translate(language, "cli.benchmarkPermissions"));
-      return;
-    }
-    if (selected === "manual" && this.hasActiveOrchestration()) {
-      this.terminal.info(translate(language, "cli.activeOrchestration"));
-      return;
-    }
-
-    if (selected === "unrestricted") {
-      this.terminal.warning(translate(language, "cli.fullAccessWarning"));
-      const confirmed = await this.terminal.selectChoice(
-        translate(language, "cli.fullAccessQuestion"),
-        [
-          {
-            id: "cancel",
-            label: translate(language, "cli.fullAccessNo"),
-            detail: translate(language, "cli.fullAccessNoDetail"),
-          },
-          {
-            id: "confirm",
-            label: translate(language, "cli.fullAccessYes"),
-            detail: translate(language, "cli.fullAccessYesDetail"),
-          },
-        ],
-        "cancel",
-      );
-      if (confirmed !== "confirm") {
-        if (announceCancellation) this.terminal.info(translate(language, "cli.fullAccessCanceled"));
-        return;
-      }
-    }
-
-    const previousMode = this.commandExecutionMode;
-    // No await between recheck and commit: dispatch sees either old or new state.
-    if (selected === "manual" && this.hasActiveOrchestration()) {
-      this.terminal.info(translate(language, "cli.activeOrchestration"));
-      return;
-    }
-    if ((previousMode === "unrestricted") !== (selected === "unrestricted")) {
-      this.hostAccessEpoch += 1;
-    }
-    this.threadStore.appendEvent(this.state.threadId, {
-      type: "approval.mode_changed",
-      payload: {
-        previousMode,
-        selected,
-        orchestrationEnabled: selected === "manual" ? false : this.state.orchestrationEnabled,
-      },
-    });
-    this.commandExecutionMode = selected;
-    if (selected === "manual") this.state.orchestrationEnabled = false;
-    this.dirty = true;
-    this.save();
-    // An explicit interactive selection supersedes a startup --approval=ask|never
-    // posture for this process. Mandatory boundaries apply in every mode.
-    this.config.approvalPolicy = "safe";
-    if (selected !== "manual") this.subagentCoordinator.activatePrepared(this.state.threadId);
-    // The session card is durable scrollback. Re-announcing it for an
-    // in-process policy change leaves both the previous and new cards visible.
-    // Update only the redrawable live UI; its danger footer reflects the new
-    // posture immediately without duplicating the EASY CODE title.
-    this.syncTerminalView();
-    if (selected === "manual") {
-      this.terminal.success(
-        translate(language, previousMode === "unrestricted" ? "cli.manualRestored" : "cli.manualEnabled"),
-      );
-    } else if (selected === "auto_approve") {
-      this.terminal.success(
-        translate(language, previousMode === "unrestricted" ? "cli.autoRestored" : "cli.autoEnabled"),
-      );
-    } else {
-      this.terminal.warning(translate(language, "cli.fullAccessEnabled"));
-    }
+    return this.shellCommands.selectCommandExecutionMode(announceCancellation, requested);
   }
-
   private effectiveConfig(): EasyCodeConfig {
-    const config: EasyCodeConfig = {
-      ...this.config,
-      mode: this.state.mode,
-      thinkingEffort: this.state.thinkingEffort,
-      provider: this.state.provider,
-      providers: Object.fromEntries(
-        Object.entries(this.config.providers).map(([provider, providerConfig]) => [provider, { ...providerConfig }]),
-      ),
-    };
-    config.providers[this.state.provider]!.model = this.state.model;
-    return config;
+    return this.shellCommands.effectiveConfig();
   }
 
   private restoreReasoningHistory(): number {
-    return this.terminal.restoreReasoning(
-      this.state.messages.flatMap((message) =>
-        message.role === "assistant" && message.reasoning_content?.trim() ? [message.reasoning_content] : [],
-      ),
-    );
+    return this.threadSessions.restoreReasoningHistory();
   }
 
   private announceResumeRecovery(): void {
-    const recovery = this.pendingResumeRecovery;
-    if (!recovery) return;
-    this.pendingResumeRecovery = undefined;
-    const language = readLanguage(this.storage);
-    this.terminal.info(translate(language, "cli.resumedThread"));
-    if (recovery.recoveredStandaloneSubagents > 0 && this.commandExecutionMode === "manual") {
-      this.terminal.warning(translate(language, "cli.childrenPaused"));
-    }
-    if (recovery.interruptedTurnRepaired) {
-      this.terminal.warning(translate(language, "cli.previousTurnInterrupted"));
-    }
+    return this.threadSessions.announceResumeRecovery();
   }
 
   private activeContextCharLimit(): number {
     return this.config.limits.maxContextChars;
   }
-
   private orchestrationEnabled(): boolean {
-    return this.commandExecutionMode !== "manual" && this.state.orchestrationEnabled;
+    return this.shellCommands.orchestrationEnabled();
   }
-
   private async updateOrchestration(args: readonly string[] = [], reportCancel = true): Promise<void> {
-    const language = readLanguage(this.storage);
-    if (args.length > 1 || (args[0] && !["on", "off"].includes(args[0]))) {
-      throw new Error("Usage: /orchestration [on|off]");
-    }
-    const selected =
-      args[0] ??
-      (await this.terminal.selectChoice(
-        translate(language, "cli.orchestrationTitle"),
-        [
-          {
-            id: "off",
-            label: translate(language, "cli.orchestrationOff"),
-            detail: translate(language, "cli.orchestrationOffDetail"),
-          },
-          {
-            id: "on",
-            label: translate(language, "cli.orchestrationOn"),
-            detail: translate(language, "cli.orchestrationOnDetail"),
-          },
-        ],
-        this.orchestrationEnabled() ? "on" : "off",
-      ));
-    if (!selected) {
-      if (reportCancel) this.terminal.info(translate(language, "cli.orchestrationCanceled"));
-      return;
-    }
-    if (!args.length) {
-      await this.handleSlashCommand(`/orchestration ${selected}`);
-      return;
-    }
-    if (selected === "on" && this.commandExecutionMode === "manual") {
-      const confirmed = await this.terminal.selectChoice(
-        translate(language, "cli.orchestrationQuestion"),
-        [
-          {
-            id: "cancel",
-            label: translate(language, "ui.cancel"),
-            detail: translate(language, "cli.orchestrationKeep"),
-          },
-          {
-            id: "enable",
-            label: translate(language, "cli.orchestrationBoth"),
-            detail: translate(language, "cli.orchestrationBothDetail"),
-          },
-        ],
-        "cancel",
-      );
-      if (confirmed !== "enable") return;
-    }
-    const nextMode =
-      selected === "on" && this.commandExecutionMode === "manual" ? "auto_approve" : this.commandExecutionMode;
-    this.threadStore.appendEvent(this.state.threadId, {
-      type: "approval.mode_changed",
-      payload: { previousMode: this.commandExecutionMode, selected: nextMode, orchestrationEnabled: selected === "on" },
-    });
-    if (nextMode !== this.commandExecutionMode) this.config.approvalPolicy = "safe";
-    this.commandExecutionMode = nextMode;
-    this.state.orchestrationEnabled = selected === "on";
-    this.dirty = true;
-    this.save();
-    if (this.commandExecutionMode !== "manual") this.subagentCoordinator.activatePrepared(this.state.threadId);
-    this.syncTerminalView();
-    this.terminal.success(
-      translate(language, "cli.orchestrationChanged", {
-        state: translate(language, selected === "on" ? "cli.on" : "cli.off"),
-      }),
-    );
+    return this.shellCommands.updateOrchestration(args, reportCancel);
   }
-
   private hasActiveOrchestration(): boolean {
-    return (
-      Boolean(this.state.taskGraph && this.state.taskGraph.status !== "completed") ||
-      this.subagentCoordinator.hasUnfinished(this.state.threadId) ||
-      this.subagentCoordinator.hasOutstanding(this.state.threadId) ||
-      this.hasRunningCommands()
-    );
+    return this.shellCommands.hasActiveOrchestration();
   }
-
   private sharedTaskBudget(threadId: string): TaskBudget {
-    let budget = this.taskBudgets.get(threadId);
-    if (!budget) {
-      const saved = [...this.threadStore.journal(threadId).read()]
-        .reverse()
-        .find((event) => event.type === "runtime.task_budget");
-      budget = saved
-        ? TaskBudget.restore(saved.payload, this.persistTaskBudget(threadId), {
-            maxRequests: this.maxModelRequests ?? null,
-            maxTokens: this.config.limits.maxTaskTokens,
-          })
-        : this.newTaskBudget(threadId);
-      this.taskBudgets.set(threadId, budget);
-    }
-    return budget;
-  }
-
-  private persistTaskBudget(
-    threadId: string,
-  ): (snapshot: import("./runtime/task-budget.js").TaskBudgetSnapshot) => void {
-    return (snapshot) => {
-      this.threadStore.appendEvent(threadId, { type: "runtime.task_budget", payload: snapshot });
-    };
+    return this.turnExecution.sharedTaskBudget(threadId);
   }
 
   private newTaskBudget(threadId: string): TaskBudget {
-    return new TaskBudget(
-      this.maxModelRequests ?? null,
-      this.config.limits.maxTaskTokens,
-      this.persistTaskBudget(threadId),
-    );
+    return this.turnExecution.newTaskBudget(threadId);
   }
 
   private syncWorkspaceState(): void {
-    const currentVersions = new Map(this.workspace.getReadVersions().map((version) => [version.path, version]));
-    let versionsChanged = currentVersions.size !== this.state.filesRead.size;
-    if (!versionsChanged) {
-      for (const [filename, version] of currentVersions) {
-        const previous = this.state.filesRead.get(filename);
-        if (!previous || previous.hash !== version.hash || previous.readAt !== version.readAt) {
-          versionsChanged = true;
-          break;
-        }
-      }
-    }
-    if (versionsChanged) {
-      this.state.filesRead = currentVersions;
-      this.dirty = true;
-    }
-    const known = new Set(
-      this.state.changes.map((change) =>
-        [change.timestamp, change.path, change.operation, change.afterHash ?? ""].join("|"),
-      ),
-    );
-    for (const change of this.workspace.getChangeSet()) {
-      const key = [change.timestamp, change.path, change.operation, change.afterHash ?? ""].join("|");
-      if (!known.has(key)) {
-        this.state.changes.push(change);
-        known.add(key);
-        this.dirty = true;
-      }
-    }
+    return this.threadSessions.syncWorkspaceState();
   }
-
-  private currentProjectWorkspace(): ProjectWorkspace | undefined {
-    if (!this.state.projectId || !this.state.primaryWorkspaceFolderId || !this.state.workspaceFolders?.length)
-      return undefined;
-    return {
-      projectId: this.state.projectId,
-      revision: this.state.workspaceRevision ?? 1,
-      primaryFolderId: this.state.primaryWorkspaceFolderId,
-      folders: this.state.workspaceFolders.map((folder, index) => ({
-        ...folder,
-        projectId: this.state.projectId!,
-        active: true,
-        addedRevision: 1,
-        sortOrder: index,
-      })),
-    };
-  }
-
-  private async replaceProjectWorkspace(descriptor: ProjectWorkspace): Promise<void> {
-    this.assertNoRunningCommands("change project folders");
-    this.subagentHost.assertNoRunningSubagents("change project folders");
-    if (this.activeTurnController)
-      throw new Error("Wait for the current request to finish before changing project folders.");
-    if (this.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
-    for (const catalog of this.mainToolCatalogs.values()) await catalog.close();
-    this.mainToolCatalogs.clear();
-    const previous = this.workspace;
-    const next = await WorkspaceManager.create(descriptor);
-    const restored = next.restorePersistedState(this.state.filesRead, this.state.changes);
-    void restored;
-    this.workspace = next;
-    this.commandRuntimes.delete(previous);
-    this.state.projectId = descriptor.projectId;
-    this.state.workspaceRevision = descriptor.revision;
-    this.state.workspaceFolders = descriptor.folders.map((folder) => ({
-      id: folder.id,
-      key: folder.key,
-      path: folder.path,
-    }));
-    this.state.primaryWorkspaceFolderId = descriptor.primaryFolderId;
-    this.state.workspaceRoot = next.root;
-    this.config.workspaceRoot = next.root;
-    this.executionEnvironments = new ExecutionEnvironmentManager({
-      logicalWorkspaceRoot: next.root,
-      dataDir: this.config.dataDir,
-      baseMode: this.config.worktreeBaseMode,
-      worktreeRoot: this.config.worktreeRoot,
-      maxManagedWorktrees: this.config.limits.maxManagedWorktrees,
-    });
-    this.dirty = true;
-    this.save();
-    this.syncTerminalView(true);
-  }
-
   private async updateWorkspaceCommand(rawArgs: string): Promise<void> {
-    const args = parseQuotedArguments(rawArgs);
-    const action = args[0] ?? "list";
-    const projectId = this.state.projectId;
-    if (!projectId) throw new Error("This thread is not attached to a logical project.");
-    const projects = new ProjectIndex(this.storage);
-    if (action === "list") {
-      if (args.length !== 1)
-        throw new Error("Usage: /workspace list|refresh|add <path>|remove <folder-id>|primary <folder-id>");
-      this.terminal.write(`${json(projects.get(projectId))}\n`);
-      return;
-    }
-    if (action === "refresh") {
-      if (args.length !== 1) throw new Error("Usage: /workspace refresh");
-      this.terminal.write(`${json(await this.workspace.refreshManifest())}\n`);
-      return;
-    }
-    // Validate the live project before persisting a new membership revision;
-    // otherwise a rejected hot swap could leave storage ahead of this Thread.
-    this.assertNoRunningCommands("change project folders");
-    this.subagentHost.assertNoRunningSubagents("change project folders");
-    if (this.activeTurnController)
-      throw new Error("Wait for the current request to finish before changing project folders.");
-    if (this.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
-    if (action === "add") {
-      if (args.length !== 2) throw new Error('Usage: /workspace add "<absolute-folder-path>"');
-      await assertDataDirectoryOutsideWorkspace(this.config.dataDir, args[1]!);
-      projects.addFolder(projectId, args[1]!);
-    } else if (action === "remove") {
-      if (args.length !== 2) throw new Error("Usage: /workspace remove <folder-id>");
-      const project = projects.get(projectId);
-      if (project.folders.filter((folder) => folder.active).length <= 1)
-        throw new Error(
-          "The CLI cannot detach the final folder while this conversation is open. Use the Web project manager.",
-        );
-      projects.removeFolder(projectId, args[1]!);
-    } else if (action === "primary") {
-      if (args.length !== 2) throw new Error("Usage: /workspace primary <folder-id>");
-      projects.setPrimaryFolder(projectId, args[1]!);
-    } else {
-      throw new Error("Usage: /workspace list|refresh|add <path>|remove <folder-id>|primary <folder-id>");
-    }
-    await this.replaceProjectWorkspace(projects.workspace(projectId));
-    this.terminal.success("Project folders updated.");
+    return this.threadSessions.updateWorkspaceCommand(rawArgs);
   }
-
   private async newThread(): Promise<void> {
-    this.save();
-    const previousThreadId = this.state.threadId;
-    const previousWorkspace = this.workspace;
-    const previousLease = this.requireThreadLease();
-    const nextWorkspace = await WorkspaceManager.create(this.currentProjectWorkspace() ?? this.config.workspaceRoot);
-    const nextState = this.threadStore.create({
-      workspaceRoot: nextWorkspace.root,
-      projectId: this.state.projectId,
-      workspaceRevision: this.state.workspaceRevision,
-      workspaceFolders: this.state.workspaceFolders?.map((folder) => ({ ...folder })),
-      primaryWorkspaceFolderId: this.state.primaryWorkspaceFolderId,
-      mode: "auto",
-      provider: this.state.provider,
-      model: this.state.model,
-      thinkingEffort: this.state.thinkingEffort,
-      promptBundle: activePromptBundleBinding(),
-      modelRegistryHash: this.state.modelRegistryHash,
-    });
-    const nextLease = this.threadStore.acquireThreadLease(nextState.threadId);
-    try {
-      await this.subagentHost.pauseSubagentsForResume();
-      await this.cancelRunningCommands();
-      this.threadStore.releaseThreadLease(previousLease);
-    } catch (error) {
-      const recoveryErrors: unknown[] = [error];
-      try {
-        // The new thread was never shown; remove it rather than leave an empty conversation behind.
-        this.threadStore.releaseThreadLease(nextLease);
-        deleteThreadTree(this.storage, this.threadStore, nextState.threadId);
-      } catch (cleanupError) {
-        recoveryErrors.push(cleanupError);
-      }
-      // Pausing may fail after stopping only some children, so always re-arm; restoring is idempotent.
-      try {
-        this.subagentHost.restorePausedCurrentThread(previousThreadId);
-      } catch (restoreError) {
-        recoveryErrors.push(restoreError);
-      }
-      if (recoveryErrors.length > 1) {
-        throw new AggregateError(
-          recoveryErrors,
-          "Could not create a new thread and the current thread could not be fully restored",
-        );
-      }
-      throw error;
-    }
-    this.workspace = nextWorkspace;
-    this.state = nextState;
-    this.config.mode = "auto";
-    this.threadLease = nextLease;
-    this.dirty = false;
-    this.subagentCoordinator.discardPausedJobs(previousThreadId);
-    this.commandRuntimes?.delete(previousWorkspace);
+    return this.threadSessions.newThread();
   }
-
   private async resumeThread(threadId: string): Promise<void> {
-    if (threadId === this.state.threadId) {
-      this.save();
-      this.pendingResumeRecovery = resumeRecoverySummary(
-        this.state,
-        {
-          restoredReadVersions: this.workspace.getReadVersions().length,
-          staleReadVersions: 0,
-          restoredChanges: this.workspace.getChangeSet().length,
-          discardedChanges: 0,
-        },
-        {
-          interruptedTurnRepaired: false,
-          reconciledSubagentAssignments: 0,
-        },
-      );
-      return;
-    }
-    // Validate and prepare the target before stopping any process-local work in
-    // the current Thread. A bad ID, active lease, or workspace mismatch must be
-    // a transactional no-op for the current session.
-    this.save();
-    const previousThreadId = this.state.threadId;
-    const previousWorkspace = this.workspace;
-    const previousLease = this.requireThreadLease();
-    let nextLease: ThreadLease | undefined;
-    let recovered: SessionState;
-    let nextWorkspace: WorkspaceManager;
-    let restoredWorkspace: WorkspaceRestoreSummary;
-    let restoredChangesChanged = false;
-    let resumedModelChanged = false;
-    let repairedInterruptedTurn: boolean;
-    let releasedOrphanedSubagents = 0;
-    try {
-      if (this.threadStore.isBoundSubagentThread(threadId)) {
-        throw new Error(`Thread ${threadId} is a parent-managed child session; resume its parent thread instead`);
-      }
-      nextLease = this.threadStore.acquireThreadLease(threadId);
-      recovered = this.threadStore.recover(threadId);
-      if (!this.config.providers[recovered.provider] || !resolveCatalogModel(recovered.provider, recovered.model)) {
-        this.terminal.warning(
-          `The saved model ${recovered.provider}/${recovered.model} is no longer available. Using the current default; choose another with /model.`,
-        );
-        recovered.provider = this.config.provider;
-        recovered.model = this.config.providers[this.config.provider]!.model;
-        resumedModelChanged = true;
-      }
-      if (
-        (recovered.projectId ?? workspaceIdFromRoot(recovered.workspaceRoot)) !==
-        (this.state.projectId ?? workspaceIdFromRoot(this.workspace.root))
-      ) {
-        throw new Error(`Thread ${threadId} belongs to another project.`);
-      }
-      const currentProject = this.currentProjectWorkspace();
-      nextWorkspace = await WorkspaceManager.create(currentProject ?? recovered.workspaceRoot);
-      recovered.projectId = nextWorkspace.projectId ?? recovered.projectId;
-      recovered.workspaceRevision = nextWorkspace.revision;
-      recovered.workspaceFolders = nextWorkspace.folders.map((folder, index) => ({
-        id: folder.id ?? `folder_${index + 1}`,
-        key: folder.key,
-        path: folder.path,
-      }));
-      recovered.primaryWorkspaceFolderId = recovered.workspaceFolders.find((folder) =>
-        samePath(folder.path, nextWorkspace.root),
-      )?.id;
-      recovered.workspaceRoot = nextWorkspace.root;
-      const savedChanges = JSON.stringify(recovered.changes);
-      restoredWorkspace = nextWorkspace.restorePersistedState(recovered.filesRead, recovered.changes);
-      recovered.filesRead = new Map(nextWorkspace.getReadVersions().map((version) => [version.path, version]));
-      recovered.changes = nextWorkspace.getChangeSet();
-      restoredChangesChanged = JSON.stringify(recovered.changes) !== savedChanges;
-      if (restoredChangesChanged) {
-        recovered.updatedAt = new Date().toISOString();
-      }
-    } catch (error) {
-      if (nextLease) {
-        try {
-          this.threadStore.releaseThreadLease(nextLease);
-        } catch (cleanupError) {
-          throw new AggregateError(
-            [error, cleanupError],
-            "Could not validate the thread for resume and its lease could not be released",
-          );
-        }
-      }
-      throw error;
-    }
-
-    try {
-      await this.subagentHost.pauseSubagentsForResume();
-      await this.cancelRunningCommands();
-      this.save();
-      releasedOrphanedSubagents = releaseOrphanedSubagentTasks(this.threadStore, recovered);
-      repairedInterruptedTurn = repairInterruptedTurn(this.threadStore, recovered);
-      this.threadStore.releaseThreadLease(previousLease);
-    } catch (error) {
-      const recoveryErrors: unknown[] = [error];
-      if (nextLease) {
-        try {
-          this.threadStore.releaseThreadLease(nextLease);
-        } catch (cleanupError) {
-          recoveryErrors.push(cleanupError);
-        }
-      }
-      // Pausing may fail after stopping only some children, so always re-arm; restoring is idempotent.
-      try {
-        this.subagentHost.restorePausedCurrentThread(previousThreadId);
-      } catch (restoreError) {
-        recoveryErrors.push(restoreError);
-      }
-      if (recoveryErrors.length > 1) {
-        throw new AggregateError(
-          recoveryErrors,
-          "Could not resume the thread and the current thread could not be fully restored",
-        );
-      }
-      throw error;
-    }
-    this.threadLease = nextLease;
-    this.state = recovered;
-    this.workspace = nextWorkspace;
-    this.config.mode = recovered.mode;
-    this.config.thinkingEffort = recovered.thinkingEffort;
-    this.config.provider = recovered.provider;
-    this.config.providers[recovered.provider]!.model = recovered.model;
-    this.subagentCoordinator.discardPausedJobs(previousThreadId);
-    this.commandRuntimes?.delete(previousWorkspace);
-    this.dirty =
-      restoredWorkspace.staleReadVersions > 0 ||
-      restoredChangesChanged ||
-      resumedModelChanged ||
-      repairedInterruptedTurn ||
-      releasedOrphanedSubagents > 0;
-    const restoredReasoningBlocks = this.restoreReasoningHistory();
-    const recoveredStandaloneSubagents = this.restoreSubagents();
-    this.pendingResumeRecovery = resumeRecoverySummary(recovered, restoredWorkspace, {
-      interruptedTurnRepaired: repairedInterruptedTurn,
-      reconciledSubagentAssignments: releasedOrphanedSubagents,
-    });
-    this.pendingResumeRecovery = {
-      ...this.pendingResumeRecovery,
-      restoredReasoningBlocks,
-      recoveredStandaloneSubagents,
-    };
-    this.save();
-    this.modelSelection.rememberLastModel();
+    return this.threadSessions.resumeThread(threadId);
   }
-
-  private requireThreadLease(): ThreadLease {
-    if (!this.threadLease) {
-      throw new Error("The active thread lease is unavailable");
-    }
-    return this.threadLease;
-  }
-
   private save(): void {
-    this.syncWorkspaceState();
-    if (!this.dirty) return;
-    this.threadStore.save(this.state);
-    this.dirty = false;
+    return this.threadSessions.save();
   }
-
   private terminalSessionInfo(): UISessionInfo {
-    return {
-      orchestrationEnabled: this.orchestrationEnabled(),
-      agentConcurrencyLimit: this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort],
-      threadId: this.state.threadId,
-      workspaceRoot: this.workspace.root,
-      projectId: this.state.projectId,
-      workspaceRevision: this.state.workspaceRevision,
-      workspaceFolders: this.state.workspaceFolders?.map((folder) => ({ ...folder })),
-      mode: this.state.mode,
-      provider: this.state.provider,
-      model: this.state.model,
-      thinkingEffort: this.state.thinkingEffort,
-      approvalPolicy: this.config.approvalPolicy,
-      commandExecutionMode: this.commandExecutionMode,
-      commandEnvironment: this.trustedOuterSandbox
-        ? "container"
-        : this.commandExecutionMode === "unrestricted"
-          ? "host"
-          : "container",
-      contextTokens: this.contextManager.estimateShortTermTokens(this.state),
-    };
+    return this.threadSessions.terminalSessionInfo();
   }
 
   private syncTerminalView(announceHeader = false): void {
-    this.terminal.setSessionInfo(this.terminalSessionInfo(), announceHeader);
-    if (!this.terminal.isInlineShell()) return;
-    if (this.state.taskGraph) {
-      this.terminal.taskGraph(taskGraphView(this.state.taskGraph));
-    } else {
-      this.terminal.clearTaskGraph();
-    }
-    this.infoCommands.printSubagents();
+    return this.threadSessions.syncTerminalView(announceHeader);
   }
 
   private resumableThreads(): ThreadSummary[] {
-    return this.threadStore
-      .list({
-        workspaceId: this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
-        limit: 50,
-      })
-      .filter((session) => !this.threadStore.isBoundSubagentThread(session.threadId));
+    return this.threadSessions.resumableThreads();
   }
-
   private async selectResumeThread(): Promise<string | undefined> {
-    const sessions = this.resumableThreads();
-    if (sessions.length === 0) {
-      this.terminal.info("This workspace has no previous threads.");
-      return undefined;
-    }
-    return this.terminal.selectChoice(
-      "Resume a thread",
-      sessions.map((session) => ({
-        id: session.threadId,
-        label: session.goal?.trim() || session.threadId,
-        detail: `${session.provider}/${session.model} · ${session.mode} · ` + `${session.updatedAt}`,
-      })),
-      this.state.threadId,
-    );
+    return this.threadSessions.selectResumeThread();
   }
 
   private observedToolCatalog(workspace: WorkspaceManager, runtime: CommandRuntime): ToolCatalog {
@@ -2715,15 +1170,6 @@ export class EasyCodeApp {
       `Cannot ${action} while a run_command background handle is active; ` +
         "ask the agent to wait for or cancel the command first.",
     );
-  }
-
-  private prompt(): string {
-    const shortTermTokens = this.contextManager.estimateShortTermTokens(this.state);
-    const text =
-      `${this.commandExecutionMode === "unrestricted" ? "! EASY CODE FULL ACCESS " : "EASY CODE "}` +
-      `[${this.state.mode} ${this.state.provider}/${this.state.model} ` +
-      `thinking:${this.state.thinkingEffort} approval:${this.commandExecutionMode === "auto_approve" ? "agent" : this.commandExecutionMode} env:${this.trustedOuterSandbox ? "container/offline" : this.commandExecutionMode === "unrestricted" ? "host" : "sandbox"} DAG/agents:${this.orchestrationEnabled() ? "on" : "off"} context:${formatTokenCount(shortTermTokens)}] > `;
-    return this.commandExecutionMode === "unrestricted" ? chalk.bold.red(text) : chalk.bold.cyan(text);
   }
 
   private mcpServersInstance?: McpServerController;
@@ -3033,6 +1479,10 @@ export class EasyCodeApp {
     };
   }
 
+  private currentProjectWorkspace(): ProjectWorkspace | undefined {
+    return this.threadSessions.currentProjectWorkspace();
+  }
+
   private runSubagent(request: SubagentExecutionRequest): Promise<SubagentExecutionOutcome> {
     return this.subagentHost.runSubagent(request);
   }
@@ -3159,4 +1609,382 @@ export class EasyCodeApp {
   ): Promise<AgentRuntime> {
     return this.runtimeAssembly.createRuntime(presentReasoning, steeringNotifier);
   }
+
+  private threadSessionsInstance?: AppThreadSessions;
+  private get threadSessions(): AppThreadSessions {
+    return (this.threadSessionsInstance ??= new AppThreadSessions(this.threadSessionsContext()));
+  }
+  private threadSessionsContext(): AppThreadSessionsContext {
+    const host = this;
+    return {
+      get activeTurnController() {
+        return host.activeTurnController;
+      },
+      assertNoRunningCommands: (...args) => host.assertNoRunningCommands(...args),
+      cancelRunningCommands: (...args) => host.cancelRunningCommands(...args),
+      get commandRuntimes() {
+        return host.commandRuntimes;
+      },
+      get config() {
+        return host.config;
+      },
+      get dirty() {
+        return host.dirty;
+      },
+      set dirty(value) {
+        host.dirty = value;
+      },
+      get executionEnvironments() {
+        return host.executionEnvironments;
+      },
+      set executionEnvironments(value) {
+        host.executionEnvironments = value;
+      },
+      get mainToolCatalogs() {
+        return host.mainToolCatalogs;
+      },
+      get modelSelection() {
+        return host.modelSelection;
+      },
+      pendingPlan: (...args) => host.pendingPlan(...args),
+      get pendingResumeRecovery() {
+        return host.pendingResumeRecovery;
+      },
+      set pendingResumeRecovery(value) {
+        host.pendingResumeRecovery = value;
+      },
+      restoreSubagents: (...args) => host.restoreSubagents(...args),
+      get state() {
+        return host.state;
+      },
+      set state(value) {
+        host.state = value;
+      },
+      get storage() {
+        return host.storage;
+      },
+      get subagentCoordinator() {
+        return host.subagentCoordinator;
+      },
+      get subagentHost() {
+        return host.subagentHost;
+      },
+      get terminal() {
+        return host.terminal;
+      },
+      get threadLease() {
+        return host.threadLease;
+      },
+      set threadLease(value) {
+        host.threadLease = value;
+      },
+      get threadStore() {
+        return host.threadStore;
+      },
+      get workspace() {
+        return host.workspace;
+      },
+      set workspace(value) {
+        host.workspace = value;
+      },
+      get commandExecutionMode() {
+        return host.commandExecutionMode;
+      },
+      orchestrationEnabled: (...args) => host.orchestrationEnabled(...args),
+      get trustedOuterSandbox() {
+        return host.trustedOuterSandbox;
+      },
+      get contextManager() {
+        return host.contextManager;
+      },
+      get infoCommands() {
+        return host.infoCommands;
+      },
+    };
+  }
+
+  private turnExecutionInstance?: AppTurnExecution;
+  private get turnExecution(): AppTurnExecution {
+    return (this.turnExecutionInstance ??= new AppTurnExecution(this.turnExecutionContext()));
+  }
+  private turnExecutionContext(): AppTurnExecutionContext {
+    const host = this;
+    return {
+      executePromptOwned: (...args) => host.executePromptOwned(...args),
+      activeContextCharLimit: (...args) => host.activeContextCharLimit(...args),
+      get activeTurnController() {
+        return host.activeTurnController;
+      },
+      set activeTurnController(value) {
+        host.activeTurnController = value;
+      },
+      get activeTurnSteering() {
+        return host.activeTurnSteering;
+      },
+      set activeTurnSteering(value) {
+        host.activeTurnSteering = value;
+      },
+      announceResumeRecovery: (...args) => host.announceResumeRecovery(...args),
+      get autoCompacting() {
+        return host.autoCompacting;
+      },
+      set autoCompacting(value) {
+        host.autoCompacting = value;
+      },
+      cancelActiveRequest: (...args) => host.cancelActiveRequest(...args),
+      captureClipboardImage: (...args) => host.captureClipboardImage(...args),
+      get clipboardImageReader() {
+        return host.clipboardImageReader;
+      },
+      get closed() {
+        return host.closed;
+      },
+      get commandExecutionMode() {
+        return host.commandExecutionMode;
+      },
+      get compacting() {
+        return host.compacting;
+      },
+      set compacting(value) {
+        host.compacting = value;
+      },
+      get config() {
+        return host.config;
+      },
+      createRuntime: (...args) => host.createRuntime(...args),
+      get dirty() {
+        return host.dirty;
+      },
+      set dirty(value) {
+        host.dirty = value;
+      },
+      discardImages: (...args) => host.discardImages(...args),
+      hasActiveOrchestration: (...args) => host.hasActiveOrchestration(...args),
+      hasRunningCommands: (...args) => host.hasRunningCommands(...args),
+      get hostAccessEpoch() {
+        return host.hostAccessEpoch;
+      },
+      get imageStore() {
+        return host.imageStore;
+      },
+      isCompacting: (...args) => host.isCompacting(...args),
+      isRequestActive: (...args) => host.isRequestActive(...args),
+      get maxModelRequests() {
+        return host.maxModelRequests;
+      },
+      get modelSelection() {
+        return host.modelSelection;
+      },
+      orchestrationEnabled: (...args) => host.orchestrationEnabled(...args),
+      pauseMemoryMaintenance: (...args) => host.pauseMemoryMaintenance(...args),
+      get pendingImages() {
+        return host.pendingImages;
+      },
+      set pendingImages(value) {
+        host.pendingImages = value;
+      },
+      prepareProjectSandbox: (...args) => host.prepareProjectSandbox(...args),
+      requireCurrentModelVision: (...args) => host.requireCurrentModelVision(...args),
+      save: (...args) => host.save(...args),
+      get state() {
+        return host.state;
+      },
+      get storage() {
+        return host.storage;
+      },
+      get subagentCoordinator() {
+        return host.subagentCoordinator;
+      },
+      get subagentHost() {
+        return host.subagentHost;
+      },
+      syncTerminalView: (...args) => host.syncTerminalView(...args),
+      syncWorkspaceState: (...args) => host.syncWorkspaceState(...args),
+      get terminal() {
+        return host.terminal;
+      },
+      get threadResourceStore() {
+        return host.threadResourceStore;
+      },
+      get threadStore() {
+        return host.threadStore;
+      },
+      get uninstallController() {
+        return host.uninstallController;
+      },
+      set uninstallController(value) {
+        host.uninstallController = value;
+      },
+      get uninstallRequested() {
+        return host.uninstallRequested;
+      },
+      get workspace() {
+        return host.workspace;
+      },
+      get taskBudgets() {
+        return host.taskBudgets;
+      },
+    };
+  }
+
+  private shellCommandsInstance?: AppShellCommands;
+  private get shellCommands(): AppShellCommands {
+    return (this.shellCommandsInstance ??= new AppShellCommands(this.shellCommandsContext()));
+  }
+  private shellCommandsContext(): AppShellCommandsContext {
+    const host = this;
+    return {
+      activeContextCharLimit: (...args) => host.activeContextCharLimit(...args),
+      announceResumeRecovery: (...args) => host.announceResumeRecovery(...args),
+      assertNoRunningCommands: (...args) => host.assertNoRunningCommands(...args),
+      captureClipboardImage: (...args) => host.captureClipboardImage(...args),
+      clearPendingImages: (...args) => host.clearPendingImages(...args),
+      get clipboardImageReader() {
+        return host.clipboardImageReader;
+      },
+      get closed() {
+        return host.closed;
+      },
+      get commandExecutionMode() {
+        return host.commandExecutionMode;
+      },
+      set commandExecutionMode(value) {
+        host.commandExecutionMode = value;
+      },
+      compactCurrentSession: (...args) => host.compactCurrentSession(...args),
+      get compacting() {
+        return host.compacting;
+      },
+      get config() {
+        return host.config;
+      },
+      get contextManager() {
+        return host.contextManager;
+      },
+      get dirty() {
+        return host.dirty;
+      },
+      set dirty(value) {
+        host.dirty = value;
+      },
+      discardImages: (...args) => host.discardImages(...args),
+      hasRunningCommands: (...args) => host.hasRunningCommands(...args),
+      get hostAccessEpoch() {
+        return host.hostAccessEpoch;
+      },
+      set hostAccessEpoch(value) {
+        host.hostAccessEpoch = value;
+      },
+      get imageStore() {
+        return host.imageStore;
+      },
+      get infoCommands() {
+        return host.infoCommands;
+      },
+      get lastProviderContext() {
+        return host.lastProviderContext;
+      },
+      get modelSelection() {
+        return host.modelSelection;
+      },
+      newThread: (...args) => host.newThread(...args),
+      get pendingImages() {
+        return host.pendingImages;
+      },
+      set pendingImages(value) {
+        host.pendingImages = value;
+      },
+      pendingPlan: (...args) => host.pendingPlan(...args),
+      processPendingPlanReview: (...args) => host.processPendingPlanReview(...args),
+      queueImagePath: (...args) => host.queueImagePath(...args),
+      requireCurrentModelVision: (...args) => host.requireCurrentModelVision(...args),
+      resumeThread: (...args) => host.resumeThread(...args),
+      get sandboxSetupDeferred() {
+        return host.sandboxSetupDeferred;
+      },
+      set sandboxSetupDeferred(value) {
+        host.sandboxSetupDeferred = value;
+      },
+      get sandboxStartupService() {
+        return host.sandboxStartupService;
+      },
+      save: (...args) => host.save(...args),
+      selectResumeThread: (...args) => host.selectResumeThread(...args),
+      showMcpServers: (...args) => host.showMcpServers(...args),
+      startMemoryMaintenance: (...args) => host.startMemoryMaintenance(...args),
+      get startupInteraction() {
+        return host.startupInteraction;
+      },
+      get state() {
+        return host.state;
+      },
+      get storage() {
+        return host.storage;
+      },
+      get subagentCoordinator() {
+        return host.subagentCoordinator;
+      },
+      get subagentHost() {
+        return host.subagentHost;
+      },
+      submitUserMessage: (...args) => host.submitUserMessage(...args),
+      syncTerminalView: (...args) => host.syncTerminalView(...args),
+      get terminal() {
+        return host.terminal;
+      },
+      terminalSessionInfo: (...args) => host.terminalSessionInfo(...args),
+      get threadStore() {
+        return host.threadStore;
+      },
+      get trustedOuterSandbox() {
+        return host.trustedOuterSandbox;
+      },
+      get uninstallRequested() {
+        return host.uninstallRequested;
+      },
+      updateWorkspaceCommand: (...args) => host.updateWorkspaceCommand(...args),
+    };
+  }
+
+  private imageInputsInstance?: AppImageInputs;
+  private get imageInputs(): AppImageInputs {
+    return (this.imageInputsInstance ??= new AppImageInputs(this.imageInputsContext()));
+  }
+  private imageInputsContext(): AppImageInputsContext {
+    const host = this;
+    return {
+      get clipboardImageReader() {
+        return host.clipboardImageReader;
+      },
+      get imageStore() {
+        return host.imageStore;
+      },
+      get pendingImages() {
+        return host.pendingImages;
+      },
+      set pendingImages(value) {
+        host.pendingImages = value;
+      },
+      get state() {
+        return host.state;
+      },
+      get storage() {
+        return host.storage;
+      },
+      get terminal() {
+        return host.terminal;
+      },
+      get workspace() {
+        return host.workspace;
+      },
+      get threadDocumentService() {
+        return host.threadDocumentService;
+      },
+      get threadResourceStore() {
+        return host.threadResourceStore;
+      },
+    };
+  }
 }
+
+export type { EasyCodeAppOptions, ToolSourceFactory, ToolSourceFactoryContext } from "./app/types.js";
