@@ -28,6 +28,7 @@ import {
   type ModelProvider,
   type PlanProposal,
   type PlanReviewState,
+  type ProviderResponse,
   type ProviderStreamEvent,
   type SessionState,
   type SubagentLifecycleUpdate,
@@ -122,6 +123,7 @@ import {
   projectAutoRouteContext,
   type AutoRouteContext,
   type AutoRouteAttempt,
+  type AutoRouteDecision,
 } from "./auto-router.js";
 import { autoRouteCapabilitySummary } from "./auto-route-capabilities.js";
 import { createProviderAttemptSignal } from "./provider-attempt-signal.js";
@@ -722,31 +724,70 @@ interface TurnMemoryContext {
   approvedPlanReview: PlanReviewState | undefined;
 }
 
-/** Values executeToolCalls reads from the enclosing turn; see AgentRuntime.run. */
-interface ToolCallsContext {
-  readonly agentIdentity: AgentIdentity;
-  readonly calls: FunctionToolCall[];
-  readonly commandRetries: CommandRetryTracker;
-  readonly effectiveMode: AgentMode;
-  readonly imageNumbering: { next: number };
-  readonly memoryContext: TurnMemoryContext;
+/** One AgentRuntime.run turn: the claimed user request and the state its phases share. */
+interface TurnRun {
+  readonly state: SessionState;
   readonly options: AgentRunOptions;
-  readonly ordinaryToolDefinitions: ToolDefinition[];
+  readonly turnId: string;
+  readonly agentIdentity: AgentIdentity;
+  readonly userInput: string;
+  readonly userMessage: Extract<ChatMessage, { role: "user" }>;
+  /** Images of this turn; steering can add more while the turn runs. */
+  readonly turnImages: ImageAttachment[];
+  /** Index of the user message in state.messages. */
+  readonly turnHistoryStart: number;
+  readonly memoryContext: TurnMemoryContext;
+  /** Child assignments still open when the turn was routed (main agent only). */
+  outstandingSubagentsAtRoute: readonly {
+    id: string;
+    assignmentKind: "dag" | "standalone";
+    taskId: string;
+    taskTitle: string;
+    status: string;
+  }[];
+  effectiveMode: AgentMode;
+}
+
+/** Memory search and layered retrieval results reused across steps while their keys are unchanged. */
+interface StepRetrievalCache {
+  memories: readonly Readonly<LongTermMemory>[];
+  rememberedPhaseKey: string | undefined;
+  rememberedQueryKey: string;
+  retrievedCache: RuntimeLayeredContext | undefined;
+  retrievedQueryKey: string;
+}
+
+/** A routed turn with its tool exposure bound; the step loop runs over this. */
+interface StepLoop extends TurnRun {
+  readonly toolGateway: ToolExecutionGateway;
+  /** Shared by reference: tool callbacks (attachImage) advance it from inside tool execution. */
+  readonly imageNumbering: { next: number };
   readonly progressResponseBase: number;
   readonly progressVerificationCommands: Map<string, VerificationKind>;
+  readonly toolRecovery: ToolRecoveryBudget;
+  readonly commandRetries: CommandRetryTracker;
+  readonly retrieval: StepRetrievalCache;
+  invalidOutputAttempts: number;
+}
+
+/** Ends the turn. The value is passed through unawaited, exactly like `return this.finish(...)` in run. */
+type TurnReturn = { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> };
+
+/** How one step ends: move on to the next step, redo this one, or end the turn. */
+type StepOutcome = { kind: "continue" } | { kind: "retry" } | TurnReturn;
+
+/** Values executeToolCalls reads from the enclosing step; see AgentRuntime.runToolBatch. */
+interface ToolCallsContext extends StepLoop {
+  readonly calls: FunctionToolCall[];
+  readonly ordinaryToolDefinitions: ToolDefinition[];
   readonly projectionHistory: ChatMessage[];
   readonly proposePlanBatched: boolean;
-  readonly state: SessionState;
   readonly step: number;
   readonly stepImageAttachments: ImageAttachment[];
   readonly submitTaskResultBatched: boolean;
-  readonly toolGateway: ToolExecutionGateway;
-  readonly toolRecovery: ToolRecoveryBudget;
-  readonly turnId: string;
-  readonly turnImages: ImageAttachment[];
 }
 
-/** Turn-local variables executeToolCalls updates; written back when it returns or throws. */
+/** What executeToolCalls records while it runs a tool batch. */
 interface ToolCallsState {
   completedVerificationPhase: boolean;
   environmentFault: string | undefined;
@@ -757,67 +798,19 @@ interface ToolCallsState {
   submittedTaskReport: SubagentTaskReport | undefined;
 }
 
-/** Values handleTextResponse reads from the enclosing turn; see AgentRuntime.run. */
-interface TextResponseContext {
-  readonly agentIdentity: AgentIdentity;
+/** Values handleTextResponse reads from the enclosing step; see AgentRuntime.runStep. */
+interface TextResponseContext extends TurnRun {
   readonly assistantMessage: ChatMessage;
   readonly calls: FunctionToolCall[];
-  readonly effectiveMode: AgentMode;
-  readonly memoryContext: TurnMemoryContext;
-  readonly options: AgentRunOptions;
-  readonly state: SessionState;
   readonly step: number;
-  readonly turnHistoryStart: number;
-  readonly turnId: string;
-  readonly turnImages: ImageAttachment[];
 }
 
-type HandleTextResponseFlow =
-  { kind: "next" } | { kind: "continue" } | { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> };
+type HandleTextResponseFlow = { kind: "next" } | { kind: "continue" } | TurnReturn;
 
-/** Values resolveTurnMode reads from the enclosing turn; see AgentRuntime.run. */
-interface TurnModeContext {
-  readonly agentIdentity: AgentIdentity;
-  readonly commitAutoRoute: (mode: "plan" | "code", reason: string) => Promise<void>;
-  readonly memoryContext: TurnMemoryContext;
-  readonly options: AgentRunOptions;
-  readonly outstandingSubagentsAtRoute: readonly {
-    id: string;
-    assignmentKind: "dag" | "standalone";
-    taskId: string;
-    taskTitle: string;
-    status: string;
-  }[];
-  readonly state: SessionState;
-  readonly turnHistoryStart: number;
-  readonly turnId: string;
-  readonly turnImages: ImageAttachment[];
-  readonly userInput: string;
-}
-
-/** Turn-local variables resolveTurnMode updates; written back when it returns or throws. */
-interface TurnModeState {
-  autoReason: string;
-  phaseCompactionRequestsUsed: number;
-}
-
-type ResolveTurnModeFlow = { kind: "next" } | { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> };
-
-/** Values settleToolBatch reads from the enclosing turn; see AgentRuntime.run. */
-interface ToolBatchOutcomeContext {
-  readonly agentIdentity: AgentIdentity;
-  readonly completedVerificationPhase: boolean;
-  readonly environmentFault: string | undefined;
-  readonly finishRejectedReason: string | undefined;
-  readonly memoryContext: TurnMemoryContext;
-  readonly proposedPlan: PlanProposal | undefined;
-  readonly requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
-  readonly state: SessionState;
+/** Values settleToolBatch reads from the enclosing step; see AgentRuntime.runToolBatch. */
+interface ToolBatchOutcomeContext extends TurnRun, Readonly<Omit<ToolCallsState, "steeringAppliedBetweenTools">> {
   readonly step: number;
   readonly stepImageAttachments: ImageAttachment[];
-  readonly submittedTaskReport: SubagentTaskReport | undefined;
-  readonly turnId: string;
-  readonly turnImages: ImageAttachment[];
 }
 
 /** Turn-local variables settleToolBatch updates; written back when it returns or throws. */
@@ -825,31 +818,7 @@ interface ToolBatchOutcomeState {
   steeringAppliedBetweenTools: boolean;
 }
 
-type SettleToolBatchFlow =
-  { kind: "next" } | { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> } | { kind: "continue" };
-
-/** Values prepareStepRequest reads from the enclosing turn; see AgentRuntime.run. */
-interface StepRequestContext {
-  readonly agentIdentity: AgentIdentity;
-  readonly effectiveMode: AgentMode;
-  readonly memoryContext: TurnMemoryContext;
-  readonly options: AgentRunOptions;
-  readonly state: SessionState;
-  readonly toolGateway: ToolExecutionGateway;
-  readonly turnId: string;
-  readonly turnImages: ImageAttachment[];
-}
-
-/** Turn-local variables prepareStepRequest updates; written back when it returns or throws. */
-interface StepRequestState {
-  memories: readonly Readonly<LongTermMemory>[];
-  phaseCompactionRequestsUsed: number;
-  rememberedPhaseKey: string | undefined;
-  rememberedQueryKey: string;
-  retrievedCache: RuntimeLayeredContext | undefined;
-  retrievedQueryKey: string;
-  step: number;
-}
+type SettleToolBatchFlow = { kind: "next" } | TurnReturn | { kind: "continue" };
 
 type PrepareStepRequestFlow =
   | {
@@ -862,8 +831,22 @@ type PrepareStepRequestFlow =
         messages: ChatMessage[];
       };
     }
-  | { kind: "return"; value: AgentRunResult | Promise<AgentRunResult> }
-  | { kind: "continue" };
+  | TurnReturn
+  | { kind: "retry" };
+
+/** The run's model-request cap; maxSteps is a legacy alias that must agree with maxModelRequests. */
+function configuredRequestLimit(options: AgentRunOptions): number | undefined {
+  if (
+    options.maxModelRequests !== undefined &&
+    options.maxSteps !== undefined &&
+    options.maxModelRequests !== options.maxSteps
+  )
+    throw new RangeError("maxModelRequests and the legacy maxSteps alias must match");
+  const limit = options.maxModelRequests ?? options.maxSteps;
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1))
+    throw new RangeError("maxModelRequests must be a positive safe integer when provided");
+  return limit;
+}
 
 export class AgentRuntime {
   /** Auxiliary operation: no user turn, tool dispatch, memory writes or task continuation. */
@@ -1342,19 +1325,28 @@ export class AgentRuntime {
   }
 
   async run(state: SessionState, input: string | AgentUserInput, options: AgentRunOptions): Promise<AgentRunResult> {
-    if (
-      options.maxModelRequests !== undefined &&
-      options.maxSteps !== undefined &&
-      options.maxModelRequests !== options.maxSteps
-    )
-      throw new RangeError("maxModelRequests and the legacy maxSteps alias must match");
-    const configuredRequestLimit = options.maxModelRequests ?? options.maxSteps;
-    if (
-      configuredRequestLimit !== undefined &&
-      (!Number.isSafeInteger(configuredRequestLimit) || configuredRequestLimit < 1)
-    )
-      throw new RangeError("maxModelRequests must be a positive safe integer when provided");
-    this.requestLimit = configuredRequestLimit;
+    const run = this.openTurn(state, input, options);
+    try {
+      await this.recordTurnStart(run);
+      const routed = await this.resolveTurnMode(run);
+      if (routed.kind === "return") return routed.value;
+      const loop = await this.bindTurnTools(run);
+      // Once execution becomes uncertain, this run never re-enables mutations.
+      // Recovery is an explicit external repair followed by Resume.
+      for (let step = 1; !this.requestLimitReached(); step += 1) {
+        const outcome = await this.runStep(loop, step);
+        if (outcome.kind === "return") return outcome.value;
+        if (outcome.kind === "retry") step -= 1;
+      }
+      return this.finishAtRequestLimit(run);
+    } catch (error) {
+      return this.failedRun(run, error);
+    }
+  }
+
+  /** Validate the request, reset the per-run budget, claim the turn and append the user message to history. */
+  private openTurn(state: SessionState, input: string | AgentUserInput, options: AgentRunOptions): TurnRun {
+    this.requestLimit = configuredRequestLimit(options);
     this.modelRequestsUsed = 0;
     this.dependencies.contextManager.configureTokenBudget(
       effectiveContextWindow(state.provider, state.model, options.maxContextTokens),
@@ -1373,11 +1365,6 @@ export class AgentRuntime {
     if (agentIdentity.role === "subagent" && state.mode !== "code" && state.mode !== "plan") {
       throw new Error("An isolated child runtime must remain in Plan or Code mode");
     }
-    const memoryContext = {
-      userInput,
-      mutations: [] as MemoryMutationRequest[],
-      approvedPlanReview: undefined as PlanReviewState | undefined,
-    };
     state.activeTurnId = turnId;
     state.goal = userInput || "Analyze the attached image(s).";
     state.updatedAt = new Date().toISOString();
@@ -1387,658 +1374,585 @@ export class AgentRuntime {
       ...(inputImages.length ? { images: inputImages } : {}),
     };
     const turnHistoryStart = state.messages.length;
-    let phaseCompactionRequestsUsed = 0;
     state.messages.push(userMessage);
     updateLatestRequestLedger(state, turnHistoryStart, userMessage.content);
+    return {
+      state,
+      options,
+      turnId,
+      agentIdentity,
+      userInput,
+      userMessage,
+      turnImages,
+      turnHistoryStart,
+      memoryContext: { userInput, mutations: [], approvedPlanReview: undefined },
+      outstandingSubagentsAtRoute: [],
+      effectiveMode: options.modeOverride ?? state.mode,
+    };
+  }
 
-    try {
-      await this.dependencies.appendEvent({
-        threadId: state.threadId,
-        turnId,
-        type: "message.user",
-        phase: "completed",
-        payload: { content: userInput, message: userMessage },
-      });
-      if (inputImages.length) {
-        await this.dependencies.commitImages?.(state.threadId, inputImages);
-      }
+  /** Persist the user message and, when this turn executes an approved plan, retire the review it came from. */
+  private async recordTurnStart(run: TurnRun): Promise<void> {
+    const { memoryContext, options, state, turnId, userMessage } = run;
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type: "message.user",
+      phase: "completed",
+      payload: { content: run.userInput, message: userMessage },
+    });
+    if (userMessage.images?.length) {
+      await this.dependencies.commitImages?.(state.threadId, userMessage.images);
+    }
+    if (!options.approvedPlan) return;
+    const review = state.planReview;
+    if (
+      !review ||
+      review.status !== "approved_pending_execution" ||
+      review.proposal.id !== options.approvedPlan.id ||
+      review.proposal.revision !== options.approvedPlan.revision
+    ) {
+      throw new Error("The approved plan no longer matches the pending review state");
+    }
+    const replacedTaskGraphId =
+      state.taskGraph && state.taskGraph.status !== "completed" ? state.taskGraph.id : undefined;
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type: "plan.execution_started",
+      phase: "completed",
+      payload: {
+        planId: review.proposal.id,
+        revision: review.proposal.revision,
+        ...(replacedTaskGraphId ? { replacedTaskGraphId } : {}),
+      },
+    });
+    memoryContext.approvedPlanReview = clonePlanReviewState(review);
+    state.planReview = undefined;
+    if (replacedTaskGraphId) state.taskGraph = undefined;
+    state.updatedAt = new Date().toISOString();
+  }
 
-      if (options.approvedPlan) {
-        const review = state.planReview;
-        if (
-          !review ||
-          review.status !== "approved_pending_execution" ||
-          review.proposal.id !== options.approvedPlan.id ||
-          review.proposal.revision !== options.approvedPlan.revision
-        ) {
-          throw new Error("The approved plan no longer matches the pending review state");
-        }
-        const replacedTaskGraphId =
-          state.taskGraph && state.taskGraph.status !== "completed" ? state.taskGraph.id : undefined;
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
+  /** Bind the tools this turn exposes to the model, audit the binding and set up the step loop. */
+  private async bindTurnTools(run: TurnRun): Promise<StepLoop> {
+    const { agentIdentity, options, state, turnId } = run;
+    const imageNumbering = { next: nextThreadImageNumber(state.messages) };
+    const exposedTools = availableTools(
+      this.dependencies.toolCatalog.tools,
+      run.effectiveMode,
+      agentIdentity.role,
+      state.thinkingEffort,
+      this.orchestrationToolsAvailable(state, options),
+      this.dependencies.visionAvailable ?? true,
+    ).filter(
+      (tool) =>
+        (tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId)) &&
+        (state.mode !== "auto" ||
+          (tool.name !== "manage_tasks" &&
+            (tool.name !== "manage_subagents" || run.outstandingSubagentsAtRoute.length > 0))),
+    );
+    const exposedToolCatalog = snapshotToolSet(exposedTools, this.dependencies.toolCatalog.revision);
+    const toolGateway = new ToolExecutionGateway(exposedToolCatalog, this.dependencies.authorizeToolExecution);
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type: "tool.catalog.bound",
+      phase: "completed",
+      payload: {
+        catalogRevision: this.dependencies.toolCatalog.revision,
+        catalogHash: this.dependencies.toolCatalog.hash,
+        exposureHash: exposedToolCatalog.hash,
+        toolCount: exposedToolCatalog.bindings.size,
+        toolsTruncated: exposedToolCatalog.bindings.size > MAX_AUDITED_TOOL_BINDINGS,
+        tools: [...exposedToolCatalog.bindings.values()].slice(0, MAX_AUDITED_TOOL_BINDINGS).map((binding) => ({
+          toolId: binding.toolId,
+          modelName: binding.modelName,
+          sourceId: binding.sourceId,
+          sourceKind: binding.sourceKind,
+          schemaHash: binding.schemaHash,
+          metadataHash: binding.metadataHash,
+        })),
+      },
+    });
+    const limits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
+    return {
+      ...run,
+      toolGateway,
+      imageNumbering,
+      progressResponseBase: state.progressGuard?.lastObservedResponseOrdinal ?? 0,
+      progressVerificationCommands: new Map<string, VerificationKind>(),
+      toolRecovery: new ToolRecoveryBudget(limits.modelContentRetries + 1),
+      commandRetries: new CommandRetryTracker(limits.sandboxInitializationRetries),
+      retrieval: {
+        memories: [],
+        rememberedPhaseKey: undefined,
+        rememberedQueryKey: "",
+        retrievedCache: undefined,
+        retrievedQueryKey: "",
+      },
+      invalidOutputAttempts: 0,
+    };
+  }
+
+  /** One model request of the turn and everything its response causes. */
+  private async runStep(loop: StepLoop, step: number): Promise<StepOutcome> {
+    const { agentIdentity, memoryContext, options, state, turnId, turnImages } = loop;
+    if (options.signal?.aborted) {
+      return {
+        kind: "return",
+        value: this.finish(
+          state,
           turnId,
-          type: "plan.execution_started",
-          phase: "completed",
-          payload: {
-            planId: review.proposal.id,
-            revision: review.proposal.revision,
-            ...(replacedTaskGraphId ? { replacedTaskGraphId } : {}),
-          },
-        });
-        memoryContext.approvedPlanReview = clonePlanReviewState(review);
-        state.planReview = undefined;
-        if (replacedTaskGraphId) state.taskGraph = undefined;
-        state.updatedAt = new Date().toISOString();
-      }
-
-      if (options.modeOverride && state.mode !== "auto") {
-        throw new Error("A review mode override is valid only while the persistent mode is Auto");
-      }
-      const outstandingSubagentsAtRoute =
-        agentIdentity.role === "main_agent" ? (this.dependencies.getOutstandingSubagents?.() ?? []) : [];
-      if (outstandingSubagentsAtRoute.length > 0 && options.modeOverride === "plan")
-        throw new Error("Outstanding child assignments must be collected before entering a Plan review override");
-      let effectiveMode: AgentMode = options.modeOverride ?? state.mode;
-      let autoReason = "";
-      const commitAutoRoute = async (mode: "plan" | "code", reason: string): Promise<void> => {
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
-          turnId,
-          type: "mode.auto_route",
-          phase: "completed",
-          payload: { mode, reason },
-        });
-        state.mode = mode;
-        state.updatedAt = new Date().toISOString();
-        effectiveMode = mode;
-        autoReason = reason;
-        try {
-          this.dependencies.onModeSelected?.(mode);
-        } catch {
-          /* Presentation cannot undo a durable mode transition. */
-        }
+          "The task was interrupted by the user.",
+          "interrupted",
+          step - 1,
+          memoryContext,
+        ),
       };
-      const resolveTurnModeState: TurnModeState = { autoReason, phaseCompactionRequestsUsed };
-      try {
-        const resolveTurnModeFlow = await this.resolveTurnMode(
-          {
-            agentIdentity,
-            commitAutoRoute,
-            memoryContext,
-            options,
-            outstandingSubagentsAtRoute,
-            state,
-            turnHistoryStart,
-            turnId,
-            turnImages,
-            userInput,
-          },
-          resolveTurnModeState,
-        );
-        if (resolveTurnModeFlow.kind === "return") return resolveTurnModeFlow.value;
-      } finally {
-        ({ autoReason, phaseCompactionRequestsUsed } = resolveTurnModeState);
-      }
+    }
+    const exhausted = await this.collectStepInputs(loop, step);
+    if (exhausted) return exhausted;
+    const prepared = await this.prepareStepRequest(loop, step);
+    if (prepared.kind !== "next") return prepared;
+    const requested = await this.requestModelResponse(loop, step, prepared.outputs);
+    if (requested.kind !== "response") return requested;
+    if (
+      agentIdentity.role === "main_agent" &&
+      (await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext))
+    ) {
+      // The response was never added to the transcript, so a tool-call
+      // protocol cannot be left half-open. Retry this logical step with the
+      // newly coalesced user message.
+      return { kind: "retry" };
+    }
+    const { assistantMessage, executionToolCalls } = await this.recordAssistantResponse(loop, step, requested.response);
+    const projectionHistory: ChatMessage[] = [...prepared.outputs.messages, assistantMessage];
 
-      let memories: readonly Readonly<LongTermMemory>[] = [];
-      let rememberedQueryKey = "";
-      let rememberedPhaseKey: string | undefined;
-      let retrievedQueryKey = "";
-      let retrievedCache: RuntimeLayeredContext | undefined;
-      // Shared by reference: tool callbacks (attachImage) advance it from inside tool execution.
-      const imageNumbering = { next: nextThreadImageNumber(state.messages) };
-      const exposedTools = availableTools(
-        this.dependencies.toolCatalog.tools,
-        effectiveMode,
-        agentIdentity.role,
-        state.thinkingEffort,
-        this.orchestrationToolsAvailable(state, options),
-        this.dependencies.visionAvailable ?? true,
-      ).filter(
-        (tool) =>
-          (tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId)) &&
-          (state.mode !== "auto" ||
-            (tool.name !== "manage_tasks" &&
-              (tool.name !== "manage_subagents" || outstandingSubagentsAtRoute.length > 0))),
-      );
-      const exposedToolCatalog = snapshotToolSet(exposedTools, this.dependencies.toolCatalog.revision);
-      const toolGateway = new ToolExecutionGateway(exposedToolCatalog, this.dependencies.authorizeToolExecution);
+    // Execute original arguments; the complete sanitized candidate remains
+    // in history until an accepted compaction retires it.
+    const invalidOutput = incompleteModelOutput(requested.response);
+    if (invalidOutput) return this.rejectIncompleteOutput(loop, step, invalidOutput, executionToolCalls ?? []);
+    loop.invalidOutputAttempts = 0;
+    const calls = executionToolCalls ?? [];
+    const handleTextResponseFlow = await this.handleTextResponse({ ...loop, assistantMessage, calls, step });
+    if (handleTextResponseFlow.kind !== "next") return handleTextResponseFlow;
+    return this.runToolBatch(loop, step, calls, prepared.outputs.ordinaryToolDefinitions, projectionHistory);
+  }
+
+  /** Deliver child reports, parent follow-ups and steering before the step's request, and review stalled progress. */
+  private async collectStepInputs(loop: StepLoop, step: number): Promise<TurnReturn | undefined> {
+    const { agentIdentity, memoryContext, options, state, turnId, turnImages } = loop;
+    if (agentIdentity.role === "main_agent") {
+      for (const report of (await this.dependencies.takeSubagentMessages?.(state.threadId, turnId)) ?? []) {
+        state.messages.push(report);
+      }
+    }
+    for (const instruction of this.dependencies.takeAdditionalInstructions?.() ?? []) {
+      const followUp: Extract<ChatMessage, { role: "user" }> = {
+        role: "user",
+        content: renderRuntimePrompt("runtime/parent-follow-up.md", {
+          instruction,
+        }),
+      };
+      state.messages.push(followUp);
       await this.dependencies.appendEvent({
         threadId: state.threadId,
         turnId,
-        type: "tool.catalog.bound",
+        stepId: `step_${step}`,
+        type: "message.user.synthetic",
         phase: "completed",
-        payload: {
-          catalogRevision: this.dependencies.toolCatalog.revision,
-          catalogHash: this.dependencies.toolCatalog.hash,
-          exposureHash: exposedToolCatalog.hash,
-          toolCount: exposedToolCatalog.bindings.size,
-          toolsTruncated: exposedToolCatalog.bindings.size > MAX_AUDITED_TOOL_BINDINGS,
-          tools: [...exposedToolCatalog.bindings.values()].slice(0, MAX_AUDITED_TOOL_BINDINGS).map((binding) => ({
-            toolId: binding.toolId,
-            modelName: binding.modelName,
-            sourceId: binding.sourceId,
-            sourceKind: binding.sourceKind,
-            schemaHash: binding.schemaHash,
-            metadataHash: binding.metadataHash,
-          })),
-        },
+        payload: followUp,
       });
-      const progressResponseBase = state.progressGuard?.lastObservedResponseOrdinal ?? 0;
-      const progressVerificationCommands = new Map<string, VerificationKind>();
+    }
+    await this.takeAndApplySteering(state, turnId, "before_model", turnImages, false, memoryContext);
+    if (agentIdentity.role !== "main_agent") return undefined;
+    const shared = this.dependencies.taskBudget?.snapshot();
+    const sharedRemaining =
+      shared?.maxRequests === null || shared === undefined
+        ? undefined
+        : Math.max(0, shared.maxRequests - shared.requests);
+    const localRemaining = this.remainingRequestAllowance();
+    const remainingModelRequests =
+      localRemaining === undefined
+        ? sharedRemaining
+        : sharedRemaining === undefined
+          ? localRemaining
+          : Math.min(localRemaining, sharedRemaining);
+    const reviewRequests = await this.processProgressIntervention({
+      state,
+      turnId,
+      userInput: memoryContext.userInput,
+      remainingModelRequests,
+      signal: options.signal,
+    });
+    this.modelRequestsUsed += reviewRequests;
+    if (!this.requestLimitReached()) return undefined;
+    return {
+      kind: "return",
+      value: this.finish(
+        state,
+        turnId,
+        "The shared model-request budget was exhausted while reviewing stalled progress.",
+        "limit_reached",
+        this.modelRequestsUsed,
+        memoryContext,
+      ),
+    };
+  }
 
-      const toolRecovery = new ToolRecoveryBudget(
-        (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1,
-      );
-      let invalidOutputAttempts = 0;
-      const commandRetries = new CommandRetryTracker(
-        (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).sandboxInitializationRetries,
-      );
-      // Once execution becomes uncertain, this run never re-enables mutations.
-      // Recovery is an explicit external repair followed by Resume.
-      for (let step = 1; !this.requestLimitReached(); step += 1) {
-        if (options.signal?.aborted) {
-          return this.finish(
-            state,
-            turnId,
-            "The task was interrupted by the user.",
-            "interrupted",
-            step - 1,
-            memoryContext,
-          );
-        }
-
-        if (agentIdentity.role === "main_agent") {
-          for (const report of (await this.dependencies.takeSubagentMessages?.(state.threadId, turnId)) ?? []) {
-            state.messages.push(report);
-          }
-        }
-        for (const instruction of this.dependencies.takeAdditionalInstructions?.() ?? []) {
-          const followUp: Extract<ChatMessage, { role: "user" }> = {
-            role: "user",
-            content: renderRuntimePrompt("runtime/parent-follow-up.md", {
-              instruction,
-            }),
-          };
-          state.messages.push(followUp);
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            stepId: `step_${step}`,
-            type: "message.user.synthetic",
-            phase: "completed",
-            payload: followUp,
-          });
-        }
-        await this.takeAndApplySteering(state, turnId, "before_model", turnImages, false, memoryContext);
-        if (agentIdentity.role === "main_agent") {
-          const shared = this.dependencies.taskBudget?.snapshot();
-          const sharedRemaining =
-            shared?.maxRequests === null || shared === undefined
-              ? undefined
-              : Math.max(0, shared.maxRequests - shared.requests);
-          const localRemaining = this.remainingRequestAllowance();
-          const remainingModelRequests =
-            localRemaining === undefined
-              ? sharedRemaining
-              : sharedRemaining === undefined
-                ? localRemaining
-                : Math.min(localRemaining, sharedRemaining);
-          const reviewRequests = await this.processProgressIntervention({
-            state,
-            turnId,
-            userInput: memoryContext.userInput,
-            remainingModelRequests,
-            signal: options.signal,
-          });
-          this.modelRequestsUsed += reviewRequests;
-          if (this.requestLimitReached()) {
-            return this.finish(
-              state,
-              turnId,
-              "The shared model-request budget was exhausted while reviewing stalled progress.",
-              "limit_reached",
-              this.modelRequestsUsed,
-              memoryContext,
-            );
-          }
-        }
-        const prepareStepRequestState: StepRequestState = {
-          memories,
-          phaseCompactionRequestsUsed,
-          rememberedPhaseKey,
-          rememberedQueryKey,
-          retrievedCache,
-          retrievedQueryKey,
-          step,
-        };
-        let prepareStepRequestFlow: PrepareStepRequestFlow;
-        try {
-          prepareStepRequestFlow = await this.prepareStepRequest(
-            { agentIdentity, effectiveMode, memoryContext, options, state, toolGateway, turnId, turnImages },
-            prepareStepRequestState,
-          );
-        } finally {
-          ({
-            memories,
-            phaseCompactionRequestsUsed,
-            rememberedPhaseKey,
-            rememberedQueryKey,
-            retrievedCache,
-            retrievedQueryKey,
-            step,
-          } = prepareStepRequestState);
-        }
-        if (prepareStepRequestFlow.kind === "return") return prepareStepRequestFlow.value;
-        if (prepareStepRequestFlow.kind === "continue") continue;
-        const { stepRuntimeContext, selectedForStep, ordinaryToolDefinitions, enabledTools, messages } =
-          prepareStepRequestFlow.outputs;
-
-        let response;
-        try {
-          const attempted = await this.runProviderAttempt(options.signal, (attemptSignal) =>
-            this.withModelRequestActivity(`Waiting for ${this.dependencies.provider.model} response`, () =>
-              this.dependencies.provider.complete({
-                messages,
-                // Every actor prefers the same streaming provider transport.
-                // Presentation remains main-agent-only so private child context
-                // cannot leak into the parent's terminal.
-                responseMode: "stream",
-                currentTurnImageIds: turnImages.map((image) => image.id),
-                tools: enabledTools.map((tool) => tool.definition),
-                signal: attemptSignal,
-                thinkingEffort: state.thinkingEffort,
-                ...(agentIdentity.role === "main_agent" && this.dependencies.onModelStream
-                  ? {
-                      onStreamEvent: (event: ProviderStreamEvent) => {
-                        try {
-                          this.dependencies.onModelStream?.(event);
-                        } catch {
-                          // Live presentation must never replace provider output.
-                        }
-                      },
+  /** Send the step's request to the provider; a failed request ends the turn and a steering interruption retries the step. */
+  private async requestModelResponse(
+    loop: StepLoop,
+    step: number,
+    outputs: Extract<PrepareStepRequestFlow, { kind: "next" }>["outputs"],
+  ): Promise<{ kind: "response"; response: ProviderResponse } | StepOutcome> {
+    const { agentIdentity, memoryContext, options, state, turnId, turnImages } = loop;
+    const { stepRuntimeContext, selectedForStep, enabledTools, messages } = outputs;
+    try {
+      const attempted = await this.runProviderAttempt(options.signal, (attemptSignal) =>
+        this.withModelRequestActivity(`Waiting for ${this.dependencies.provider.model} response`, () =>
+          this.dependencies.provider.complete({
+            messages,
+            // Every actor prefers the same streaming provider transport.
+            // Presentation remains main-agent-only so private child context
+            // cannot leak into the parent's terminal.
+            responseMode: "stream",
+            currentTurnImageIds: turnImages.map((image) => image.id),
+            tools: enabledTools.map((tool) => tool.definition),
+            signal: attemptSignal,
+            thinkingEffort: state.thinkingEffort,
+            ...(agentIdentity.role === "main_agent" && this.dependencies.onModelStream
+              ? {
+                  onStreamEvent: (event: ProviderStreamEvent) => {
+                    try {
+                      this.dependencies.onModelStream?.(event);
+                    } catch {
+                      // Live presentation must never replace provider output.
                     }
-                  : {}),
-              }),
-            ),
-          );
-          if (attempted.kind === "steering_interrupted") {
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "model.attempt.steering_interrupted",
-              phase: "interrupted",
-              payload: { purpose: "agent_step" },
-            });
-            await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext);
-            step -= 1;
-            continue;
-          }
-          response = attempted.value;
-          if (
-            agentIdentity.role === "main_agent" &&
-            selectedForStep?.memories.length &&
-            messages.some((message) => message.role === "user" && message.content === stepRuntimeContext)
-          ) {
-            try {
-              this.dependencies.recordMemoryRecall?.(
-                state.threadId,
-                turnId,
-                selectedForStep.memories.map((memory) => memory.id),
-              );
-            } catch {
-              // Recall accounting is derived state, never a reason to discard a model response.
-            }
-          }
-          await this.reportModelUsage(turnId, "agent_step", response.usage, { step, attempt: 1, retry: false });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (!options.signal?.aborted && isContextCapacityError(error)) {
-            return this.finish(
-              state,
-              turnId,
-              "Context paused: the provider rejected the input capacity after bounded recovery. History, files and pending operations are preserved; reduce required input or configure a supported model window before resuming.",
-              "limit_reached",
-              step,
-              memoryContext,
-              undefined,
-              undefined,
-              {
-                code: "context_capacity_exhausted",
-                tool: "runtime",
-                attempts: state.pressureRecovery?.serverReset ? 1 : 0,
-                recoverable: true,
-              },
-            );
-          }
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            stepId: `step_${step}`,
-            type: "model.error",
-            phase: "failed",
-            payload: { message, category: failureCategory(error, options.signal), commandReplay: false },
-          });
-          const interrupted = Boolean(options.signal?.aborted);
-          return this.finish(
-            state,
-            turnId,
-            interrupted ? "The task was interrupted by the user." : `Model request failed: ${message}`,
-            interrupted ? "interrupted" : error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
-            error instanceof TaskBudgetExceeded ? this.modelRequestsUsed : step,
-            memoryContext,
-            undefined,
-            undefined,
-            interrupted ? undefined : contextCapacityFailure(error, state),
-          );
-        }
-
-        if (
-          agentIdentity.role === "main_agent" &&
-          (await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext))
-        ) {
-          // The response was never added to the transcript, so a tool-call
-          // protocol cannot be left half-open. Retry this logical step with the
-          // newly coalesced user message.
-          step -= 1;
-          continue;
-        }
-
-        const executionToolCalls = deduplicateThreadTitleCalls(response.message.tool_calls);
-        const assistantMessage: ChatMessage = {
-          role: "assistant",
-          content: response.message.content,
-          ...(response.message.phase ? { phase: response.message.phase } : {}),
-          tool_calls: executionToolCalls,
-          reasoning_content: response.message.reasoning_content,
-        };
-        state.messages.push(assistantMessage);
-        const projectionHistory: ChatMessage[] = [...messages, assistantMessage];
+                  },
+                }
+              : {}),
+          }),
+        ),
+      );
+      if (attempted.kind === "steering_interrupted") {
         await this.dependencies.appendEvent({
           threadId: state.threadId,
           turnId,
           stepId: `step_${step}`,
-          type: "message.assistant",
-          phase: "completed",
-          payload: assistantMessage,
+          type: "model.attempt.steering_interrupted",
+          phase: "interrupted",
+          payload: { purpose: "agent_step" },
         });
-        const reasoningText = response.message.reasoning_content;
-        const thinkingEffort = state.thinkingEffort;
-        if (
-          thinkingEffort !== "none" &&
-          reasoningText !== undefined &&
-          reasoningText !== null &&
-          reasoningText.trim().length > 0
-        ) {
-          try {
-            this.dependencies.onReasoning?.({
-              type: "reasoning",
-              text: reasoningText,
-              threadId: state.threadId,
-              turnId,
-              step,
-              provider: this.dependencies.provider.name,
-              model: this.dependencies.provider.model,
-              thinkingEffort,
-            });
-          } catch {
-            // This hook is ephemeral presentation only. A broken UI must not
-            // interrupt the durable assistant message or its pending tool calls.
-          }
-        }
-
-        // Execute original arguments; the complete sanitized candidate remains
-        // in history until an accepted compaction retires it.
-        const invalidOutput = incompleteModelOutput(response);
-        if (invalidOutput) {
-          invalidOutputAttempts++;
-          for (const call of executionToolCalls ?? []) {
-            const rejected: ChatMessage = {
-              role: "tool",
-              name: call.function.name,
-              tool_call_id: call.id,
-              content: JSON.stringify({ ok: false, error: invalidOutput, executed: false }),
-            };
-            state.messages.push(rejected);
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              type: "tool.result",
-              phase: "failed",
-              payload: {
-                callId: call.id,
-                tool: call.function.name,
-                message: rejected,
-                result: { ok: false, executed: false, error: invalidOutput },
-              },
-            });
-          }
-          const feedback: ChatMessage = { role: "user", content: "RUNTIME_MODEL_CONTENT_ERROR: " + invalidOutput };
-          state.messages.push(feedback);
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            type: "message.user.synthetic",
-            payload: feedback,
-          });
-          if (invalidOutputAttempts <= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries)
-            continue;
-          return this.finish(
-            state,
-            turnId,
-            invalidOutput + " Content correction budget exhausted; work is unverified and retained.",
-            "failed",
-            step,
-            memoryContext,
-          );
-        }
-        invalidOutputAttempts = 0;
-        const calls = executionToolCalls ?? [];
-        const handleTextResponseFlow = await this.handleTextResponse({
-          agentIdentity,
-          assistantMessage,
-          calls,
-          effectiveMode,
-          memoryContext,
-          options,
-          state,
-          step,
-          turnHistoryStart,
-          turnId,
-          turnImages,
-        });
-        if (handleTextResponseFlow.kind === "continue") continue;
-        if (handleTextResponseFlow.kind === "return") return handleTextResponseFlow.value;
-
-        const proposePlanBatched = calls.length > 1 && calls.some((call) => call.function.name === "propose_plan");
-        const submitTaskResultBatched =
-          calls.length > 1 && calls.some((call) => call.function.name === "submit_task_result");
-        const stepImageAttachments: ImageAttachment[] = [];
-        let proposedPlan: PlanProposal | undefined;
-        let submittedTaskReport: SubagentTaskReport | undefined;
-        let steeringAppliedBetweenTools = false;
-        let requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
-        let finishRejectedReason: string | undefined;
-        let completedVerificationPhase = false;
-        let environmentFault = this.dependencies.getEnvironmentFault?.();
-
-        const executeToolCallsState: ToolCallsState = {
-          completedVerificationPhase,
-          environmentFault,
-          finishRejectedReason,
-          proposedPlan,
-          requiredProtocolExhaustion,
-          steeringAppliedBetweenTools,
-          submittedTaskReport,
-        };
-        try {
-          await this.executeToolCalls(
-            {
-              agentIdentity,
-              calls,
-              commandRetries,
-              effectiveMode,
-              imageNumbering,
-              memoryContext,
-              options,
-              ordinaryToolDefinitions,
-              progressResponseBase,
-              progressVerificationCommands,
-              projectionHistory,
-              proposePlanBatched,
-              state,
-              step,
-              stepImageAttachments,
-              submitTaskResultBatched,
-              toolGateway,
-              toolRecovery,
-              turnId,
-              turnImages,
-            },
-            executeToolCallsState,
-          );
-        } finally {
-          ({
-            completedVerificationPhase,
-            environmentFault,
-            finishRejectedReason,
-            proposedPlan,
-            requiredProtocolExhaustion,
-            steeringAppliedBetweenTools,
-            submittedTaskReport,
-          } = executeToolCallsState);
-        }
-
-        const settleToolBatchState: ToolBatchOutcomeState = { steeringAppliedBetweenTools };
-        try {
-          const settleToolBatchFlow = await this.settleToolBatch(
-            {
-              agentIdentity,
-              completedVerificationPhase,
-              environmentFault,
-              finishRejectedReason,
-              memoryContext,
-              proposedPlan,
-              requiredProtocolExhaustion,
-              state,
-              step,
-              stepImageAttachments,
-              submittedTaskReport,
-              turnId,
-              turnImages,
-            },
-            settleToolBatchState,
-          );
-          if (settleToolBatchFlow.kind === "return") return settleToolBatchFlow.value;
-          if (settleToolBatchFlow.kind === "continue") continue;
-        } finally {
-          ({ steeringAppliedBetweenTools } = settleToolBatchState);
-        }
+        await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext);
+        return { kind: "retry" };
       }
-
-      if (state.completionControl?.active) {
-        const obligations = state.completionControl.active.obligations;
-        const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(
-          (item) => item.kind === "subagent_submission" || item.kind === "collect_subagents",
-        )
-          ? "subagent"
-          : "completion_protocol";
-        return this.finish(
-          state,
-          turnId,
-          `Task paused at the model-request limit with ${obligations.length} unresolved completion obligation(s).`,
-          "paused",
-          this.modelRequestsUsed,
-          memoryContext,
-          undefined,
-          undefined,
-          undefined,
-          {
-            cause,
-            resumable: true,
-            requiredAction: obligations.map((item) => item.requiredAction).join(" "),
-            obligations,
-          },
-        );
-      }
-      if (this.requestLimit === undefined) {
-        throw new Error("Agent loop ended without completion or a configured model-request limit");
-      }
-      return this.finish(
-        state,
-        turnId,
-        `Reached the hard limit of ${this.requestLimit} model requests before the task could be confirmed complete.`,
-        "limit_reached",
-        this.modelRequestsUsed,
-        memoryContext,
-      );
-    } catch (error) {
-      const interrupted = Boolean(options.signal?.aborted);
-      const message = error instanceof Error ? error.message : String(error);
-      const protocolFailure = !interrupted && error instanceof ToolProtocolExhausted ? error : undefined;
-      const controlFailure =
-        protocolFailure?.failure ?? (!interrupted ? contextCapacityFailure(error, state) : undefined);
-      const capacityExhausted = !interrupted && isContextCapacityError(error);
-      const result: AgentRunResult = {
-        text: interrupted
-          ? "The task was interrupted by the user."
-          : error instanceof CommandEnvironmentQuarantined
-            ? `Task paused: the command environment is quarantined. History and pending work are preserved; repair and verify cleanup before resuming. ${message}`
-            : capacityExhausted
-              ? "Context paused: the required request exceeds the model capacity. History and pending work are preserved; reduce required input or use a supported larger window before resuming."
-              : `Agent run failed: ${message}`,
-        reason: interrupted
-          ? "interrupted"
-          : capacityExhausted || error instanceof TaskBudgetExceeded
-            ? "limit_reached"
-            : "failed",
-        steps:
-          error instanceof TaskBudgetExceeded || error instanceof CommandEnvironmentQuarantined
-            ? this.modelRequestsUsed
-            : (protocolFailure?.steps ?? 0),
-        threadId: state.threadId,
-        turnId,
-        ...(controlFailure ? { failure: controlFailure } : {}),
-      };
-      if (state.activeTurnId === turnId) {
+      const response = attempted.value;
+      if (
+        agentIdentity.role === "main_agent" &&
+        selectedForStep?.memories.length &&
+        messages.some((message) => message.role === "user" && message.content === stepRuntimeContext)
+      ) {
         try {
-          return await this.finish(
-            state,
+          this.dependencies.recordMemoryRecall?.(
+            state.threadId,
             turnId,
-            result.text,
-            result.reason,
-            result.steps,
-            memoryContext,
-            undefined,
-            undefined,
-            result.failure,
+            selectedForStep.memories.map((memory) => memory.id),
           );
         } catch {
-          state.activeTurnId = undefined;
-          state.updatedAt = new Date().toISOString();
+          // Recall accounting is derived state, never a reason to discard a model response.
         }
       }
-      return result;
+      await this.reportModelUsage(turnId, "agent_step", response.usage, { step, attempt: 1, retry: false });
+      return { kind: "response", response };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!options.signal?.aborted && isContextCapacityError(error)) {
+        return {
+          kind: "return",
+          value: this.finish(
+            state,
+            turnId,
+            "Context paused: the provider rejected the input capacity after bounded recovery. History, files and pending operations are preserved; reduce required input or configure a supported model window before resuming.",
+            "limit_reached",
+            step,
+            memoryContext,
+            undefined,
+            undefined,
+            {
+              code: "context_capacity_exhausted",
+              tool: "runtime",
+              attempts: state.pressureRecovery?.serverReset ? 1 : 0,
+              recoverable: true,
+            },
+          ),
+        };
+      }
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        stepId: `step_${step}`,
+        type: "model.error",
+        phase: "failed",
+        payload: { message, category: failureCategory(error, options.signal), commandReplay: false },
+      });
+      const interrupted = Boolean(options.signal?.aborted);
+      return {
+        kind: "return",
+        value: this.finish(
+          state,
+          turnId,
+          interrupted ? "The task was interrupted by the user." : `Model request failed: ${message}`,
+          interrupted ? "interrupted" : error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
+          error instanceof TaskBudgetExceeded ? this.modelRequestsUsed : step,
+          memoryContext,
+          undefined,
+          undefined,
+          interrupted ? undefined : contextCapacityFailure(error, state),
+        ),
+      };
     }
   }
 
+  /** Append the model's response to history and show its reasoning; returns the calls to execute. */
+  private async recordAssistantResponse(
+    loop: StepLoop,
+    step: number,
+    response: ProviderResponse,
+  ): Promise<{ assistantMessage: ChatMessage; executionToolCalls: FunctionToolCall[] | undefined }> {
+    const { state, turnId } = loop;
+    const executionToolCalls = deduplicateThreadTitleCalls(response.message.tool_calls);
+    const assistantMessage: ChatMessage = {
+      role: "assistant",
+      content: response.message.content,
+      ...(response.message.phase ? { phase: response.message.phase } : {}),
+      tool_calls: executionToolCalls,
+      reasoning_content: response.message.reasoning_content,
+    };
+    state.messages.push(assistantMessage);
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      stepId: `step_${step}`,
+      type: "message.assistant",
+      phase: "completed",
+      payload: assistantMessage,
+    });
+    const reasoningText = response.message.reasoning_content;
+    const thinkingEffort = state.thinkingEffort;
+    if (
+      thinkingEffort !== "none" &&
+      reasoningText !== undefined &&
+      reasoningText !== null &&
+      reasoningText.trim().length > 0
+    ) {
+      try {
+        this.dependencies.onReasoning?.({
+          type: "reasoning",
+          text: reasoningText,
+          threadId: state.threadId,
+          turnId,
+          step,
+          provider: this.dependencies.provider.name,
+          model: this.dependencies.provider.model,
+          thinkingEffort,
+        });
+      } catch {
+        // This hook is ephemeral presentation only. A broken UI must not
+        // interrupt the durable assistant message or its pending tool calls.
+      }
+    }
+    return { assistantMessage, executionToolCalls };
+  }
+
+  /** Reject every call of a truncated or malformed response and ask the model to correct it, within the content-retry budget. */
+  private async rejectIncompleteOutput(
+    loop: StepLoop,
+    step: number,
+    invalidOutput: string,
+    calls: readonly FunctionToolCall[],
+  ): Promise<StepOutcome> {
+    const { memoryContext, state, turnId } = loop;
+    loop.invalidOutputAttempts++;
+    for (const call of calls) {
+      const rejected: ChatMessage = {
+        role: "tool",
+        name: call.function.name,
+        tool_call_id: call.id,
+        content: JSON.stringify({ ok: false, error: invalidOutput, executed: false }),
+      };
+      state.messages.push(rejected);
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        type: "tool.result",
+        phase: "failed",
+        payload: {
+          callId: call.id,
+          tool: call.function.name,
+          message: rejected,
+          result: { ok: false, executed: false, error: invalidOutput },
+        },
+      });
+    }
+    const feedback: ChatMessage = { role: "user", content: "RUNTIME_MODEL_CONTENT_ERROR: " + invalidOutput };
+    state.messages.push(feedback);
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type: "message.user.synthetic",
+      payload: feedback,
+    });
+    if (loop.invalidOutputAttempts <= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries)
+      return { kind: "continue" };
+    return {
+      kind: "return",
+      value: this.finish(
+        state,
+        turnId,
+        invalidOutput + " Content correction budget exhausted; work is unverified and retained.",
+        "failed",
+        step,
+        memoryContext,
+      ),
+    };
+  }
+
+  /** Execute the response's tool calls, then act on what the batch produced. */
+  private async runToolBatch(
+    loop: StepLoop,
+    step: number,
+    calls: FunctionToolCall[],
+    ordinaryToolDefinitions: ToolDefinition[],
+    projectionHistory: ChatMessage[],
+  ): Promise<StepOutcome> {
+    const proposePlanBatched = calls.length > 1 && calls.some((call) => call.function.name === "propose_plan");
+    const submitTaskResultBatched =
+      calls.length > 1 && calls.some((call) => call.function.name === "submit_task_result");
+    const stepImageAttachments: ImageAttachment[] = [];
+    const batch: ToolCallsState = {
+      completedVerificationPhase: false,
+      environmentFault: this.dependencies.getEnvironmentFault?.(),
+      finishRejectedReason: undefined,
+      proposedPlan: undefined,
+      requiredProtocolExhaustion: undefined,
+      steeringAppliedBetweenTools: false,
+      submittedTaskReport: undefined,
+    };
+    await this.executeToolCalls(
+      {
+        ...loop,
+        calls,
+        ordinaryToolDefinitions,
+        projectionHistory,
+        proposePlanBatched,
+        step,
+        stepImageAttachments,
+        submitTaskResultBatched,
+      },
+      batch,
+    );
+    const settleToolBatchFlow = await this.settleToolBatch({ ...loop, ...batch, step, stepImageAttachments }, batch);
+    return settleToolBatchFlow.kind === "next" ? { kind: "continue" } : settleToolBatchFlow;
+  }
+
+  /** The loop ran out of model requests: pause on open completion obligations, otherwise stop at the limit. */
+  private finishAtRequestLimit(run: TurnRun): Promise<AgentRunResult> {
+    const { memoryContext, state, turnId } = run;
+    if (state.completionControl?.active) {
+      const obligations = state.completionControl.active.obligations;
+      const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(
+        (item) => item.kind === "subagent_submission" || item.kind === "collect_subagents",
+      )
+        ? "subagent"
+        : "completion_protocol";
+      return this.finish(
+        state,
+        turnId,
+        `Task paused at the model-request limit with ${obligations.length} unresolved completion obligation(s).`,
+        "paused",
+        this.modelRequestsUsed,
+        memoryContext,
+        undefined,
+        undefined,
+        undefined,
+        {
+          cause,
+          resumable: true,
+          requiredAction: obligations.map((item) => item.requiredAction).join(" "),
+          obligations,
+        },
+      );
+    }
+    if (this.requestLimit === undefined) {
+      throw new Error("Agent loop ended without completion or a configured model-request limit");
+    }
+    return this.finish(
+      state,
+      turnId,
+      `Reached the hard limit of ${this.requestLimit} model requests before the task could be confirmed complete.`,
+      "limit_reached",
+      this.modelRequestsUsed,
+      memoryContext,
+    );
+  }
+
+  /** Close a turn that threw: report interruption, quarantine, capacity or failure and release the active turn. */
+  private async failedRun(run: TurnRun, error: unknown): Promise<AgentRunResult> {
+    const { memoryContext, options, state, turnId } = run;
+    const interrupted = Boolean(options.signal?.aborted);
+    const message = error instanceof Error ? error.message : String(error);
+    const protocolFailure = !interrupted && error instanceof ToolProtocolExhausted ? error : undefined;
+    const controlFailure =
+      protocolFailure?.failure ?? (!interrupted ? contextCapacityFailure(error, state) : undefined);
+    const capacityExhausted = !interrupted && isContextCapacityError(error);
+    const result: AgentRunResult = {
+      text: interrupted
+        ? "The task was interrupted by the user."
+        : error instanceof CommandEnvironmentQuarantined
+          ? `Task paused: the command environment is quarantined. History and pending work are preserved; repair and verify cleanup before resuming. ${message}`
+          : capacityExhausted
+            ? "Context paused: the required request exceeds the model capacity. History and pending work are preserved; reduce required input or use a supported larger window before resuming."
+            : `Agent run failed: ${message}`,
+      reason: interrupted
+        ? "interrupted"
+        : capacityExhausted || error instanceof TaskBudgetExceeded
+          ? "limit_reached"
+          : "failed",
+      steps:
+        error instanceof TaskBudgetExceeded || error instanceof CommandEnvironmentQuarantined
+          ? this.modelRequestsUsed
+          : (protocolFailure?.steps ?? 0),
+      threadId: state.threadId,
+      turnId,
+      ...(controlFailure ? { failure: controlFailure } : {}),
+    };
+    if (state.activeTurnId === turnId) {
+      try {
+        return await this.finish(
+          state,
+          turnId,
+          result.text,
+          result.reason,
+          result.steps,
+          memoryContext,
+          undefined,
+          undefined,
+          result.failure,
+        );
+      } catch {
+        state.activeTurnId = undefined;
+        state.updatedAt = new Date().toISOString();
+      }
+    }
+    return result;
+  }
+
   /** Assemble this step's provider request: memory selection, layered retrieval, system prompt, enabled tools and capacity-checked messages. */
-  private async prepareStepRequest(
-    ctx: StepRequestContext,
-    updates: StepRequestState,
-  ): Promise<PrepareStepRequestFlow> {
-    const { agentIdentity, effectiveMode, memoryContext, options, state, toolGateway, turnId, turnImages } = ctx;
-    let {
-      memories,
-      phaseCompactionRequestsUsed,
-      rememberedPhaseKey,
-      rememberedQueryKey,
-      retrievedCache,
-      retrievedQueryKey,
-      step,
-    } = updates;
+  private async prepareStepRequest(loop: StepLoop, step: number): Promise<PrepareStepRequestFlow> {
+    const { agentIdentity, effectiveMode, memoryContext, options, retrieval, state, toolGateway, turnId, turnImages } =
+      loop;
+    let { memories, rememberedPhaseKey, rememberedQueryKey, retrievedCache, retrievedQueryKey } = retrieval;
     try {
       let layeredContext = pinCurrentState(state, memoryContext.approvedPlanReview);
       const memoryLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
@@ -2262,7 +2176,6 @@ export class AgentRuntime {
           contextUtilization >= memoryLimits.contextCompactionTriggerRatio,
           this.remainingRequestAllowance(),
         );
-        phaseCompactionRequestsUsed += compacted.requests;
         if (compacted.paused)
           return {
             kind: "return",
@@ -2283,10 +2196,7 @@ export class AgentRuntime {
               },
             ),
           };
-        if (compacted.committed || compacted.requests > 0) {
-          step -= 1;
-          return { kind: "continue" };
-        }
+        if (compacted.committed || compacted.requests > 0) return { kind: "retry" };
       }
       // Remove only duplicates backed by the FINAL visible message set. Keep
       // all other messages byte-identical: no re-selection can evict their proof.
@@ -2372,13 +2282,11 @@ export class AgentRuntime {
         outputs: { stepRuntimeContext, selectedForStep, ordinaryToolDefinitions, enabledTools, messages },
       };
     } finally {
-      updates.memories = memories;
-      updates.phaseCompactionRequestsUsed = phaseCompactionRequestsUsed;
-      updates.rememberedPhaseKey = rememberedPhaseKey;
-      updates.rememberedQueryKey = rememberedQueryKey;
-      updates.retrievedCache = retrievedCache;
-      updates.retrievedQueryKey = retrievedQueryKey;
-      updates.step = step;
+      retrieval.memories = memories;
+      retrieval.rememberedPhaseKey = rememberedPhaseKey;
+      retrieval.rememberedQueryKey = rememberedQueryKey;
+      retrieval.retrievedCache = retrievedCache;
+      retrieval.retrievedQueryKey = retrievedQueryKey;
     }
   }
 
@@ -2554,392 +2462,448 @@ export class AgentRuntime {
   }
 
   /** Resolve the effective mode for this turn: honor an explicit override, or run Auto routing (which may answer directly or pause the turn). */
-  private async resolveTurnMode(ctx: TurnModeContext, updates: TurnModeState): Promise<ResolveTurnModeFlow> {
-    const {
-      agentIdentity,
-      commitAutoRoute,
-      memoryContext,
-      options,
-      outstandingSubagentsAtRoute,
+  /** Settle the turn's mode: validate a review override, then let Auto mode choose Plan, Code or a direct answer. */
+  private async resolveTurnMode(run: TurnRun): Promise<{ kind: "next" } | TurnReturn> {
+    const { agentIdentity, options, state, turnId } = run;
+    if (options.modeOverride && state.mode !== "auto") {
+      throw new Error("A review mode override is valid only while the persistent mode is Auto");
+    }
+    run.outstandingSubagentsAtRoute =
+      agentIdentity.role === "main_agent" ? (this.dependencies.getOutstandingSubagents?.() ?? []) : [];
+    if (run.outstandingSubagentsAtRoute.length > 0 && options.modeOverride === "plan")
+      throw new Error("Outstanding child assignments must be collected before entering a Plan review override");
+    if (state.mode !== "auto") return { kind: "next" };
+    if (options.modeOverride) {
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        type: "mode.review_override",
+        phase: "completed",
+        payload: {
+          mode: options.modeOverride,
+          reason:
+            options.modeOverride === "plan"
+              ? "The user requested a revision of the pending plan."
+              : "Runtime resumed an explicitly selected Code operation.",
+        },
+      });
+      return { kind: "next" };
+    }
+    const paused = await this.compactBeforeAutoRoute(run);
+    if (paused) return paused;
+    const fixedSelection = this.fixedAutoRoute(run);
+    if (fixedSelection) {
+      await this.commitAutoRoute(run, fixedSelection.mode, fixedSelection.reason);
+      return { kind: "next" };
+    }
+    return this.chooseAutoRoute(run);
+  }
+
+  /** Persist Auto mode's choice and switch this turn (and the session) into it. */
+  private async commitAutoRoute(run: TurnRun, mode: "plan" | "code", reason: string): Promise<void> {
+    const { state, turnId } = run;
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type: "mode.auto_route",
+      phase: "completed",
+      payload: { mode, reason },
+    });
+    state.mode = mode;
+    state.updatedAt = new Date().toISOString();
+    run.effectiveMode = mode;
+    try {
+      this.dependencies.onModeSelected?.(mode);
+    } catch {
+      /* Presentation cannot undo a durable mode transition. */
+    }
+  }
+
+  /** Compact before routing when history is already under pressure, sized for a Code request. */
+  private async compactBeforeAutoRoute(run: TurnRun): Promise<TurnReturn | undefined> {
+    const { agentIdentity, memoryContext, options, state, turnId, turnImages } = run;
+    const routingPressure = this.dependencies.contextManager.inspect(state, options.maxContextChars).utilization;
+    if (
+      run.outstandingSubagentsAtRoute.length > 0 ||
+      routingPressure < (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextCompactionTriggerRatio
+    )
+      return undefined;
+    const nextTools = availableTools(
+      this.dependencies.toolCatalog.tools,
+      "code",
+      agentIdentity.role,
+      state.thinkingEffort,
+      this.orchestrationToolsAvailable(state, options),
+      this.dependencies.visionAvailable ?? true,
+    );
+    const nextRequest = {
+      systemPrompt: await this.dependencies.buildSystemPrompt({
+        mode: "code",
+        workspaceSummary: "",
+        memories: [],
+        toolNames: nextTools.map((tool) => tool.name),
+      }),
+      runtimeContext: renderPinnedCurrentState(state),
+      tools: nextTools.map((tool) => tool.definition),
+      reservedTokens: optionalMemoryTokenBudget(
+        options.maxContextChars,
+        options.maxContextTokens,
+        this.dependencies.limits,
+        true,
+      ),
+    };
+    const compacted = await this.maintainContext(
       state,
-      turnHistoryStart,
       turnId,
       turnImages,
-      userInput,
-    } = ctx;
-    let { autoReason, phaseCompactionRequestsUsed } = updates;
-    try {
-      if (state.mode === "auto" && options.modeOverride) {
-        autoReason =
-          options.modeOverride === "plan"
-            ? "The user requested a revision of the pending plan."
-            : "Runtime resumed an explicitly selected Code operation.";
+      memoryContext,
+      options,
+      nextRequest,
+      false,
+      this.remainingRequestAllowance(),
+    );
+    if (compacted.paused)
+      return {
+        kind: "return",
+        value: this.finish(
+          state,
+          turnId,
+          `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History and task state are preserved.`,
+          "limit_reached",
+          compacted.requests,
+          memoryContext,
+          undefined,
+          undefined,
+          {
+            code: "context_capacity_exhausted",
+            tool: "runtime",
+            attempts: state.compactionControl?.transaction?.attempts ?? 0,
+            recoverable: true,
+          },
+        ),
+      };
+    if (this.requestLimitReached())
+      return {
+        kind: "return",
+        value: this.finish(
+          state,
+          turnId,
+          "The shared model-request budget was exhausted during pre-route context compaction.",
+          "limit_reached",
+          this.modelRequestsUsed,
+          memoryContext,
+        ),
+      };
+    return undefined;
+  }
+
+  /** Conditions that force Code mode without asking the router. */
+  private fixedAutoRoute(run: TurnRun): { mode: "code"; reason: string } | undefined {
+    const backgroundCommandHandleOpenAtRoute = this.dependencies.hasOpenCommandHandles?.() ?? false;
+    if (reconciliationPending(run.state))
+      return {
+        mode: "code",
+        reason: "Reconcile the reset context, workspace and original pending operations before finishing.",
+      };
+    if (backgroundCommandHandleOpenAtRoute) return { mode: "code", reason: backgroundCommandFinalizationInstruction() };
+    if (run.outstandingSubagentsAtRoute.length > 0)
+      return {
+        mode: "code",
+        reason: "Collect every running or unobserved child assignment in code mode before planning or finishing.",
+      };
+    return undefined;
+  }
+
+  /** Ask the local decider and then the router model until a route survives steering. */
+  private async chooseAutoRoute(run: TurnRun): Promise<{ kind: "next" } | TurnReturn> {
+    const { memoryContext, state, turnId, turnImages } = run;
+    for (;;) {
+      await this.takeAndApplySteering(state, turnId, "before_model", turnImages, false, memoryContext);
+      let routed;
+      try {
+        routed = await this.requestAutoRoute(run);
+      } catch (error) {
+        if (error instanceof AutoRouteSelectionError || error instanceof AutoRouteRequestError) {
+          await this.reportAutoRouteUsage(turnId, error.attempts);
+        }
+        if (error instanceof AutoRouteRequestError) throw error.originalError;
+        throw error;
+      }
+      if (routed.kind === "resolved") return { kind: "next" };
+      if (routed.kind === "retry") continue;
+      if (routed.kind === "steering_interrupted") {
         await this.dependencies.appendEvent({
           threadId: state.threadId,
           turnId,
-          type: "mode.review_override",
-          phase: "completed",
-          payload: { mode: options.modeOverride, reason: autoReason },
+          type: "model.attempt.steering_interrupted",
+          phase: "interrupted",
+          payload: { purpose: "auto_route" },
         });
-      } else if (state.mode === "auto") {
-        const routingPressure = this.dependencies.contextManager.inspect(state, options.maxContextChars).utilization;
-        if (
-          outstandingSubagentsAtRoute.length === 0 &&
-          routingPressure >= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextCompactionTriggerRatio
-        ) {
-          {
-            const nextTools = availableTools(
-              this.dependencies.toolCatalog.tools,
-              "code",
-              agentIdentity.role,
-              state.thinkingEffort,
-              this.orchestrationToolsAvailable(state, options),
-              this.dependencies.visionAvailable ?? true,
-            );
-            const nextRequest = {
-              systemPrompt: await this.dependencies.buildSystemPrompt({
-                mode: "code",
-                workspaceSummary: "",
-                memories: [],
-                toolNames: nextTools.map((tool) => tool.name),
-              }),
-              runtimeContext: renderPinnedCurrentState(state),
-              tools: nextTools.map((tool) => tool.definition),
-              reservedTokens: optionalMemoryTokenBudget(
-                options.maxContextChars,
-                options.maxContextTokens,
-                this.dependencies.limits,
-                true,
-              ),
-            };
-            const compacted = await this.maintainContext(
-              state,
-              turnId,
-              turnImages,
-              memoryContext,
-              options,
-              nextRequest,
-              false,
-              this.remainingRequestAllowance(),
-            );
-            phaseCompactionRequestsUsed += compacted.requests;
-            if (compacted.paused)
-              return {
-                kind: "return",
-                value: this.finish(
-                  state,
-                  turnId,
-                  `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History and task state are preserved.`,
-                  "limit_reached",
-                  phaseCompactionRequestsUsed,
-                  memoryContext,
-                  undefined,
-                  undefined,
-                  {
-                    code: "context_capacity_exhausted",
-                    tool: "runtime",
-                    attempts: state.compactionControl?.transaction?.attempts ?? 0,
-                    recoverable: true,
-                  },
-                ),
-              };
-            if (this.requestLimitReached())
-              return {
-                kind: "return",
-                value: this.finish(
-                  state,
-                  turnId,
-                  "The shared model-request budget was exhausted during pre-route context compaction.",
-                  "limit_reached",
-                  this.modelRequestsUsed,
-                  memoryContext,
-                ),
-              };
+        await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext);
+        continue;
+      }
+      const decision = routed.value;
+      await this.reportAutoRouteUsage(turnId, decision.attempts);
+      if (decision.threadTitle) {
+        try {
+          if (this.dependencies.threadTitle?.claim(state.threadId, decision.threadTitle)) {
+            this.dependencies.onThreadTitleClaimed?.(decision.threadTitle);
           }
-        }
-        const backgroundCommandHandleOpenAtRoute = this.dependencies.hasOpenCommandHandles?.() ?? false;
-        const reconciliationPendingAtRoute = reconciliationPending(state);
-        const fixedSelection = reconciliationPendingAtRoute
-          ? {
-              mode: "code" as const,
-              reason: "Reconcile the reset context, workspace and original pending operations before finishing.",
-            }
-          : backgroundCommandHandleOpenAtRoute
-            ? {
-                mode: "code" as const,
-                reason: backgroundCommandFinalizationInstruction(),
-              }
-            : outstandingSubagentsAtRoute.length > 0
-              ? {
-                  mode: "code" as const,
-                  reason:
-                    "Collect every running or unobserved child assignment in code mode before planning or finishing.",
-                }
-              : undefined;
-        if (fixedSelection) {
-          await commitAutoRoute(fixedSelection.mode, fixedSelection.reason);
-        } else {
-          let routeResolved = false;
-          while (!routeResolved) {
-            await this.takeAndApplySteering(state, turnId, "before_model", turnImages, false, memoryContext);
-            let routed;
-            try {
-              this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
-              const steeringText = state.messages
-                .slice(turnHistoryStart + 1)
-                .filter(
-                  (message): message is Extract<ChatMessage, { role: "user" }> =>
-                    message.role === "user" &&
-                    message.content.startsWith(runtimePromptText("runtime/steering-prefix.md")),
-                )
-                .map((message) => message.content)
-                .join("\n\n");
-              const routingInput = [
-                userInput,
-                turnImages.length ? `[${turnImages.length} image attachment(s) are included.]` : "",
-                steeringText,
-              ]
-                .filter(Boolean)
-                .join("\n\n");
-              const priorMessagesStart = Math.min(state.compactedMessageCount, turnHistoryStart);
-              const autoRouteContext: AutoRouteContext = {
-                workingSummary: state.workingSummary,
-                priorMessages: state.messages.slice(priorMessagesStart, turnHistoryStart),
-                threadNeedsTitle: threadTitleUnclaimed(this.dependencies, state.threadId),
-              };
-              let localDirect = false;
-              if (agentIdentity.role === "main_agent" && turnImages.length === 0) {
-                const prior = projectAutoRouteContext(autoRouteContext).content;
-                const localInput = prior ? `${prior}\n\nCurrent request:\n${routingInput}` : routingInput;
-                const local = await this.decideLocally(state, turnId, "route", localInput, options.signal);
-                if (local) {
-                  if (await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext))
-                    continue;
-                  if (local.result.decision === "PLAN" || local.result.decision === "CODE") {
-                    await commitAutoRoute(
-                      local.result.decision.toLowerCase() as "plan" | "code",
-                      `Local Laya selected ${local.result.decision}.`,
-                    );
-                    routeResolved = true;
-                    continue;
-                  }
-                  localDirect = local.result.decision === "DIRECT";
-                }
-              }
-              const autoRouteBoundary =
-                priorMessagesStart + projectAutoRouteContext(autoRouteContext).priorMessageBoundary;
-              let routeLayeredContext = pinCurrentState(state, memoryContext.approvedPlanReview);
-              if (this.dependencies.getLayeredContext) {
-                try {
-                  const derived = await this.dependencies.getLayeredContext({
-                    state,
-                    query: contextRetrievalQuery(state, memoryContext.userInput),
-                    beforeMessageIndex: 0,
-                  });
-                  routeLayeredContext = pinCurrentState(state, memoryContext.approvedPlanReview, derived);
-                } catch {
-                  // Layered retrieval is an internal optimization; the current
-                  // durable context remains authoritative when it is unavailable.
-                }
-              }
-              // Direct answers must inherit the same base security contract and
-              // layered EASYCODE.md guidance as a normal agent request. Empty
-              // workspace/memory inputs prevent this controller from answering
-              // questions that require repository or retrieval facts.
-              const planRouteTools = availableTools(
-                this.dependencies.toolCatalog.tools,
-                "plan",
-                agentIdentity.role,
-                state.thinkingEffort,
-                this.orchestrationToolsAvailable(state, options),
-                this.dependencies.visionAvailable ?? true,
-              );
-              const codeRouteTools = availableTools(
-                this.dependencies.toolCatalog.tools,
-                "code",
-                agentIdentity.role,
-                state.thinkingEffort,
-                this.orchestrationToolsAvailable(state, options),
-                this.dependencies.visionAvailable ?? true,
-              );
-              const routeCapabilities = autoRouteCapabilitySummary({
-                planTools: planRouteTools,
-                codeTools: codeRouteTools,
-                connectedMcpServers: this.dependencies.connectedMcpServers?.length ?? 0,
-              });
-              const buildControllerPolicy = async (context: typeof routeLayeredContext): Promise<string> => {
-                const allowance = optionalMemoryTokenBudget(
-                  options.maxContextChars,
-                  options.maxContextTokens,
-                  this.dependencies.limits,
-                );
-                const selection = selectMemoryContext({
-                  state,
-                  memories: [],
-                  evidence: context.evidence ?? [],
-                  tokenBudget: allowance,
-                  limits: this.dependencies.limits,
-                  presentText: [state.workingSummary],
-                });
-                const evidenceText = context.evidence
-                  ? renderRetrievedContext(selection.evidence)
-                  : requestTokens([{ role: "user", content: context.retrievedThreadEvidence ?? "" }]) <= allowance
-                    ? context.retrievedThreadEvidence
-                    : undefined;
-                const basePolicy = await this.dependencies.buildSystemPrompt({
-                  mode: "auto",
-                  workspaceSummary: "",
-                  memories: [],
-                  ...(context.workingCheckpoint ? { workingCheckpoint: context.workingCheckpoint } : {}),
-                  ...(evidenceText ? { retrievedThreadEvidence: evidenceText } : {}),
-                  toolNames: [],
-                });
-                return `${basePolicy}\n\n${renderRuntimePrompt("controllers/live-capability-status.md", {
-                  planCapabilities: routeCapabilities.planCapabilities,
-                  codeCapabilities: routeCapabilities.codeCapabilities,
-                  currentConditions: routeCapabilities.currentConditions,
-                })}`;
-              };
-              let controllerPolicy = await buildControllerPolicy(routeLayeredContext);
-              if (this.dependencies.getLayeredContext) {
-                try {
-                  const derived = await this.dependencies.getLayeredContext({
-                    state,
-                    query: contextRetrievalQuery(state, memoryContext.userInput),
-                    beforeMessageIndex: autoRouteBoundary,
-                  });
-                  routeLayeredContext = pinCurrentState(state, memoryContext.approvedPlanReview, derived);
-                  controllerPolicy = await buildControllerPolicy(routeLayeredContext);
-                } catch {
-                  // Fall back to the pinned checkpoint without surfacing an
-                  // implementation detail in the conversation.
-                }
-              }
-              routed = await this.runProviderAttempt(options.signal, (attemptSignal) =>
-                this.withModelRequestActivity(`Waiting for ${this.dependencies.provider.model} response`, () =>
-                  determineAutoRoute(
-                    this.dependencies.provider,
-                    routingInput,
-                    attemptSignal,
-                    turnImages,
-                    state.thinkingEffort,
-                    autoRouteContext,
-                    controllerPolicy,
-                    (request, attempt) => {
-                      const inspection = this.dependencies.contextManager.inspectProviderRequest({
-                        state,
-                        maxContextChars: options.maxContextChars,
-                        messages: request.messages,
-                        ...(request.tools ? { tools: request.tools } : {}),
-                      });
-                      this.observeProviderContext({
-                        state,
-                        turnId,
-                        attempt,
-                        purpose: "auto_route",
-                        messages: request.messages,
-                        ...(request.tools ? { tools: request.tools } : {}),
-                        enforcedPressure: inspection.pressure,
-                        enforcedUtilization: inspection.utilization,
-                        maxContextChars: options.maxContextChars,
-                        actualRequest: inspection,
-                      });
-                    },
-                    this.dependencies.limits,
-                    localDirect,
-                  ),
-                ),
-              );
-            } catch (error) {
-              if (error instanceof AutoRouteSelectionError || error instanceof AutoRouteRequestError) {
-                await this.reportAutoRouteUsage(turnId, error.attempts);
-              }
-              if (error instanceof AutoRouteRequestError) throw error.originalError;
-              throw error;
-            }
-            if (routed.kind === "steering_interrupted") {
-              await this.dependencies.appendEvent({
-                threadId: state.threadId,
-                turnId,
-                type: "model.attempt.steering_interrupted",
-                phase: "interrupted",
-                payload: { purpose: "auto_route" },
-              });
-              await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext);
-              continue;
-            }
-            const decision = routed.value;
-            await this.reportAutoRouteUsage(turnId, decision.attempts);
-            if (decision.threadTitle) {
-              try {
-                if (this.dependencies.threadTitle?.claim(state.threadId, decision.threadTitle)) {
-                  this.dependencies.onThreadTitleClaimed?.(decision.threadTitle);
-                }
-              } catch {
-                // Automatic naming is best-effort and must not add noise to the
-                // user's response when the title store is unavailable.
-              }
-            }
-            if (await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext)) {
-              continue;
-            }
-            if (decision.kind === "direct_response") {
-              if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) {
-                continue;
-              }
-              await this.dependencies.appendEvent({
-                threadId: state.threadId,
-                turnId,
-                type: "mode.auto_direct_response",
-                phase: "completed",
-                payload: { attempts: decision.attempts.length },
-              });
-              const directAssistant: Extract<ChatMessage, { role: "assistant" }> = {
-                role: "assistant",
-                content: decision.content,
-                phase: "final_answer",
-                ...(decision.reasoningContent ? { reasoning_content: decision.reasoningContent } : {}),
-              };
-              state.messages.push(directAssistant);
-              await this.dependencies.appendEvent({
-                threadId: state.threadId,
-                turnId,
-                type: "message.assistant",
-                phase: "completed",
-                payload: directAssistant,
-              });
-              if (state.thinkingEffort !== "none" && decision.reasoningContent) {
-                try {
-                  this.dependencies.onReasoning?.({
-                    type: "reasoning",
-                    text: decision.reasoningContent,
-                    threadId: state.threadId,
-                    turnId,
-                    step: 0,
-                    provider: this.dependencies.provider.name,
-                    model: this.dependencies.provider.model,
-                    thinkingEffort: state.thinkingEffort,
-                  });
-                } catch {
-                  // Presentation is transient; the durable assistant remains authoritative.
-                }
-              }
-              this.dependencies.onText?.(decision.content);
-              return {
-                kind: "return",
-                value: this.finish(state, turnId, decision.content, "success", 0, memoryContext),
-              };
-            }
-            await commitAutoRoute(decision.mode, decision.reason);
-            routeResolved = true;
-          }
+        } catch {
+          // Automatic naming is best-effort and must not add noise to the
+          // user's response when the title store is unavailable.
         }
       }
-    } finally {
-      updates.autoReason = autoReason;
-      updates.phaseCompactionRequestsUsed = phaseCompactionRequestsUsed;
+      if (await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext)) {
+        continue;
+      }
+      if (decision.kind === "direct_response") {
+        if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) {
+          continue;
+        }
+        return this.answerDirectly(run, decision);
+      }
+      await this.commitAutoRoute(run, decision.mode, decision.reason);
+      return { kind: "next" };
     }
-    return { kind: "next" };
+  }
+
+  /**
+   * One routing attempt. The local decider may settle Plan or Code on its own ("resolved"), or ask for a retry
+   * because steering arrived; otherwise this is the router model's attempt.
+   */
+  private async requestAutoRoute(
+    run: TurnRun,
+  ): Promise<
+    | { kind: "resolved" }
+    | { kind: "retry" }
+    | { kind: "completed"; value: AutoRouteDecision }
+    | { kind: "steering_interrupted" }
+  > {
+    const { agentIdentity, memoryContext, options, state, turnHistoryStart, turnId, turnImages } = run;
+    this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
+    const steeringText = state.messages
+      .slice(turnHistoryStart + 1)
+      .filter(
+        (message): message is Extract<ChatMessage, { role: "user" }> =>
+          message.role === "user" && message.content.startsWith(runtimePromptText("runtime/steering-prefix.md")),
+      )
+      .map((message) => message.content)
+      .join("\n\n");
+    const routingInput = [
+      run.userInput,
+      turnImages.length ? `[${turnImages.length} image attachment(s) are included.]` : "",
+      steeringText,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const priorMessagesStart = Math.min(state.compactedMessageCount, turnHistoryStart);
+    const autoRouteContext: AutoRouteContext = {
+      workingSummary: state.workingSummary,
+      priorMessages: state.messages.slice(priorMessagesStart, turnHistoryStart),
+      threadNeedsTitle: threadTitleUnclaimed(this.dependencies, state.threadId),
+    };
+    let localDirect = false;
+    if (agentIdentity.role === "main_agent" && turnImages.length === 0) {
+      const prior = projectAutoRouteContext(autoRouteContext).content;
+      const localInput = prior ? `${prior}\n\nCurrent request:\n${routingInput}` : routingInput;
+      const local = await this.decideLocally(state, turnId, "route", localInput, options.signal);
+      if (local) {
+        if (await this.takeAndApplySteering(state, turnId, "after_model", turnImages, false, memoryContext))
+          return { kind: "retry" };
+        if (local.result.decision === "PLAN" || local.result.decision === "CODE") {
+          await this.commitAutoRoute(
+            run,
+            local.result.decision.toLowerCase() as "plan" | "code",
+            `Local Laya selected ${local.result.decision}.`,
+          );
+          return { kind: "resolved" };
+        }
+        localDirect = local.result.decision === "DIRECT";
+      }
+    }
+    const controllerPolicy = await this.autoRouteControllerPolicy(
+      run,
+      priorMessagesStart + projectAutoRouteContext(autoRouteContext).priorMessageBoundary,
+    );
+    return this.runProviderAttempt(options.signal, (attemptSignal) =>
+      this.withModelRequestActivity(`Waiting for ${this.dependencies.provider.model} response`, () =>
+        determineAutoRoute(
+          this.dependencies.provider,
+          routingInput,
+          attemptSignal,
+          turnImages,
+          state.thinkingEffort,
+          autoRouteContext,
+          controllerPolicy,
+          (request, attempt) => {
+            const inspection = this.dependencies.contextManager.inspectProviderRequest({
+              state,
+              maxContextChars: options.maxContextChars,
+              messages: request.messages,
+              ...(request.tools ? { tools: request.tools } : {}),
+            });
+            this.observeProviderContext({
+              state,
+              turnId,
+              attempt,
+              purpose: "auto_route",
+              messages: request.messages,
+              ...(request.tools ? { tools: request.tools } : {}),
+              enforcedPressure: inspection.pressure,
+              enforcedUtilization: inspection.utilization,
+              maxContextChars: options.maxContextChars,
+              actualRequest: inspection,
+            });
+          },
+          this.dependencies.limits,
+          localDirect,
+        ),
+      ),
+    );
+  }
+
+  /**
+   * The router's system prompt. Direct answers must inherit the same base security contract and layered
+   * EASYCODE.md guidance as a normal agent request. Empty workspace/memory inputs prevent this controller from
+   * answering questions that require repository or retrieval facts.
+   */
+  private async autoRouteControllerPolicy(run: TurnRun, autoRouteBoundary: number): Promise<string> {
+    const { agentIdentity, memoryContext, options, state } = run;
+    let routeLayeredContext = pinCurrentState(state, memoryContext.approvedPlanReview);
+    if (this.dependencies.getLayeredContext) {
+      try {
+        const derived = await this.dependencies.getLayeredContext({
+          state,
+          query: contextRetrievalQuery(state, memoryContext.userInput),
+          beforeMessageIndex: 0,
+        });
+        routeLayeredContext = pinCurrentState(state, memoryContext.approvedPlanReview, derived);
+      } catch {
+        // Layered retrieval is an internal optimization; the current
+        // durable context remains authoritative when it is unavailable.
+      }
+    }
+    const planRouteTools = availableTools(
+      this.dependencies.toolCatalog.tools,
+      "plan",
+      agentIdentity.role,
+      state.thinkingEffort,
+      this.orchestrationToolsAvailable(state, options),
+      this.dependencies.visionAvailable ?? true,
+    );
+    const codeRouteTools = availableTools(
+      this.dependencies.toolCatalog.tools,
+      "code",
+      agentIdentity.role,
+      state.thinkingEffort,
+      this.orchestrationToolsAvailable(state, options),
+      this.dependencies.visionAvailable ?? true,
+    );
+    const routeCapabilities = autoRouteCapabilitySummary({
+      planTools: planRouteTools,
+      codeTools: codeRouteTools,
+      connectedMcpServers: this.dependencies.connectedMcpServers?.length ?? 0,
+    });
+    const buildControllerPolicy = async (context: typeof routeLayeredContext): Promise<string> => {
+      const allowance = optionalMemoryTokenBudget(
+        options.maxContextChars,
+        options.maxContextTokens,
+        this.dependencies.limits,
+      );
+      const selection = selectMemoryContext({
+        state,
+        memories: [],
+        evidence: context.evidence ?? [],
+        tokenBudget: allowance,
+        limits: this.dependencies.limits,
+        presentText: [state.workingSummary],
+      });
+      const evidenceText = context.evidence
+        ? renderRetrievedContext(selection.evidence)
+        : requestTokens([{ role: "user", content: context.retrievedThreadEvidence ?? "" }]) <= allowance
+          ? context.retrievedThreadEvidence
+          : undefined;
+      const basePolicy = await this.dependencies.buildSystemPrompt({
+        mode: "auto",
+        workspaceSummary: "",
+        memories: [],
+        ...(context.workingCheckpoint ? { workingCheckpoint: context.workingCheckpoint } : {}),
+        ...(evidenceText ? { retrievedThreadEvidence: evidenceText } : {}),
+        toolNames: [],
+      });
+      return `${basePolicy}\n\n${renderRuntimePrompt("controllers/live-capability-status.md", {
+        planCapabilities: routeCapabilities.planCapabilities,
+        codeCapabilities: routeCapabilities.codeCapabilities,
+        currentConditions: routeCapabilities.currentConditions,
+      })}`;
+    };
+    let controllerPolicy = await buildControllerPolicy(routeLayeredContext);
+    if (this.dependencies.getLayeredContext) {
+      try {
+        const derived = await this.dependencies.getLayeredContext({
+          state,
+          query: contextRetrievalQuery(state, memoryContext.userInput),
+          beforeMessageIndex: autoRouteBoundary,
+        });
+        routeLayeredContext = pinCurrentState(state, memoryContext.approvedPlanReview, derived);
+        controllerPolicy = await buildControllerPolicy(routeLayeredContext);
+      } catch {
+        // Fall back to the pinned checkpoint without surfacing an
+        // implementation detail in the conversation.
+      }
+    }
+    return controllerPolicy;
+  }
+
+  /** Auto mode answered the request itself: record the answer and finish the turn without a step. */
+  private async answerDirectly(
+    run: TurnRun,
+    decision: Extract<AutoRouteDecision, { kind: "direct_response" }>,
+  ): Promise<TurnReturn> {
+    const { memoryContext, state, turnId } = run;
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type: "mode.auto_direct_response",
+      phase: "completed",
+      payload: { attempts: decision.attempts.length },
+    });
+    const directAssistant: Extract<ChatMessage, { role: "assistant" }> = {
+      role: "assistant",
+      content: decision.content,
+      phase: "final_answer",
+      ...(decision.reasoningContent ? { reasoning_content: decision.reasoningContent } : {}),
+    };
+    state.messages.push(directAssistant);
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type: "message.assistant",
+      phase: "completed",
+      payload: directAssistant,
+    });
+    if (state.thinkingEffort !== "none" && decision.reasoningContent) {
+      try {
+        this.dependencies.onReasoning?.({
+          type: "reasoning",
+          text: decision.reasoningContent,
+          threadId: state.threadId,
+          turnId,
+          step: 0,
+          provider: this.dependencies.provider.name,
+          model: this.dependencies.provider.model,
+          thinkingEffort: state.thinkingEffort,
+        });
+      } catch {
+        // Presentation is transient; the durable assistant remains authoritative.
+      }
+    }
+    this.dependencies.onText?.(decision.content);
+    return {
+      kind: "return",
+      value: this.finish(state, turnId, decision.content, "success", 0, memoryContext),
+    };
   }
 
   /** Handle a model response without tool calls: enforce outstanding obligations, then finish the turn or continue with the next step. */
