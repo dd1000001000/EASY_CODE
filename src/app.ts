@@ -132,13 +132,8 @@ import type { ToolExecutionAuthorizer, ToolExecutionAuthorizationRequest } from 
 import { toolApprovalIdentity, type ToolApprovalIdentity } from "./tools/approval.js";
 import { reviewToolApproval, type ToolApprovalReview } from "./tools/approval-agent.js";
 import { DownloadBroker } from "./downloads/broker.js";
-import {
-  interruptedTurnAssistantMessage,
-  ThreadStore,
-  peekThreadWorkspaceRoot,
-  type ThreadLease,
-  type ThreadSummary,
-} from "./threads/thread-store.js";
+import { ThreadStore, peekThreadWorkspaceRoot, type ThreadLease, type ThreadSummary } from "./threads/thread-store.js";
+import { interruptedTurnAssistantMessage } from "./threads/event-replay.js";
 import type { UISessionInfo } from "./ui/contracts.js";
 import type { PlanReviewDecision } from "./ui/interaction-port.js";
 import { applySubagentTaskOperation, taskGraphView } from "./tasks/task-graph.js";

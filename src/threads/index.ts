@@ -7,8 +7,8 @@ export {
   type ThreadListOptions,
   type ThreadSummary,
   type TurnStartResult,
-  type UserChatMessage,
 } from "./thread-store.js";
+export { type UserChatMessage } from "./steering-entries.js";
 export {
   deserializeChatMessage,
   deserializeChatMessages,
