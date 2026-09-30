@@ -456,7 +456,7 @@ describe("Terminal retained inline shell", () => {
       const output = new TtyOutput();
       output.resume();
       const terminal = new Terminal(new TtyInput(), output);
-      const probe = terminal as unknown as { flushModelStreams(): void };
+      const probe = (terminal as unknown as { streams: { flush(): void } }).streams;
       try {
         terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
         terminal.beginShell(session());
@@ -480,7 +480,7 @@ describe("Terminal retained inline shell", () => {
           name: "file",
           arguments: "x".repeat(2048),
         });
-        probe.flushModelStreams();
+        probe.flush();
         const label = terminalState(terminal).live.activity?.label ?? "";
         assert.match(label, /Preparing create_file #1 · 2\.0 KiB arguments/u);
         assert.equal(label.includes("SECRET"), false);
@@ -501,7 +501,7 @@ describe("Terminal retained inline shell", () => {
       const output = new TtyOutput();
       output.resume();
       const terminal = new Terminal(new TtyInput(), output);
-      const probe = terminal as unknown as { flushModelStreams(): void; streamFlushTimer?: NodeJS.Timeout };
+      const probe = (terminal as unknown as { streams: { flush(): void; flushTimer?: NodeJS.Timeout } }).streams;
       try {
         terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
         terminal.beginShell(session());
@@ -511,9 +511,9 @@ describe("Terminal retained inline shell", () => {
         for (let index = 0; index < 200; index++)
           terminal.modelStream({ kind: "text_delta", streamId: "burst", sequence: index + 2, text: fragment });
         assert.equal(terminalState(terminal).transcript.filter((entry) => entry.kind === "assistant").length, 0);
-        assert.ok(probe.streamFlushTimer);
-        probe.flushModelStreams();
-        assert.equal(probe.streamFlushTimer, undefined);
+        assert.ok(probe.flushTimer);
+        probe.flush();
+        assert.equal(probe.flushTimer, undefined);
         assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /Live preview limited/u);
         assert.ok((terminalState(terminal).transcript.at(-1)?.text.length ?? 0) < 1200);
         terminal.modelStream({ kind: "completed", streamId: "burst", sequence: 202, finishReason: "stop" });
@@ -530,7 +530,7 @@ describe("Terminal retained inline shell", () => {
       const output = new TtyOutput();
       output.resume();
       const terminal = new Terminal(new TtyInput(), output);
-      const probe = terminal as unknown as { flushModelStreams(): void };
+      const probe = (terminal as unknown as { streams: { flush(): void } }).streams;
       try {
         terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
         terminal.beginShell(session());
@@ -543,7 +543,7 @@ describe("Terminal retained inline shell", () => {
           sequence: 2,
           text: `${"a".repeat(1100)} `,
         });
-        probe.flushModelStreams();
+        probe.flush();
         let marker = terminalState(terminal).transcript.find((entry) => entry.id === "thinking_1")?.text ?? "";
         assert.match(marker, /Thinking #1 · 1,101 chars · still receiving/u);
         assert.match(marker, /\[Live preview limited to 1,024 chars\]/u);
@@ -559,7 +559,7 @@ describe("Terminal retained inline shell", () => {
           sequence: 3,
           text: "more reasoning",
         });
-        probe.flushModelStreams();
+        probe.flush();
         marker = terminalState(terminal).transcript.find((entry) => entry.id === "thinking_1")?.text ?? "";
         assert.match(marker, /Thinking #1 · 1,115 chars · still receiving/u);
         assert.ok(marker.length < 1300);
@@ -606,14 +606,14 @@ describe("Terminal retained inline shell", () => {
       const output = new TtyOutput();
       output.resume();
       const terminal = new Terminal(new TtyInput(), output);
-      const probe = terminal as unknown as { streamFlushTimer?: NodeJS.Timeout };
+      const probe = (terminal as unknown as { streams: { flushTimer?: NodeJS.Timeout } }).streams;
       try {
         terminal.beginShell(session());
         terminal.setCurrentRequest("Clear stream");
         terminal.modelStream({ kind: "started", streamId: "clear", sequence: 1 });
         terminal.modelStream({ kind: "text_delta", streamId: "clear", sequence: 2, text: "stale " });
         terminal.clearScreen();
-        assert.equal(probe.streamFlushTimer, undefined);
+        assert.equal(probe.flushTimer, undefined);
         terminal.modelStream({ kind: "text_delta", streamId: "clear", sequence: 3, text: "late " });
         terminal.modelStream({ kind: "completed", streamId: "clear", sequence: 4, finishReason: "stop" });
         assert.equal(terminal.finalizeStreamedAnswer("stale late"), false);
@@ -621,7 +621,7 @@ describe("Terminal retained inline shell", () => {
       } finally {
         terminal.close();
       }
-      assert.equal(probe.streamFlushTimer, undefined);
+      assert.equal(probe.flushTimer, undefined);
     });
   });
 
@@ -630,7 +630,7 @@ describe("Terminal retained inline shell", () => {
       const output = new TtyOutput();
       output.resume();
       const terminal = new Terminal(new TtyInput(), output);
-      const probe = terminal as unknown as { flushModelStreams(): void };
+      const probe = (terminal as unknown as { streams: { flush(): void } }).streams;
       try {
         terminal.beginShell(session());
         terminal.setCurrentRequest("Sensitive stream");
@@ -641,10 +641,10 @@ describe("Terminal retained inline shell", () => {
           sequence: 2,
           text: "Image data:image/png;base64,c2Vj",
         });
-        probe.flushModelStreams();
+        probe.flush();
         assert.doesNotMatch(terminalState(terminal).transcript.at(-1)?.text ?? "", /c2Vj/u);
         terminal.modelStream({ kind: "text_delta", streamId: "sensitive", sequence: 3, text: "cmV0\n" });
-        probe.flushModelStreams();
+        probe.flush();
         assert.doesNotMatch(terminalState(terminal).transcript.at(-1)?.text ?? "", /c2Vj|cmV0/u);
         terminal.modelStream({ kind: "completed", streamId: "sensitive", sequence: 4, finishReason: "stop" });
         assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /REDACTED_IMAGE_DATA_URL/u);

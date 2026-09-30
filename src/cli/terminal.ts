@@ -1,5 +1,4 @@
 import readline from "node:readline";
-import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
 import {
   compactionActivityLabel,
@@ -36,14 +35,9 @@ import {
   type PromptInputSession,
   type PromptSubmission,
 } from "./prompt-input.js";
-import {
-  ReasoningRegistry,
-  prepareReasoningText,
-  renderReasoningBody,
-  renderReasoningMarker,
-  type ReasoningBlock,
-} from "./reasoning.js";
+import { ReasoningRegistry, renderReasoningBody, renderReasoningMarker, type ReasoningBlock } from "./reasoning.js";
 import { AdjustmentRegistry, renderAdjustmentBody, type AdjustmentBlock } from "./adjustment.js";
+import { ModelStreamRenderer } from "./model-stream-renderer.js";
 import {
   selectModel,
   selectProvider,
@@ -120,30 +114,6 @@ interface CurrentTurnDisclosure {
   readonly entry: Readonly<UITranscriptEntry>;
   readonly reasoning?: Readonly<ReasoningBlock>;
   readonly adjustment?: Readonly<AdjustmentBlock>;
-}
-
-interface ActiveModelStream {
-  readonly streamId: string;
-  /** Activity that owned this provider request when streaming began. */
-  readonly activityId?: string;
-  reasoningText: string;
-  answerText: string;
-  reasoningId?: number;
-  reasoningEntryId?: string;
-  answerEntryId?: string;
-  toolCallSeen: boolean;
-  readonly toolCalls: Map<number, { name: string; argumentChars: number }>;
-  toolProgressDirty: boolean;
-  completed: boolean;
-  sequence: number;
-  pendingReasoning: string[];
-  pendingText: string[];
-  finalDisplay: boolean;
-  renderedReasoning?: string;
-  renderedAnswer?: string;
-  reasoningSourceChars: number;
-  reasoningLastDeltaAtMs?: number;
-  renderedReasoningProgressKey?: string;
 }
 
 interface DeferredTranscriptCommit {
@@ -242,6 +212,25 @@ export class Terminal implements AppInteractionPort {
   private steeringAdmissionPaused = false;
   private readonly reasoning = new ReasoningRegistry();
   private readonly adjustments = new AdjustmentRegistry();
+  private readonly streams = new ModelStreamRenderer({
+    reasoning: this.reasoning,
+    isClosed: () => this.closed,
+    canStreamIntoDocument: () => this.inlineShellActive && this.isInteractive() && Boolean(this.disclosureViewer),
+    hasDisclosureDocument: () => Boolean(this.disclosureViewer),
+    activeActivityId: () => this.activeActivityId,
+    showToolArgumentProgress: (text) => this.showToolArgumentProgress(text),
+    colorEnabled: () => this.colorEnabled(),
+    safeInline: (value, maximum) => this.safeInline(value, maximum),
+    safeStreamText: (value) => this.safeStreamText(value),
+    commitTranscript: (entry) => this.commitTranscript(entry),
+    replaceTranscriptEntry: (id, entry) => this.replaceTranscriptEntry(id, entry),
+    retainCurrentTurnDisclosure: (entry, block) => this.retainCurrentTurnDisclosure(entry, block),
+    retainReasoningDisclosure: (entryId, block) => {
+      this.retainedReasoningDisclosures.set(entryId, block);
+    },
+    refreshDisclosureViewer: (nodesChanged) => this.refreshDisclosureViewer(nodesChanged),
+    failTerminalUi: (stage, value) => this.failTerminalUi(stage, value),
+  });
   /** Visible Thinking controls outlive a model turn, but not a display/thread reset.
    * Keep the existing immutable bodies by reference; do not duplicate history. */
   private readonly retainedReasoningDisclosures = new Map<string, Readonly<ReasoningBlock>>();
@@ -264,23 +253,6 @@ export class Terminal implements AppInteractionPort {
   private pendingRequestTranscriptStart?: number;
   /** A completed turn remains viewable, but a later direct/resumed request is new. */
   private currentTurnCompleted = false;
-  /** Provider deltas are a replaceable projection; only assembled messages are durable. */
-  private readonly modelStreams = new Map<string, ActiveModelStream>();
-  private streamFlushTimer?: NodeJS.Timeout;
-  private streamFlushIntervalMs = DEFAULT_RUNTIME_LIMITS.streamFlushIntervalMs;
-  private streamPreviewMaxChars = DEFAULT_RUNTIME_LIMITS.streamPreviewMaxChars;
-  private streamBatchRendering = false;
-  private streamDocumentDirty = false;
-  private streamedAnswerCandidate?: Readonly<{
-    streamId: string;
-    entryId: string;
-    text: string;
-  }>;
-  private streamedReasoningCandidate?: Readonly<{
-    streamId: string;
-    id: number;
-    text: string;
-  }>;
   private activityTimer?: NodeJS.Timeout;
   private contextTokensProvider?: () => number;
   private lastContextTokenSampleAt = 0;
@@ -360,14 +332,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   configureStreaming(limits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number }): void {
-    this.streamFlushIntervalMs = limits.streamFlushIntervalMs;
-    this.streamPreviewMaxChars = limits.streamPreviewMaxChars;
-  }
-
-  private resetModelStreams(): void {
-    if (this.streamFlushTimer) clearTimeout(this.streamFlushTimer);
-    this.streamFlushTimer = undefined;
-    this.modelStreams.clear();
+    this.streams.configure(limits);
   }
 
   /** Enable the retained inline UI only for a real TTY owned by this instance. */
@@ -457,9 +422,7 @@ export class Terminal implements AppInteractionPort {
     }
     this.pendingRequestTranscriptStart = undefined;
     this.currentTurnCompleted = false;
-    this.resetModelStreams();
-    this.streamedAnswerCandidate = undefined;
-    this.streamedReasoningCandidate = undefined;
+    this.streams.forget();
     this.progressItems = [];
     this.progressSequence = 0;
     this.uiState = applyEvent(this.uiState, { type: "progress.clear" });
@@ -673,9 +636,7 @@ export class Terminal implements AppInteractionPort {
     this.retainedReasoningDisclosures.clear();
     this.currentTurnTranscriptStart = this.uiState.composer.busy ? 0 : undefined;
     this.pendingRequestTranscriptStart = undefined;
-    this.resetModelStreams();
-    this.streamedAnswerCandidate = undefined;
-    this.streamedReasoningCandidate = undefined;
+    this.streams.forget();
     if (!this.inlineShellActive) {
       if ((this.output as NodeJS.WriteStream).isTTY) this.output.write("\u001B[3J\u001B[2J\u001B[H");
       return;
@@ -726,9 +687,7 @@ export class Terminal implements AppInteractionPort {
     this.currentTurnTranscriptStart = undefined;
     this.pendingRequestTranscriptStart = undefined;
     this.currentTurnCompleted = false;
-    this.resetModelStreams();
-    this.streamedAnswerCandidate = undefined;
-    this.streamedReasoningCandidate = undefined;
+    this.streams.forget();
     this.reasoning.clear();
     this.adjustments.clear();
     this.uiState = createUIState({
@@ -1647,11 +1606,8 @@ export class Terminal implements AppInteractionPort {
 
   /** Store provider thinking safely and print only its collapsed marker. */
   addReasoning(text: string): number {
-    const streamed = this.streamedReasoningCandidate;
-    if (streamed && prepareReasoningText(text).text === streamed.text) {
-      this.streamedReasoningCandidate = undefined;
-      return streamed.id;
-    }
+    const streamedId = this.streams.consumeStreamedReasoning(text);
+    if (streamedId !== undefined) return streamedId;
     const block = this.reasoning.add(text);
     if (this.isInteractive()) {
       const entry = {
@@ -1671,94 +1627,20 @@ export class Terminal implements AppInteractionPort {
 
   /** Project transient provider deltas into stable in-place transcript nodes. */
   modelStream(event: Readonly<ProviderStreamEvent>): void {
-    if (this.closed) return;
-    if (event.kind === "started") {
-      this.flushModelStreams();
-      this.applyModelStream(event);
-      return;
-    }
-    const state = this.modelStreams.get(event.streamId);
-    if (!state || state.completed || event.sequence <= state.sequence) return;
-    state.sequence = event.sequence;
-    // Assistant phase is a Web presentation hint. CLI transcript behavior stays unchanged.
-    if (event.kind === "assistant_phase") return;
-    if (event.kind === "reasoning_delta" || event.kind === "text_delta") {
-      if (event.kind === "reasoning_delta") {
-        state.reasoningSourceChars += countCodePoints(event.text);
-        state.reasoningLastDeltaAtMs = Date.now();
-      }
-      (event.kind === "reasoning_delta" ? state.pendingReasoning : state.pendingText).push(event.text);
-      this.scheduleModelStreamFlush();
-      return;
-    }
-    if (event.kind === "tool_call_delta") {
-      this.applyModelStream(event);
-      this.scheduleModelStreamFlush();
-      return;
-    }
-    this.flushModelStreams(event.kind === "completed" ? event.streamId : undefined);
-    this.applyModelStream(event);
+    this.streams.onEvent(event);
   }
 
-  private scheduleModelStreamFlush(): void {
-    if (this.streamFlushTimer) return;
-    this.streamFlushTimer = setTimeout(() => {
-      try {
-        this.flushModelStreams();
-      } catch (error) {
-        this.resetModelStreams();
-        this.streamedAnswerCandidate = undefined;
-        this.streamedReasoningCandidate = undefined;
-        this.failTerminalUi("stream renderer", error);
-      }
-    }, this.streamFlushIntervalMs);
-    this.streamFlushTimer.unref();
+  /** Reconcile the streamed final node with the Runtime's assembled result. */
+  finalizeStreamedAnswer(text: string): boolean {
+    return this.streams.finalizeAnswer(text);
   }
 
-  private flushModelStreams(finalStreamId?: string): void {
-    if (this.streamFlushTimer) clearTimeout(this.streamFlushTimer);
-    this.streamFlushTimer = undefined;
-    this.streamBatchRendering = true;
-    try {
-      for (const state of this.modelStreams.values()) {
-        if (state.completed) continue;
-        state.finalDisplay = state.streamId === finalStreamId;
-        for (const kind of ["reasoning_delta", "text_delta"] as const) {
-          const pending = kind === "reasoning_delta" ? state.pendingReasoning : state.pendingText;
-          const retained = kind === "reasoning_delta" ? state.reasoningText : state.answerText;
-          if (!pending.length && !(state.finalDisplay && retained)) continue;
-          const text = pending.join("");
-          pending.length = 0;
-          this.applyModelStream({ kind, streamId: state.streamId, sequence: state.sequence, text });
-        }
-        if (state.toolProgressDirty) this.renderStreamToolProgress(state);
-      }
-    } finally {
-      this.streamBatchRendering = false;
-      if (this.streamDocumentDirty) {
-        this.streamDocumentDirty = false;
-        this.refreshDisclosureViewer(true);
-      }
-    }
-  }
-
-  private renderStreamToolProgress(state: ActiveModelStream): void {
-    state.toolProgressDirty = false;
-    const calls = [...state.toolCalls.entries()].sort(([left], [right]) => left - right);
-    if (!calls.length || !this.activeActivityId || state.activityId !== this.activeActivityId) return;
-    const parts = calls.slice(0, 2).map(([index, call]) => {
-      const name = this.safeInline(call.name || "tool", 48);
-      const size =
-        call.argumentChars < 1024
-          ? `${call.argumentChars} chars`
-          : `${(call.argumentChars / 1024).toFixed(call.argumentChars < 10 * 1024 ? 1 : 0)} KiB`;
-      return `${name} #${index + 1} · ${size}`;
-    });
-    const remaining = calls.length - parts.length;
-    this.activityText = `Preparing ${parts.join("; ")}${remaining > 0 ? `; +${remaining} more` : ""} arguments`;
+  /** Show streamed tool-argument progress as the label of the active activity. */
+  private showToolArgumentProgress(text: string): void {
+    this.activityText = text;
     if (this.inlineShellActive) {
       const current = this.uiState.live.activity;
-      if (current?.id === this.activeActivityId) {
+      if (current && current.id === this.activeActivityId) {
         this.uiState = applyEvent(this.uiState, {
           type: "activity.start",
           activity: { ...current, label: this.activityText },
@@ -1766,279 +1648,6 @@ export class Terminal implements AppInteractionPort {
       }
     }
     this.renderActivity();
-  }
-
-  private liveStreamText(value: string, final: boolean, includeLimitNotice = true): string {
-    if (final) return this.safeStreamText(value);
-    const prefix = value.slice(0, this.streamPreviewMaxChars);
-    // Hold the unfinished lexical token (including credentials, data URLs and
-    // terminal escape fragments) until a whitespace boundary is available.
-    const boundary = Math.max(
-      prefix.lastIndexOf(" "),
-      prefix.lastIndexOf("\n"),
-      prefix.lastIndexOf("\t"),
-      ...["。", "，", "！", "？", "；"].map((mark) => prefix.lastIndexOf(mark)),
-    );
-    const safe = this.safeStreamText(prefix.slice(0, Math.max(0, boundary + 1)));
-    return includeLimitNotice && value.length > this.streamPreviewMaxChars
-      ? `${safe}\n[Live preview limited; complete output will appear when the response finishes.]`
-      : safe;
-  }
-
-  /**
-   * Update only the small Thinking marker after its body reaches the live
-   * preview cap. The complete provider text remains assembled in the stream
-   * state for final reconciliation, but is not repeatedly sanitized or
-   * projected into the terminal document.
-   */
-  private renderLiveReasoningProgress(state: ActiveModelStream, nowMs = Date.now()): void {
-    if (
-      state.completed ||
-      state.finalDisplay ||
-      state.reasoningSourceChars <= this.streamPreviewMaxChars ||
-      state.reasoningLastDeltaAtMs === undefined ||
-      !state.reasoningId ||
-      !state.reasoningEntryId
-    )
-      return;
-    const ageBucket = Math.floor(Math.max(0, nowMs - state.reasoningLastDeltaAtMs) / 100);
-    const progressKey = `${state.reasoningSourceChars}:${ageBucket}`;
-    if (state.renderedReasoningProgressKey === progressKey) return;
-    const block = this.reasoning.get(state.reasoningId);
-    if (!block) return;
-    state.renderedReasoningProgressKey = progressKey;
-    this.retainedReasoningDisclosures.set(state.reasoningEntryId, block);
-    this.replaceTranscriptEntry(state.reasoningEntryId, {
-      kind: "raw",
-      id: state.reasoningEntryId,
-      text: renderReasoningMarker(block, {
-        color: this.colorEnabled(),
-        live: {
-          sourceChars: state.reasoningSourceChars,
-          previewLimitChars: this.streamPreviewMaxChars,
-          lastDeltaAtMs: state.reasoningLastDeltaAtMs,
-          nowMs,
-        },
-      }),
-      reasoning: block.text,
-    });
-  }
-
-  private refreshLiveReasoningProgress(nowMs = Date.now()): void {
-    for (const state of this.modelStreams.values()) {
-      this.renderLiveReasoningProgress(state, nowMs);
-    }
-  }
-
-  private applyModelStream(event: Readonly<ProviderStreamEvent>): void {
-    // Small/non-TTY terminals retain the existing atomic final-answer path.
-    // Streaming is enabled only when the managed document can replace nodes
-    // without corrupting ordinary terminal scrollback.
-    if (!this.inlineShellActive || !this.isInteractive() || !this.disclosureViewer) {
-      return;
-    }
-
-    if (event.kind === "started") {
-      for (const [streamId, state] of this.modelStreams) {
-        if (state.completed) this.modelStreams.delete(streamId);
-      }
-      this.streamedAnswerCandidate = undefined;
-      this.modelStreams.set(event.streamId, {
-        streamId: event.streamId,
-        ...(this.activeActivityId ? { activityId: this.activeActivityId } : {}),
-        reasoningText: "",
-        answerText: "",
-        toolCallSeen: false,
-        toolCalls: new Map(),
-        toolProgressDirty: false,
-        completed: false,
-        sequence: event.sequence,
-        pendingReasoning: [],
-        pendingText: [],
-        finalDisplay: false,
-        reasoningSourceChars: 0,
-      });
-      return;
-    }
-
-    const state = this.modelStreams.get(event.streamId);
-    if (!state || event.sequence <= 1) return;
-
-    if (event.kind === "reasoning_delta") {
-      const previewWasFull = state.reasoningText.length > this.streamPreviewMaxChars;
-      state.reasoningText += event.text;
-      if (previewWasFull && state.reasoningId && !state.finalDisplay) {
-        this.renderLiveReasoningProgress(state);
-        return;
-      }
-      const safeReasoning = state.finalDisplay
-        ? this.liveStreamText(state.reasoningText, true)
-        : this.liveStreamText(state.reasoningText, false, false);
-      if (!safeReasoning && state.reasoningSourceChars <= this.streamPreviewMaxChars) return;
-      if (safeReasoning === state.renderedReasoning && state.reasoningId) {
-        this.renderLiveReasoningProgress(state);
-        return;
-      }
-      state.renderedReasoning = safeReasoning;
-      if (!state.reasoningId) {
-        const block = this.reasoning.add(safeReasoning);
-        const entryId = `thinking_${block.id}`;
-        state.reasoningId = block.id;
-        state.reasoningEntryId = entryId;
-        this.retainCurrentTurnDisclosure(
-          {
-            kind: "raw",
-            id: entryId,
-            text: renderReasoningMarker(block, {
-              color: this.colorEnabled(),
-              ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined
-                ? {}
-                : {
-                    live: {
-                      sourceChars: state.reasoningSourceChars,
-                      previewLimitChars: this.streamPreviewMaxChars,
-                      lastDeltaAtMs: state.reasoningLastDeltaAtMs,
-                    },
-                  }),
-            }),
-            reasoning: block.text,
-          },
-          block,
-        );
-      } else {
-        const block = this.reasoning.replace(state.reasoningId, safeReasoning);
-        if (block && state.reasoningEntryId) {
-          this.retainedReasoningDisclosures.set(state.reasoningEntryId, block);
-          this.replaceTranscriptEntry(state.reasoningEntryId, {
-            kind: "raw",
-            id: state.reasoningEntryId,
-            text: renderReasoningMarker(block, {
-              color: this.colorEnabled(),
-              ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined
-                ? {}
-                : {
-                    live: {
-                      sourceChars: state.reasoningSourceChars,
-                      previewLimitChars: this.streamPreviewMaxChars,
-                      lastDeltaAtMs: state.reasoningLastDeltaAtMs,
-                    },
-                  }),
-            }),
-            reasoning: block.text,
-          });
-        }
-      }
-      return;
-    }
-
-    if (event.kind === "text_delta") {
-      const previewWasFull = state.answerText.length > this.streamPreviewMaxChars;
-      state.answerText += event.text;
-      if (previewWasFull && state.renderedAnswer && !state.finalDisplay) return;
-      const safe = this.liveStreamText(state.answerText, state.finalDisplay);
-      if (!safe || safe === state.renderedAnswer) return;
-      state.renderedAnswer = safe;
-      if (!state.answerEntryId) {
-        state.answerEntryId = `model_stream_${event.streamId}_answer`;
-        this.commitTranscript({
-          kind: "assistant",
-          id: state.answerEntryId,
-          text: `\n${safe}`,
-        });
-      } else {
-        this.replaceTranscriptEntry(state.answerEntryId, {
-          kind: "assistant",
-          id: state.answerEntryId,
-          text: `\n${safe}`,
-        });
-      }
-      return;
-    }
-
-    if (event.kind === "tool_call_delta") {
-      state.toolCallSeen = true;
-      const current = state.toolCalls.get(event.index) ?? { name: "", argumentChars: 0 };
-      if (event.name) current.name += event.name;
-      if (event.arguments) current.argumentChars += event.arguments.length;
-      state.toolCalls.set(event.index, current);
-      state.toolProgressDirty = true;
-      return;
-    }
-
-    if (event.kind === "completed") {
-      state.completed = true;
-      if (state.reasoningId) {
-        const block = this.reasoning.get(state.reasoningId);
-        if (block) {
-          this.streamedReasoningCandidate = {
-            streamId: event.streamId,
-            id: block.id,
-            text: block.text,
-          };
-        }
-      }
-      if (!state.toolCallSeen && state.answerEntryId && ["stop", null, undefined].includes(event.finishReason)) {
-        this.streamedAnswerCandidate = {
-          streamId: event.streamId,
-          entryId: state.answerEntryId,
-          text: this.safeStreamText(state.answerText),
-        };
-      }
-      return;
-    }
-
-    if (event.kind === "interrupted") {
-      const interrupted = state.toolCallSeen
-        ? "[Interrupted model response; streamed tool arguments were incomplete and were not executed.]"
-        : "[Interrupted model response; not a completed answer.]";
-      if (state.reasoningId && state.reasoningEntryId) {
-        const block = this.reasoning.replace(state.reasoningId, this.safeStreamText(state.reasoningText));
-        if (block)
-          this.replaceTranscriptEntry(state.reasoningEntryId, {
-            kind: "raw",
-            id: state.reasoningEntryId,
-            text: `${renderReasoningMarker(block, { color: this.colorEnabled() })} [interrupted]`,
-            reasoning: block.text,
-          });
-      }
-      if (state.answerEntryId) {
-        this.replaceTranscriptEntry(state.answerEntryId, {
-          kind: "assistant",
-          id: state.answerEntryId,
-          text: `\n${state.renderedAnswer ?? ""}\n${interrupted}\n`,
-        });
-      } else {
-        this.commitTranscript({
-          kind: "raw",
-          id: `model_stream_${event.streamId}_interrupted`,
-          text: `${interrupted}\n`,
-        });
-      }
-      state.completed = true;
-      this.modelStreams.delete(event.streamId);
-      if (this.streamedAnswerCandidate?.streamId === event.streamId) {
-        this.streamedAnswerCandidate = undefined;
-      }
-      if (this.streamedReasoningCandidate?.streamId === event.streamId) {
-        this.streamedReasoningCandidate = undefined;
-      }
-    }
-  }
-
-  /** Reconcile the streamed final node with the Runtime's assembled result. */
-  finalizeStreamedAnswer(text: string): boolean {
-    const candidate = this.streamedAnswerCandidate;
-    this.streamedAnswerCandidate = undefined;
-    if (!candidate || !this.disclosureViewer) return false;
-    const complete = this.safeStreamText(text).trim();
-    if (!complete) return false;
-    this.replaceTranscriptEntry(candidate.entryId, {
-      kind: "assistant",
-      id: candidate.entryId,
-      text: `\n${complete}\n\n`,
-    });
-    this.modelStreams.delete(candidate.streamId);
-    return true;
   }
 
   peerMessage(senderThreadId: string, text: string, outgoing = false): void {
@@ -2121,9 +1730,7 @@ export class Terminal implements AppInteractionPort {
 
   /** Drop the current Thread's blocks without reusing IDs from old markers. */
   clearReasoning(): void {
-    this.resetModelStreams();
-    this.streamedAnswerCandidate = undefined;
-    this.streamedReasoningCandidate = undefined;
+    this.streams.forget();
     this.closeDisclosureViewer();
     this.retainedReasoningDisclosures.clear();
     this.freezeCurrentTurnDisclosures();
@@ -2133,7 +1740,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   close(): void {
-    this.resetModelStreams();
+    this.streams.reset();
     this.activeApprovalController?.abort();
     this.vscodeMenuBridge?.close();
     if (this.closed) return;
@@ -2921,10 +2528,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   private refreshDisclosureViewer(nodesChanged = false): void {
-    if (this.streamBatchRendering) {
-      this.streamDocumentDirty ||= nodesChanged;
-      return;
-    }
+    if (this.streams.deferDocumentRefresh(nodesChanged)) return;
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.closing) return;
     if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
@@ -3330,9 +2934,7 @@ export class Terminal implements AppInteractionPort {
   }
 
   private reasoningDisclosureNode(block: Readonly<ReasoningBlock>, active: boolean): VirtualDocumentNode {
-    const activeStream = [...this.modelStreams.values()].find(
-      (state) => !state.completed && state.reasoningId === block.id,
-    );
+    const activeStream = this.streams.activeReasoningStream(block.id);
     const marker = stripAnsi(
       renderReasoningMarker(block, {
         color: false,
@@ -3341,7 +2943,7 @@ export class Terminal implements AppInteractionPort {
           : {
               live: {
                 sourceChars: activeStream.reasoningSourceChars,
-                previewLimitChars: this.streamPreviewMaxChars,
+                previewLimitChars: this.streams.previewLimitChars,
                 lastDeltaAtMs: activeStream.reasoningLastDeltaAtMs,
               },
             }),
@@ -3901,7 +3503,7 @@ export class Terminal implements AppInteractionPort {
 
   private renderActivity(): void {
     if (this.inlineShellActive) {
-      this.refreshLiveReasoningProgress();
+      this.streams.refreshLiveReasoningProgress();
       this.activityVisible = true;
       this.refresh();
       return;
@@ -3994,12 +3596,6 @@ function formatSubmittedRequest(value: string): string {
     .split("\n")
     .map((line, index) => `${index === 0 ? "> " : "  "}${line}`)
     .join("\n");
-}
-
-function countCodePoints(value: string): number {
-  let count = 0;
-  for (const _character of value) count += 1;
-  return count;
 }
 
 export function printBanner(
