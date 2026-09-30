@@ -2,8 +2,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TaskBudget } from "./runtime/task-budget.js";
 import { BenchmarkContainerBackend } from "./sandbox/benchmark-backend.js";
-import { runWorkspaceReview } from "./review/application.js";
-import { sharedReviewEvidenceOwner } from "./context/recall.js";
 
 import chalk from "chalk";
 
@@ -11,7 +9,6 @@ import { consumeHarborProviderApiKeyFile, resolveHarborOuterSandbox } from "./be
 import { Terminal, printBanner } from "./cli/terminal.js";
 import { formatTokenCount } from "./cli/token-count.js";
 import type { AppInteractionPort, UserSubmission } from "./ui/interaction-port.js";
-import { compactionRunning } from "./ui/compaction.js";
 import { helpText, parseModelCommand, parseSlashCommand } from "./cli/slash-command.js";
 import { SystemKeyringCredentialStore, type ApiKeyCredentialStore } from "./config/credentials.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
@@ -22,11 +19,9 @@ import { McpConfigStore, USER_MCP_CONFIG_PATH } from "./mcp/config.js";
 import { McpConnections, McpToolSource } from "./mcp/source.js";
 import { MCP_SERVER_ACTION_IDS } from "./mcp/menu.js";
 import { SkillStore } from "./skills/store.js";
-import { isCommandApprovalPrefixGranted } from "./command/approval.js";
 import { ApprovalQueue, type ApprovalReview } from "./command/approval-agent.js";
-import { canGrantCommandPrefix } from "./command/approval.js";
 import { CommandRuntime } from "./command/runtime.js";
-import { ContextArtifactIndex, renderContextCheckpoint, renderRetrievedContext } from "./context/artifact-index.js";
+import { ContextArtifactIndex } from "./context/artifact-index.js";
 import { ContextManager } from "./context/manager.js";
 import type {
   AgentMode,
@@ -39,11 +34,9 @@ import type {
   EventRecord,
   ImageAttachment,
   PlanProposal,
-  ProviderStreamEvent,
   ProviderName,
   SessionState,
   ThinkingEffort,
-  TurnSteeringBatch,
   TurnSteeringEntry,
 } from "./core/types.js";
 import {
@@ -72,18 +65,14 @@ import {
   requireVisionModel,
   resolveCatalogModel,
   effectiveContextWindow,
-  modelSupportsVision,
   validateProviderImageAttachments,
   USER_MODEL_REGISTRY_PATH,
   sweBenchVerified50Profile,
 } from "./models/catalog.js";
 import { thinkingEffortIsApplied } from "./models/thinking.js";
-import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
-import { TokenCalibration } from "./context/token-calibration.js";
 import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
 import { LocalLayaClient } from "./local-decision/client.js";
-import { appendLocalDecisionFallbackTrace, appendLocalDecisionTrace } from "./local-decision/trace.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
 import { WorkspaceToolObserver } from "./coordination/observer.js";
 import { NativeSandboxBackend } from "./sandbox/native-backend.js";
@@ -92,7 +81,6 @@ import { runSandboxStartupGuide, type SandboxStartupService } from "./sandbox/st
 import { createStorage, workspaceIdFromRoot, type EasyCodeStorage } from "./storage/database.js";
 import {
   SubagentCoordinator,
-  type ObservedSubagentArtifacts,
   type SubagentExecutionOutcome,
   type SubagentExecutionRequest,
 } from "./subagents/coordinator.js";
@@ -139,6 +127,7 @@ import { ApprovalReviewer, type ApprovalReviewerContext } from "./app/approval-r
 import { ApprovalFlow, type ApprovalFlowContext } from "./app/approval-flow.js";
 import { InfoCommands, type InfoCommandsContext } from "./app/info-commands.js";
 import { SubagentHost, type SubagentHostContext } from "./app/subagent-host.js";
+import { RuntimeAssembly, type RuntimeAssemblyContext } from "./app/runtime-assembly.js";
 
 // Re-exported so the package entry (src/index.ts `export *`) keeps its public API.
 export {
@@ -1743,398 +1732,6 @@ export class EasyCodeApp {
     }
   }
 
-  private async createRuntime(
-    presentReasoning: boolean,
-    steeringNotifier?: TurnSteeringAttemptNotifier,
-  ): Promise<AgentRuntime> {
-    const effectiveConfig = this.effectiveConfig();
-    const promptStartedAt = new Date();
-    const childrenRunning = this.subagentCoordinator
-      .snapshot(this.state.threadId)
-      .some((child) => child.status === "running" || child.status === "stopping");
-    const reviewPending = this.state.reviewSessions?.some((session) => session.status !== "applied");
-    const budget =
-      childrenRunning || reviewPending || this.compacting
-        ? this.sharedTaskBudget(this.state.threadId)
-        : this.newTaskBudget(this.state.threadId);
-    this.taskBudgets.set(this.state.threadId, budget);
-    const visionCapable = modelSupportsVision(this.state.provider, this.state.model);
-    const provider = createProvider(effectiveConfig, this.state.provider, this.state.model, {
-      loadImage: (attachment) => this.imageStore.load(this.state.threadId, attachment),
-    });
-    const workspaceId = this.state.projectId ?? workspaceIdFromRoot(this.workspace.root);
-    const projectMemoryId = this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
-    const commandRuntime = this.createCommandRuntime(this.workspace);
-    const commandOwner = {
-      threadId: this.state.threadId,
-      agentRole: "main_agent" as const,
-    };
-    const toolCatalog = await this.mainToolCatalogSnapshot();
-
-    return new AgentRuntime({
-      provider,
-      localDecision: (task, input, signal) => {
-        this.localLayaClient ??= new LocalLayaClient(
-          {
-            startupMs: this.config.limits.layaStartupTimeoutMs,
-            decisionMs: this.config.limits.layaDecisionTimeoutMs,
-            idleMs: this.config.limits.layaIdleTimeoutMs,
-          },
-          {
-            dataDir: this.config.dataDir,
-            python:
-              process.env.EASY_CODE_LAYA_PYTHON ||
-              path.join(
-                this.config.dataDir,
-                "runtimes",
-                "laya-decision-onnx",
-                process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
-              ),
-          },
-        );
-        return this.localLayaClient.decide(task, input, signal);
-      },
-      recordLocalDecision: (trace) => appendLocalDecisionTrace(this.workspace.root, trace),
-      recordLocalDecisionFallback: (trace) => appendLocalDecisionFallbackTrace(this.workspace.root, trace),
-      deliveryChallengeAlreadyUsed: (threadId) => {
-        const events = this.threadStore.journal(threadId).read();
-        for (let index = events.length - 1; index >= 0; index -= 1) {
-          const event = events[index];
-          if (event?.type === "decision.delivery.challenge_requested") return true;
-          const completedReason =
-            event?.payload && typeof event.payload === "object" && "reason" in event.payload
-              ? event.payload.reason
-              : undefined;
-          if (event?.type === "turn.completed" && (completedReason === "success" || completedReason === "planned"))
-            return false;
-        }
-        return false;
-      },
-      limits: this.config.limits,
-      taskBudget: budget,
-      tokenCalibration: new TokenCalibration(
-        JSON.stringify([provider.name, provider.model, effectiveConfig.providers[provider.name]!.baseUrl]),
-        this.storage,
-      ),
-      toolCatalog,
-      threadTitle: {
-        isUnclaimed: (threadId) => this.threadTitles.isUnclaimed(threadId),
-        claim: (threadId, title) => this.threadTitles.claim(threadId, title),
-      },
-      onThreadTitleClaimed: (title) => this.terminal.threadTitleChanged?.(title),
-      connectedMcpServers: this.mcpConnections?.connectedServers() ?? [],
-      visionAvailable: visionCapable,
-      authorizeToolExecution: (request) => this.authorizeCatalogToolCall(request),
-      agentIdentity: { role: "main_agent" },
-      takeSubagentMessages: async (threadId, turnId) => this.subagentMessages.deliverToModel(threadId, turnId),
-      contextManager: this.contextManager,
-      buildSystemPrompt: async ({
-        mode,
-        workspaceSummary,
-        memories,
-        workingCheckpoint,
-        retrievedThreadEvidence,
-        toolNames,
-        taskGraph,
-        planReview,
-      }) =>
-        buildSystemPrompt({
-          config: effectiveConfig,
-          workspaceFolders: this.workspace.folders,
-          skillStore: SkillStore.forProject(
-            this.workspace.root,
-            this.config.dataDir,
-            this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
-          ),
-          now: promptStartedAt,
-          mode,
-          workspaceSummary,
-          memories,
-          ...(workingCheckpoint ? { workingCheckpoint } : {}),
-          ...(retrievedThreadEvidence ? { retrievedThreadEvidence } : {}),
-          availableTools: toolNames,
-          commandExecutionMode: this.commandExecutionMode,
-          ...(taskGraph ? { taskGraph } : {}),
-          ...(planReview ? { planReview } : {}),
-        }),
-      getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
-      searchMemories: async (query, options) =>
-        this.memoryManager.searchScoped(projectMemoryId, query, {
-          workspaceRoot: this.workspace.root,
-          limit: options?.limit ?? this.config.limits.memorySearchLimit,
-          includeInactive: options?.includeInactive,
-          scope: options?.scope,
-          includeGlobalPreferences: options === undefined,
-        }),
-      memoryGeneration: () => this.memoryManager.scopeGenerationKey(projectMemoryId),
-      recordMemoryRecall: (threadId, turnId, memoryIds) => this.memoryManager.recordRecall(threadId, turnId, memoryIds),
-      captureToolEvidence: (state, callId, tool, result) =>
-        this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
-      readToolEvidence: (state, id, offset, limit) =>
-        this.memoryManager.evidenceStore.read(workspaceId, sharedReviewEvidenceOwner(state, id), id, offset, limit),
-      getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
-        const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
-        const hits = await this.contextArtifactIndex.search(workspaceId, state.threadId, query, {
-          beforeMessageIndex,
-          queries,
-          limit: this.config.limits.memorySearchLimit,
-        });
-        return {
-          workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
-          evidence: hits,
-          ...(hits.length ? { retrievedThreadEvidence: renderRetrievedContext(hits) } : {}),
-        };
-      },
-      checkpointContext: async (state) => {
-        await this.workspace.fullConsistencyCheck();
-        this.syncWorkspaceState();
-        await this.contextArtifactIndex.checkpoint(workspaceId, state);
-      },
-      hasOpenCommandHandles: () => commandRuntime.hasOpenCommandHandles(commandOwner),
-      getEnvironmentFault: () => commandRuntime.environmentFault(),
-      commitMemoryMutations: async (input) =>
-        this.memoryManager.applyModelMutationsWithEmbeddings({
-          workspaceId: this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
-          workspaceRoot: input.workspaceRoot,
-          threadId: input.threadId,
-          turnId: input.turnId,
-          outcome: input.outcome,
-          mutations: input.mutations,
-        }),
-      appendEvent: async (event) => {
-        const { threadId, ...input } = event;
-        this.threadStore.appendEvent(threadId, input);
-        this.dirty = true;
-      },
-      ...(steeringNotifier
-        ? {
-            steeringNotifier,
-            takeSteering: async ({
-              threadId,
-              turnId,
-              boundary,
-            }: {
-              threadId: string;
-              turnId: string;
-              boundary: import("./core/types.js").TurnSteeringBoundary;
-            }) => this.threadStore.drainTurnSteering(threadId, turnId, this.config.limits, boundary !== "after_model"),
-            sealSteering: async ({ threadId, turnId }: { threadId: string; turnId: string }) =>
-              this.terminal.sealCurrentRequestSteering(() =>
-                this.threadStore.sealTurnSteering(threadId, turnId, this.config.limits),
-              ),
-            hasPendingSteering: async ({ threadId, turnId }: { threadId: string; turnId: string }) =>
-              this.threadStore.hasPendingTurnSteering(threadId, turnId),
-            onSteeringApplied: (batch: Readonly<TurnSteeringBatch>) => {
-              if (batch.source === "peer_message") {
-                for (const entry of batch.entries)
-                  this.terminal.peerMessage?.(entry.senderThreadId!, entry.message.content);
-                return;
-              }
-              const first = batch.entries[0]?.sequence;
-              const last = batch.throughSequence;
-              const range = first === last ? `#${last}` : `#${first}-#${last}`;
-              this.terminal.success(`Applied adjustment${first === last ? "" : "s"} ${range}.`);
-            },
-          }
-        : {}),
-      recordCommand: (turnId, entry) => {
-        this.threadStore.recordToolAudit(this.state.threadId, turnId, entry);
-        this.dirty = true;
-      },
-      commitImages: async (threadId, attachments) => {
-        for (const attachment of attachments) {
-          await this.imageStore.commit(threadId, attachment);
-        }
-      },
-      onToolCompleted: async (_state, toolName, result, displayName, details) => {
-        if (toolName === "send_thread_message" && result.ok) {
-          const sent = result.data as { targetThreadId: string; message: string };
-          this.terminal.peerMessage?.(sent.targetThreadId, sent.message, true);
-        }
-        this.terminal.toolCompleted(displayName ?? toolName, result.ok, result.summary, result.error, details);
-        if (toolName === "name_thread" && result.ok) {
-          const title = (result.data as { title?: unknown } | undefined)?.title;
-          if (typeof title === "string") this.terminal.threadTitleChanged?.(title);
-        }
-        let mergedSubagentArtifacts: ObservedSubagentArtifacts | undefined;
-        if (result.ok && result.subagentLifecycle) {
-          const artifacts = this.subagentCoordinator.commitLifecycle(result.subagentLifecycle);
-          if (artifacts) {
-            await this.subagentHost.mergeSubagentArtifacts(_state, artifacts);
-            mergedSubagentArtifacts = artifacts;
-          }
-        }
-        this.syncWorkspaceState();
-        this.save();
-        if (mergedSubagentArtifacts) {
-          this.subagentCoordinator.finalizeArtifactMerge(mergedSubagentArtifacts.agentId);
-        }
-        if ((toolName === "manage_tasks" || toolName === "manage_subagents") && result.ok && result.taskGraphUpdate) {
-          try {
-            this.terminal.taskGraph(taskGraphView(result.taskGraphUpdate));
-          } catch {
-            this.terminal.info("The task DAG was updated successfully, but its terminal view could not be rendered.");
-          }
-        }
-        if (toolName === "manage_subagents" && result.ok) {
-          try {
-            this.infoCommands.printSubagents();
-          } catch {
-            this.terminal.info(
-              "The child-agent state was updated successfully, but its terminal view could not be rendered.",
-            );
-          }
-        }
-        if (result.ok && result.presentation?.type === "file_diff") {
-          try {
-            this.terminal.fileDiff(result.presentation);
-          } catch {
-            this.terminal.info("The file was updated successfully, but the diff preview could not be rendered.");
-          }
-        }
-      },
-      onSubagentLifecycleRollback: (update) => {
-        this.subagentCoordinator.rollbackLifecycle(update);
-      },
-      getOutstandingSubagents: () => this.subagentCoordinator.outstanding(this.state.threadId),
-      collectReadySubagents: (state, turnId, signal) =>
-        this.subagentHost.collectReadySubagentResults(state, turnId, signal),
-      requestApproval: async (request) => {
-        return this.requestToolApproval(request);
-      },
-      runReviewSession: async (input) =>
-        this.workspaceMutationLock.runExclusive(async () => {
-          // A background writer outlives its run_command lock; do not snapshot it.
-          if (this.hasRunningCommands())
-            return {
-              decision: "unavailable" as const,
-              requests: 0,
-              reused: true,
-              reason: "A supervised command is still running; observe its terminal result before review.",
-            };
-          const reviewUiId = this.terminal.startReview();
-          try {
-            return await runWorkspaceReview(input, {
-              workspace: this.workspace,
-              store: this.threadStore,
-              memory: this.memoryManager,
-              index: this.contextArtifactIndex,
-              provider,
-              budget,
-              limits: this.config.limits,
-              sensitivePaths: [
-                this.config.configDir,
-                this.config.dataDir,
-                this.config.cacheDir,
-                USER_MODEL_REGISTRY_PATH,
-                USER_MCP_CONFIG_PATH,
-              ],
-              dataDir: this.config.dataDir,
-              lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"),
-              offline: this.trustedOuterSandbox === "harbor",
-              status: (text) => this.terminal.status(text),
-              onProgress: (progress) => this.terminal.updateReview(reviewUiId, progress.phase),
-              approve: async (context, request) =>
-                this.approvalQueue.run(async () => {
-                  if (request.signal?.aborted || request.command?.scope === "host") return false;
-                  const saved = this.threadStore.recover(context.threadId);
-                  if (isCommandApprovalPrefixGranted(saved.commandApprovalPrefixes, request.commandPrefix)) return true;
-                  // Review permissions do not inherit main-thread Full access.
-                  const decision = await this.reviewApproval(request);
-                  this.threadStore.appendEvent(context.threadId, { type: "approval.reviewed", payload: decision });
-                  let vote = decision.decision;
-                  if (vote === "reject") {
-                    if (this.trustedOuterSandbox || request.allowPrompt === false || !process.stdin.isTTY) return false;
-                    vote = await this.terminal.approve({
-                      ...request,
-                      description: `${request.description}\nApproval reviewer: ${decision.reason}`,
-                    });
-                  }
-                  if (request.signal?.aborted) return false;
-                  if (vote === "allow_prefix" && canGrantCommandPrefix(request.commandPrefix))
-                    this.threadStore.recordCommandApprovalPrefixGrant(
-                      context.threadId,
-                      request.commandPrefix,
-                      context.turnId,
-                    );
-                  return vote !== "reject";
-                }),
-            });
-          } finally {
-            this.terminal.stopReview(reviewUiId);
-          }
-        }, input.signal),
-      onStatus: (status) => this.terminal.status(status),
-      onCompactionProgress: (progress) => {
-        this.autoCompacting = progress.mode === "automatic" && compactionRunning(progress);
-        this.terminal.compactionProgress?.(progress);
-      },
-      onModeSelected: (mode) => {
-        this.config.mode = mode;
-        this.syncTerminalView();
-      },
-      onModelRequestStart: (text) => this.terminal.startActivity(text, "model"),
-      onModelRequestEnd: (activityToken) => {
-        if (typeof activityToken === "string") {
-          this.terminal.stopActivity(activityToken);
-        }
-      },
-      onToolExecutionStart: (toolName, text) => this.terminal.startActivity(text, "tool", toolName),
-      onToolExecutionEnd: (_toolName, activityToken) => {
-        if (typeof activityToken === "string") {
-          this.terminal.stopActivity(activityToken);
-        }
-      },
-      onModelUsage: async (record) => {
-        this.threadStore.appendEvent(this.state.threadId, {
-          type: "model.usage",
-          phase: "completed",
-          payload: record,
-        });
-        this.dirty = true;
-      },
-      onProviderContext: (snapshot) => {
-        if (snapshot.threadId === this.state.threadId) {
-          this.lastProviderContext = snapshot;
-          this.syncTerminalView();
-        }
-      },
-      onModelStream: (event: Readonly<ProviderStreamEvent>) => {
-        try {
-          this.terminal.modelStream(event);
-        } catch {
-          // Streaming is transient UI only; the assembled response is still shown.
-        }
-      },
-      ...(presentReasoning
-        ? {
-            onReasoning: ({ text }: { text: string }) => {
-              try {
-                this.terminal.addReasoning(text);
-              } catch {
-                // Reasoning presentation is transient and must never interrupt
-                // a persisted model response or its pending tool calls.
-              }
-            },
-          }
-        : {}),
-      ...(visionCapable
-        ? {
-            attachImage: (input: { threadId: string; label: string; absolutePath: string; sourceName?: string }) =>
-              this.imageStore.importFile(
-                input.threadId,
-                input.label,
-                input.absolutePath,
-                input.sourceName,
-                this.workspace.root,
-              ),
-            discardImage: (threadId: string, attachment: ImageAttachment) =>
-              this.imageStore.remove(threadId, attachment),
-          }
-        : {}),
-    });
-  }
-
   private requireCurrentModelVision(): void {
     requireVisionModel(this.state.provider, this.state.model);
   }
@@ -3448,5 +3045,124 @@ export class EasyCodeApp {
 
   private restoreSubagents(): number {
     return this.subagentHost.restoreSubagents();
+  }
+
+  private runtimeAssemblyInstance?: RuntimeAssembly;
+  private get runtimeAssembly(): RuntimeAssembly {
+    return (this.runtimeAssemblyInstance ??= new RuntimeAssembly(this.runtimeAssemblyContext()));
+  }
+  private runtimeAssemblyContext(): RuntimeAssemblyContext {
+    const app = this;
+    return {
+      get approvalQueue() {
+        return app.approvalQueue;
+      },
+      authorizeCatalogToolCall: (...args) => app.authorizeCatalogToolCall(...args),
+      get autoCompacting() {
+        return app.autoCompacting;
+      },
+      set autoCompacting(value) {
+        app.autoCompacting = value;
+      },
+      get commandExecutionMode() {
+        return app.commandExecutionMode;
+      },
+      get compacting() {
+        return app.compacting;
+      },
+      get config() {
+        return app.config;
+      },
+      get contextArtifactIndex() {
+        return app.contextArtifactIndex;
+      },
+      get contextManager() {
+        return app.contextManager;
+      },
+      createCommandRuntime: (...args) => app.createCommandRuntime(...args),
+      get dirty() {
+        return app.dirty;
+      },
+      set dirty(value) {
+        app.dirty = value;
+      },
+      effectiveConfig: (...args) => app.effectiveConfig(...args),
+      hasRunningCommands: (...args) => app.hasRunningCommands(...args),
+      get imageStore() {
+        return app.imageStore;
+      },
+      get infoCommands() {
+        return app.infoCommands;
+      },
+      get lastProviderContext() {
+        return app.lastProviderContext;
+      },
+      set lastProviderContext(value) {
+        app.lastProviderContext = value;
+      },
+      get localLayaClient() {
+        return app.localLayaClient;
+      },
+      set localLayaClient(value) {
+        app.localLayaClient = value;
+      },
+      mainToolCatalogSnapshot: (...args) => app.mainToolCatalogSnapshot(...args),
+      get mcpConnections() {
+        return app.mcpConnections;
+      },
+      get memoryManager() {
+        return app.memoryManager;
+      },
+      newTaskBudget: (...args) => app.newTaskBudget(...args),
+      requestToolApproval: (...args) => app.requestToolApproval(...args),
+      reviewApproval: (...args) => app.reviewApproval(...args),
+      save: (...args) => app.save(...args),
+      sharedTaskBudget: (...args) => app.sharedTaskBudget(...args),
+      get state() {
+        return app.state;
+      },
+      get storage() {
+        return app.storage;
+      },
+      get subagentCoordinator() {
+        return app.subagentCoordinator;
+      },
+      get subagentHost() {
+        return app.subagentHost;
+      },
+      get subagentMessages() {
+        return app.subagentMessages;
+      },
+      syncTerminalView: (...args) => app.syncTerminalView(...args),
+      syncWorkspaceState: (...args) => app.syncWorkspaceState(...args),
+      get taskBudgets() {
+        return app.taskBudgets;
+      },
+      get terminal() {
+        return app.terminal;
+      },
+      get threadStore() {
+        return app.threadStore;
+      },
+      get threadTitles() {
+        return app.threadTitles;
+      },
+      get trustedOuterSandbox() {
+        return app.trustedOuterSandbox;
+      },
+      get workspace() {
+        return app.workspace;
+      },
+      get workspaceMutationLock() {
+        return app.workspaceMutationLock;
+      },
+    };
+  }
+
+  private createRuntime(
+    presentReasoning: boolean,
+    steeringNotifier?: TurnSteeringAttemptNotifier,
+  ): Promise<AgentRuntime> {
+    return this.runtimeAssembly.createRuntime(presentReasoning, steeringNotifier);
   }
 }
