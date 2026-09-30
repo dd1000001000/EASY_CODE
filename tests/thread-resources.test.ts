@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -88,6 +89,76 @@ describe("Thread resources", () => {
       await rm(root, { recursive: true, force: true });
       await rm(data, { recursive: true, force: true });
     }
+  });
+
+  it("preserves final empty lines in resource ranges and rejects dot-segment owners", async () => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "easy-code-resource-lines-"));
+    try {
+      const store = new ThreadResourceStore(data);
+      const input = {
+        threadId: "thread_resource_test",
+        filename: "lines.md",
+        kind: "document" as const,
+        mediaType: "text/markdown",
+        markdown: "line\n",
+        byteSize: 5,
+      };
+      for (const threadId of [".", ".."])
+        await assert.rejects(store.create({ ...input, threadId }), /Invalid conversation ID/u);
+      for (const markdown of ["", "line", "line\n", "line\n\n", "\n"]) {
+        const resource = await store.create({ ...input, markdown });
+        const expected = markdown.split("\n");
+        const full = await store.readLines(input.threadId, resource.uri, 1, 100);
+        assert.equal(full.record.totalLines, expected.length);
+        assert.deepEqual(full.lines, expected);
+        assert.deepEqual(
+          (await store.readLines(input.threadId, resource.uri, expected.length, expected.length)).lines,
+          [expected.at(-1)],
+        );
+        assert.deepEqual((await store.readLines(input.threadId, resource.uri, expected.length + 1, 100)).lines, []);
+        if (expected.length > 1)
+          assert.deepEqual(
+            (await store.readLines(input.threadId, resource.uri, 1, expected.length - 1)).lines,
+            expected.slice(0, -1),
+          );
+      }
+    } finally {
+      await rm(data, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an invalid resource kind before staging anything on disk", async () => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "easy-code-resource-kind-"));
+    try {
+      const store = new ThreadResourceStore(data);
+      await assert.rejects(
+        store.create({
+          threadId: "thread_resource_test",
+          filename: "notes.md",
+          kind: "note" as unknown as "document",
+          mediaType: "text/markdown",
+          markdown: "# Notes",
+          byteSize: 7,
+        }),
+        /Invalid Thread resource kind/u,
+      );
+      // readRecord() would reject this metadata forever, hiding the record from
+      // list() and blocking remove(); nothing may have been staged.
+      assert.deepEqual(await store.list("thread_resource_test"), []);
+      assert.equal(existsSync(path.join(data, "threads", "thread_resource_test")), false);
+    } finally {
+      await rm(data, { recursive: true, force: true });
+    }
+  });
+
+  it("handles out-of-range numeric HTML entities without losing search results", () => {
+    const results = parseSearchHtml(
+      '<a class="result__a" href="https://example.com">Docs &#1114112; &#x110000; &#x1F600;</a><div class="result__snippet">Preview &#999999999999999999999;</div>',
+      5,
+    );
+    assert.deepEqual(results, [
+      { title: "Docs \uFFFD \uFFFD \uD83D\uDE00", url: "https://example.com/", snippet: "Preview \uFFFD" },
+    ]);
   });
 
   it("extracts bounded search previews", () => {

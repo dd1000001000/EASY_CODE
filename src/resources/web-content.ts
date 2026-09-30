@@ -12,7 +12,7 @@ function decodeEntities(value: string): string {
         entity[1]?.toLowerCase() === "x" ? entity.slice(2) : entity.slice(1),
         entity[1]?.toLowerCase() === "x" ? 16 : 10,
       );
-      return Number.isSafeInteger(code) ? String.fromCodePoint(code) : "";
+      return Number.isSafeInteger(code) && code <= 0x10ffff ? String.fromCodePoint(code) : "\uFFFD";
     }
     return named[entity.toLowerCase()] ?? `&${entity};`;
   });

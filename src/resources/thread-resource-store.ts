@@ -14,7 +14,7 @@ const METADATA = "resource.json";
 const CONTENT = "content.md";
 
 function assertThreadId(value: string): void {
-  if (!THREAD_ID.test(value)) throw new Error("Invalid conversation ID.");
+  if (!THREAD_ID.test(value) || value === "." || value === "..") throw new Error("Invalid conversation ID.");
 }
 
 function assertResourceId(value: string): void {
@@ -131,6 +131,11 @@ export class ThreadResourceStore {
     original?: Buffer;
   }): Promise<ThreadResourceAttachment> {
     assertThreadId(input.threadId);
+    // readRecord() only resolves these two kinds, and remove() refuses to delete
+    // a record it cannot read; reject before staging so no orphan can be created.
+    if (input.kind !== "document" && input.kind !== "webpage") {
+      throw new Error("Invalid Thread resource kind.");
+    }
     if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 0 || input.byteSize > this.maxBytes) {
       throw new Error(`Resource exceeds the configured ${this.maxBytes}-byte limit.`);
     }
@@ -259,9 +264,10 @@ export class ThreadResourceStore {
       reader.close();
       stream.destroy();
     }
-    // An empty Markdown resource still has one logical (empty) line because
-    // totalLines is derived from splitting the normalized content on "\n".
-    if (line === 0 && target.record.totalLines === 1 && startLine === 1) lines.push("");
+    // readline omits the final empty line from both empty and newline-terminated
+    // content. Preserve the logical lines counted by split("\n") in metadata.
+    const finalLine = target.record.totalLines;
+    if (line === finalLine - 1 && startLine <= finalLine && endLine >= finalLine) lines.push("");
     return { record: target.record, lines };
   }
 
