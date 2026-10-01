@@ -152,4 +152,30 @@ describe("workspace snapshot", () => {
       );
     });
   });
+
+  it("does not attach one abort listener per concurrently hashed file", async () => {
+    await withWorkspace(async (root) => {
+      await Promise.all(
+        Array.from({ length: 40 }, (_, index) => writeFile(path.join(root, `file-${index}.txt`), `${index}`, "utf8")),
+      );
+      const { signal } = new AbortController();
+      const live = new Set<unknown>();
+      let peak = 0;
+      const add = signal.addEventListener.bind(signal);
+      const remove = signal.removeEventListener.bind(signal);
+      signal.addEventListener = (type: string, listener: unknown, options?: unknown) => {
+        if (type === "abort") peak = Math.max(peak, live.add(listener).size);
+        add(type, listener as EventListener, options as AddEventListenerOptions);
+      };
+      signal.removeEventListener = (type: string, listener: unknown, options?: unknown) => {
+        if (type === "abort") live.delete(listener);
+        remove(type, listener as EventListener, options as EventListenerOptions);
+      };
+
+      const snapshot = await captureWorkspaceSnapshot(new WorkspacePathGuard(root), { signal, ioConcurrency: 32 });
+
+      assert.equal(snapshot.files.size, 40);
+      assert.ok(peak <= 1, `snapshot attached ${peak} concurrent abort listeners`);
+    });
+  });
 });

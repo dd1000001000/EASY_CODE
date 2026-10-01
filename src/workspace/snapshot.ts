@@ -98,7 +98,11 @@ async function hashStableRegularFile(
     }
 
     const hash = createHash("sha256");
-    const stream = handle.createReadStream({ autoClose: false, signal });
+    // Cancellation is checked per chunk instead of passing the signal to the
+    // stream: every concurrent hash would otherwise attach its own abort
+    // listener to the caller's long-lived turn signal and trip Node's
+    // MaxListenersExceededWarning once more than 10 files are in flight.
+    const stream = handle.createReadStream({ autoClose: false });
     for await (const chunk of stream) {
       throwIfAborted(signal);
       hash.update(chunk as Buffer);
