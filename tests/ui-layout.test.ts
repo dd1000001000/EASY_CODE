@@ -98,4 +98,17 @@ describe("terminal UI layout", () => {
     assert.ok(styled[1]?.startsWith("\u001B[31m  "));
     assert.deepEqual(wrapToWidth("● abcdefgh", 6), ["● abcd", "efgh"]);
   });
+
+  it("word-wraps at spaces, keeps CJK breakable and carries only a word's own style", () => {
+    const words = { wordWrap: true, preserveAnsi: false } as const;
+    assert.deepEqual(wrapToWidth("hello wonderful world", 12, words), ["hello", "wonderful", "world"]);
+    assert.deepEqual(wrapToWidth("abcdefghij", 4, words), ["abcd", "efgh", "ij"]);
+    assert.deepEqual(wrapToWidth("见文件 config", 8, words), ["见文件", "config"]);
+    assert.deepEqual(wrapToWidth("● one two three", 9, { ...words, hangingIndent: true }), ["● one two", "  three"]);
+    const styled = wrapToWidth("plain \u001B[31mredword\u001B[39m", 10, { wordWrap: true });
+    assert.deepEqual(styled.map(stripAnsi), ["plain", "redword"]);
+    // The carried word keeps its colour; the row it left does not.
+    assert.equal(styled[0]?.includes("\u001B[31m"), false);
+    assert.ok(styled[1]?.startsWith("\u001B[31mredword"));
+  });
 });

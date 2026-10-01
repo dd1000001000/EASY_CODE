@@ -9,7 +9,7 @@ import type { ReasoningBlock } from "../../cli/reasoning.js";
 import { classifyStatus } from "../../cli/terminal-status.js";
 import { renderSubagents } from "../../cli/subagents.js";
 import { renderTaskGraph } from "../../cli/task-graph.js";
-import { formatAssistantText, formatToolTranscript, toolTarget } from "../../cli/transcript-format.js";
+import { formatToolTranscript, toolTarget } from "../../cli/transcript-format.js";
 import {
   formatCommandApprovalPrefix,
   canGrantCommandPrefix,
@@ -51,9 +51,12 @@ import type {
 import { applyEvent, createUIState } from "../store.js";
 import type { ComposerDraft } from "./composer.js";
 import { EditorHistory } from "./composer-editor.js";
-import type { InkActions } from "./ink-actions.js";
-import { SESSION_HEADER_ID_PREFIX, mountInkApp, type MountedInkApp } from "./ink-app.js";
+import type { InkActions, InkTerminalControl } from "./ink-actions.js";
+import { mountInkApp, type MountedInkApp } from "./ink-app.js";
 import { InputTranslator } from "./input-translator.js";
+import { SESSION_HEADER_ID_PREFIX, thinkingToggleHint, transcriptDocument } from "./entry-text.js";
+import { ThinkingViewer } from "./thinking-viewer.js";
+import { createVsCodeMenuBridge, type VsCodeMenuBridge } from "../../cli/vscode-menu-bridge.js";
 import { InkStore, type MenuModal } from "./ink-store.js";
 
 const CLEAR_DISPLAY = "\u001B[3J\u001B[2J\u001B[H";
@@ -61,7 +64,7 @@ const RESET_TERMINAL = "\u001Bc";
 const MAX_PROGRESS_ITEMS = 12;
 const INTERRUPT_REPEAT_MS = 1_500;
 const MAX_TYPE_AHEAD_CHARS = 4_096;
-const THINKING_HINT = "Ctrl+T shows the latest Thinking";
+const THINKING_HINT = thinkingToggleHint;
 /** Wait for a window drag to settle before reprinting the transcript at the new width. */
 const RESIZE_SETTLE_MS = 120;
 
@@ -91,6 +94,13 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   readonly history = new EditorHistory();
   private readonly drafts = new WeakMap<object, ComposerDraft>();
   private typeAhead = "";
+  private terminalControl: InkTerminalControl | undefined;
+  private readonly viewer: ThinkingViewer;
+  private viewerResume: (() => Promise<void>) | undefined;
+  private viewerOpening = false;
+  /** While the viewer owns the screen, nothing new may reach scrollback (Ink is suspended). */
+  private holdSettled = false;
+  private bridge: VsCodeMenuBridge | undefined;
 
   /** Classic Terminal for runs without an interactive TTY; created only when needed. */
   private legacyInstance: Terminal | undefined;
@@ -133,6 +143,11 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   ) {
     this.store = new InkStore(this.language);
     this.streams = new ModelStreamRenderer(this.streamHost());
+    this.viewer = new ThinkingViewer({
+      output,
+      document: (expanded, columns) => this.viewerDocument(expanded, columns),
+      onClosed: () => this.onViewerClosed(),
+    });
   }
 
   /**
@@ -186,7 +201,14 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     }
     if (!this.canUseInkShell()) return this.legacy.beginShell(session);
     this.store.dispatch({ type: "session.set", session });
+    // Start on a clean screen, like a full-screen app, while keeping native scrollback.
+    this.output.write(CLEAR_DISPLAY);
     this.app = this.mount();
+    // VS Code Ctrl+click on a Thinking title arrives over the extension's bridge.
+    this.bridge = createVsCodeMenuBridge();
+    this.bridge?.onDisclosureToggle((kind, id) => {
+      if (kind === "thinking") void this.toggleThinking(id);
+    });
     if (this.contextTokensProvider) this.setContextTokensProvider(this.contextTokensProvider);
     return true;
   }
@@ -252,6 +274,9 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     this.cancelPending();
     this.externalOperation?.abort();
     this.externalOperation = undefined;
+    this.viewer.close();
+    this.bridge?.close();
+    this.bridge = undefined;
     this.teardownApp();
     this.legacyInstance?.close();
   }
@@ -528,7 +553,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     // gets the same assistant formatting as a streamed one.
     const complete = this.safeStreamText(text).trim();
     if (!complete) return false;
-    this.commit({ kind: "assistant", text: formatAssistantText(complete, this.colorEnabled()) });
+    this.commit({ kind: "assistant", text: this.formatAnswer(complete) });
     return true;
   }
 
@@ -861,7 +886,16 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   }
 
   showLatestThinking(): void {
-    if (!this.showReasoning("last")) this.info("No Thinking content is available in this thread.");
+    const block = this.reasoning.get("last");
+    if (block) void this.toggleThinking(block.id);
+    else this.info("No Thinking content is available in this thread.");
+  }
+
+  attachTerminal(control: InkTerminalControl): () => void {
+    this.terminalControl = control;
+    return () => {
+      if (this.terminalControl === control) this.terminalControl = undefined;
+    };
   }
 
   submitPrompt(submission: UserSubmission): void {
@@ -926,6 +960,14 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     );
   }
 
+  /**
+   * Answers are stored as the model's Markdown and styled when displayed (see
+   * entryDisplay), so tables and wrapping follow the current terminal width.
+   */
+  private formatAnswer(text: string): string {
+    return text;
+  }
+
   private safeInline(value: string, maximum: number): string {
     const safe = redactSensitiveInformation(sanitizeCommandOutput(value))
       .replace(/[\r\n\t]+/gu, " ")
@@ -951,7 +993,12 @@ export class InkInteraction implements AppInteractionPort, InkActions {
 
   private applyTranscript(event: Parameters<typeof applyEvent>[1]): void {
     const ui = applyEvent(this.store.ui, event);
-    this.store.set({ ui, settled: this.settledCount(ui.transcript, this.store.getSnapshot().settled) });
+    this.store.set({ ui, settled: this.nextSettled(ui.transcript) });
+  }
+
+  private nextSettled(transcript: readonly Readonly<UITranscriptEntry>[]): number {
+    const current = this.store.getSnapshot().settled;
+    return this.holdSettled ? current : this.settledCount(transcript, current);
   }
 
   private settledCount(transcript: readonly Readonly<UITranscriptEntry>[], from: number): number {
@@ -967,7 +1014,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   private settleAllEntries(): void {
     if (this.openEntryIds.size === 0 && this.store.getSnapshot().settled >= this.store.ui.transcript.length) return;
     this.openEntryIds.clear();
-    this.store.set({ settled: this.store.ui.transcript.length });
+    if (!this.holdSettled) this.store.set({ settled: this.store.ui.transcript.length });
   }
 
   /** A finished stream can no longer replace its rows, except an answer still awaiting reconciliation. */
@@ -979,7 +1026,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
       }
     }
     this.streamToolCalls.delete(streamId);
-    this.store.set({ settled: this.settledCount(this.store.ui.transcript, this.store.getSnapshot().settled) });
+    this.store.set({ settled: this.nextSettled(this.store.ui.transcript) });
   }
 
   private commitStable(text: string, kind: "info" | "success" | "warning" | "error"): void {
@@ -1077,6 +1124,82 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     if (modal) this.cancelModal();
   }
 
+  /**
+   * Ctrl+click (VS Code) or Ctrl+T: show a Thinking block expanded. Scrollback
+   * cannot be rewritten in place, so Ink hands the terminal to the full-screen
+   * viewer, which keeps the marker on the row where it was clicked.
+   */
+  private async toggleThinking(id: number): Promise<void> {
+    if (this.viewer.isOpen) return this.viewer.toggle(id);
+    const control = this.terminalControl;
+    if (!this.app || !control || this.viewerOpening || this.closed || !this.reasoning.get(id)) return;
+    this.viewerOpening = true;
+    try {
+      // Laying out the document renders answers through Ink; leave the key handler's React batch first.
+      await new Promise((resolve) => setImmediate(resolve));
+      const anchor = this.markerScreenRow(id, control.liveRows());
+      this.holdSettled = true;
+      const suspension = await control.suspend();
+      this.viewerResume = () => suspension.resume();
+      if (this.inputProxy) this.input.unpipe(this.inputProxy);
+      this.input.setRawMode?.(true);
+      this.input.on("data", this.onViewerInput);
+      this.input.resume();
+      this.viewer.show(id, anchor);
+    } catch (error) {
+      this.failUi("thinking viewer", error);
+    } finally {
+      this.viewerOpening = false;
+    }
+  }
+
+  /** Where the marker sits on the primary screen, assuming the user has not scrolled back. */
+  private markerScreenRow(id: number, liveRows: number): number {
+    const { ui, settled } = this.store.getSnapshot();
+    const document = this.viewerDocument(new Set(), this.viewerColumns(), ui.transcript.slice(0, settled));
+    const marker = document.markers.get(id);
+    if (marker === undefined) return 0;
+    const rows = this.output.rows || 24;
+    const printed = document.lines.length;
+    return printed + liveRows >= rows ? rows - liveRows - (printed - marker) : marker;
+  }
+
+  private viewerColumns(): number {
+    return Math.max(12, (this.output.columns || 80) - 1);
+  }
+
+  private viewerDocument(
+    expanded: ReadonlySet<number>,
+    columns: number,
+    transcript = this.store.ui.transcript,
+  ): ReturnType<typeof transcriptDocument> {
+    const ui = { ...this.store.ui, transcript };
+    return transcriptDocument(
+      ui,
+      { columns, rows: this.output.rows || 24, color: this.colorEnabled(), language: this.language },
+      expanded,
+      (id) => this.reasoning.get(id)?.text,
+    );
+  }
+
+  private readonly onViewerInput = (chunk: Buffer | string): void => {
+    this.viewer.handleInput(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+  };
+
+  private onViewerClosed(): void {
+    this.input.removeListener("data", this.onViewerInput);
+    if (this.inputProxy) this.input.pipe(this.inputProxy);
+    this.holdSettled = false;
+    const resume = this.viewerResume;
+    this.viewerResume = undefined;
+    void (async () => {
+      await resume?.();
+      if (this.disposed) return;
+      this.store.set({ settled: this.settledCount(this.store.ui.transcript, this.store.getSnapshot().settled) });
+      if (this.app && this.output.columns !== this.printedColumns) this.remount(CLEAR_DISPLAY);
+    })();
+  }
+
   /** Restart the Ink tree on a freshly cleared terminal (clear, new thread). */
   private remount(sequence: string): void {
     this.store.set({ closing: true });
@@ -1095,6 +1218,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
     this.resizeTimer = setTimeout(() => {
       this.resizeTimer = undefined;
+      if (this.viewer.isOpen) return this.viewer.resize();
       if (!this.app || this.closed || this.output.columns === this.printedColumns) return;
       this.remount(CLEAR_DISPLAY);
     }, RESIZE_SETTLE_MS);
@@ -1159,6 +1283,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
         }
       },
       colorEnabled: () => this.colorEnabled(),
+      formatAnswer: (text) => this.formatAnswer(text),
       reasoningToggleHint: THINKING_HINT,
       safeInline: (value, maximum) => this.safeInline(value, maximum),
       safeStreamText: (value) => this.safeStreamText(value),

@@ -1,9 +1,19 @@
 import chalk from "chalk";
-import { Box, Static, Text, render, useInput, useWindowSize } from "ink";
+import {
+  Box,
+  Static,
+  Text,
+  render,
+  useApp,
+  useBoxMetrics,
+  useInput,
+  usePaste,
+  useWindowSize,
+  type DOMElement,
+} from "ink";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
 
 import type { UIState, UITranscriptEntry } from "../contracts.js";
-import { truncateToWidth, wrapToWidth } from "../render/layout.js";
 import {
   renderComposerStatusRegion,
   renderFixedBottomRegions,
@@ -12,7 +22,8 @@ import {
   type RenderViewOptions,
 } from "../render/view.js";
 import { Composer } from "./composer.js";
-import { clipTail, transcriptEntryText } from "./entry-text.js";
+import { entryDisplay } from "./entry-text.js";
+import { AnswerBlock } from "./markdown-view.js";
 import type { InkActions } from "./ink-actions.js";
 import type { InkSnapshot } from "./ink-store.js";
 import { MenuModalView, SECRET_MODAL_ROWS, SecretModalView, TextModalView, renderMenuModal } from "./modal.js";
@@ -27,9 +38,6 @@ const COMPOSER_FRAME_ROWS = 2;
 const TEXT_MODAL_CHROME_ROWS = 4;
 /** A second Ctrl+C within this window ends the session from an empty editor. */
 const EXIT_CONFIRM_MS = 2_000;
-const CONVERSATION_KINDS = new Set<UITranscriptEntry["kind"]>(["user", "assistant", "tool"]);
-/** Transcript ids of session headers, re-rendered for the current width whenever they are printed. */
-export const SESSION_HEADER_ID_PREFIX = "session_header_";
 
 export interface MountedInkApp {
   /** Erase the live region and unmount, so nothing of the editor lingers in scrollback. */
@@ -57,23 +65,17 @@ function useNow(active: boolean): number {
   return active ? now : Date.now();
 }
 
-/**
- * One transcript row wrapped to the current width, so the row count Ink prints
- * is exactly the count used for the live-region budget. Conversation rows keep
- * continuation lines indented under their gutter.
- */
-function entryDisplay(entry: Readonly<UITranscriptEntry>, ui: UIState, view: RenderViewOptions): string {
-  const width = view.columns ?? 80;
-  if (entry.id?.startsWith(SESSION_HEADER_ID_PREFIX)) return `\n${renderSessionHeader(ui, view)}\n`;
-  const text = transcriptEntryText(entry);
-  // Thinking previews are a teaser: cut them at the edge instead of wrapping mid-word.
-  if (entry.id?.startsWith("thinking_")) {
-    return text
-      .split("\n")
-      .map((line) => truncateToWidth(line, width, { preserveAnsi: true }))
-      .join("\n");
+/** One transcript entry: answers are a Markdown block laid out by Ink, everything else printed text. */
+function TranscriptRow(props: {
+  readonly entry: Readonly<UITranscriptEntry>;
+  readonly ui: UIState;
+  readonly view: RenderViewOptions;
+}): ReactElement {
+  const { entry, ui, view } = props;
+  if (entry.kind === "assistant") {
+    return <AnswerBlock text={entry.text} width={view.columns ?? 80} color={view.color ?? false} spaced />;
   }
-  return wrapToWidth(text, width, { preserveAnsi: true, hangingIndent: CONVERSATION_KINDS.has(entry.kind) }).join("\n");
+  return <Text>{entryDisplay(entry, ui, view)}</Text>;
 }
 
 /** Persistent rows below the composer, compacted when they would crowd out the conversation. */
@@ -86,6 +88,20 @@ function statusRegion(ui: UIState, view: RenderViewOptions, now: number, budget:
 
 function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
   const snapshot = useSyncExternalStore(actions.store.subscribe, actions.store.getSnapshot);
+  const { suspendTerminal } = useApp();
+  const liveRef = useRef<DOMElement | null>(null);
+  const liveMetrics = useBoxMetrics(liveRef);
+  const previewRef = useRef<DOMElement | null>(null);
+  const previewMetrics = useBoxMetrics(previewRef);
+  const previewContentRef = useRef<DOMElement | null>(null);
+  const previewContent = useBoxMetrics(previewContentRef);
+  const liveRows = useRef(0);
+  liveRows.current = liveMetrics.height;
+  // The Thinking viewer borrows the terminal and needs to know where the live region sits.
+  useEffect(
+    () => actions.attachTerminal({ suspend: () => suspendTerminal(), liveRows: () => liveRows.current }),
+    [actions, suspendTerminal],
+  );
   const { columns, rows } = useWindowSize();
   const width = Math.max(MIN_COLUMNS, columns - 1);
   const color = actions.colorEnabled();
@@ -102,6 +118,10 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
     else if (key.return) actions.bufferTypeAhead("\r");
     else if (key.backspace) actions.bufferTypeAhead("\b");
     else if (input && !key.ctrl && !key.meta && !key.escape && !key.tab) actions.bufferTypeAhead(input);
+  });
+  // A paste keeps its line breaks as text ("\n"); only a typed Enter ("\r") submits.
+  usePaste((text) => actions.bufferTypeAhead(text.replace(/\r\n?/gu, "\n")), {
+    isActive: !prompt && !steering && !modal,
   });
 
   const animated = Boolean(ui.live.activity || ui.live.review || ui.live.subagents.length > 0 || ui.live.tasks);
@@ -141,25 +161,43 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
   const previewRows = budget - reserved;
 
   const settled = ui.transcript.slice(0, snapshot.settled);
-  const preview = ui.transcript
-    .slice(snapshot.settled)
-    .map((entry) => entryDisplay(entry, ui, view))
-    .join("\n")
-    .replace(/^\n+/u, "");
+  const open = ui.transcript.slice(snapshot.settled);
+  // The streaming preview keeps its newest rows: taller content is clipped at the top by Ink.
+  const previewOverflows = previewMetrics.hasMeasured && open.length > 0 && previewContent.height > previewRows;
+  const previewHeight = previewMetrics.hasMeasured && open.length > 0 ? previewMetrics.height : 0;
+  // Rows above the composer card inside the live region; the terminal caret is placed relative to them.
+  const composerTop = previewHeight + (modal?.kind === "text" ? 1 : lineCount(activity));
 
   return (
     <>
       <Static key={snapshot.epoch} items={settled}>
         {(entry, index) => (
           <Box key={index} width={width}>
-            <Text>{entryDisplay(entry, ui, view)}</Text>
+            <TranscriptRow entry={entry} ui={ui} view={view} />
           </Box>
         )}
       </Static>
       {snapshot.closing ? null : (
-        <Box flexDirection="column" width={width}>
-          {preview && previewRows > 0 ? (
-            <Text>{clipTail(preview, previewRows, (hidden) => chalk.gray(`  … ${hidden} more rows above`))}</Text>
+        <Box ref={liveRef} flexDirection="column" width={width}>
+          {open.length > 0 && previewRows > 0 ? (
+            <Box ref={previewRef} flexDirection="column" width={width}>
+              {previewOverflows ? (
+                <Text>{chalk.gray("  … earlier rows are shown when the answer completes")}</Text>
+              ) : null}
+              <Box
+                flexDirection="column"
+                width={width}
+                maxHeight={Math.max(0, previewOverflows ? previewRows - 1 : previewRows)}
+                overflowY="hidden"
+                justifyContent="flex-end"
+              >
+                <Box ref={previewContentRef} flexDirection="column" flexShrink={0} width={width}>
+                  {open.map((entry, index) => (
+                    <TranscriptRow key={index} entry={entry} ui={ui} view={view} />
+                  ))}
+                </Box>
+              </Box>
+            </Box>
           ) : null}
           {modal?.kind === "menu" ? (
             <MenuModalView modal={modal} ui={ui} view={modalView} width={width} color={color} />
@@ -168,7 +206,15 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
             <SecretModalView modal={modal} ui={ui} view={view} width={width} color={color} />
           ) : null}
           {modal?.kind === "text" ? (
-            <TextModalView modal={modal} ui={ui} view={view} width={width} color={color} composerRows={composerRows} />
+            <TextModalView
+              modal={modal}
+              ui={ui}
+              view={view}
+              width={width}
+              color={color}
+              composerRows={composerRows}
+              composerTop={composerTop}
+            />
           ) : null}
           {modal ? null : (
             <>
@@ -180,6 +226,7 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
                   width={width}
                   color={color}
                   maxRows={composerRows}
+                  top={composerTop}
                 />
               ) : null}
               {status ? <Text>{status}</Text> : null}
@@ -197,8 +244,9 @@ function ComposerSlot(props: {
   readonly width: number;
   readonly color: boolean;
   readonly maxRows: number;
+  readonly top: number;
 }): ReactElement {
-  const { snapshot, actions, width, color, maxRows } = props;
+  const { snapshot, actions, width, color, maxRows, top } = props;
   const { prompt, busy, ui } = snapshot;
   const [exitArmed, setExitArmed] = useState(false);
   const exitTimer = useRef<NodeJS.Timeout | undefined>(undefined);
@@ -213,6 +261,7 @@ function ComposerSlot(props: {
         width={width}
         color={color}
         maxRows={maxRows}
+        top={top}
         placeholder={exitArmed ? "Press Ctrl+C again to exit" : "Type your request…"}
         history={actions.history}
         onShowThinking={() => actions.showLatestThinking()}
@@ -251,6 +300,7 @@ function ComposerSlot(props: {
       width={width}
       color={color}
       maxRows={maxRows}
+      top={top}
       placeholder={ui.composer.placeholder}
       disabled={!steerable || busy?.paused === true}
       history={actions.history}

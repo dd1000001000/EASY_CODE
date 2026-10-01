@@ -24,7 +24,7 @@ export interface ReasoningRenderOptions {
   readonly color?: boolean;
   readonly previewChars?: number;
   /** How the user can expand the block; defaults to the VS Code terminal link. */
-  readonly toggleHint?: string;
+  readonly toggleHint?: string | ((id: number) => string);
   /** Live transport metadata is kept separate from the bounded preview body. */
   readonly live?: Readonly<{
     readonly sourceChars: number;
@@ -199,7 +199,7 @@ export function renderReasoningMarker(block: ReasoningBlock, options: ReasoningR
       : "";
   return palette.gray(
     `▶ Thinking #${block.id} · ${formatCount(sourceChars)} chars${liveStatus} · ` +
-      `${options.toggleHint ?? "VS Code Ctrl/Cmd+click to toggle"}\n` +
+      `${typeof options.toggleHint === "function" ? options.toggleHint(block.id) : (options.toggleHint ?? "VS Code Ctrl/Cmd+click to toggle")}\n` +
       `  ${preview}${omitted ? "..." : ""}\n` +
       limitNotice,
   );

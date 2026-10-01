@@ -58,6 +58,8 @@ export interface ComposerProps {
   readonly onInterrupt: (draftEmpty: boolean) => "clear" | "handled";
   /** Ctrl+D on an empty draft. */
   readonly onEndOfInput?: () => void;
+  /** Row of the card's top border within Ink's live region, for placing the terminal caret. */
+  readonly top?: number;
   /** Called once on mount for keys typed before the editor existed. */
   readonly takeInitialInput?: () => string;
   /** Ctrl+T. */
@@ -170,21 +172,6 @@ export function Composer(props: ComposerProps): ReactElement {
     setEditor(EMPTY_EDITOR);
   }, [props, setEditor]);
 
-  // Keys typed before this editor opened: the text up to the first Enter is
-  // submitted at once; without an Enter it becomes the draft.
-  const takeInitialInput = props.takeInitialInput;
-  useEffect(() => {
-    const pending = takeInitialInput?.().replace(/\r\n?|\n/gu, "\r");
-    if (!pending) return;
-    const enter = pending.indexOf("\r");
-    if (enter === -1) {
-      setEditor(insertText(editorRef.current, pending));
-      return;
-    }
-    setEditor(insertText(editorRef.current, pending.slice(0, enter)));
-    submit();
-  }, [takeInitialInput, setEditor, submit]);
-
   const clearDraft = useCallback((): void => {
     const state = attachments.current;
     if (state.images.length > 0) props.onDiscardImages?.(state.images);
@@ -217,6 +204,20 @@ export function Composer(props: ComposerProps): ReactElement {
     },
     [setEditor],
   );
+
+  // Keys typed before this editor opened: the text up to the first Enter is
+  // submitted at once; without an Enter it becomes the draft.
+  const takeInitialInput = props.takeInitialInput;
+  useEffect(() => {
+    // "\r" is an Enter key; "\n" only occurs inside pasted text.
+    const pending = takeInitialInput?.();
+    if (!pending) return;
+    const enter = pending.indexOf("\r");
+    const draft = enter === -1 ? pending : pending.slice(0, enter);
+    if (draft.includes("\n")) insertPaste(draft);
+    else setEditor(insertText(editorRef.current, draft));
+    if (enter !== -1) submit();
+  }, [takeInitialInput, setEditor, submit, insertPaste]);
 
   const pasteFromClipboard = useCallback((): void => {
     const clipboard = props.clipboard;
@@ -377,15 +378,14 @@ export function Composer(props: ComposerProps): ReactElement {
   const first = showPlaceholder ? 0 : Math.max(0, Math.min(cursorRow - maxVisible + 1, lines.length - maxVisible));
   const visible = lines.slice(first, first + maxVisible);
 
-  // The terminal's own caret sits on the edit position so IME candidate windows follow it.
-  const hasMeasured = metrics.hasMeasured;
+  // The terminal's own caret sits on the edit position so IME composition and
+  // candidate windows follow it. Ink applies the position with the frame being
+  // rendered, so it must be set during render: from an effect it would trail the
+  // text by one frame (an IME commit of several characters left it behind).
+  const top = props.top ?? (metrics.hasMeasured ? metrics.top : undefined);
   const caretX = 2 + 2 + (showPlaceholder ? 0 : cursorColumn(editor.text, rows, editor.cursor));
-  const caretY = metrics.top + 1 + (showPlaceholder ? 0 : cursorRow - first);
-  useEffect(() => {
-    if (disabled || !hasMeasured) setCursorPosition(undefined);
-    else setCursorPosition({ x: Math.min(caretX, width - 3), y: caretY });
-    return () => setCursorPosition(undefined);
-  }, [caretX, caretY, disabled, hasMeasured, setCursorPosition, width]);
+  const caretY = (top ?? 0) + 1 + (showPlaceholder ? 0 : cursorRow - first);
+  setCursorPosition(disabled || top === undefined ? undefined : { x: Math.min(caretX, width - 3), y: caretY });
 
   return (
     <Box ref={boxRef} width={width} borderStyle="round" borderColor={color ? "cyan" : undefined} paddingX={1}>

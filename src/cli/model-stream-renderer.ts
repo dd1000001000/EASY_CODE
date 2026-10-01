@@ -20,8 +20,10 @@ export interface ModelStreamHost {
   /** Show streamed tool-argument progress as the label of the active activity. */
   showToolArgumentProgress(text: string): void;
   colorEnabled(): boolean;
+  /** Formats a complete or partial answer; defaults to the plain `● answer` transcript row. */
+  formatAnswer?(text: string): string;
   /** Overrides the Thinking marker hint for hosts without VS Code toggle links. */
-  readonly reasoningToggleHint?: string;
+  readonly reasoningToggleHint?: string | ((id: number) => string);
   safeInline(value: string, maximum: number): string;
   safeStreamText(value: string): string;
   commitTranscript(entry: Readonly<UITranscriptEntry>): void;
@@ -80,6 +82,10 @@ export class ModelStreamRenderer {
   }>;
 
   constructor(private readonly host: ModelStreamHost) {}
+
+  private formatAnswer(text: string): string {
+    return this.host.formatAnswer?.(text) ?? formatAssistantText(text, this.host.colorEnabled());
+  }
 
   configure(limits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number }): void {
     this.flushIntervalMs = limits.streamFlushIntervalMs;
@@ -168,7 +174,7 @@ export class ModelStreamRenderer {
     this.host.replaceTranscriptEntry(candidate.entryId, {
       kind: "assistant",
       id: candidate.entryId,
-      text: `\n${formatAssistantText(complete, this.host.colorEnabled())}\n\n`,
+      text: `\n${this.formatAnswer(complete)}\n\n`,
     });
     this.streams.delete(candidate.streamId);
     return true;
@@ -363,13 +369,13 @@ export class ModelStreamRenderer {
         this.host.commitTranscript({
           kind: "assistant",
           id: state.answerEntryId,
-          text: `\n${formatAssistantText(safe, this.host.colorEnabled())}`,
+          text: `\n${this.formatAnswer(safe)}`,
         });
       } else {
         this.host.replaceTranscriptEntry(state.answerEntryId, {
           kind: "assistant",
           id: state.answerEntryId,
-          text: `\n${formatAssistantText(safe, this.host.colorEnabled())}`,
+          text: `\n${this.formatAnswer(safe)}`,
         });
       }
       return;
@@ -472,7 +478,7 @@ export class ModelStreamRenderer {
       this.host.replaceTranscriptEntry(state.answerEntryId, {
         kind: "assistant",
         id: state.answerEntryId,
-        text: `\n${formatAssistantText(`${state.renderedAnswer ?? ""}\n${interrupted}`, this.host.colorEnabled())}\n`,
+        text: `\n${this.formatAnswer(`${state.renderedAnswer ?? ""}\n${interrupted}`)}\n`,
       });
     } else {
       this.host.commitTranscript({

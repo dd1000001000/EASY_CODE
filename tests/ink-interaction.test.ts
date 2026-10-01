@@ -81,6 +81,8 @@ interface Harness {
   readonly output: TtyOutput;
   /** Everything written so far, ANSI removed. */
   text(): string;
+  /** Everything written so far, as written. */
+  raw(): string;
   /** Type one chunk and let Ink process it. */
   type(chunk: string): Promise<void>;
 }
@@ -106,6 +108,7 @@ async function withInk(run: (harness: Harness) => Promise<void>): Promise<void> 
       input,
       output,
       text: () => stripAnsi(written),
+      raw: () => written,
       type: async (chunk) => {
         input.write(chunk);
         await wait();
@@ -298,12 +301,82 @@ describe("Ink interaction", () => {
     });
   });
 
-  it("shows an answer that was not streamed in assistant format", async () => {
-    await withInk(async ({ ink }) => {
-      assert.equal(ink.finalizeStreamedAnswer("Plain final answer."), true);
-      const last = ink.store.ui.transcript.at(-1);
-      assert.equal(last?.kind, "assistant");
-      assert.match(stripAnsi(last?.text ?? ""), /● Plain final answer\./u);
+  it("keeps keys and pastes typed before the prompt opens, submitting only on a typed Enter", async () => {
+    await withInk(async ({ ink, type }) => {
+      await wait();
+      await type("\u001B[200~first line\nsecond line\nthird line\u001B[201~");
+      await type(" tail");
+      const pending = ink.readPrompt("> ", { captureImage: async () => IMAGE });
+      await wait();
+      assert.notEqual(ink.store.getSnapshot().prompt, null, "a pasted line break is not Enter");
+      await type("\r");
+      assert.equal((await pending)?.text, "first line\nsecond line\nthird line tail");
+
+      await type("queued\r");
+      const next = await ink.readPrompt("> ", { captureImage: async () => IMAGE });
+      assert.equal(next?.text, "queued");
+    });
+  });
+
+  it("clears the screen and scrollback when the shell starts", async () => {
+    await withInk(async ({ raw }) => {
+      assert.ok(raw().startsWith("\u001B[3J\u001B[2J\u001B[H"));
+    });
+  });
+
+  it("links Thinking markers for VS Code and expands them in a full-screen viewer", async () => {
+    await withInk(async ({ ink, type, text, raw }) => {
+      ink.addReasoning("First, inspect the repository layout.\nThen answer the greeting.");
+      const marker = stripAnsi(ink.store.ui.transcript.at(-1)?.text ?? "");
+      // The extension only links a title whose id is repeated after `/thinking`.
+      assert.match(marker, /▶ Thinking #1 · [^\n]*? · \/thinking 1 /u);
+
+      const pending = ink.readPrompt("> ", { captureImage: async () => IMAGE });
+      await wait();
+      await type("draft");
+      await type("\u0014");
+      await wait(150);
+      assert.ok(raw().includes("\u001B[?1049h"), "the viewer uses the alternate screen");
+      assert.match(text(), /↕ Thinking #1 · Ctrl\/Cmd\+click to close · \/thinking 1/u);
+      assert.match(text(), /Then answer the greeting\./u);
+
+      // Output arriving while the viewer is open waits for it to close.
+      ink.info("finished while viewing");
+      assert.equal(ink.store.getSnapshot().settled, ink.store.ui.transcript.length - 1);
+
+      await type("\u001B");
+      await wait(150);
+      assert.ok(raw().includes("\u001B[?1049l"), "closing returns to the primary screen");
+      assert.equal(ink.store.getSnapshot().settled, ink.store.ui.transcript.length);
+      await type("\r");
+      assert.equal((await pending)?.text, "draft");
+    });
+  });
+
+  it("clips a streaming answer taller than the window to its newest rows", async () => {
+    await withInk(async ({ ink, text, raw }) => {
+      ink.configureStreaming({ streamFlushIntervalMs: 1, streamPreviewMaxChars: 40_000 });
+      const lines = Array.from({ length: 60 }, (_, index) => `- item ${index + 1}`).join("\n");
+      ink.modelStream({ kind: "started", streamId: "tall", sequence: 1 });
+      ink.modelStream({ kind: "text_delta", streamId: "tall", sequence: 2, text: `${lines}\n` });
+      await wait(200);
+      const startClears = raw().split("\u001B[2J").length - 1;
+      assert.match(text(), /item 60/u);
+      assert.match(text(), /earlier rows are shown when the answer completes/u);
+      ink.modelStream({ kind: "text_delta", streamId: "tall", sequence: 3, text: "- item 61\n" });
+      await wait(200);
+      // Staying shorter than the window means Ink never falls back to clearing the screen.
+      assert.equal(raw().split("\u001B[2J").length - 1, startClears);
+    });
+  });
+
+  it("shows an answer that was not streamed as a styled Markdown assistant row", async () => {
+    await withInk(async ({ ink, text }) => {
+      assert.equal(ink.finalizeStreamedAnswer("## Plain final answer\n| a | b |\n|---|---|\n| 1 | 2 |"), true);
+      assert.equal(ink.store.ui.transcript.at(-1)?.kind, "assistant");
+      await wait(120);
+      assert.match(text(), /● Plain final answer/u);
+      assert.match(text(), /a {2}b\n {2}─+\n {2}1 {2}2/u);
     });
   });
 

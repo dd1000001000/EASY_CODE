@@ -22,6 +22,8 @@ interface ModalProps {
   readonly color: boolean;
   /** Draft rows available to an editing dialog. */
   readonly composerRows?: number;
+  /** Live-region row of the composer card, for the terminal caret. */
+  readonly composerTop?: number;
 }
 
 function firstEnabled(modal: MenuModal, from: number, step: 1 | -1): number {
@@ -123,6 +125,7 @@ export function TextModalView({
   width,
   color,
   composerRows,
+  composerTop,
 }: ModalProps & { readonly modal: TextModal }): ReactElement {
   return (
     <Box width={width} flexDirection="column">
@@ -132,6 +135,7 @@ export function TextModalView({
         color={color}
         placeholder="Describe how the plan should change…"
         {...(composerRows === undefined ? {} : { maxRows: composerRows })}
+        {...(composerTop === undefined ? {} : { top: composerTop })}
         onSubmit={(submission) => {
           modal.resolve(submission.text);
           return true;

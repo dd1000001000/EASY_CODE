@@ -62,14 +62,22 @@ export interface WrapToWidthOptions {
   readonly preserveAnsi?: boolean;
   /**
    * Indent soft-wrapped continuation rows to the end of the line's gutter:
-   * its leading spaces plus one transcript marker (`●`, `⎿`, `›`) and the
+   * its leading spaces plus one transcript marker (`●`, `⎿`, `›`, `•`, `│`) and the
    * spaces after it. Hard newlines start a new gutter.
    */
   readonly hangingIndent?: boolean;
+  /**
+   * Break rows at spaces (and around wide CJK glyphs) instead of mid-word.
+   * A word longer than the row still breaks by cell.
+   */
+  readonly wordWrap?: boolean;
 }
 
+/** CJK closing punctuation never starts a word-wrapped row. */
+const NO_LINE_START = /^[，。、；：？！）」』》〉】〕…—,.;:!?)\]}]$/u;
+
 /** Transcript gutter markers that continuation rows align after. */
-const HANGING_INDENT_MARKERS = new Set(["●", "⎿", "›"]);
+const HANGING_INDENT_MARKERS = new Set(["●", "⎿", "›", "•", "│"]);
 
 /** Return true when a string contains an ANSI/C1 terminal sequence. */
 export function hasAnsi(value: string): boolean {
@@ -248,9 +256,34 @@ export function wrapToWidth(value: string, columns: number, options: WrapToWidth
   let leading = hanging;
   let markerSeen = false;
 
+  // Word wrap: the latest position in `current` where a row may end without
+  // splitting a word (after a space, or around a wide CJK glyph), and the SGR
+  // state at that point so a carried word keeps exactly its own styling.
+  const wordWrap = options.wordWrap ?? false;
+  let breakIndex = -1;
+  let breakSgr: SgrToken[] = [];
+  // The opportunity before the latest one: when closing punctuation overflows
+  // right after a CJK glyph, that glyph moves down with it.
+  let priorBreakIndex = -1;
+  let priorBreakSgr: SgrToken[] = [];
+  const markBreak = (): void => {
+    if (!wordWrap || leading) return;
+    if (breakIndex !== current.length) {
+      priorBreakIndex = breakIndex;
+      priorBreakSgr = breakSgr;
+    }
+    breakIndex = current.length;
+    breakSgr = activeSgr;
+  };
+  const resetBreaks = (): void => {
+    breakIndex = -1;
+    priorBreakIndex = -1;
+  };
+
   const softWrap = (): void => {
     pushLine();
     leading = false;
+    resetBreaks();
     // A gutter wider than half the row would leave too little room for text.
     if (gutter > 0 && gutter * 2 <= limit) {
       current.push({ kind: "text", value: " ".repeat(gutter), width: gutter });
@@ -258,23 +291,45 @@ export function wrapToWidth(value: string, columns: number, options: WrapToWidth
     }
   };
 
-  for (const token of tokens) {
+  /** Move the unfinished word after the last break opportunity to a new row. */
+  const wrapAtWord = (): boolean => {
+    const atEnd = breakIndex === current.length;
+    const index = atEnd ? priorBreakIndex : breakIndex;
+    const sgr = atEnd ? priorBreakSgr : breakSgr;
+    const carry = current.slice(index);
+    const carriedText = carry.filter((token): token is TextToken => token.kind === "text");
+    if (index <= 0 || carriedText.length === 0) return false;
+    current = current.slice(0, index);
+    // Spaces at the break belong to neither row.
+    while (current.length > 0) {
+      const last = current[current.length - 1]!;
+      if (last.kind !== "text" || last.value !== " ") break;
+      current.pop();
+    }
+    activeSgr = sgr;
+    softWrap();
+    for (const token of carry) place(token);
+    return true;
+  };
+
+  const place = (token: LayoutToken): void => {
     if (token.kind === "sgr") {
       current.push(token);
       lineHasSgr = true;
       activeSgr = isPureSgrReset(token.value) ? [] : [...activeSgr, token];
-      continue;
+      return;
     }
     if (token.value === "\n") {
       pushLine();
       gutter = 0;
       leading = hanging;
       markerSeen = false;
-      continue;
+      resetBreaks();
+      return;
     }
     if (token.width === 0) {
       current.push(token);
-      continue;
+      return;
     }
     if (token.width > limit) {
       // A two-cell glyph cannot be displayed in a one-column terminal.  A
@@ -282,7 +337,7 @@ export function wrapToWidth(value: string, columns: number, options: WrapToWidth
       if (currentWidth === limit) softWrap();
       current.push({ kind: "text", value: "…", width: 1 });
       currentWidth += 1;
-      continue;
+      return;
     }
     if (leading) {
       if (token.value === " ") {
@@ -294,10 +349,24 @@ export function wrapToWidth(value: string, columns: number, options: WrapToWidth
         leading = false;
       }
     }
-    if (currentWidth > 0 && currentWidth + token.width > limit) softWrap();
+    if (currentWidth > 0 && currentWidth + token.width > limit) {
+      // A space that does not fit is simply the break; it starts no row.
+      if (wordWrap && !leading && token.value === " ") {
+        softWrap();
+        return;
+      }
+      const keepsWord = token.width === 1 || NO_LINE_START.test(token.value);
+      if (!(wordWrap && keepsWord && wrapAtWord())) softWrap();
+      else if (currentWidth + token.width > limit) softWrap();
+    }
+    const wide = token.width > 1 && !NO_LINE_START.test(token.value);
+    if (wide) markBreak();
     current.push(token);
     currentWidth += token.width;
-  }
+    if (token.value === " " || wide) markBreak();
+  };
+
+  for (const token of tokens) place(token);
 
   pushLine();
   return lines;
