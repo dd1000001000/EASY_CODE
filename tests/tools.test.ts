@@ -165,7 +165,7 @@ describe("workspace file tools", () => {
       assert.equal(first, second);
       assert.equal(first.filter((tool) => tool.name === "submit_task_result").length, 1);
       assert.equal(
-        first.some((tool) => tool.name === "manage_subagents"),
+        first.some((tool) => tool.name === "spawn_subagent"),
         false,
       );
     });
@@ -191,12 +191,11 @@ describe("workspace file tools", () => {
         },
       });
       const tools = await source.listTools();
-      const manage = tools.find((tool) => tool.name === "manage_subagents");
+      const message = tools.find((tool) => tool.name === "message_subagent");
       const send = tools.find((tool) => tool.name === "send_parent_message");
-      assert.ok(manage?.inputSchema);
+      assert.ok(message?.inputSchema);
       assert.ok(send?.inputSchema);
-      const followUp = manage.inputSchema.parse({
-        action: "follow_up",
+      const followUp = message.inputSchema.parse({
         agentId: "subagent_00000000-0000-4000-8000-000000000001",
         message: "f".repeat(3000),
       }) as { message: string };

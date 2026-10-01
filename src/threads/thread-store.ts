@@ -34,6 +34,7 @@ import { workspaceIdFromRoot } from "../storage/database.js";
 import { createId } from "../utils/ids.js";
 import { aggregateModelUsage, parseModelUsageRecord, type ModelUsageSummary } from "../usage/model-usage.js";
 import { cloneTaskGraph } from "../tasks/task-graph.js";
+import { isSubagentToolName } from "../subagents/tool-names.js";
 import { EventJournal, type AppendEventInput } from "./event-journal.js";
 import { deserializeSessionState, isChatMessage, serializeSessionState } from "./serialization.js";
 import { CURRENT_PROTOCOL } from "../protocol/versions.js";
@@ -1106,7 +1107,7 @@ export class ThreadStore {
         continue;
       const payload = asPayloadRecord(event.payload);
       const lifecycle = asPayloadRecord(payload?.subagentLifecycle);
-      if (payload?.tool !== "manage_subagents" || !lifecycle) continue;
+      if (!isSubagentToolName(payload?.tool) || !lifecycle) continue;
       if (lifecycle.action === "activate") {
         const assignment = subagentAssignment(payload.subagentAssignment);
         if (!assignment || assignment.agentId !== lifecycle.agentId || !event.turnId) {
@@ -1166,7 +1167,7 @@ export class ThreadStore {
         const payload = asPayloadRecord(event.payload);
         const lifecycle = asPayloadRecord(payload?.subagentLifecycle);
         return (
-          payload?.tool === "manage_subagents" && lifecycle?.action === "request_stop" && lifecycle.agentId === agentId
+          payload?.tool === "stop_subagent" && lifecycle?.action === "request_stop" && lifecycle.agentId === agentId
         );
       });
   }

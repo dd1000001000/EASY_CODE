@@ -18,6 +18,7 @@ import {
   type SessionState,
 } from "../core/types.js";
 import { foldReviewEvent } from "../review/session.js";
+import { isSubagentTaskGraphSource } from "../subagents/tool-names.js";
 import {
   subagentTaskOperationSchema,
   taskGraphOperationSchema,
@@ -330,7 +331,7 @@ export function recoverFromEvents(threadId: string, events: readonly EventRecord
     } else if (event.type === "subagent.collected" && payload) {
       if (
         event.phase !== "completed" ||
-        payload.tool !== "manage_subagents" ||
+        payload.tool !== "observe_subagents" ||
         !isChatMessage(payload.message) ||
         payload.message.role !== "user"
       ) {
@@ -650,7 +651,7 @@ export function replayTaskGraphResult(
     !event.turnId ||
     ((event.type === "tool.result" || event.type === "subagent.collected") &&
       payload.tool !== "manage_tasks" &&
-      payload.tool !== "manage_subagents")
+      !isSubagentTaskGraphSource(payload.tool))
   ) {
     throw new Error(`Invalid task DAG source in tool.result event ${event.eventId}`);
   }
@@ -663,7 +664,7 @@ export function replayTaskGraphResult(
       return validateTaskGraphTransition(state.taskGraph, parsed.data, payload.taskGraph, event.turnId);
     }
     if (
-      (payload.tool === "manage_subagents" || event.type === "subagent.reconciled") &&
+      (isSubagentTaskGraphSource(payload.tool) || event.type === "subagent.reconciled") &&
       "subagentTaskOperation" in payload
     ) {
       const parsed = subagentTaskOperationSchema.parse(payload.subagentTaskOperation);

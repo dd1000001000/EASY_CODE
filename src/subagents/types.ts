@@ -23,7 +23,6 @@ export const MAX_SUBAGENT_SUMMARY_CHARS = DEFAULT_RUNTIME_LIMITS.subagentSummary
 export const MAX_SUBAGENT_EVIDENCE_CHARS = 1_000;
 export const MAX_SUBAGENT_AGENT_IDS_PER_CALL = 8;
 export const MAX_SUBAGENT_WAIT_MS = 60_000;
-export const DEFAULT_SUBAGENT_WAIT_MS = 30_000;
 
 const UNSAFE_SUBAGENT_TEXT =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/gu;
@@ -58,30 +57,15 @@ export interface StandaloneSubagentTask {
   completionChecks: string[];
 }
 
-export type SpawnSubagentRequest =
-  | {
-      action: "spawn";
-      /** User-facing display name; unique per parent Thread and never used for addressing. */
-      name: string;
-      taskId: string;
-      task?: never;
-      instructions: string;
-      isolation?: SubagentIsolationMode;
-      thinkingEffort?: ThinkingEffort;
-    }
-  | {
-      action: "spawn";
-      name: string;
-      taskId?: never;
-      task: StandaloneSubagentTask;
-      instructions: string;
-      isolation?: SubagentIsolationMode;
-      thinkingEffort?: ThinkingEffort;
-    };
-
-export interface SubagentStatusRequest {
-  action: "status";
-  agentIds?: string[];
+/** Exactly one of `taskId` (a dependency-ready DAG task) or `task` (a standalone assignment) is present. */
+export interface SpawnSubagentRequest {
+  /** User-facing display name; unique per parent Thread and never used for addressing. */
+  name: string;
+  taskId?: string;
+  task?: StandaloneSubagentTask;
+  instructions: string;
+  isolation?: SubagentIsolationMode;
+  thinkingEffort?: ThinkingEffort;
 }
 
 /** A bounded child report addressed to its Runtime-bound parent, not a new task instruction. */
@@ -94,38 +78,27 @@ export interface SubagentParentMessage {
   createdAt: string;
 }
 
-export interface WaitForSubagentsRequest {
-  action: "wait";
-  agentIds: string[];
+/** Omitted agentIds select every child of the parent; a zero timeout returns an immediate snapshot. */
+export interface ObserveSubagentsRequest {
+  agentIds?: string[];
   timeoutMs: number;
 }
 
 export interface FollowUpSubagentRequest {
-  action: "follow_up";
   agentId: string;
   message: string;
 }
 
 export interface StopSubagentRequest {
-  action: "stop";
   agentId: string;
   reason: string;
 }
 
 export interface HandoffSubagentRequest {
-  action: "handoff";
   agentId: string;
   destination: "local" | "branch";
   branchName?: string;
 }
-
-export type ManageSubagentsInput =
-  | SpawnSubagentRequest
-  | SubagentStatusRequest
-  | WaitForSubagentsRequest
-  | FollowUpSubagentRequest
-  | StopSubagentRequest
-  | HandoffSubagentRequest;
 
 export interface SubagentRecord {
   id: string;
@@ -204,15 +177,14 @@ export interface SubagentView {
 }
 
 /**
- * Runtime-owned control plane injected into the model-facing tool. Implementations
+ * Runtime-owned control plane injected into the model-facing subagent tools. Implementations
  * remain responsible for main-agent authorization, task binding, dynamic
  * concurrency, persistence, and lifecycle transitions.
  */
 export interface SubagentControl {
   assertAuthorized(context: ToolContext): void | Promise<void>;
   spawn(request: SpawnSubagentRequest, context: ToolContext): Promise<ToolExecutionResult>;
-  status(request: SubagentStatusRequest, context: ToolContext): Promise<ToolExecutionResult>;
-  wait(request: WaitForSubagentsRequest, context: ToolContext): Promise<ToolExecutionResult>;
+  observe(request: ObserveSubagentsRequest, context: ToolContext): Promise<ToolExecutionResult>;
   followUp(request: FollowUpSubagentRequest, context: ToolContext): Promise<ToolExecutionResult>;
   stop(request: StopSubagentRequest, context: ToolContext): Promise<ToolExecutionResult>;
   handoff(request: HandoffSubagentRequest, context: ToolContext): Promise<ToolExecutionResult>;

@@ -29,7 +29,7 @@ export function reconciliationGate(
   const args = input as Record<string, unknown> | undefined;
   if (
     (tool === "poll_command" && state.pressureRecovery!.reconciliation!.commands.includes(String(args?.commandId))) ||
-    (tool === "manage_subagents" && ["status", "wait"].includes(String(args?.action))) ||
+    tool === "observe_subagents" ||
     ["read_file", "read_document", "search_files", "read_image", "recall_context", "search_context"].includes(tool)
   )
     return;
@@ -68,7 +68,7 @@ export function reconciliationObservation(
     ["running", "exited", "timed_out", "canceled", "spawn_failed"].includes(data.status ?? "")
   )
     return { command: data.commandId };
-  if (result.ok && tool === "manage_subagents" && Array.isArray(data?.agents))
+  if (result.ok && tool === "observe_subagents" && Array.isArray(data?.agents))
     return {
       children: data.agents.flatMap((a) =>
         typeof (a.agentId ?? a.id) === "string" ? [String(a.agentId ?? a.id)] : [],
@@ -82,7 +82,7 @@ export function foldReconciliation(state: SessionState, tool: string, value: unk
   const p = observationSchema.parse(value),
     r = state.pressureRecovery?.reconciliation;
   if (!r) throw new Error("Unbound context reconciliation");
-  if ((p.command && tool !== "poll_command") || (p.children && tool !== "manage_subagents"))
+  if ((p.command && tool !== "poll_command") || (p.children && tool !== "observe_subagents"))
     throw new Error("Invalid reconciliation source");
   if (p.command) r.commands = r.commands.filter((id) => id !== p.command);
   if (p.children) r.children = r.children.filter((id) => !p.children!.includes(id));

@@ -1,0 +1,11 @@
+{
+  "id": "handoff_subagent",
+  "contractVersion": "1.0.0",
+  "description": "Deliver a collected, completed child result artifact either by applying it to the local workspace or by preserving it on a new Git branch. A DAG result can be handed off only after the whole task graph completes.",
+  "propertyDescriptions": {
+    "agentId": "The child-agent identifier whose completed result should be handed off.",
+    "destination": "Apply the verified result locally or preserve it on a new branch.",
+    "branchName": "For a branch handoff, an optional explicit branch name."
+  },
+  "guidance": "Hand off only a completed child's result artifact; a conflicted handoff requires resolution before the result is delivered."
+}

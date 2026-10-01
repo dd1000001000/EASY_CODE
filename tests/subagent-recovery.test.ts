@@ -63,11 +63,11 @@ function appendStandaloneLifecycle(
     phase: "completed",
     payload: {
       callId: `call_${action}_${assignment.agentId}`,
-      tool: "manage_subagents",
+      tool: action === "activate" ? "spawn_subagent" : "observe_subagents",
       message: {
         role: "tool",
         tool_call_id: `call_${action}_${assignment.agentId}`,
-        name: "manage_subagents",
+        name: action === "activate" ? "spawn_subagent" : "observe_subagents",
         content: '{"ok":true}',
       },
       subagentAssignment: assignment,
@@ -581,11 +581,11 @@ describe("subagent task journal recovery", () => {
         phase: "completed",
         payload: {
           callId: "call_claim_dag_binding_scan",
-          tool: "manage_subagents",
+          tool: "spawn_subagent",
           message: {
             role: "tool",
             tool_call_id: "call_claim_dag_binding_scan",
-            name: "manage_subagents",
+            name: "spawn_subagent",
             content: '{"ok":true}',
           },
           taskGraph: claimed,
@@ -726,9 +726,8 @@ describe("subagent task journal recovery", () => {
         finishedAt: durable?.timestamp ?? assignment.createdAt,
       });
 
-      const waited = await coordinator.wait(
+      const waited = await coordinator.observe(
         {
-          action: "wait",
           agentIds: [assignment.agentId],
           timeoutMs: 0,
         },
@@ -752,15 +751,15 @@ describe("subagent task journal recovery", () => {
       assert.equal(coordinator.hasOutstanding(state.threadId), false);
       assert.deepEqual(threads.unobservedStandaloneAssignments(state.threadId), []);
 
-      const observedAgain = await coordinator.wait(
+      const observedAgain = await coordinator.observe(
         {
-          action: "wait",
           agentIds: [assignment.agentId],
           timeoutMs: 0,
         },
         standaloneContext(recoveredState, "turn_collect_standalone_again"),
       );
-      assert.equal((observedAgain.data as { timedOut?: boolean }).timedOut, true);
+      assert.equal((observedAgain.data as { timedOut?: boolean }).timedOut, false);
+      assert.match(observedAgain.summary, /no unobserved result is pending/u);
       assert.equal(observedAgain.subagentLifecycle, undefined);
       assert.equal(
         threads.recover(state.threadId).changes.filter((change) => change.path === "src/standalone-result.ts").length,
@@ -802,8 +801,8 @@ describe("subagent task journal recovery", () => {
         },
       });
       assert.equal(restoreStandaloneViaApp(threads, state, coordinator), 1);
-      await coordinator.wait(
-        { action: "wait", agentIds: [assignment.agentId], timeoutMs: 1_000 },
+      await coordinator.observe(
+        { agentIds: [assignment.agentId], timeoutMs: 1_000 },
         standaloneContext(state, "turn_wait_resumed_standalone"),
       );
       const durable = threads.latestSubagentResult(state.threadId, assignment.agentId, assignment.taskId);
@@ -898,11 +897,11 @@ describe("subagent task journal recovery", () => {
         phase: "completed",
         payload: {
           callId: "call_claim_recovery",
-          tool: "manage_subagents",
+          tool: "spawn_subagent",
           message: {
             role: "tool",
             tool_call_id: "call_claim_recovery",
-            name: "manage_subagents",
+            name: "spawn_subagent",
             content: '{"ok":true}',
           },
           taskGraph: claimed,
@@ -925,11 +924,11 @@ describe("subagent task journal recovery", () => {
         phase: "completed",
         payload: {
           callId: "call_claim_verification",
-          tool: "manage_subagents",
+          tool: "spawn_subagent",
           message: {
             role: "tool",
             tool_call_id: "call_claim_verification",
-            name: "manage_subagents",
+            name: "spawn_subagent",
             content: '{"ok":true}',
           },
           taskGraph: bothClaimed,
@@ -1104,11 +1103,11 @@ describe("subagent task journal recovery", () => {
         phase: "completed",
         payload: {
           callId: "call_claim_stop_race",
-          tool: "manage_subagents",
+          tool: "spawn_subagent",
           message: {
             role: "tool",
             tool_call_id: "call_claim_stop_race",
-            name: "manage_subagents",
+            name: "spawn_subagent",
             content: '{"ok":true}',
           },
           taskGraph: claimed,
@@ -1123,11 +1122,11 @@ describe("subagent task journal recovery", () => {
         phase: "completed",
         payload: {
           callId: "call_stop_race",
-          tool: "manage_subagents",
+          tool: "stop_subagent",
           message: {
             role: "tool",
             tool_call_id: "call_stop_race",
-            name: "manage_subagents",
+            name: "stop_subagent",
             content: '{"ok":true}',
           },
           subagentLifecycle: {

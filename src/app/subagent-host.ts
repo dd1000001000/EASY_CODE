@@ -868,14 +868,7 @@ export class SubagentHost {
           limits: this.ctx.config.limits,
           taskGraph: state.taskGraph,
         };
-        const result = await this.ctx.subagentCoordinator.wait(
-          {
-            action: "wait",
-            agentIds: [candidate.id],
-            timeoutMs: 0,
-          },
-          context,
-        );
+        const result = await this.ctx.subagentCoordinator.observe({ agentIds: [candidate.id], timeoutMs: 0 }, context);
         if (!result.ok || !result.subagentLifecycle || !result.subagentAssignment) break;
         const data =
           result.data && typeof result.data === "object"
@@ -894,7 +887,7 @@ export class SubagentHost {
             }),
         };
         const payload = {
-          tool: "manage_subagents",
+          tool: "observe_subagents",
           subagentLifecycle: result.subagentLifecycle,
           subagentAssignment: result.subagentAssignment,
           ...(result.taskGraphUpdate ? { taskGraph: result.taskGraphUpdate } : {}),

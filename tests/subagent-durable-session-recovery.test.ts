@@ -68,11 +68,11 @@ function appendLifecycle(
     phase: "completed",
     payload: {
       callId: `call_${action}_${assignment.agentId}`,
-      tool: "manage_subagents",
+      tool: action === "activate" ? "spawn_subagent" : "observe_subagents",
       message: {
         role: "tool",
         tool_call_id: `call_${action}_${assignment.agentId}`,
-        name: "manage_subagents",
+        name: action === "activate" ? "spawn_subagent" : "observe_subagents",
         content: '{"ok":true}',
       },
       subagentAssignment: assignment,
@@ -163,8 +163,8 @@ describe("durable child session recovery", () => {
       model: "deepseek-v4-flash",
       thinkingEffort: "high",
     } as SessionState;
-    await coordinator.wait(
-      { action: "wait", agentIds: [first.agentId, second.agentId], timeoutMs: 1_000 },
+    await coordinator.observe(
+      { agentIds: [first.agentId, second.agentId], timeoutMs: 1_000 },
       context(state, "turn_wait_deferred_restore"),
     );
     assert.equal(childRuns, 2);
@@ -367,8 +367,8 @@ describe("durable child session recovery", () => {
       model: "deepseek-v4-flash",
       thinkingEffort: "high",
     } as SessionState;
-    const waited = await coordinator.wait(
-      { action: "wait", agentIds: [assignment.agentId], timeoutMs: 1_000 },
+    const waited = await coordinator.observe(
+      { agentIds: [assignment.agentId], timeoutMs: 1_000 },
       { ...context(state, "turn_observe_durable_resume"), mode: "plan", selectedMode: "plan" },
     );
 
@@ -429,8 +429,8 @@ describe("durable child session recovery", () => {
       model: "deepseek-v4-flash",
       thinkingEffort: "high",
     } as SessionState;
-    const waited = await coordinator.wait(
-      { action: "wait", agentIds: [assignment.agentId], timeoutMs: 0 },
+    const waited = await coordinator.observe(
+      { agentIds: [assignment.agentId], timeoutMs: 0 },
       context(state, "turn_observe_terminal_restore"),
     );
 

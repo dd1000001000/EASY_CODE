@@ -39,6 +39,7 @@ import { TurnSteeringAttemptNotifier } from "../runtime/turn-steering-notifier.j
 import { workspaceIdFromRoot, type EasyCodeStorage } from "../storage/database.js";
 import { SubagentCoordinator, type ObservedSubagentArtifacts } from "../subagents/coordinator.js";
 import { SubagentMessageMailbox } from "../subagents/messages.js";
+import { isSubagentTaskGraphSource, isSubagentToolName } from "../subagents/tool-names.js";
 import { WorkspaceMutationLock } from "../subagents/workspace-mutation-lock.js";
 import { type ToolCatalogSnapshot } from "../tools/catalog.js";
 import type { ToolExecutionAuthorizationRequest } from "../tools/execution-gateway.js";
@@ -373,7 +374,7 @@ export class RuntimeAssembly {
     if (mergedSubagentArtifacts) {
       this.ctx.subagentCoordinator.finalizeArtifactMerge(mergedSubagentArtifacts.agentId);
     }
-    if ((toolName === "manage_tasks" || toolName === "manage_subagents") && result.ok && result.taskGraphUpdate) {
+    if ((toolName === "manage_tasks" || isSubagentTaskGraphSource(toolName)) && result.ok && result.taskGraphUpdate) {
       try {
         this.ctx.terminal.taskGraph(
           taskGraphView(result.taskGraphUpdate, (agentId) => this.ctx.subagentCoordinator.displayLabel(agentId)),
@@ -382,7 +383,7 @@ export class RuntimeAssembly {
         this.ctx.terminal.info("The task DAG was updated successfully, but its terminal view could not be rendered.");
       }
     }
-    if (toolName === "manage_subagents" && result.ok) {
+    if (isSubagentToolName(toolName) && result.ok) {
       try {
         this.ctx.infoCommands.printSubagents();
       } catch {

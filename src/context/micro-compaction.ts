@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { isSubagentToolName } from "../subagents/tool-names.js";
 import { sha256 } from "../utils/hash.js";
 
 /**
@@ -278,7 +279,7 @@ function synopsisForTool(toolName: string, payload: JsonRecord | undefined): str
     return mutationSynopsis(toolName, payload);
   }
   if (toolName === "manage_tasks") return taskSynopsis(payload);
-  if (toolName === "manage_subagents") return subagentSynopsis(payload);
+  if (isSubagentToolName(toolName)) return subagentSynopsis(payload);
   if (toolName === "submit_task_result") return submittedTaskSynopsis(payload);
   return genericSynopsis(toolName, payload);
 }

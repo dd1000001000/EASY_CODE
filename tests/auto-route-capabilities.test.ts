@@ -32,7 +32,7 @@ describe("Auto route capability summary", () => {
       tool("run_command"),
       tool("read_memory"),
       tool("manage_tasks"),
-      tool("manage_subagents"),
+      tool("spawn_subagent"),
       tool("propose_plan"),
     ]).tools;
     const codeTools = snapshotToolSet([
@@ -44,7 +44,7 @@ describe("Auto route capability summary", () => {
       tool("run_command"),
       tool("fetch_artifact"),
       tool("save_remote_mcp_server"),
-      tool("manage_subagents"),
+      tool("spawn_subagent"),
       tool("read_memory"),
     ]).tools;
     const summary = autoRouteCapabilitySummary({ planTools, codeTools, connectedMcpServers: 2 });
@@ -56,7 +56,7 @@ describe("Auto route capability summary", () => {
     assert.match(summary.currentConditions, /Public Web search\/page reading: Plan and Code/u);
     assert.match(summary.currentConditions, /Task graphs and child agents: Plan and Code after selection/u);
     assert.match(summary.currentConditions, /Connected MCP servers: 2/u);
-    assert.doesNotMatch(rendered, /read_file|read_image|web_search|fetch_webpage|manage_subagents/u);
+    assert.doesNotMatch(rendered, /read_file|read_image|web_search|fetch_webpage|spawn_subagent/u);
   });
 
   it("reports conditional capabilities as unavailable when filtering removed them", () => {

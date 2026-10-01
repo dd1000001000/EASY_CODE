@@ -1,4 +1,5 @@
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
+import { isSubagentTaskGraphSource, subagentLifecycleSource } from "../subagents/tool-names.js";
 import type {
   AgentTool,
   FunctionToolCall,
@@ -86,7 +87,7 @@ export function gateToolCall(
   return undefined;
 }
 
-/** Only an authorized manage_tasks or manage_subagents call may update the task DAG, and manage_tasks must. */
+/** Only an authorized manage_tasks, spawn_subagent or observe_subagents call may update the task DAG, and manage_tasks must. */
 export function validateTaskGraphEffect(
   state: SessionState,
   turnId: string,
@@ -108,7 +109,7 @@ export function validateTaskGraphEffect(
           ),
         };
       }
-      if (toolName === "manage_subagents" && result.subagentTaskOperation) {
+      if (isSubagentTaskGraphSource(toolName) && result.subagentTaskOperation) {
         subagentTaskOperation = subagentTaskOperationSchema.parse(result.subagentTaskOperation);
         return {
           result,
@@ -121,7 +122,9 @@ export function validateTaskGraphEffect(
           ),
         };
       }
-      throw new Error("Only an authorized manage_tasks or manage_subagents call may update the task DAG");
+      throw new Error(
+        "Only an authorized manage_tasks, spawn_subagent or observe_subagents call may update the task DAG",
+      );
     } catch (error) {
       return {
         result: {
@@ -183,7 +186,8 @@ export function subagentLifecycleError(
   taskGraphUpdate: TaskGraph | undefined,
   subagentTaskOperation: SubagentTaskOperation | undefined,
 ): string | undefined {
-  if (toolName !== "manage_subagents") return "Only manage_subagents may change child lifecycle state";
+  const source = subagentLifecycleSource(lifecycle.action);
+  if (toolName !== source) return `Only ${source} may record the ${lifecycle.action} child lifecycle transition`;
   if (lifecycle.action !== "activate" && lifecycle.action !== "observe") {
     return taskGraphUpdate || subagentTaskOperation || assignment
       ? "Follow-up and stop lifecycle transitions must not alter the child binding or task DAG"

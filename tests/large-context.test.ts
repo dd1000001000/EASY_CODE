@@ -9,7 +9,7 @@ import { ContextManager, contextPressureLevel } from "../src/context/manager.js"
 import { tokenBudget, requestTokens } from "../src/context/token-budget.js";
 import { effectiveContextWindow } from "../src/models/catalog.js";
 import { createSemanticSummarySchema } from "../src/context/semantic-compaction.js";
-import { createManageSubagentsInputSchema } from "../src/tools/manage-subagents.js";
+import { createSpawnSubagentInputSchema } from "../src/tools/subagent-tools.js";
 import { createSubmitTaskResultInputSchema } from "../src/tools/submit-task-result.js";
 import { createRecallContextSchema } from "../src/tools/context-read.js";
 import { runCompactionTransaction } from "../src/context/compaction-transaction.js";
@@ -90,22 +90,19 @@ describe("configurable 1M context", () => {
     assert.equal(schema.shape.currentWork.safeParse("a".repeat(6000)).success, true);
     assert.equal(schema.shape.currentWork.safeParse("a".repeat(6001)).success, false);
     assert.equal(
-      createManageSubagentsInputSchema(limits).parse({
-        action: "spawn",
+      createSpawnSubagentInputSchema(limits).parse({
         name: "Child 1",
         taskId: "task_a",
         instructions: "a".repeat(15000),
-      }).action,
-      "spawn",
+      }).instructions.length,
+      15000,
     );
-    const oversizedSpawn = createManageSubagentsInputSchema(limits).parse({
-      action: "spawn",
+    const oversizedSpawn = createSpawnSubagentInputSchema(limits).parse({
       name: "Child 2",
       taskId: "task_a",
       instructions: "a".repeat(16001),
     });
-    assert.equal(oversizedSpawn.action, "spawn");
-    if (oversizedSpawn.action === "spawn") assert.equal(oversizedSpawn.instructions.length, 16000);
+    assert.equal(oversizedSpawn.instructions.length, 16000);
     assert.equal(
       createSubmitTaskResultInputSchema(limits).parse({
         outcome: "completed",

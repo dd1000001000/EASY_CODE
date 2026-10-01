@@ -118,7 +118,7 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
       ? {
           pendingOperations,
           pendingOperationsPolicy:
-            "Commands are last-observed running: use poll_command, do not restart them. Children await manage_subagents status/wait; preserve assignment and follow-ups. A stop request does not mean completion.",
+            "Commands are last-observed running: use poll_command, do not restart them. Children await observe_subagents; preserve assignment and follow-ups. A stop request does not mean completion.",
         }
       : {}),
     ...(failures.length

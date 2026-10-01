@@ -283,7 +283,7 @@ describe("requirements-only circuit breaker", () => {
     foldReconciliation(s, "read_file", reconciliationObservation(s, "read_file", { ok: true, summary: "read" }));
     assert.equal(reconciliationPending(s), true);
     foldReconciliation(s, "poll_command", { command: "cmd" });
-    foldReconciliation(s, "manage_subagents", { children: ["child"] });
+    foldReconciliation(s, "observe_subagents", { children: ["child"] });
     assert.equal(reconciliationPending(s), false);
     assert.equal(reconciliationGate(s, "run_command", {}), undefined);
     assert.equal(s.contextOperations!.commands.cmd?.status, "running"); // querying never manufactures completion

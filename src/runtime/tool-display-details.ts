@@ -1,5 +1,6 @@
 import type { AgentTool, SessionState, ToolDisplayDetail, ToolExecutionResult } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { isSubagentToolName } from "../subagents/tool-names.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -130,8 +131,7 @@ export function toolDisplayDetails(
     return [...detail("Action", action), ...detail("Tasks", titles.slice(0, 16).join("; "))];
   }
 
-  if (toolName === "manage_subagents") {
-    const action = string(input?.action);
+  if (isSubagentToolName(toolName)) {
     const task = record(input?.task);
     const id = string(input?.taskId);
     const data = record(result.data);
@@ -156,7 +156,7 @@ export function toolDisplayDetails(
     const label =
       (name && title ? `${name} · ${title}` : (name ?? title)) ??
       (returnedTitles.slice(0, 8).join("; ") || string(input?.agentId) || agentIds.join(", "));
-    return [...detail("Action", action), ...detail("Subagent", label)];
+    return detail("Subagent", label);
   }
 
   if (toolName === "submit_task_result") {

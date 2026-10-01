@@ -21,7 +21,7 @@ import { DeleteFileTool } from "./delete-file.js";
 import { FetchArtifactTool } from "./fetch-artifact.js";
 import { MemoryToolSession } from "./memory-tool-session.js";
 import { ReadMemoryTool } from "./read-memory.js";
-import { ManageSubagentsTool } from "./manage-subagents.js";
+import { createSubagentTools } from "./subagent-tools.js";
 import { ManageTasksTool } from "./manage-tasks.js";
 import { NameThreadTool } from "./name-thread.js";
 import {
@@ -144,9 +144,7 @@ export class BuiltinToolSource implements ToolSource {
             new RemoveMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
           ]
         : []),
-      ...(this.options.subagentControl
-        ? [new ManageSubagentsTool(this.options.subagentControl, this.options.limits)]
-        : []),
+      ...(this.options.subagentControl ? createSubagentTools(this.options.subagentControl, this.options.limits) : []),
       new ProposePlanTool(),
       new RecallContextTool(this.options.limits),
       new SearchContextTool(),

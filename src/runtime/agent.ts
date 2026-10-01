@@ -32,6 +32,7 @@ import { effectiveContextWindow, validateProviderImageAttachments } from "../mod
 import { clonePlanReviewState } from "../plans/plan.js";
 import { foldProgressHint } from "../progress/guard.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
+import { isSubagentToolName } from "../subagents/tool-names.js";
 import { snapshotToolSet } from "../tools/catalog.js";
 import { ToolExecutionGateway } from "../tools/execution-gateway.js";
 import { createId } from "../utils/ids.js";
@@ -513,7 +514,8 @@ export class AgentRuntime {
         (tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId)) &&
         (state.mode !== "auto" ||
           (tool.name !== "manage_tasks" &&
-            (tool.name !== "manage_subagents" || run.outstandingSubagentsAtRoute.length > 0))),
+            tool.name !== "spawn_subagent" &&
+            (!isSubagentToolName(tool.name) || run.outstandingSubagentsAtRoute.length > 0))),
     );
     const exposedToolCatalog = snapshotToolSet(exposedTools, this.dependencies.toolCatalog.revision);
     const toolGateway = new ToolExecutionGateway(exposedToolCatalog, this.dependencies.authorizeToolExecution);

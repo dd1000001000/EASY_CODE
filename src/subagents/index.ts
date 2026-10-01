@@ -1,8 +1,8 @@
 export * from "./coordinator.js";
 export * from "./workspace-mutation-lock.js";
 export * from "./display-name.js";
+export * from "./tool-names.js";
 export {
-  DEFAULT_SUBAGENT_WAIT_MS,
   MAX_SUBAGENT_AGENT_IDS_PER_CALL,
   MAX_SUBAGENT_EVIDENCE_CHARS,
   MAX_SUBAGENT_FOLLOW_UP_CHARS,
@@ -16,7 +16,7 @@ export {
 export type {
   FollowUpSubagentRequest,
   HandoffSubagentRequest,
-  ManageSubagentsInput,
+  ObserveSubagentsRequest,
   SpawnSubagentRequest,
   StandaloneSubagentTask,
   StopSubagentRequest,
@@ -25,8 +25,6 @@ export type {
   SubagentEnvironmentView,
   SubagentRecord,
   SubagentStatus,
-  SubagentStatusRequest,
   SubagentTaskReport,
   SubagentView,
-  WaitForSubagentsRequest,
 } from "./types.js";

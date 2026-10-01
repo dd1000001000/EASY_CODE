@@ -1,0 +1,10 @@
+{
+  "id": "observe_subagents",
+  "contractVersion": "1.0.0",
+  "description": "Inspect child agents owned by this parent and receive at most one pending update: an unread child report or a terminal result, which this call collects into the task DAG and workspace. With timeoutMs omitted or zero it returns an immediate snapshot; a positive timeoutMs blocks until an update arrives or the timeout elapses.",
+  "propertyDescriptions": {
+    "agentIds": "Optional children to observe. Omit to observe every child owned by this parent.",
+    "timeoutMs": "Optional bounded time to wait for an update. Omit or use zero for an immediate snapshot."
+  },
+  "guidance": "A child report does not complete or collect the child: keep observing with a positive timeoutMs until its terminal result is collected."
+}

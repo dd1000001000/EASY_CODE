@@ -4,14 +4,19 @@ import type { TaskNode, ToolContext, ToolExecutionResult } from "../src/core/typ
 import type {
   FollowUpSubagentRequest,
   HandoffSubagentRequest,
+  ObserveSubagentsRequest,
   SpawnSubagentRequest,
   StopSubagentRequest,
   SubagentControl,
-  SubagentStatusRequest,
-  WaitForSubagentsRequest,
 } from "../src/subagents/types.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
-import { ManageSubagentsTool } from "../src/tools/manage-subagents.js";
+import {
+  HandoffSubagentTool,
+  MessageSubagentTool,
+  ObserveSubagentsTool,
+  SpawnSubagentTool,
+  StopSubagentTool,
+} from "../src/tools/subagent-tools.js";
 import { SubmitTaskResultTool } from "../src/tools/submit-task-result.js";
 import { describe, it } from "./harness.js";
 
@@ -32,12 +37,11 @@ function context(mode: ToolContext["mode"] = "code"): ToolContext {
 }
 
 type ControlCall =
-  | SpawnSubagentRequest
-  | SubagentStatusRequest
-  | WaitForSubagentsRequest
-  | FollowUpSubagentRequest
-  | StopSubagentRequest
-  | HandoffSubagentRequest;
+  | { method: "spawn"; request: SpawnSubagentRequest }
+  | { method: "observe"; request: ObserveSubagentsRequest }
+  | { method: "followUp"; request: FollowUpSubagentRequest }
+  | { method: "stop"; request: StopSubagentRequest }
+  | { method: "handoff"; request: HandoffSubagentRequest };
 
 class RecordingControl implements SubagentControl {
   readonly calls: ControlCall[] = [];
@@ -50,32 +54,34 @@ class RecordingControl implements SubagentControl {
   }
 
   spawn(request: SpawnSubagentRequest): Promise<ToolExecutionResult> {
-    return this.record(request);
+    return this.record({ method: "spawn", request });
   }
 
-  status(request: SubagentStatusRequest): Promise<ToolExecutionResult> {
-    return this.record(request);
-  }
-
-  wait(request: WaitForSubagentsRequest): Promise<ToolExecutionResult> {
-    return this.record(request);
+  observe(request: ObserveSubagentsRequest): Promise<ToolExecutionResult> {
+    return this.record({ method: "observe", request });
   }
 
   followUp(request: FollowUpSubagentRequest): Promise<ToolExecutionResult> {
-    return this.record(request);
+    return this.record({ method: "followUp", request });
   }
 
   stop(request: StopSubagentRequest): Promise<ToolExecutionResult> {
-    return this.record(request);
+    return this.record({ method: "stop", request });
   }
 
   handoff(request: HandoffSubagentRequest): Promise<ToolExecutionResult> {
-    return this.record(request);
+    return this.record({ method: "handoff", request });
   }
 
-  private async record(request: ControlCall): Promise<ToolExecutionResult> {
-    this.calls.push(request);
-    return { ok: true, summary: `Handled ${request.action}`, data: request };
+  spawned(index: number): SpawnSubagentRequest {
+    const call = this.calls[index];
+    if (call?.method !== "spawn") throw new Error(`Expected spawn call ${index}`);
+    return call.request;
+  }
+
+  private async record(call: ControlCall): Promise<ToolExecutionResult> {
+    this.calls.push(call);
+    return { ok: true, summary: `Handled ${call.method}`, data: call.request };
   }
 }
 
@@ -101,30 +107,19 @@ function boundTask(
 describe("subagent control tools", () => {
   it("allows an explicitly selected Plan parent to dispatch a planning child", async () => {
     const control = new RecordingControl();
-    const tool = new ManageSubagentsTool(control);
+    const tool = new SpawnSubagentTool(control);
     const parameters = tool.definition.function.parameters as { properties: Record<string, unknown> };
     assert.equal("mode" in parameters.properties, false);
     const result = await tool.execute(
-      {
-        action: "spawn",
-        name: "Child 1",
-        taskId: "research",
-        instructions: "Inspect without modifying files",
-      },
+      { name: "Child 1", taskId: "research", instructions: "Inspect without modifying files" },
       { ...context("plan"), selectedMode: "plan" },
     );
     assert.equal(result.ok, true);
-    assert.equal(control.calls[0]?.action, "spawn");
+    assert.equal(control.calls[0]?.method, "spawn");
     assert.equal(
       (
         await tool.execute(
-          {
-            action: "spawn",
-            name: "Child 2",
-            taskId: "research",
-            instructions: "Inspect",
-            mode: "code",
-          },
+          { name: "Child 2", taskId: "research", instructions: "Inspect", mode: "code" },
           { ...context("plan"), selectedMode: "plan" },
         )
       ).ok,
@@ -132,22 +127,16 @@ describe("subagent control tools", () => {
     );
     assert.equal(control.calls.length, 1);
   });
+
   it("truncates oversized spawn instructions and follow-ups after sanitizing", async () => {
     const control = new RecordingControl();
-    const tool = new ManageSubagentsTool(control, {
-      ...DEFAULT_RUNTIME_LIMITS,
-      subagentInstructionsMaxChars: 64,
-      subagentFollowUpMaxChars: 64,
-    });
+    const limits = { ...DEFAULT_RUNTIME_LIMITS, subagentInstructionsMaxChars: 64, subagentFollowUpMaxChars: 64 };
+    const spawn = new SpawnSubagentTool(control, limits);
+    const message = new MessageSubagentTool(control, limits);
     assert.equal(
       (
-        await tool.execute(
-          {
-            action: "spawn",
-            name: "Child 3",
-            taskId: "implementation",
-            instructions: `START😀${"x".repeat(200)}END`,
-          },
+        await spawn.execute(
+          { name: "Child 3", taskId: "implementation", instructions: `START😀${"x".repeat(200)}END` },
           context(),
         )
       ).ok,
@@ -155,9 +144,8 @@ describe("subagent control tools", () => {
     );
     assert.equal(
       (
-        await tool.execute(
+        await spawn.execute(
           {
-            action: "spawn",
             name: "Child 4",
             task: { title: "Standalone", description: "Work", completionChecks: ["Done"] },
             instructions: `SECOND${"x".repeat(200)}END`,
@@ -168,153 +156,76 @@ describe("subagent control tools", () => {
       true,
     );
     assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "follow_up",
-            agentId: AGENT_ONE,
-            message: `FOLLOW${"x".repeat(200)}END`,
-          },
-          context(),
-        )
-      ).ok,
+      (await message.execute({ agentId: AGENT_ONE, message: `FOLLOW${"x".repeat(200)}END` }, context())).ok,
       true,
     );
-    assert.equal(control.calls[0]?.action, "spawn");
-    if (control.calls[0]?.action === "spawn") {
-      assert.match(control.calls[0].instructions, /^START😀.*\[truncated\].*END$/su);
-      assert.ok(control.calls[0].instructions.length <= 64);
-    }
-    assert.equal(control.calls[1]?.action, "spawn");
-    if (control.calls[1]?.action === "spawn") {
-      assert.match(control.calls[1].instructions, /^SECOND.*\[truncated\].*END$/su);
-      assert.ok(control.calls[1].instructions.length <= 64);
-    }
-    assert.equal(control.calls[2]?.action, "follow_up");
-    if (control.calls[2]?.action === "follow_up") {
-      assert.match(control.calls[2].message, /^FOLLOW.*\[truncated\].*END$/su);
-      assert.ok(control.calls[2].message.length <= 64);
-    }
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "follow_up",
-            agentId: AGENT_ONE,
-            message: "  \u001b[31m  ",
-          },
-          context(),
-        )
-      ).ok,
-      false,
-    );
+    assert.match(control.spawned(0).instructions, /^START😀.*\[truncated\].*END$/su);
+    assert.ok(control.spawned(0).instructions.length <= 64);
+    assert.match(control.spawned(1).instructions, /^SECOND.*\[truncated\].*END$/su);
+    assert.ok(control.spawned(1).instructions.length <= 64);
+    const followUp = control.calls[2];
+    if (followUp?.method !== "followUp") throw new Error("Expected follow-up call");
+    assert.match(followUp.request.message, /^FOLLOW.*\[truncated\].*END$/su);
+    assert.ok(followUp.request.message.length <= 64);
+    assert.equal((await message.execute({ agentId: AGENT_ONE, message: "  \u001b[31m  " }, context())).ok, false);
     assert.equal(control.calls.length, 3);
   });
 
-  it("strictly dispatches every main-agent action and defaults wait timeout", async () => {
+  it("routes each tool to its controller method and defaults observation to a snapshot", async () => {
     const control = new RecordingControl();
-    const tool = new ManageSubagentsTool(control);
+    const spawn = new SpawnSubagentTool(control);
+    const observe = new ObserveSubagentsTool(control);
+    const message = new MessageSubagentTool(control);
+    const stop = new StopSubagentTool(control);
+    const handoff = new HandoffSubagentTool(control);
 
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "spawn",
-            name: "Child 5",
-            taskId: "implementation",
-            instructions: "Inspect the target and implement the focused change.",
-            thinkingEffort: "low",
-          },
-          context(),
-        )
-      ).ok,
-      true,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "status",
-            agentIds: [AGENT_ONE],
-          },
-          context(),
-        )
-      ).ok,
-      true,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "wait",
-            agentIds: [AGENT_ONE, AGENT_TWO],
-          },
-          context(),
-        )
-      ).ok,
-      true,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "follow_up",
-            agentId: AGENT_ONE,
-            message: "Also run the focused test.",
-          },
-          context(),
-        )
-      ).ok,
-      true,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "stop",
-            agentId: AGENT_TWO,
-            reason: "The parent no longer needs this task.",
-          },
-          context(),
-        )
-      ).ok,
-      true,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "handoff",
-            agentId: AGENT_ONE,
-            destination: "branch",
-            branchName: "easy-code/implementation",
-          },
-          context(),
-        )
-      ).ok,
-      true,
+    const results = [
+      await spawn.execute(
+        {
+          name: "Child 5",
+          taskId: "implementation",
+          instructions: "Inspect the target and implement the focused change.",
+          thinkingEffort: "low",
+        },
+        context(),
+      ),
+      await observe.execute({}, context()),
+      await observe.execute({ agentIds: [AGENT_ONE, AGENT_TWO], timeoutMs: 30_000 }, context()),
+      await message.execute({ agentId: AGENT_ONE, message: "Also run the focused test." }, context()),
+      await stop.execute({ agentId: AGENT_TWO, reason: "The parent no longer needs this task." }, context()),
+      await handoff.execute(
+        { agentId: AGENT_ONE, destination: "branch", branchName: "easy-code/implementation" },
+        context(),
+      ),
+    ];
+    assert.deepEqual(
+      results.map((result) => result.ok),
+      [true, true, true, true, true, true],
     );
 
     assert.deepEqual(
-      control.calls.map((call) => call.action),
-      ["spawn", "status", "wait", "follow_up", "stop", "handoff"],
+      control.calls.map((call) => call.method),
+      ["spawn", "observe", "observe", "followUp", "stop", "handoff"],
     );
-    const wait = control.calls[2];
-    assert.equal(wait?.action, "wait");
-    if (wait?.action === "wait") assert.equal(wait.timeoutMs, 30_000);
+    assert.deepEqual(control.calls[1]?.request, { timeoutMs: 0 });
+    assert.deepEqual(control.calls[2]?.request, { agentIds: [AGENT_ONE, AGENT_TWO], timeoutMs: 30_000 });
     assert.equal(control.authorizationChecks, 6);
-    assert.equal(control.calls[0]?.action, "spawn");
-    if (control.calls[0]?.action === "spawn") assert.equal(control.calls[0].thinkingEffort, "low");
-    assert.equal(tool.definition.function.strict, true);
-    assert.equal(tool.definition.function.parameters.additionalProperties, false);
+    assert.equal(control.spawned(0).thinkingEffort, "low");
+    for (const tool of [spawn, observe, message, stop, handoff]) {
+      assert.equal(tool.definition.function.strict, true);
+      assert.equal(tool.definition.function.parameters.additionalProperties, false);
+    }
+    assert.deepEqual((spawn.definition.function.parameters as { required: string[] }).required, [
+      "name",
+      "instructions",
+    ]);
   });
 
   it("sanitizes controls and secrets before passing text to the controller", async () => {
     const control = new RecordingControl();
-    const tool = new ManageSubagentsTool(control);
+    const tool = new SpawnSubagentTool(control);
     const result = await tool.execute(
       {
-        action: "spawn",
         name: "Child 6",
         taskId: "implementation",
         instructions: "Inspect\u001b[31m the task\u202e\napi_key=super-secret-value before editing.",
@@ -323,9 +234,7 @@ describe("subagent control tools", () => {
     );
 
     assert.equal(result.ok, true);
-    const call = control.calls[0];
-    assert.equal(call?.action, "spawn");
-    if (call?.action !== "spawn") throw new Error("Expected spawn call");
+    const call = control.spawned(0);
     assert.doesNotMatch(call.instructions, /\u001b|\u202e/u);
     assert.doesNotMatch(call.instructions, /super-secret-value/u);
     assert.match(call.instructions, /api_key=\[REDACTED\]/u);
@@ -333,7 +242,7 @@ describe("subagent control tools", () => {
 
   it("requires a bounded single-line display name for every spawn", async () => {
     const control = new RecordingControl();
-    const tool = new ManageSubagentsTool(control);
+    const tool = new SpawnSubagentTool(control);
     const task = {
       title: "Inspect",
       description: "Inspect an isolated source.",
@@ -341,31 +250,28 @@ describe("subagent control tools", () => {
     };
 
     for (const input of [
-      { action: "spawn", taskId: "implementation", instructions: "Do the task" },
-      { action: "spawn", task, instructions: "Do the task" },
-      { action: "spawn", name: ` \u001b[31m\u202e `, taskId: "implementation", instructions: "Do the task" },
-      { action: "spawn", name: "x".repeat(33), taskId: "implementation", instructions: "Do the task" },
+      { taskId: "implementation", instructions: "Do the task" },
+      { task, instructions: "Do the task" },
+      { name: ` \u001b[31m\u202e `, taskId: "implementation", instructions: "Do the task" },
+      { name: "x".repeat(33), taskId: "implementation", instructions: "Do the task" },
     ]) {
       assert.equal((await tool.execute(input, context())).ok, false);
     }
     assert.equal(control.calls.length, 0);
 
     const result = await tool.execute(
-      { action: "spawn", name: `  前端\n  审查员\u202e `, task, instructions: "Do the task" },
+      { name: `  前端\n  审查员\u202e `, task, instructions: "Do the task" },
       context(),
     );
     assert.equal(result.ok, true);
-    const call = control.calls[0];
-    if (call?.action !== "spawn") throw new Error("Expected spawn call");
-    assert.equal(call.name, "前端 审查员");
+    assert.equal(control.spawned(0).name, "前端 审查员");
   });
 
   it("accepts a standalone task contract and enforces exclusive spawn forms", async () => {
     const control = new RecordingControl();
-    const tool = new ManageSubagentsTool(control);
+    const tool = new SpawnSubagentTool(control);
     const standalone = await tool.execute(
       {
-        action: "spawn",
         name: "Child 7",
         task: {
           title: "Audit authentication\u001b[31m",
@@ -378,33 +284,19 @@ describe("subagent control tools", () => {
       context(),
     );
     assert.equal(standalone.ok, true);
-    const call = control.calls[0];
-    assert.equal(call?.action, "spawn");
-    if (call?.action !== "spawn" || !call.task) {
-      throw new Error("Expected a standalone spawn call");
-    }
+    const call = control.spawned(0);
+    if (!call.task) throw new Error("Expected a standalone spawn call");
     assert.equal(call.task.title, "Audit authentication");
     assert.deepEqual(call.task.completionChecks, ["The findings are verified"]);
     assert.equal(call.thinkingEffort, "none");
 
+    const missing = await tool.execute({ name: "Child 8", instructions: "Missing both assignment forms." }, context());
+    assert.equal(missing.ok, false);
+    assert.match(missing.error ?? "", /exactly one of taskId/u);
     assert.equal(
       (
         await tool.execute(
           {
-            action: "spawn",
-            name: "Child 8",
-            instructions: "Missing both assignment forms.",
-          },
-          context(),
-        )
-      ).ok,
-      false,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "spawn",
             name: "Child 9",
             taskId: "implementation",
             task: {
@@ -422,97 +314,41 @@ describe("subagent control tools", () => {
     assert.equal(control.calls.length, 1);
   });
 
-  it("rejects malformed, cross-action, duplicate-target, Auto dispatch, and unauthorized calls", async () => {
+  it("rejects malformed, cross-tool, duplicate-target, Auto dispatch, and unauthorized calls", async () => {
     const control = new RecordingControl();
-    const tool = new ManageSubagentsTool(control);
+    const spawn = new SpawnSubagentTool(control);
+    const observe = new ObserveSubagentsTool(control);
+    const message = new MessageSubagentTool(control);
+    const handoff = new HandoffSubagentTool(control);
 
+    const rejected = [
+      await spawn.execute(
+        { name: "Child 10", taskId: "implementation", instructions: "Do the task", agentId: AGENT_ONE },
+        context(),
+      ),
+      await spawn.execute(
+        { name: "Child 11", taskId: "implementation", instructions: "Do the task", thinkingEffort: "ultra" },
+        context(),
+      ),
+      await observe.execute({ thinkingEffort: "low" }, context()),
+      await observe.execute({ agentIds: [AGENT_ONE, AGENT_ONE], timeoutMs: 1 }, context()),
+      await observe.execute({ timeoutMs: 600_000 }, context()),
+      await message.execute({ agentId: "agent-not-runtime-issued", message: "Continue" }, context()),
+      await handoff.execute({ agentId: AGENT_ONE, destination: "local", branchName: "feature" }, context()),
+      await spawn.execute(
+        { name: "Child 12", taskId: "implementation", instructions: "Do the task" },
+        { ...context("code"), selectedMode: "auto" },
+      ),
+    ];
     assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "spawn",
-            name: "Child 10",
-            taskId: "implementation",
-            instructions: "Do the task",
-            agentId: AGENT_ONE,
-          },
-          context(),
-        )
-      ).ok,
-      false,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "spawn",
-            name: "Child 11",
-            taskId: "implementation",
-            instructions: "Do the task",
-            thinkingEffort: "ultra",
-          },
-          context(),
-        )
-      ).ok,
-      false,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "status",
-            thinkingEffort: "low",
-          },
-          context(),
-        )
-      ).ok,
-      false,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "wait",
-            agentIds: [AGENT_ONE, AGENT_ONE],
-            timeoutMs: 1,
-          },
-          context(),
-        )
-      ).ok,
-      false,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "follow_up",
-            agentId: "agent-not-runtime-issued",
-            message: "Continue",
-          },
-          context(),
-        )
-      ).ok,
-      false,
-    );
-    assert.equal(
-      (
-        await tool.execute(
-          {
-            action: "spawn",
-            name: "Child 12",
-            taskId: "implementation",
-            instructions: "Do the task",
-          },
-          { ...context("code"), selectedMode: "auto" },
-        )
-      ).ok,
-      false,
+      rejected.every((result) => !result.ok),
+      true,
     );
     assert.equal(control.calls.length, 0);
     assert.equal(control.authorizationChecks, 0);
 
     control.authorizationError = new Error("Only the main agent may manage children");
-    const denied = await tool.execute({ action: "status" }, context());
+    const denied = await observe.execute({}, context());
     assert.equal(denied.ok, false);
     assert.match(denied.error ?? "", /main agent/u);
     assert.equal(control.calls.length, 0);

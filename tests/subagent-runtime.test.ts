@@ -36,7 +36,11 @@ const ALL_TOOL_NAMES: ToolName[] = [
   "poll_command",
   "cancel_command",
   "manage_tasks",
-  "manage_subagents",
+  "spawn_subagent",
+  "observe_subagents",
+  "message_subagent",
+  "stop_subagent",
+  "handoff_subagent",
   "send_parent_message",
   "submit_task_result",
   "read_memory",
@@ -108,7 +112,9 @@ function fakeTool(name: ToolName, execute?: AgentTool["execute"]): AgentTool {
       name === "start_command" ||
       name === "cancel_command" ||
       name === "manage_tasks" ||
-      name === "manage_subagents" ||
+      name === "spawn_subagent" ||
+      name === "observe_subagents" ||
+      name === "handoff_subagent" ||
       name === "send_parent_message" ||
       name === "submit_task_result" ||
       name === "write_memory",
@@ -259,7 +265,7 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(taken, 1);
   });
 
-  it("exposes manage_subagents to a main agent at every thinking effort", async () => {
+  it("exposes spawn_subagent to a main agent at every thinking effort", async () => {
     const visibleByEffort = new Map<ThinkingEffort, ToolName[]>();
 
     for (const effort of ["none", "low", "medium", "high"] as const) {
@@ -278,7 +284,7 @@ describe("AgentRuntime subagent boundaries", () => {
       });
       const result = await runtime({
         provider: model,
-        tools: [fakeTool("read_file"), fakeTool("manage_subagents")],
+        tools: [fakeTool("read_file"), fakeTool("spawn_subagent")],
         agentIdentity: { role: "main_agent" },
       }).run(state(effort, `main_${effort}`), "Inspect tool access", options(1));
 
@@ -286,7 +292,7 @@ describe("AgentRuntime subagent boundaries", () => {
     }
 
     for (const effort of ["none", "low", "medium", "high"] as const) {
-      assert.equal(visibleByEffort.get(effort)?.includes("manage_subagents"), true);
+      assert.equal(visibleByEffort.get(effort)?.includes("spawn_subagent"), true);
       assert.equal(visibleByEffort.get(effort)?.includes("read_file"), true);
     }
   });
@@ -335,7 +341,7 @@ describe("AgentRuntime subagent boundaries", () => {
               {
                 id: "collect_outstanding_standalone_in_auto",
                 type: "function",
-                function: { name: "manage_subagents", arguments: "{}" },
+                function: { name: "observe_subagents", arguments: "{}" },
               },
             ],
           },
@@ -353,7 +359,7 @@ describe("AgentRuntime subagent boundaries", () => {
     const result = await runtime({
       provider: model,
       tools: [
-        fakeTool("manage_subagents", async () => ({
+        fakeTool("observe_subagents", async () => ({
           ok: true,
           summary: "Collected the outstanding standalone child.",
           subagentAssignment: assignment,
@@ -384,7 +390,7 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(result.reason, "success");
     assert.equal(routerRequests, 0);
     assert.equal(codeRequests, 2);
-    assert.equal(codeTools.includes("manage_subagents"), true);
+    assert.equal(codeTools.includes("observe_subagents"), true);
     assert.equal(codeTools.includes("propose_plan"), false);
     assert.equal(result.planProposal, undefined);
     const route = events.find((event) => event.type === "mode.auto_route");
@@ -451,7 +457,7 @@ describe("AgentRuntime subagent boundaries", () => {
               {
                 id: "spawn_standalone",
                 type: "function",
-                function: { name: "manage_subagents", arguments: "{}" },
+                function: { name: "spawn_subagent", arguments: "{}" },
               },
             ],
           },
@@ -462,7 +468,7 @@ describe("AgentRuntime subagent boundaries", () => {
     const result = await runtime({
       provider: model,
       tools: [
-        fakeTool("manage_subagents", async () => ({
+        fakeTool("spawn_subagent", async () => ({
           ok: true,
           summary: "Standalone child reserved.",
           subagentAssignment: assignment,
@@ -484,7 +490,7 @@ describe("AgentRuntime subagent boundaries", () => {
     const invalid = await runtime({
       provider: model,
       tools: [
-        fakeTool("manage_subagents", async () => ({
+        fakeTool("spawn_subagent", async () => ({
           ok: true,
           summary: "Missing binding.",
           subagentLifecycle: { action: "activate", agentId: CHILD_AGENT_ID },
@@ -496,6 +502,45 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(
       invalidState.messages.some(
         (message) => message.role === "tool" && message.content.includes("missing its exact Runtime binding"),
+      ),
+      true,
+    );
+
+    requests = 0;
+    const wrongSourceState = state("medium", "standalone_wrong_source");
+    const wrongSource = await runtime({
+      provider: provider(async () => {
+        requests += 1;
+        return requests === 1
+          ? {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    id: "spawn_through_message",
+                    type: "function",
+                    function: { name: "message_subagent", arguments: "{}" },
+                  },
+                ],
+              },
+            }
+          : { message: { role: "assistant", content: "Done.", tool_calls: [] } };
+      }),
+      tools: [
+        fakeTool("message_subagent", async () => ({
+          ok: true,
+          summary: "Activation from the wrong tool.",
+          subagentAssignment: assignment,
+          subagentLifecycle: { action: "activate", agentId: CHILD_AGENT_ID },
+        })),
+      ],
+      agentIdentity: { role: "main_agent" },
+    }).run(wrongSourceState, "Start child through the wrong tool", options(2));
+    assert.equal(wrongSource.reason, "success");
+    assert.equal(
+      wrongSourceState.messages.some(
+        (message) => message.role === "tool" && message.content.includes("Only spawn_subagent may record the activate"),
       ),
       true,
     );
@@ -519,7 +564,7 @@ describe("AgentRuntime subagent boundaries", () => {
               {
                 id: "collect_standalone",
                 type: "function",
-                function: { name: "manage_subagents", arguments: "{}" },
+                function: { name: "observe_subagents", arguments: "{}" },
               },
             ],
           },
@@ -531,7 +576,7 @@ describe("AgentRuntime subagent boundaries", () => {
     const result = await runtime({
       provider: model,
       tools: [
-        fakeTool("manage_subagents", async () => ({
+        fakeTool("observe_subagents", async () => ({
           ok: true,
           summary: "Collected child result.",
           subagentAssignment: assignment,
@@ -584,7 +629,7 @@ describe("AgentRuntime subagent boundaries", () => {
 
     assert.equal(result.reason, "success");
     assert.deepEqual([...visibleTools].sort(), [...CHILD_TOOL_NAMES].sort());
-    assert.equal(visibleTools.includes("manage_subagents"), false);
+    assert.equal(visibleTools.includes("spawn_subagent"), false);
     assert.equal(visibleTools.includes("manage_tasks"), false);
     assert.equal(visibleTools.includes("write_memory"), false);
     assert.equal(visibleTools.includes("read_memory"), true);
@@ -614,7 +659,7 @@ describe("AgentRuntime subagent boundaries", () => {
       [...visibleTools].sort(),
       ["read_file", "read_memory", "send_parent_message", "submit_task_result"].sort(),
     );
-    for (const name of ["create_file", "update_file", "delete_file", "run_command", "manage_tasks", "manage_subagents"])
+    for (const name of ["create_file", "update_file", "delete_file", "run_command", "manage_tasks", "spawn_subagent"])
       assert.equal(visibleTools.includes(name as ToolName), false);
   });
 
@@ -858,14 +903,14 @@ describe("AgentRuntime subagent boundaries", () => {
             id: "follow_up_with_failed_event",
             type: "function",
             function: {
-              name: "manage_subagents",
+              name: "message_subagent",
               arguments: "{}",
             },
           },
         ],
       },
     }));
-    const control = fakeTool("manage_subagents", async () => ({
+    const control = fakeTool("message_subagent", async () => ({
       ok: true,
       summary: "Prepared follow-up delivery.",
       subagentLifecycle: {

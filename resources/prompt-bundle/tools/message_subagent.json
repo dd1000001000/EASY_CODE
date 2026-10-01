@@ -1,0 +1,10 @@
+{
+  "id": "message_subagent",
+  "contractVersion": "1.0.0",
+  "description": "Queue scoped follow-up guidance for a running child agent. It is delivered once at the child's next model-step boundary and does not expand the child's assignment.",
+  "propertyDescriptions": {
+    "agentId": "The target child-agent identifier.",
+    "message": "The scoped guidance for the child. Excess text is truncated to the configured message length."
+  },
+  "guidance": "Use message_subagent only to correct or narrow a running child's assigned work; a child that is stopping or terminal no longer accepts guidance."
+}

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { SessionState, ToolExecutionResult } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { isSubagentToolName, subagentLifecycleSource } from "../subagents/tool-names.js";
 import { foldReconciliation } from "./reconciliation.js";
 
 const commandSchema = z
@@ -84,7 +85,7 @@ export function foldPendingOperations(state: SessionState, payload: Record<strin
     if (command.status === "running") operations.commands[command.commandId] = command;
     else delete operations.commands[command.commandId]; // Terminal result was observed, not inferred.
   }
-  if (payload.tool !== "manage_subagents" || !payload.subagentLifecycle) return;
+  if (!isSubagentToolName(payload.tool) || !payload.subagentLifecycle) return;
   const lifecycle = z
     .object({
       action: z.enum(["activate", "observe", "deliver_follow_up", "request_stop"]),
@@ -93,6 +94,7 @@ export function foldPendingOperations(state: SessionState, payload: Record<strin
       reason: z.string().optional(),
     })
     .parse(payload.subagentLifecycle);
+  if (payload.tool !== subagentLifecycleSource(lifecycle.action)) throw new Error("Invalid child lifecycle source");
   const operations = (state.contextOperations ??= { commands: {}, children: {} });
   if (lifecycle.action === "activate") {
     if (payload.subagentAssignment === undefined)

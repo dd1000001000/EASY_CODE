@@ -137,7 +137,41 @@ const BUILTIN_POLICIES = {
     roles: MAIN,
     validationSensitive: true,
   },
-  manage_subagents: {
+  spawn_subagent: {
+    effects: ["agent_control", "workspace_write"],
+    modes: ORCHESTRATION_MODES,
+    roles: MAIN,
+    requiresOrchestration: true,
+    validationSensitive: true,
+    controlPlane: true,
+    resultClass: "subagent_control",
+  },
+  // Collecting a terminal child merges its result artifacts into the parent workspace.
+  observe_subagents: {
+    effects: ["agent_control", "workspace_write"],
+    modes: ORCHESTRATION_MODES,
+    roles: MAIN,
+    requiresOrchestration: true,
+    controlPlane: true,
+    resultClass: "subagent_control",
+  },
+  message_subagent: {
+    effects: ["agent_control"],
+    modes: ORCHESTRATION_MODES,
+    roles: MAIN,
+    requiresOrchestration: true,
+    controlPlane: true,
+    resultClass: "subagent_control",
+  },
+  stop_subagent: {
+    effects: ["agent_control"],
+    modes: ORCHESTRATION_MODES,
+    roles: MAIN,
+    requiresOrchestration: true,
+    controlPlane: true,
+    resultClass: "subagent_control",
+  },
+  handoff_subagent: {
     effects: ["agent_control", "workspace_write"],
     modes: ORCHESTRATION_MODES,
     roles: MAIN,

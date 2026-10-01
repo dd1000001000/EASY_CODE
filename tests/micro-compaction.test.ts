@@ -224,7 +224,7 @@ describe("MicroCompaction", () => {
         expected: [/kind=task_graph/u, /graph_id=graph_1/u, /completed=2/u, /total=5/u, /startable=1/u],
       },
       {
-        name: "manage_subagents",
+        name: "observe_subagents",
         data: {
           timedOut: false,
           observedAgentId: "subagent_1",
@@ -261,7 +261,7 @@ describe("MicroCompaction", () => {
           { role: "tool", tool_call_id: `call_${index}`, name: testCase.name, content: payload },
           { role: "assistant", content: "consumed" },
         ])[1]?.content ?? "";
-      if (["manage_tasks", "manage_subagents", "submit_task_result"].includes(testCase.name)) {
+      if (["manage_tasks", "observe_subagents", "submit_task_result"].includes(testCase.name)) {
         assert.equal(reference, payload);
       } else {
         for (const expected of testCase.expected) assert.match(reference, expected);

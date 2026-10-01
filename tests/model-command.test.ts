@@ -1022,11 +1022,11 @@ describe("thread leases", () => {
       phase: "completed",
       payload: {
         callId: "call_restore_after_failed_new",
-        tool: "manage_subagents",
+        tool: "spawn_subagent",
         message: {
           role: "tool",
           tool_call_id: "call_restore_after_failed_new",
-          name: "manage_subagents",
+          name: "spawn_subagent",
           content: '{"ok":true}',
         },
         subagentAssignment: assignment,

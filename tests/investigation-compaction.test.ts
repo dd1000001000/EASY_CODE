@@ -321,17 +321,21 @@ describe("unfinished investigation compaction", () => {
         thinkingEffort: "high",
         createdAt: f.state.createdAt,
       };
-      for (const [id, lifecycle] of [
-        ["start_child", { action: "activate", agentId: "child" }],
-        ["follow", { action: "deliver_follow_up", agentId: "child", message: "Also check empty strings" }],
-      ]) {
+      for (const [id, name, lifecycle] of [
+        ["start_child", "spawn_subagent", { action: "activate", agentId: "child" }],
+        [
+          "follow",
+          "message_subagent",
+          { action: "deliver_follow_up", agentId: "child", message: "Also check empty strings" },
+        ],
+      ] as const) {
         f.message({
           role: "assistant",
           content: null,
-          tool_calls: [{ id, type: "function", function: { name: "manage_subagents", arguments: "{}" } }],
+          tool_calls: [{ id, type: "function", function: { name, arguments: "{}" } }],
         });
         f.message(
-          { role: "tool", name: "manage_subagents", tool_call_id: id, content: "running" },
+          { role: "tool", name, tool_call_id: id, content: "running" },
           {
             subagentLifecycle: lifecycle,
             ...(lifecycle.action === "activate" ? { subagentAssignment: assignment } : {}),

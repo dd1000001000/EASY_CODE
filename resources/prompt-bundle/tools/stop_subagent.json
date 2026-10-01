@@ -1,0 +1,10 @@
+{
+  "id": "stop_subagent",
+  "contractVersion": "1.0.0",
+  "description": "Request cancellation of a running child agent. Stopping is asynchronous: collect the child's terminal result with observe_subagents before continuing.",
+  "propertyDescriptions": {
+    "agentId": "The target child-agent identifier.",
+    "reason": "A concise auditable cancellation reason."
+  },
+  "guidance": "A stop request does not complete or collect the child; observe_subagents must still collect its terminal result."
+}

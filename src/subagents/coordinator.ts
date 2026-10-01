@@ -25,6 +25,7 @@ import { MAX_SUBAGENT_DISPLAY_NAME_CHARS, subagentDisplayLabel, subagentDisplayN
 import type {
   FollowUpSubagentRequest,
   HandoffSubagentRequest,
+  ObserveSubagentsRequest,
   SpawnSubagentRequest,
   StandaloneSubagentTask,
   StopSubagentRequest,
@@ -32,9 +33,7 @@ import type {
   SubagentRecord,
   SubagentParentMessage,
   SubagentStatus,
-  SubagentStatusRequest,
   SubagentView,
-  WaitForSubagentsRequest,
 } from "./types.js";
 
 function agentPromptText(path: string): string {
@@ -371,26 +370,22 @@ export class SubagentCoordinator implements SubagentControl {
     };
   }
 
-  async status(request: SubagentStatusRequest, context: ToolContext): Promise<ToolExecutionResult> {
-    const records = this.selectRecords(request.agentIds, context.threadId);
-    const active = this.recordsForThread(context.threadId).filter(
-      (record) => !TERMINAL_STATUSES.has(record.status),
-    ).length;
-    return {
-      ok: true,
-      summary: records.length
-        ? `Reported ${records.length} subagent status record(s).`
-        : "This parent has no subagents.",
-      data: {
-        agents: records.map(publicRecord),
-        concurrency: { active, limit: this.concurrencyLimit(context) },
-        unreadMessageCount: this.pendingMessages(context.threadId, request.agentIds).length,
-      },
-    };
-  }
-
-  async wait(request: WaitForSubagentsRequest, context: ToolContext): Promise<ToolExecutionResult> {
-    const jobs = this.selectJobs(request.agentIds, context.threadId);
+  /**
+   * Report the selected children and deliver at most one pending update: an
+   * unread child report or a terminal result, which this call collects. A
+   * positive timeout blocks until one arrives.
+   */
+  async observe(request: ObserveSubagentsRequest, context: ToolContext): Promise<ToolExecutionResult> {
+    const jobs = request.agentIds
+      ? this.selectJobs(request.agentIds, context.threadId)
+      : [...this.jobs.values()].filter((job) => job.record.parentThreadId === context.threadId);
+    if (!jobs.length) {
+      return {
+        ok: true,
+        summary: "This parent has no subagents.",
+        data: { agents: [], concurrency: { active: 0, limit: this.concurrencyLimit(context) }, unreadMessageCount: 0 },
+      };
+    }
     let mergeable = jobs.find((job) => isTerminal(job.record.status) && !job.graphObserved);
     let message = this.pendingMessages(context.threadId, request.agentIds)[0];
     if (!mergeable && !message && request.timeoutMs > 0) {
@@ -435,19 +430,23 @@ export class SubagentCoordinator implements SubagentControl {
       active: this.recordsForThread(context.threadId).filter((record) => !TERMINAL_STATUSES.has(record.status)).length,
       limit: this.concurrencyLimit(context),
     };
+    const unreadMessageCount = this.pendingMessages(context.threadId, request.agentIds).length;
     if (message) {
       return {
         ok: true,
         summary: `Received an update from ${message.agentId} for task ${message.taskId}.`,
-        data: { timedOut: false, message, agents: records, concurrency },
+        data: { timedOut: false, message, agents: records, concurrency, unreadMessageCount: unreadMessageCount - 1 },
         subagentMessageId: message.id,
       };
     }
     if (!mergeable) {
       return {
         ok: true,
-        summary: `No unobserved subagent result became available within ${request.timeoutMs} ms.`,
-        data: { timedOut: true, agents: records, concurrency },
+        summary:
+          request.timeoutMs > 0
+            ? `No unobserved subagent result became available within ${request.timeoutMs} ms.`
+            : `Reported ${records.length} subagent status record(s); no unobserved result is pending.`,
+        data: { timedOut: request.timeoutMs > 0, agents: records, concurrency, unreadMessageCount },
       };
     }
 
@@ -1044,10 +1043,6 @@ export class SubagentCoordinator implements SubagentControl {
 
   private recordsForThread(threadId: string): SubagentRecord[] {
     return [...this.jobs.values()].filter((job) => job.record.parentThreadId === threadId).map((job) => job.record);
-  }
-
-  private selectRecords(agentIds: readonly string[] | undefined, threadId: string): SubagentRecord[] {
-    return agentIds ? this.selectJobs(agentIds, threadId).map((job) => job.record) : this.recordsForThread(threadId);
   }
 
   private selectJobs(agentIds: readonly string[], threadId: string): SubagentJob[] {

@@ -199,7 +199,7 @@ describe("system prompt builder", () => {
       assert.doesNotMatch(prompt, /update_file applies a checked update/u);
       assert.doesNotMatch(prompt, /Prefer direct test runners and existing scripts/u);
       assert.doesNotMatch(prompt, /manage_tasks is available only/u);
-      assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
+      assert.doesNotMatch(prompt, /spawn_subagent is exposed only/u);
       assert.doesNotMatch(prompt, /Supply currentWork and nextStep/u);
       assert.doesNotMatch(prompt, /write_memory is the only path/u);
       assert.doesNotMatch(prompt, /best-effort housekeeping/u);
@@ -265,7 +265,7 @@ describe("system prompt builder", () => {
       assert.doesNotMatch(prompt, /create_file creates a new file/u);
       assert.doesNotMatch(prompt, /delete_file deletes a previously read/u);
       assert.doesNotMatch(prompt, /manage_tasks is available only/u);
-      assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
+      assert.doesNotMatch(prompt, /spawn_subagent is exposed only/u);
       assert.doesNotMatch(prompt, /submit_task_result is available only/u);
 
       const unrestricted = await buildSystemPrompt({

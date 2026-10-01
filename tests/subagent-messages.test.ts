@@ -150,9 +150,9 @@ describe("child-to-parent messages", () => {
         turnId: "turn_parent_messages",
         payload: {
           callId: "call_wait",
-          tool: "manage_subagents",
+          tool: "observe_subagents",
           subagentMessageId: messageId,
-          message: { role: "tool", name: "manage_subagents", tool_call_id: "call_wait", content: "received" },
+          message: { role: "tool", name: "observe_subagents", tool_call_id: "call_wait", content: "received" },
         },
       });
       assert.equal(fixture.mailbox.pending(parentThreadId).length, 0);
@@ -237,7 +237,6 @@ describe("child-to-parent messages", () => {
       });
       const spawned = await coordinator.spawn(
         {
-          action: "spawn",
           name: "Child 1",
           task: {
             title: "Inspect source",
@@ -252,7 +251,7 @@ describe("child-to-parent messages", () => {
       assert.ok(spawned.subagentLifecycle);
       assert.ok(spawned.subagentAssignment);
       coordinator.commitLifecycle(spawned.subagentLifecycle);
-      const waiting = coordinator.wait({ action: "wait", agentIds: [agentId], timeoutMs: 5_000 }, parentContext());
+      const waiting = coordinator.observe({ agentIds: [agentId], timeoutMs: 5_000 }, parentContext());
       const posted = fixture.mailbox.post(
         parentThreadId,
         { agentId, taskId: spawned.subagentAssignment.taskId, taskTitle: "Inspect source", text: "Progress update" },
@@ -264,8 +263,10 @@ describe("child-to-parent messages", () => {
       assert.equal(result.subagentMessageId, posted.id);
       assert.equal((result.data as { agents: { status: string }[] }).agents[0]?.status, "running");
       assert.equal(result.subagentLifecycle, undefined);
-      const snapshot = await coordinator.status({ action: "status" }, parentContext());
-      assert.equal((snapshot.data as { unreadMessageCount: number }).unreadMessageCount, 1);
+      // Until the delivered report is committed as read, a snapshot delivers it again.
+      const snapshot = await coordinator.observe({ timeoutMs: 0 }, parentContext());
+      assert.equal(snapshot.subagentMessageId, posted.id);
+      assert.equal((snapshot.data as { unreadMessageCount: number }).unreadMessageCount, 0);
     } finally {
       fixture.close();
     }
