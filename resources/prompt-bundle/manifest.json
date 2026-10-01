@@ -371,8 +371,8 @@
       "bytes": 436
     },
     "tools/manage_tasks.json": {
-      "sha256": "sha256:6a0f3f470d22c39e098084aa9ee05215ea919450d9f89f31bf0d714cda0c23b8",
-      "bytes": 5861
+      "sha256": "sha256:f54b7431601ad330d3fef8f87be8142714339e99dfea7a740e6032566635cf6c",
+      "bytes": 5796
     },
     "tools/message_subagent.json": {
       "sha256": "sha256:215f6ed050133c4a7299de3ddd60bdb2784cac94ce67698fb33d55369a74646d",
@@ -555,7 +555,7 @@
     "manage_tasks": {
       "path": "tools/manage_tasks.json",
       "contractVersion": "1.1.0",
-      "contentHash": "sha256:6a0f3f470d22c39e098084aa9ee05215ea919450d9f89f31bf0d714cda0c23b8"
+      "contentHash": "sha256:f54b7431601ad330d3fef8f87be8142714339e99dfea7a740e6032566635cf6c"
     },
     "message_subagent": {
       "path": "tools/message_subagent.json",
@@ -703,5 +703,5 @@
       "contentHash": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049"
     }
   },
-  "bundleHash": "sha256:cf75abd5b5067ed67fae68f5ab869a05f73f3043a5f029b0c4cf0e981a41b73b"
+  "bundleHash": "sha256:afa85744f42a986e53f9d5d623cd25e061a6eefcac5258b9c8522eae038cbd61"
 }

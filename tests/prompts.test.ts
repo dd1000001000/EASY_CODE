@@ -143,7 +143,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /delete_file deletes a previously read regular file/);
       assert.match(prompt, /write_memory is the only path that creates long-term memory/);
       assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/);
-      assert.match(prompt, /manage_tasks is available only when Plan or Code is explicitly selected/u);
+      assert.match(prompt, /manage_tasks is available in Plan or Code mode/u);
       assert.match(prompt, /Skip it for short linear work/u);
       assert.match(prompt, /submit (?:the )?(?:proposed plan|proposal) (?:with|through) propose_plan/u);
       assert.match(prompt, /Plain assistant text cannot complete a Plan-mode turn/u);
@@ -198,8 +198,8 @@ describe("system prompt builder", () => {
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
       assert.doesNotMatch(prompt, /update_file applies a checked update/u);
       assert.doesNotMatch(prompt, /Prefer direct test runners and existing scripts/u);
-      assert.doesNotMatch(prompt, /manage_tasks is available only/u);
-      assert.doesNotMatch(prompt, /spawn_subagent is exposed only/u);
+      assert.doesNotMatch(prompt, /manage_tasks is available in/u);
+      assert.doesNotMatch(prompt, /Child agents are available to the main agent/u);
       assert.doesNotMatch(prompt, /Supply currentWork and nextStep/u);
       assert.doesNotMatch(prompt, /write_memory is the only path/u);
       assert.doesNotMatch(prompt, /best-effort housekeeping/u);
@@ -264,8 +264,8 @@ describe("system prompt builder", () => {
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
       assert.doesNotMatch(prompt, /create_file creates a new file/u);
       assert.doesNotMatch(prompt, /delete_file deletes a previously read/u);
-      assert.doesNotMatch(prompt, /manage_tasks is available only/u);
-      assert.doesNotMatch(prompt, /spawn_subagent is exposed only/u);
+      assert.doesNotMatch(prompt, /manage_tasks is available in/u);
+      assert.doesNotMatch(prompt, /Child agents are available to the main agent/u);
       assert.doesNotMatch(prompt, /submit_task_result is available only/u);
 
       const unrestricted = await buildSystemPrompt({
