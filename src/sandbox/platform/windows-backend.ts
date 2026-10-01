@@ -73,7 +73,7 @@ export class WindowsNativeBackend implements NativeBackendPlatform {
     );
     try {
       await service.initialize(this.startupTimeoutMs);
-      await assertProjectSandboxReady(service, this.startupTimeoutMs);
+      await assertProjectSandboxReady(service, this.startupTimeoutMs, this.options.home);
       const code = "const fs=require('node:fs');fs.rmSync(process.argv[1],{recursive:true,force:true,maxRetries:3})";
       const result = await service.request(
         "command/exec",

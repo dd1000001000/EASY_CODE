@@ -144,7 +144,9 @@ export function nativeSandboxEnvironment(
     if (source[key] !== undefined) environment[key] = source[key];
   }
   // This variable is private to the child process. EASY CODE never changes the
-  // controller's CODEX_HOME or reads a user's Codex configuration.
+  // controller's CODEX_HOME or reads a user's Codex configuration; the only
+  // file it shares with another Codex home is the sandbox account credentials
+  // (see windows-shared-accounts.ts).
   environment.CODEX_HOME = home;
   environment.NO_COLOR = "1";
   Object.assign(environment, nativeSandboxProxyEnvironment(localProxyURL, windowsProxyPorts));

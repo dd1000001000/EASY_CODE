@@ -16,6 +16,7 @@ import type {
   ReadinessResult,
 } from "./startup-types.js";
 import { startupError } from "./startup-types.js";
+import { reconcileWindowsSandboxAccounts, resetElsewhereMessage } from "../windows-shared-accounts.js";
 
 export class WindowsNativeStartup implements NativeStartupPlatform {
   readonly backendName = "Native OS sandbox (Windows elevated)";
@@ -39,7 +40,14 @@ export class WindowsNativeStartup implements NativeStartupPlatform {
     return { lease, proxyURL: `http://127.0.0.1:${lease.port}`, ports: await lease.setupPorts() };
   }
 
-  async checkReadiness(service: NativeAppServerClient, result: ReadinessResult): Promise<SandboxReadiness | undefined> {
+  async checkReadiness(
+    service: NativeAppServerClient,
+    result: ReadinessResult,
+    home: string,
+  ): Promise<SandboxReadiness | undefined> {
+    // Checked before the probe: a probe with stale passwords makes Codex start an unannounced elevated setup.
+    const accounts = await reconcileWindowsSandboxAccounts(home);
+    if (accounts.kind === "reset_elsewhere") return result("setup_required", [resetElsewhereMessage(accounts)], true);
     const configured = await service.request("windowsSandbox/readiness", {}, this.startupTimeoutMs);
     return configured?.status === "ready"
       ? undefined

@@ -85,7 +85,7 @@ export class NativeSandboxStartupService implements SandboxStartupService {
       );
       try {
         await service.initialize(this.limits.sandboxStartupWindowsMs);
-        const notReady = await platform.checkReadiness(service, this.result);
+        const notReady = await platform.checkReadiness(service, this.result, home);
         if (notReady) return notReady;
         const probe = await service.request(
           "command/exec",

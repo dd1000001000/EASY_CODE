@@ -87,7 +87,7 @@ try {
   // is infrastructure and must not be attributed as target network traffic.
   service = new NativeAppServerClient(payload.entrypoint, payload.home, environment, undefined, payload.proxyPorts);
   await service.initialize(payload.startupMs);
-  await assertProjectSandboxReady(service, payload.startupMs);
+  await assertProjectSandboxReady(service, payload.startupMs, payload.home);
   const stopListening = service.onNotification((message) => {
     if (message?.method !== "command/exec/outputDelta") return;
     const encoded = message.params?.deltaBase64;

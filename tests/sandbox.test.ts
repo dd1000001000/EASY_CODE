@@ -35,7 +35,10 @@ describe("native sandbox runtime", () => {
         return { status: "notConfigured" };
       },
     };
-    await assert.rejects(assertProjectSandboxReady(service, 1_000, "win32"), /Project sandbox is not ready/u);
+    await assert.rejects(
+      assertProjectSandboxReady(service, 1_000, "unused-home", "win32"),
+      /Project sandbox is not ready/u,
+    );
     assert.deepEqual(methods, ["windowsSandbox/readiness"]);
   });
 
@@ -45,7 +48,7 @@ describe("native sandbox runtime", () => {
         throw new Error("Windows API must not run");
       },
     };
-    await assertProjectSandboxReady(service, 1_000, "linux");
+    await assertProjectSandboxReady(service, 1_000, "unused-home", "linux");
   });
 
   it("pins the single tested runtime without publishing a shrinkwrap", async () => {

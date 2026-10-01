@@ -21,7 +21,11 @@ export interface NativeStartupPlatform {
   readonly probeCommand: readonly string[];
   readonly successDetail: string;
   proxyState(): Promise<NativeProxyState | undefined>;
-  checkReadiness(service: NativeAppServerClient, result: ReadinessResult): Promise<SandboxReadiness | undefined>;
+  checkReadiness(
+    service: NativeAppServerClient,
+    result: ReadinessResult,
+    home: string,
+  ): Promise<SandboxReadiness | undefined>;
   checkProbe(stdout: unknown, result: ReadinessResult): SandboxReadiness | undefined;
   probeSucceeded(proxy: NativeProxyState | undefined): Promise<void>;
   probeFailed(message: string, result: ReadinessResult): SandboxReadiness;

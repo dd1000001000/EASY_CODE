@@ -12,6 +12,9 @@ for (const name of ["EASY_CODE_VSCODE_BRIDGE_ENDPOINT", "EASY_CODE_VSCODE_BRIDGE
 // Approvals and long requests raise desktop notifications; a test run must not pop real ones.
 // Notifier tests pass their own environment.
 process.env.EASY_CODE_NOTIFICATIONS = "off";
+// Sandbox tests must never read or update the developer's real Codex home (~/.codex).
+// Account-sharing tests pass their own homes.
+process.env.EASY_CODE_SHARE_SANDBOX_ACCOUNTS = "off";
 
 async function main() {
   const projectRoot = path.resolve(__dirname, "..");

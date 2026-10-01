@@ -89,7 +89,7 @@ export class SandboxedMcpStdioTransport implements Transport {
     this.service = service;
     try {
       await service.initialize(this.limits.mcpStartupTimeoutMs);
-      await assertProjectSandboxReady(service, this.limits.mcpStartupTimeoutMs);
+      await assertProjectSandboxReady(service, this.limits.mcpStartupTimeoutMs, home);
       this.stopNotifications = service.onNotification((notification) => {
         if (notification?.method !== "command/exec/outputDelta" || notification.params?.processId !== this.processId)
           return;
