@@ -196,7 +196,7 @@ export function layoutVirtualDocument(
     const appendPart = (part: VirtualDocumentLinePart, value: string): void => {
       let wrapped = nodeCache.parts.get(part);
       if (!wrapped) {
-        wrapped = wrapToWidth(value, normalizedColumns, { preserveAnsi });
+        wrapped = wrapToWidth(value, normalizedColumns, { preserveAnsi, hangingIndent: true });
         nodeCache.parts.set(part, wrapped);
       }
       for (let partRow = 0; partRow < wrapped.length; partRow += 1) {

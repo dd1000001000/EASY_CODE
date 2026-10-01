@@ -83,4 +83,19 @@ describe("terminal UI layout", () => {
     assert.equal(clampVisualColumn("a中b", 3), 3);
     assert.equal(clampVisualColumn("a中b", 99), 4);
   });
+
+  it("indents soft-wrapped rows under a transcript gutter only when asked", () => {
+    assert.deepEqual(wrapToWidth("● abcdefgh", 6, { hangingIndent: true }), ["● abcd", "  efgh"]);
+    assert.deepEqual(wrapToWidth("  ⎿  abcdefghijk", 11, { hangingIndent: true }), ["  ⎿  abcdef", "     ghijk"]);
+    // Hard newlines start a new gutter; plain indentation is a gutter too.
+    assert.deepEqual(wrapToWidth("● ab\ncdefgh", 4, { hangingIndent: true }), ["● ab", "cdef", "gh"]);
+    assert.deepEqual(wrapToWidth("  abcdef", 6, { hangingIndent: true }), ["  abcd", "  ef"]);
+    // A gutter wider than half the row is not repeated.
+    assert.deepEqual(wrapToWidth("    abcd", 6, { hangingIndent: true }), ["    ab", "cd"]);
+    // Styles survive the inserted indent, and the default is unchanged.
+    const styled = wrapToWidth("● \u001B[31mabcdef\u001B[39m", 6, { hangingIndent: true });
+    assert.deepEqual(styled.map(stripAnsi), ["● abcd", "  ef"]);
+    assert.ok(styled[1]?.startsWith("\u001B[31m  "));
+    assert.deepEqual(wrapToWidth("● abcdefgh", 6), ["● abcd", "efgh"]);
+  });
 });

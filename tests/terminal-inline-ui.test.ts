@@ -424,7 +424,7 @@ describe("Terminal retained inline shell", () => {
         );
         assert.equal(state.transcript.filter((entry) => entry.id === "thinking_1").length, 1);
         assert.equal(state.transcript[1]?.reasoning, "Inspect files");
-        assert.equal(state.transcript[2]?.text, "\nHello world\n\n");
+        assert.equal(stripAnsi(state.transcript[2]?.text ?? ""), "\n● Hello world\n\n");
       } finally {
         terminal.close();
       }
@@ -444,7 +444,10 @@ describe("Terminal retained inline shell", () => {
         terminal.modelStream({ kind: "text_delta", streamId: "stream_2", sequence: 2, text: "Partial " });
         terminal.modelStream({ kind: "interrupted", streamId: "stream_2", sequence: 3 });
         assert.equal(terminal.finalizeStreamedAnswer("Failure result"), false);
-        assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /Partial.*\n\[Interrupted model response/u);
+        assert.match(
+          terminalState(terminal).transcript.at(-1)?.text ?? "",
+          /Partial.*\n  \[Interrupted model response/u,
+        );
       } finally {
         terminal.close();
       }
@@ -518,7 +521,10 @@ describe("Terminal retained inline shell", () => {
         assert.ok((terminalState(terminal).transcript.at(-1)?.text.length ?? 0) < 1200);
         terminal.modelStream({ kind: "completed", streamId: "burst", sequence: 202, finishReason: "stop" });
         assert.equal(terminal.finalizeStreamedAnswer(fragment.repeat(200)), true);
-        assert.equal(terminalState(terminal).transcript.at(-1)?.text, `\n${fragment.repeat(200).trim()}\n\n`);
+        assert.equal(
+          stripAnsi(terminalState(terminal).transcript.at(-1)?.text ?? ""),
+          `\n● ${fragment.repeat(200).trim()}\n\n`,
+        );
       } finally {
         terminal.close();
       }
@@ -594,7 +600,7 @@ describe("Terminal retained inline shell", () => {
         const answers = terminalState(terminal).transcript.filter((entry) => entry.kind === "assistant");
         assert.equal(answers.length, 2);
         assert.match(answers[0]?.text ?? "", /Interrupted/u);
-        assert.equal(answers[1]?.text, "\nAccepted\n\n");
+        assert.equal(stripAnsi(answers[1]?.text ?? ""), "\n● Accepted\n\n");
       } finally {
         terminal.close();
       }
@@ -701,7 +707,7 @@ describe("Terminal retained inline shell", () => {
         const composer = disclosureRegionText(terminal, "composer");
         assert.ok(composer.indexOf("Progress") < composer.indexOf("Working on:"));
         const footer = disclosureRegionText(terminal, "footer");
-        const statusOffset = footer.indexOf("auto  deepseek/v4-pro");
+        const statusOffset = footer.indexOf("v4-pro · medium");
         const tasksOffset = footer.indexOf("Tasks 2/3");
         const agentsOffset = footer.indexOf("backend-auth");
         assert.ok(statusOffset >= 0);
@@ -766,7 +772,7 @@ describe("Terminal retained inline shell", () => {
         terminal.setSessionInfo(session({ commandExecutionMode: "auto_approve" }));
         const safeFrame = stripAnsi(captured().slice(safeOffset));
         assert.doesNotMatch(safeFrame, /! EASY CODE HOST FULL ACCESS/u);
-        assert.equal((stripAnsi(captured()).match(/╭─ EASY CODE /gu) ?? []).length, 1);
+        assert.equal((stripAnsi(captured()).match(/EASY CODE\r?\n/gu) ?? []).length, 1);
       } finally {
         terminal.close();
       }
@@ -860,11 +866,11 @@ describe("Terminal retained inline shell", () => {
           transcript.map((entry) => entry.kind),
           ["tool", "warning", "raw"],
         );
-        assert.match(transcript[0]?.text ?? "", /✓ Tool: read_file/u);
+        assert.match(stripAnsi(transcript[0]?.text ?? ""), /● read_file/u);
         assert.match(transcript[1]?.text ?? "", /Retrying API attempt 2\/3/u);
         assert.equal(transcript[2]?.text, "Authentication flow inspected.\n");
         assert.equal(transcript.filter((entry) => entry.kind === "tool").length, 1);
-        assert.match(stripAnsi(captured()), /✓ Tool: read_file/u);
+        assert.match(stripAnsi(captured()), /● read_file/u);
 
         terminal.clearCurrentRequest();
         assert.deepEqual(terminalState(terminal).live.progress, []);
@@ -907,7 +913,7 @@ describe("Terminal retained inline shell", () => {
           "readPrompt must not enable terminal modes before the persistent writer",
         );
         assert.equal(
-          stripAnsi(promptStartup.slice(0, alternateScreenOffset)).includes("╭─ Request"),
+          stripAnsi(promptStartup.slice(0, alternateScreenOffset)).includes("│ › "),
           false,
           "readPrompt must not paint a transient inline prompt before the fixed frame",
         );
@@ -918,8 +924,8 @@ describe("Terminal retained inline shell", () => {
         );
 
         const initial = disclosureRegionText(terminal);
-        assert.match(initial, /╭─ Request /u);
-        assert.match(initial, /╰─+╯\r?\nauto\s+deepseek\/v4-pro/u);
+        assert.match(initial, /│ › /u);
+        assert.match(initial, /╰─+╯\r?\nauto · v4-pro · medium/u);
 
         const liveOnlyOffset = captured().length;
         terminal.status("Tool: read_file");
@@ -934,7 +940,7 @@ describe("Terminal retained inline shell", () => {
         assertPersistentFrame(terminal, output);
         const activeComposer = disclosureRegionText(terminal, "composer");
         assert.match(activeComposer, /Progress[\s\S]*Tool: read_file/u);
-        assert.match(activeComposer, /╭─ Request/u);
+        assert.match(activeComposer, /│ › /u);
         const activeFooter = disclosureRegionText(terminal, "footer");
         const tasksOffset = activeFooter.indexOf("Tasks 2/3");
         const agentsOffset = activeFooter.indexOf("backend-auth");
@@ -955,9 +961,9 @@ describe("Terminal retained inline shell", () => {
           ),
           true,
         );
-        assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › /u);
         const afterStatusFooter = disclosureRegionText(terminal, "footer");
-        assert.ok(afterStatusFooter.indexOf("auto  deepseek/v4-pro") < afterStatusFooter.indexOf("Tasks 2/3"));
+        assert.ok(afterStatusFooter.indexOf("v4-pro · medium") < afterStatusFooter.indexOf("Tasks 2/3"));
         assert.doesNotMatch(afterStatusFooter, /Agents 1\/4/u);
 
         output.columns = 44;
@@ -1027,7 +1033,7 @@ describe("Terminal retained inline shell", () => {
         assert.equal(submittedUsers.length, 1);
         assert.match(submittedUsers[0]?.text ?? "", /first line/u);
         assert.match(submittedUsers[0]?.text ?? "", /second line/u);
-        assert.match(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /> first line[\s\S]*second line/u);
+        assert.match(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /› first line[\s\S]*second line/u);
 
         terminal.setCurrentRequest("Process the pasted request");
         assert.equal(
@@ -1776,7 +1782,7 @@ describe("Terminal retained inline shell", () => {
         const expandedNode = disclosureNode(terminal, `thinking_${firstId}`);
         assert.equal(expandedNode.expanded, true);
         assert.match(expandedNode.body ?? "", /Inspect the authentication routes/u);
-        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › draft/u);
         assert.equal(lastCursorVisibility(captured()), "hidden");
 
         terminal.handleDisclosureToggle("thinking", firstId);
@@ -1786,7 +1792,7 @@ describe("Terminal retained inline shell", () => {
         const collapsedNode = disclosureNode(terminal, `thinking_${firstId}`);
         assert.equal(collapsedNode.expanded, false);
         assert.match(collapsedNode.preview ?? "", /Inspect the authentication routes/u);
-        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › draft/u);
         assert.equal(
           (captured().match(/\u001B\[\?1049l/gu) ?? []).length,
           exitsBeforeToggle,
@@ -1989,12 +1995,12 @@ describe("Terminal retained inline shell", () => {
         );
         assert.ok(thinkingIndex >= 0 && thinkingIndex < answerIndex);
         assert.equal(collapsedNodes[thinkingIndex]?.expanded, false);
-        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › draft/u);
 
         output.emit("resize");
         await settlePromptInput();
         assertPersistentFrame(terminal, output);
-        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › draft/u);
         assert.equal(terminalState(terminal).composer.text, "draft");
 
         terminal.handleDisclosureToggle("thinking", id);
@@ -2005,10 +2011,10 @@ describe("Terminal retained inline shell", () => {
         assert.match(openNode.body ?? "", /FULL-ONLY-SENTINEL/u);
         assert.match(openNode.title ?? "", new RegExp(`Thinking #${id}`, "u"));
         const completeTurn = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
-        assert.match(completeTurn, /> Explain the authentication changes/u);
+        assert.match(completeTurn, /› Explain the authentication changes/u);
         assert.match(completeTurn, /ASSISTANT-OUTPUT-SENTINEL/u);
         assert.ok(
-          completeTurn.indexOf("> Explain the authentication changes") < completeTurn.indexOf(`Thinking #${id}`),
+          completeTurn.indexOf("› Explain the authentication changes") < completeTurn.indexOf(`Thinking #${id}`),
         );
         assert.ok(completeTurn.indexOf(`Thinking #${id}`) < completeTurn.indexOf("ASSISTANT-OUTPUT-SENTINEL"));
         assert.equal(
@@ -2016,7 +2022,7 @@ describe("Terminal retained inline shell", () => {
           1,
           "the expanded body must replace, not duplicate, the collapsed marker",
         );
-        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › draft/u);
 
         // This is the same OSC emitted when the user clicks the expanded title.
         terminal.handleDisclosureToggle("thinking", id);
@@ -2025,7 +2031,7 @@ describe("Terminal retained inline shell", () => {
         const restoredNode = disclosureNode(terminal, `thinking_${id}`);
         assert.equal(restoredNode.expanded, false);
         assert.doesNotMatch(restoredNode.preview ?? "", /FULL-ONLY-SENTINEL/u);
-        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › draft/u);
         assert.equal(terminalState(terminal).composer.text, "draft");
         assert.ok(disclosureFrame(terminal));
 
@@ -2066,11 +2072,11 @@ describe("Terminal retained inline shell", () => {
         assert.equal(expandedThinking.expanded, true);
         assert.match(expandedThinking.body ?? "", /THINKING-DETAIL/u);
         const completeTurn = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
-        assert.match(completeTurn, /> Inspect this project/u);
+        assert.match(completeTurn, /› Inspect this project/u);
         assert.match(completeTurn, /ASSISTANT-ROW-IN-CURRENT-TURN/u);
-        assert.ok(completeTurn.indexOf("> Inspect this project") < completeTurn.indexOf("> deploy this project"));
-        assert.ok(completeTurn.indexOf("THINKING-DETAIL") < completeTurn.indexOf("> deploy this project"));
-        assert.ok(completeTurn.indexOf("> deploy this project") < completeTurn.indexOf("SECOND-THINKING-DETAIL"));
+        assert.ok(completeTurn.indexOf("› Inspect this project") < completeTurn.indexOf("› deploy this project"));
+        assert.ok(completeTurn.indexOf("THINKING-DETAIL") < completeTurn.indexOf("› deploy this project"));
+        assert.ok(completeTurn.indexOf("› deploy this project") < completeTurn.indexOf("SECOND-THINKING-DETAIL"));
         assert.ok(
           completeTurn.indexOf("SECOND-THINKING-DETAIL") < completeTurn.indexOf("ASSISTANT-ROW-IN-CURRENT-TURN"),
         );
@@ -2151,12 +2157,15 @@ describe("Terminal retained inline shell", () => {
             .map((row) => row.text)
             .join("\n"),
         );
-        const normalHeader = renderSessionHeader(terminalState(terminal), {
-          // ScreenWriter reserves the final physical TTY cell to avoid
-          // ConPTY pending-autowrap; both normal and expanded views use it.
-          columns: output.columns - 1,
-          color: false,
-        });
+        const normalHeader = stripAnsi(
+          renderSessionHeader(terminalState(terminal), {
+            // ScreenWriter reserves the final physical TTY cell to avoid
+            // ConPTY pending-autowrap; both normal and expanded views use it.
+            columns: output.columns - 1,
+            rows: output.rows,
+            color: true,
+          }),
+        );
         assert.equal(expandedHeader, normalHeader, "expanded Thinking must reuse the normal EASY CODE session header");
         terminal.setSessionInfo(
           session({
@@ -2177,11 +2186,11 @@ describe("Terminal retained inline shell", () => {
         const completeDocument = completeTurn.join("\n");
         const orderedMarkers = [
           "PRIOR-TURN-MUST-STAY-OUTSIDE-VIEWER",
-          "> 这个项目是做什么的",
+          "› 这个项目是做什么的",
           "Server rejected context capacity",
           "FIRST-THINKING-FULL-BODY",
-          "> 以及这个项目怎么使用",
-          "✓ Tool: read_file",
+          "› 以及这个项目怎么使用",
+          "● read_file",
           "SECOND-THINKING-FULL-BODY",
           "MODEL-ANSWER",
           "POST-TURN-IDLE-STATUS-MUST-STAY-OUTSIDE-VIEWER",
@@ -2274,9 +2283,9 @@ describe("Terminal retained inline shell", () => {
 
         const stableTurn = stripAnsi(captured().slice(turnOffset));
         const markerOffset = stableTurn.indexOf(`▶ Thinking #${thinkingId}`);
-        const toolOffset = stableTurn.indexOf("✓ Tool: read_file");
+        const toolOffset = stableTurn.indexOf("● read_file");
         const secondMarkerOffset = stableTurn.indexOf(`▶ Thinking #${secondThinkingId}`);
-        const secondToolOffset = stableTurn.indexOf("✓ Tool: update_file");
+        const secondToolOffset = stableTurn.indexOf("● update_file");
         const answerOffset = stableTurn.indexOf("EVENT-TIME-ANSWER");
         assert.ok(markerOffset >= 0);
         assert.ok(toolOffset > markerOffset);
@@ -2337,7 +2346,7 @@ describe("Terminal retained inline shell", () => {
         terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
         const completeTurn = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
-        assert.match(completeTurn, /> 保留现有样式\n  补充部署说明/u);
+        assert.match(completeTurn, /› 保留现有样式\n  补充部署说明/u);
         assert.match(completeTurn, /PLAN-REVISION-ANSWER/u);
         assert.match(completeTurn, /Revise the accepted plan/u);
         assert.doesNotMatch(completeTurn, /INTERNAL-REVISION-CONTROL-PROMPT/u);
@@ -2524,7 +2533,7 @@ describe("Terminal retained inline shell", () => {
         const atStart = disclosureFrame(terminal);
         assert.ok(atStart);
         assert.equal(atStart.viewport.atStart, true);
-        assert.match(stripAnsi(atStart.visibleRows.map((row) => row.text).join("\n")), /> Inspect tail anchor/u);
+        assert.match(stripAnsi(atStart.visibleRows.map((row) => row.text).join("\n")), /› Inspect tail anchor/u);
 
         input.write("\u001B[6~".repeat(10));
         await settlePromptInput();
@@ -2575,7 +2584,7 @@ describe("Terminal retained inline shell", () => {
         output.emit("resize");
         await settlePromptInput();
         assertPersistentFrame(terminal, output);
-        assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › /u);
         const completeBeforeExpand = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
         assert.match(completeBeforeExpand, /assistant row 1/u);
         assert.match(completeBeforeExpand, /assistant row 25/u);
@@ -2586,9 +2595,9 @@ describe("Terminal retained inline shell", () => {
         const expandedNode = disclosureNode(terminal, `thinking_${targetId}`);
         assert.equal(expandedNode.expanded, true);
         assert.match(expandedNode.body ?? "", /TARGET-THINKING-DETAIL-1/u);
-        assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ › /u);
         const completeTurn = disclosureNodes(terminal).map(disclosureNodeText).join("\n");
-        assert.match(completeTurn, /> Summarize a long verification run/u);
+        assert.match(completeTurn, /› Summarize a long verification run/u);
         assert.match(completeTurn, /assistant row 1/u);
         assert.match(completeTurn, /assistant row 25/u);
         assert.match(completeTurn, /answer tail 1/u);
@@ -2604,7 +2613,7 @@ describe("Terminal retained inline shell", () => {
         input.write("still works\r");
         assert.equal((await prompt)?.text, "still works");
         assert.equal(disclosureFrame(terminal)?.viewport.atEnd, true);
-        assert.match(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /> still works/u);
+        assert.match(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /› still works/u);
       } finally {
         terminal.close();
       }

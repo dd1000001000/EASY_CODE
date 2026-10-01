@@ -7,6 +7,7 @@ import {
   type ReasoningBlock,
   type ReasoningRegistry,
 } from "./reasoning.js";
+import { formatAssistantText } from "./transcript-format.js";
 
 /** What the stream renderer needs from the Terminal that owns the transcript document. */
 export interface ModelStreamHost {
@@ -165,7 +166,7 @@ export class ModelStreamRenderer {
     this.host.replaceTranscriptEntry(candidate.entryId, {
       kind: "assistant",
       id: candidate.entryId,
-      text: `\n${complete}\n\n`,
+      text: `\n${formatAssistantText(complete, this.host.colorEnabled())}\n\n`,
     });
     this.streams.delete(candidate.streamId);
     return true;
@@ -358,13 +359,13 @@ export class ModelStreamRenderer {
         this.host.commitTranscript({
           kind: "assistant",
           id: state.answerEntryId,
-          text: `\n${safe}`,
+          text: `\n${formatAssistantText(safe, this.host.colorEnabled())}`,
         });
       } else {
         this.host.replaceTranscriptEntry(state.answerEntryId, {
           kind: "assistant",
           id: state.answerEntryId,
-          text: `\n${safe}`,
+          text: `\n${formatAssistantText(safe, this.host.colorEnabled())}`,
         });
       }
       return;
@@ -467,7 +468,7 @@ export class ModelStreamRenderer {
       this.host.replaceTranscriptEntry(state.answerEntryId, {
         kind: "assistant",
         id: state.answerEntryId,
-        text: `\n${state.renderedAnswer ?? ""}\n${interrupted}\n`,
+        text: `\n${formatAssistantText(`${state.renderedAnswer ?? ""}\n${interrupted}`, this.host.colorEnabled())}\n`,
       });
     } else {
       this.host.commitTranscript({

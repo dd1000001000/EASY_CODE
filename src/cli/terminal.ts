@@ -20,6 +20,7 @@ import type {
   PlanProposal,
   ProviderStreamEvent,
   ThinkingEffort,
+  ToolDisplayDetail,
 } from "../core/types.js";
 import { translate } from "../i18n/catalog.js";
 import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
@@ -62,6 +63,7 @@ import {
 import { AdjustmentRegistry, renderAdjustmentBody, type AdjustmentBlock } from "./adjustment.js";
 import { formatUserTranscriptEntry, type DisclosureKind, type TerminalViewOptions } from "./disclosure-render.js";
 import { renderFileDiff } from "./file-diff.js";
+import { formatToolTranscript, toolTarget } from "./transcript-format.js";
 import {
   type ModelSelectorChoice,
   type ProviderSelectorChoice,
@@ -481,35 +483,33 @@ export class Terminal implements AppInteractionPort {
     this.refresh();
   }
 
-  toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string): void {
+  toolCompleted(
+    toolName: string,
+    ok: boolean,
+    summary?: string,
+    error?: string,
+    details?: readonly ToolDisplayDetail[],
+  ): void {
     if (!this.inlineShellActive) return;
     // Completion is durable scrollback. Keeping a second completed copy in the
     // redrawable region makes every tool appear twice and lets Progress grow
     // for the lifetime of a request.
     this.removeRunningProgress("tool");
-    const completeSummary = summary ? redactSensitiveInformation(sanitizeCommandOutput(summary)).trim() : "";
-    const summaryPreview = completeSummary ? this.safeInline(completeSummary, 160) : "";
-    const detail = summaryPreview ? ` — ${summaryPreview}` : "";
-    // The completion row stays compact, but it must not become the only copy
-    // of a longer or multiline tool summary. Keep the full sanitized summary
-    // directly below its preview in stable scrollback.
-    const summaryBody =
-      completeSummary && completeSummary !== summaryPreview
-        ? `\n${completeSummary
-            .split(/\r?\n/gu)
-            .map((line) => `  ${line}`)
-            .join("\n")}`
-        : "";
-    const completeError = !ok && error ? redactSensitiveInformation(sanitizeCommandOutput(error)).trim() : "";
-    const errorBody = completeError
-      ? `\n${completeError
-          .split(/\r?\n/gu)
-          .map((line) => `  ${line}`)
-          .join("\n")}`
-      : "";
+    // The result rows must not become a preview of a longer or multiline
+    // summary: scrollback keeps the complete sanitized text.
+    const multiline = (value: string | undefined): string =>
+      value ? redactSensitiveInformation(sanitizeCommandOutput(value)).trim().replace(/\r\n?/gu, "\n") : "";
+    const target = toolTarget(details);
     this.commitTranscript({
       kind: "tool",
-      text: `${ok ? "✓" : "✗"} Tool: ${this.safeInline(toolName, 80)}${detail}` + `${summaryBody}${errorBody}\n`,
+      text: `${formatToolTranscript({
+        name: this.safeInline(toolName, 80),
+        ok,
+        summary: multiline(summary),
+        error: ok ? "" : multiline(error),
+        ...(target ? { target: this.safeInline(target, 160) } : {}),
+        color: this.colorEnabled(),
+      })}\n`,
       title: toolName,
     });
     this.refresh();

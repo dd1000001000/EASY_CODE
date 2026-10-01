@@ -4,6 +4,7 @@ import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
 import type { UIEvent, UIProgressStatus } from "../src/ui/contracts.js";
 import { displayWidth, stripAnsi } from "../src/ui/render/layout.js";
+import { LOGO_ROWS } from "../src/ui/render/logo.js";
 import { createDisclosureViewState, renderDisclosureView } from "../src/ui/tui/disclosure-view.js";
 import {
   renderAgentStatusLines,
@@ -225,7 +226,7 @@ describe("pure terminal UI views", () => {
 
     const rendered = renderSessionHeader(state, { columns: 80, color: false });
 
-    assert.match(rendered, /^╭─ EASY CODE /u);
+    assert.match(rendered, /^EASY CODE\n/u);
     assert.match(rendered, /auto · DeepSeek\/v4-pro · thinking:medium/u);
     assert.match(rendered, /context:82\.4k\/128k/u);
     assert.match(rendered, /课程系统 password=\[REDACTED\]/u);
@@ -253,10 +254,34 @@ describe("pure terminal UI views", () => {
         },
       ]);
       const footer = renderComposerFooter(state, { columns: 80, color: false });
-      assert.ok(footer.includes(`DAG/agents ${enabled ? "on" : "off"}`));
+      assert.equal(footer.includes("DAG/agents on"), enabled);
       assert.match(renderSessionHeader(state, { columns: 80, color: false }), /context:82\.4k\/128k/u);
       assertBoundedLines(footer, 80);
     }
+  });
+
+  it("right-aligns the model in the footer and hides idle run state", () => {
+    const state = applyEvents(createUIState(), [
+      {
+        type: "session.set",
+        session: {
+          threadId: "footer-thread",
+          workspaceRoot: "F:\\project",
+          mode: "code",
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+          thinkingEffort: "medium",
+          contextTokens: 82_400,
+          contextLimitTokens: 128_000,
+        },
+      },
+    ]);
+    const footer = renderComposerFooter(state, { columns: 60, color: false });
+    assert.match(footer, /^code {2,}v4-pro · medium · ctx 82\.4k\/128k$/u);
+    assert.equal(footer.length, 59, "the last terminal cell stays empty");
+    assert.doesNotMatch(footer, /task|Agents|DAG/u);
+    // Too narrow to split: the model still follows the mode.
+    assert.match(renderComposerFooter(state, { columns: 24, color: false }), /^code · v4-pro · medium/u);
   });
 
   it("keeps one stable session title and renders unrestricted mode in the live footer", () => {
@@ -277,7 +302,16 @@ describe("pure terminal UI views", () => {
 
     const header = renderSessionHeader(state, { columns: 80, color: true });
     const footer = renderComposerFooter(state, { columns: 80, color: true });
-    assert.match(stripAnsi(header), /^╭─ EASY CODE /u);
+    // With color, room and height, the origami-dog logo sits left of the title.
+    const headerRows = stripAnsi(header).split("\n");
+    assert.equal(headerRows.length, LOGO_ROWS);
+    assert.match(headerRows[1] ?? "", /^[▀▄ ]{11} {2}EASY CODE$/u);
+    assert.match(headerRows[3] ?? "", /^[▀▄ ]{11} {2}F:\\projects\\danger · thread: danger-thread$/u);
+    assertBoundedLines(header, 80);
+    // A short or narrow terminal keeps its rows for the conversation.
+    for (const options of [{ columns: 80, rows: 12 }, { columns: 30 }]) {
+      assert.match(stripAnsi(renderSessionHeader(state, { ...options, color: true })), /^EASY CODE\n/u);
+    }
     assert.doesNotMatch(stripAnsi(header), /Unrestricted command execution/u);
     assert.match(stripAnsi(footer), /^! EASY CODE HOST FULL ACCESS  code/u);
     assert.doesNotMatch(header, /\u001B\[31m/u);
@@ -334,17 +368,17 @@ describe("pure terminal UI views", () => {
     assert.match(rendered, /Agents 2\/4/u);
     assert.match(rendered, /● agent-1  Implement authentication API/u);
     assert.equal(rendered.includes("agent-6"), false);
-    assert.match(rendered, /> Working…/u);
-    assert.match(rendered, /⠹ Waiting for deepseek-v4-pro · 14s/u);
-    assert.match(rendered, /auto  deepseek\/v4-pro/u);
+    assert.match(rendered, /› Working…/u);
+    assert.match(rendered, /⠹ Waiting for deepseek-v4-pro \(14s\)/u);
+    assert.match(rendered, /auto · .*v4-pro · medium/u);
     const blocks = rendered.split("\n\n");
     assert.equal(blocks.length, 5);
     assert.match(blocks[0] ?? "", /^Progress/u);
     assert.match(blocks[0] ?? "", /Read static\/index\.html/u);
-    assert.match(blocks[0] ?? "", /⠹ Waiting for deepseek-v4-pro · 14s/u);
+    assert.match(blocks[0] ?? "", /⠹ Waiting for deepseek-v4-pro \(14s\)/u);
     assert.match(blocks[1] ?? "", /^╭─/u);
-    assert.match(blocks[1] ?? "", /> Working…/u);
-    assert.match(blocks[2] ?? "", /^auto  deepseek\/v4-pro/u);
+    assert.match(blocks[1] ?? "", /› Working…/u);
+    assert.match(blocks[2] ?? "", /^auto · .*v4-pro · medium/u);
     assert.match(blocks[3] ?? "", /^Tasks 2\/7/u);
     assert.match(blocks[4] ?? "", /^Agents 2\/4/u);
     assert.doesNotMatch(blocks[0] ?? "", /Tasks/u);
@@ -383,7 +417,7 @@ describe("pure terminal UI views", () => {
     assert.equal(regions.tasks.length, 3);
     assert.equal(regions.agents.length, 3);
     assert.deepEqual(regions.lines, [...regions.status, ...regions.tasks, ...regions.agents]);
-    assert.match(regions.lines[0] ?? "", /^auto  deepseek\/v4-pro/u);
+    assert.match(regions.lines[0] ?? "", /^auto · .*v4-pro · medium/u);
     assert.match(regions.lines[1] ?? "", /^Tasks 2\/7/u);
     assert.match(regions.lines[4] ?? "", /^Agents 2\/4/u);
 
@@ -459,7 +493,7 @@ describe("pure terminal UI views", () => {
       bottom.lines,
     );
 
-    const statusRow = footerRows.find((row) => /auto  deepseek\/v4-pro/u.test(row.text));
+    const statusRow = footerRows.find((row) => /auto · .*v4-pro · medium/u.test(row.text));
     const tasksRow = footerRows.find((row) => /^Tasks 2\/7/u.test(row.text));
     const agentsRow = footerRows.find((row) => /^Agents 2\/4/u.test(row.text));
     assert.ok(statusRow && tasksRow && agentsRow);
@@ -505,8 +539,8 @@ describe("pure terminal UI views", () => {
       65_000,
     );
 
-    assert.match(upper, /⠴ Running Tool: run_command · 1m 04s/u);
-    assert.match(footer, /^auto  deepseek\/v4-pro/u);
+    assert.match(upper, /⠴ Running Tool: run_command \(1m 04s\)/u);
+    assert.match(footer, /^auto · .*v4-pro · medium/u);
     assert.match(narrowFooter, /^auto/u);
     assertBoundedLines(footer, 72);
     assertBoundedLines(narrowFooter, 32);
@@ -649,9 +683,9 @@ describe("pure terminal UI views", () => {
 
     assert.equal(rendered.includes("Thinking #4"), false);
     assert.ok(rendered.indexOf("Progress") < rendered.indexOf("Waiting for deepseek-v4-pro"));
-    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("> Working…"));
-    assert.ok(rendered.indexOf("> Working…") < rendered.lastIndexOf("auto  deepseek"));
-    assert.ok(rendered.lastIndexOf("auto  deepseek") < rendered.indexOf("Tasks 2/7"));
+    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("› Working…"));
+    assert.ok(rendered.indexOf("› Working…") < rendered.lastIndexOf("v4-pro · medium"));
+    assert.ok(rendered.lastIndexOf("v4-pro · medium") < rendered.indexOf("Tasks 2/7"));
     assert.ok(rendered.indexOf("Tasks 2/7") < rendered.indexOf("Agents 2/4"));
     assertBoundedLines(rendered, 72);
 
@@ -742,12 +776,12 @@ describe("pure terminal UI views", () => {
     const prompt = renderComposerPrompt(state, { columns: 24, color: false });
     const footer = renderComposerFooter(state, { columns: 24, color: false });
 
-    assert.match(prompt, /> 添加登录/u);
+    assert.match(prompt, /› 添加登录/u);
     assert.match(prompt.replace(/[\s│]/gu, ""), /\[REDACTEDTOKEN\]/u);
     assert.equal(prompt.includes("\u001B"), false);
     assertBoundedLines(prompt, 24);
     assertBoundedLines(footer, 24);
-    assert.match(footer, /^auto  deepseek\/v4-pro/u);
+    assert.match(footer, /^auto · .*v4-pro · medium/u);
   });
 
   it("renders command completion without adding it to composer text", () => {
@@ -760,6 +794,6 @@ describe("pure terminal UI views", () => {
       },
     });
     assert.equal(state.composer.text, "/approv");
-    assert.match(renderComposerPrompt(state, { columns: 40, color: false }), /> \/approval/u);
+    assert.match(renderComposerPrompt(state, { columns: 40, color: false }), /› \/approval/u);
   });
 });

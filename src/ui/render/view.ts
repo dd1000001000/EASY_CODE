@@ -1,4 +1,4 @@
-import { Chalk, type ChalkInstance } from "chalk";
+import { Chalk, supportsColor, type ChalkInstance } from "chalk";
 
 import { formatTokenCount } from "../../cli/token-count.js";
 import { DEFAULT_LANGUAGE, type Language } from "../../i18n/language.js";
@@ -9,6 +9,7 @@ import type { SubagentStatus, SubagentView } from "../../subagents/types.js";
 import type { TaskGraphView } from "../../tasks/task-graph.js";
 import type { UIOverlayState, UIProgressStatus, UISessionInfo, UIState, UIThinkingPanelInput } from "../contracts.js";
 import { displayWidth, sanitizeTerminalText, truncateToWidth, wrapToWidth } from "./layout.js";
+import { LOGO_COLUMNS, renderEasyCodeLogo } from "./logo.js";
 
 export const DEFAULT_VIEW_COLUMNS = 80;
 export const MAX_COMPACT_TASK_ROWS = 5;
@@ -92,9 +93,51 @@ export interface FixedBottomRegions {
   readonly lines: readonly string[];
 }
 
-/** Render the stable EASY CODE session card shown above terminal scrollback. */
+/** Narrowest text column worth placing beside the logo. */
+const HEADER_MIN_TEXT_COLUMNS = 24;
+/** Terminals shorter than this keep the conversation instead of a logo. */
+const HEADER_MIN_LOGO_ROWS = 18;
+/** Cells between the logo and the session text. */
+const HEADER_LOGO_GAP = "  ";
+
+/**
+ * Render the stable EASY CODE session header shown above terminal scrollback:
+ * the origami-dog logo beside the title and session facts. Without color, or
+ * in a narrow or short terminal, the same facts are shown as plain rows.
+ */
 export function renderSessionHeader(state: Readonly<UIState>, options: RenderViewOptions = {}): string {
   const columns = viewColumns(options);
+  const palette = viewPalette(options);
+  const text = [palette.cyan.bold(safeInline(state.header.title) || "EASY CODE"), ...sessionHeaderBody(state, options)];
+  const showLogo =
+    viewColor(options) &&
+    columns >= LOGO_COLUMNS + HEADER_LOGO_GAP.length + HEADER_MIN_TEXT_COLUMNS &&
+    viewRows(options) >= HEADER_MIN_LOGO_ROWS;
+  if (!showLogo) {
+    return text.map((line) => truncateToWidth(line, columns, { preserveAnsi: viewColor(options) })).join("\n");
+  }
+
+  const logo = renderEasyCodeLogo(logoColorLevel());
+  // Leave the last cell empty: an exact-width row can autowrap in some terminals.
+  const textColumns = columns - 1 - LOGO_COLUMNS - HEADER_LOGO_GAP.length;
+  const offset = Math.max(0, Math.floor((logo.length - text.length) / 2));
+  const rows = Math.max(logo.length, offset + text.length);
+  return Array.from({ length: rows }, (_, row) => {
+    const mark = logo[row] ?? " ".repeat(LOGO_COLUMNS);
+    const line = text[row - offset];
+    return line === undefined
+      ? mark
+      : `${mark}${HEADER_LOGO_GAP}${truncateToWidth(line, textColumns, { preserveAnsi: true })}`;
+  }).join("\n");
+}
+
+/** Truecolor or 256-color logo where the terminal supports it; basic colors otherwise. */
+function logoColorLevel(): 1 | 2 | 3 {
+  const level = supportsColor ? supportsColor.level : 1;
+  return level >= 3 ? 3 : level === 2 ? 2 : 1;
+}
+
+function sessionHeaderBody(state: Readonly<UIState>, options: RenderViewOptions): string[] {
   const palette = viewPalette(options);
   const session = state.header.session;
   const body: string[] = [];
@@ -122,8 +165,7 @@ export function renderSessionHeader(state: Readonly<UIState>, options: RenderVie
       ].join(palette.gray(" · ")),
     );
   }
-
-  return renderBox(safeInline(state.header.title) || "EASY CODE", body, columns, palette, "cyan");
+  return body;
 }
 
 /**
@@ -248,7 +290,7 @@ export function renderComposerPrompt(state: Readonly<UIState>, options: RenderVi
   const contentColumns = Math.max(1, innerWidth - 2);
   const wrapped = wrapToWidth(payload, contentColumns, { preserveAnsi: true });
   const lines = wrapped.map((line, index) => {
-    const prefixed = `${index === 0 ? "> " : "  "}${line}`;
+    const prefixed = `${index === 0 ? "› " : "  "}${line}`;
     if (hasText) return prefixed;
     return composer.busy ? palette.yellow(prefixed) : palette.gray(prefixed);
   });
@@ -262,56 +304,59 @@ export function renderComposerFooter(
   _nowMs = state.live.activity?.startedAt ?? 0,
 ): string {
   const palette = viewPalette(options);
+  const language = options.language ?? DEFAULT_LANGUAGE;
   const session = state.header.session;
   const graph = state.live.tasks;
   const task = graph ? taskPosition(graph) : undefined;
   const activeAgents = state.live.subagents.filter((agent) => isActiveAgent(agent.status)).length;
-  const metadata: string[] = [];
+  // Left: how the agent acts. Right: which model and how much context. Run
+  // state (DAG, task, agents, steering) appears only while it means something.
+  const left: string[] = [];
+  const right: string[] = [];
   const danger = renderDangerStatusLabel(state, options);
 
   if (session) {
-    metadata.push(palette.cyan(localizedMode(options.language ?? DEFAULT_LANGUAGE, session.mode)));
+    left.push(palette.cyan.bold(localizedMode(language, session.mode)));
     if (session.commandExecutionMode) {
-      metadata.push(
-        palette.gray(
-          `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.approval")}:${session.commandExecutionMode === "auto_approve" ? translate(options.language ?? DEFAULT_LANGUAGE, "cli.agent") : session.commandExecutionMode === "unrestricted" ? translate(options.language ?? DEFAULT_LANGUAGE, "cli.none") : translate(options.language ?? DEFAULT_LANGUAGE, "cli.manual")}`,
-        ),
+      const approval =
+        session.commandExecutionMode === "auto_approve"
+          ? translate(language, "cli.agent")
+          : session.commandExecutionMode === "unrestricted"
+            ? translate(language, "cli.none")
+            : translate(language, "cli.manual");
+      const environment = localizedEnvironment(
+        language,
+        session.commandEnvironment ?? (session.commandExecutionMode === "unrestricted" ? "host" : "sandbox"),
       );
-      metadata.push(
-        palette.gray(
-          `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.env")}:${localizedEnvironment(options.language ?? DEFAULT_LANGUAGE, session.commandEnvironment ?? (session.commandExecutionMode === "unrestricted" ? "host" : "sandbox"))}`,
-        ),
-      );
+      left.push(palette.gray(`${translate(language, "cli.approval")}:${approval}`));
+      left.push(palette.gray(`${translate(language, "cli.env")}:${environment}`));
     }
-    metadata.push(palette.bold(formatProviderModel(session, false)));
-    metadata.push(localizedEffort(options.language ?? DEFAULT_LANGUAGE, session.thinkingEffort));
-    metadata.push(
-      palette.gray(
-        `DAG/${translate(options.language ?? DEFAULT_LANGUAGE, "cli.agentsLower")} ${translate(options.language ?? DEFAULT_LANGUAGE, session.orchestrationEnabled ? "cli.on" : "cli.off")}`,
-      ),
-    );
-    metadata.push(palette.gray(`ctx ${formatContext(session)}`));
+    if (session.orchestrationEnabled) {
+      left.push(palette.gray(`DAG/${translate(language, "cli.agentsLower")} ${translate(language, "cli.on")}`));
+    }
+    right.push(palette.bold(compactModelName(session)));
+    right.push(localizedEffort(language, session.thinkingEffort));
+    right.push(palette.gray(`ctx ${formatContext(session)}`));
   } else {
-    metadata.push(palette.gray(translate(options.language ?? DEFAULT_LANGUAGE, "cli.startingShort")));
+    left.push(palette.gray(translate(language, "cli.startingShort")));
   }
-  metadata.push(
-    palette.gray(
-      task
-        ? `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.task")} ${task.current}/${task.total}`
-        : `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.task")} –`,
-    ),
-  );
-  metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "ui.agents")} ${activeAgents}`));
+  if (task) left.push(palette.cyan(`${translate(language, "cli.task")} ${task.current}/${task.total}`));
+  if (activeAgents > 0) left.push(palette.cyan(`${translate(language, "ui.agents")} ${activeAgents}`));
   if (state.composer.pendingSubmissions > 0) {
-    metadata.push(
-      palette.gray(
-        `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.steering")} ${state.composer.pendingSubmissions}`,
-      ),
-    );
+    left.push(palette.yellow(`${translate(language, "cli.steering")} ${state.composer.pendingSubmissions}`));
   }
 
   const columns = viewColumns(options);
-  const metadataLine = metadata.join("  ");
+  const separator = palette.gray(" · ");
+  const leftText = left.join(separator);
+  const rightText = right.join(separator);
+  // Leave the last cell empty: an exact-width row can autowrap in some terminals.
+  const gap = columns - 1 - displayWidth(leftText) - displayWidth(rightText);
+  // Too narrow to split: keep mode, model and context ahead of the rest.
+  const metadataLine =
+    !danger && rightText && gap >= 2
+      ? `${leftText}${" ".repeat(gap)}${rightText}`
+      : [...left.slice(0, 1), ...right, ...left.slice(1)].join(separator);
   const priority = danger;
   if (priority) {
     const fittedPriority = truncateToWidth(priority, columns, {
@@ -758,17 +803,18 @@ function renderActivity(state: Readonly<UIState>, nowMs: number, options: Render
   const detail = activity.detail ? ` · ${safeInline(activity.detail)}` : "";
   const columns = viewColumns(options);
   const prefix = `${frame} `;
-  const suffix = ` · ${formatElapsed(elapsedMs)}`;
+  const suffix = ` (${formatElapsed(elapsedMs)})`;
   const payloadWidth = Math.max(0, columns - displayWidth(prefix) - displayWidth(suffix));
   const payload = truncateToWidth(`${safeInline(activity.label) || "Working"}${detail}`, payloadWidth, {
     preserveAnsi: false,
   });
-  const line = payload
-    ? `${prefix}${payload}${suffix}`
-    : truncateToWidth(`${frame} ${formatElapsed(elapsedMs)}`, columns, {
-        preserveAnsi: false,
-      });
-  return palette.gray(line);
+  return payload
+    ? `${palette.cyan(prefix)}${payload}${palette.gray(suffix)}`
+    : palette.cyan(
+        truncateToWidth(`${frame} ${formatElapsed(elapsedMs)}`, columns, {
+          preserveAnsi: false,
+        }),
+      );
 }
 
 function renderReviewStage(state: Readonly<UIState>, options: RenderViewOptions, nowMs: number): string {
@@ -832,6 +878,13 @@ function renderBox(
 
 function formatProviderModel(session: Readonly<UISessionInfo>, titledProvider: boolean): string {
   const provider = safeInline(session.provider).toLowerCase() || "provider";
+  const label = titledProvider ? catalogProviderLabel(session.provider) : provider;
+  return `${label}/${compactModelName(session)}`;
+}
+
+/** Model name without a redundant provider prefix; the header names the provider. */
+function compactModelName(session: Readonly<UISessionInfo>): string {
+  const provider = safeInline(session.provider).toLowerCase() || "provider";
   const model = safeInline(session.model) || "model";
   const prefix = `${provider}-`;
   const compactModel = model.toLowerCase().startsWith(prefix)
@@ -839,8 +892,7 @@ function formatProviderModel(session: Readonly<UISessionInfo>, titledProvider: b
     : model.toLowerCase().startsWith(`${provider}/`)
       ? model.slice(provider.length + 1)
       : model;
-  const label = titledProvider ? catalogProviderLabel(session.provider) : provider;
-  return `${label}/${compactModel || "model"}`;
+  return compactModel || "model";
 }
 
 function formatContext(session: Readonly<UISessionInfo>): string {

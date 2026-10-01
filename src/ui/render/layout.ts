@@ -60,7 +60,16 @@ export interface TruncateToWidthOptions {
 export interface WrapToWidthOptions {
   /** Keep safe SGR colour/style sequences. Defaults to true. */
   readonly preserveAnsi?: boolean;
+  /**
+   * Indent soft-wrapped continuation rows to the end of the line's gutter:
+   * its leading spaces plus one transcript marker (`●`, `⎿`, `›`) and the
+   * spaces after it. Hard newlines start a new gutter.
+   */
+  readonly hangingIndent?: boolean;
 }
+
+/** Transcript gutter markers that continuation rows align after. */
+const HANGING_INDENT_MARKERS = new Set(["●", "⎿", "›"]);
 
 /** Return true when a string contains an ANSI/C1 terminal sequence. */
 export function hasAnsi(value: string): boolean {
@@ -232,6 +241,23 @@ export function wrapToWidth(value: string, columns: number, options: WrapToWidth
     currentWidth = 0;
   };
 
+  // Gutter of the current hard line. `leading` stays true until the line's
+  // first content cell, after leading spaces and at most one marker.
+  const hanging = options.hangingIndent ?? false;
+  let gutter = 0;
+  let leading = hanging;
+  let markerSeen = false;
+
+  const softWrap = (): void => {
+    pushLine();
+    leading = false;
+    // A gutter wider than half the row would leave too little room for text.
+    if (gutter > 0 && gutter * 2 <= limit) {
+      current.push({ kind: "text", value: " ".repeat(gutter), width: gutter });
+      currentWidth = gutter;
+    }
+  };
+
   for (const token of tokens) {
     if (token.kind === "sgr") {
       current.push(token);
@@ -241,6 +267,9 @@ export function wrapToWidth(value: string, columns: number, options: WrapToWidth
     }
     if (token.value === "\n") {
       pushLine();
+      gutter = 0;
+      leading = hanging;
+      markerSeen = false;
       continue;
     }
     if (token.width === 0) {
@@ -250,12 +279,22 @@ export function wrapToWidth(value: string, columns: number, options: WrapToWidth
     if (token.width > limit) {
       // A two-cell glyph cannot be displayed in a one-column terminal.  A
       // visible one-cell replacement keeps the width invariant deterministic.
-      if (currentWidth === limit) pushLine();
+      if (currentWidth === limit) softWrap();
       current.push({ kind: "text", value: "…", width: 1 });
       currentWidth += 1;
       continue;
     }
-    if (currentWidth > 0 && currentWidth + token.width > limit) pushLine();
+    if (leading) {
+      if (token.value === " ") {
+        gutter += token.width;
+      } else if (!markerSeen && HANGING_INDENT_MARKERS.has(token.value)) {
+        markerSeen = true;
+        gutter += token.width;
+      } else {
+        leading = false;
+      }
+    }
+    if (currentWidth > 0 && currentWidth + token.width > limit) softWrap();
     current.push(token);
     currentWidth += token.width;
   }

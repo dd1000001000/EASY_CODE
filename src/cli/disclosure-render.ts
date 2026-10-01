@@ -95,7 +95,7 @@ export function formatSubmittedRequest(value: string): string {
   const normalized = value.replace(/\r\n?/gu, "\n");
   return normalized
     .split("\n")
-    .map((line, index) => `${index === 0 ? "> " : "  "}${line}`)
+    .map((line, index) => `${index === 0 ? `${chalk.cyan.bold("›")} ` : "  "}${line}`)
     .join("\n");
 }
 
@@ -133,10 +133,24 @@ export function disclosureDocumentNodes(
     nodes.push({
       id: `transcript:${index}`,
       kind: "text",
-      text: entry.kind === "user" ? formatUserTranscriptEntry(entry) : entry.text,
+      text: CONVERSATION_ITEM_KINDS.has(entry.kind)
+        ? conversationItemText(entry.kind === "user" ? formatUserTranscriptEntry(entry) : entry.text)
+        : entry.text,
     });
   }
   return nodes;
+}
+
+const CONVERSATION_ITEM_KINDS = new Set<UITranscriptEntry["kind"]>(["user", "assistant", "tool"]);
+
+/**
+ * Scrollback text ends with line terminators, but every trailing newline of a
+ * document node is a visible row. Give each conversation item exactly one
+ * blank row above it instead, so requests, answers and tool calls are evenly
+ * spaced however their scrollback text was terminated.
+ */
+function conversationItemText(text: string): string {
+  return `\n${text.replace(/^\n+|\n+$/gu, "")}`;
 }
 
 function reasoningDisclosureNode(
@@ -199,10 +213,13 @@ export function disclosureComposerLines(
   columns: number,
   rows: number,
 ): readonly string[] {
-  const label = state.composer.busy ? "Adjust current task" : "Request";
-  const fitted = truncateToWidth(` ${label} `, Math.max(1, columns - 3), {
-    preserveAnsi: false,
-  });
+  // An idle composer is self-evident; only the busy state, where input
+  // adjusts the running task instead of starting one, is labelled.
+  const fitted = state.composer.busy
+    ? truncateToWidth(" Adjust current task ", Math.max(1, columns - 3), {
+        preserveAnsi: false,
+      })
+    : "";
   const fill = "─".repeat(Math.max(0, columns - 3 - displayWidth(fitted)));
   const text = state.composer.text;
   const cursor = Math.max(0, Math.min(text.length, state.composer.cursor));
@@ -222,8 +239,9 @@ export function disclosureComposerLines(
         `${attachmentSuffix ? `${text ? " " : ""}${attachmentSuffix}` : ""}`
       : `${chalk.inverse(" ")}${chalk.gray(placeholder)}`;
   const interiorWidth = Math.max(1, columns - 4);
-  const allRows = wrapToWidth(`> ${visibleDraft}`, interiorWidth, {
+  const allRows = wrapToWidth(`${chalk.cyan.bold("›")} ${visibleDraft}`, interiorWidth, {
     preserveAnsi: true,
+    hangingIndent: true,
   });
   // A very large draft remains fully retained in readline. Limit only the
   // on-screen composer window so complete Thinking/Adjustment content keeps
@@ -232,7 +250,10 @@ export function disclosureComposerLines(
   // conversation plus status/tasks/agents below this card. The complete
   // draft remains in readline; only a small cursor-centred window is shown.
   const maximumDraftRows = Math.max(1, Math.min(3, rows - 8));
-  const cursorRow = Math.max(0, wrapToWidth(`> ${before}`, interiorWidth, { preserveAnsi: false }).length - 1);
+  const cursorRow = Math.max(
+    0,
+    wrapToWidth(`› ${before}`, interiorWidth, { preserveAnsi: false, hangingIndent: true }).length - 1,
+  );
   const start = Math.max(
     0,
     Math.min(Math.max(0, allRows.length - maximumDraftRows), cursorRow - Math.floor(maximumDraftRows / 2)),
