@@ -92,7 +92,9 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   private readonly drafts = new WeakMap<object, ComposerDraft>();
   private typeAhead = "";
 
-  private readonly legacy: Terminal;
+  /** Classic Terminal for runs without an interactive TTY; created only when needed. */
+  private legacyInstance: Terminal | undefined;
+  private streamingLimits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number } | undefined;
   private app: MountedInkApp | undefined;
   private inputProxy: InputTranslator | undefined;
   private resizeTimer: NodeJS.Timeout | undefined;
@@ -129,31 +131,47 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     private readonly input: NodeJS.ReadStream = process.stdin,
     private readonly output: NodeJS.WriteStream = process.stdout,
   ) {
-    this.legacy = new Terminal(input, output);
     this.store = new InkStore(this.language);
     this.streams = new ModelStreamRenderer(this.streamHost());
+  }
+
+  /**
+   * The classic Terminal is only reached when Ink cannot own the terminal (pipes,
+   * CI, TERM=dumb). Creating it lazily keeps its VS Code bridge and readline state
+   * out of interactive sessions.
+   */
+  private get legacy(): Terminal {
+    if (!this.legacyInstance) {
+      const terminal = new Terminal(this.input, this.output);
+      terminal.setLanguage(this.language);
+      if (this.streamingLimits) terminal.configureStreaming(this.streamingLimits);
+      terminal.setContextTokensProvider(this.contextTokensProvider);
+      this.legacyInstance = terminal;
+    }
+    return this.legacyInstance;
   }
 
   // ---------------------------------------------------------------- session
 
   setLanguage(language: Language): void {
     this.language = language;
-    this.legacy.setLanguage(language);
+    this.legacyInstance?.setLanguage(language);
     this.store.set({ language });
   }
 
   isInteractive(): boolean {
-    return this.legacy.isInteractive();
+    return Boolean(this.input.isTTY && this.output.isTTY);
   }
 
   configureStreaming(limits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number }): void {
     this.streams.configure(limits);
-    this.legacy.configureStreaming(limits);
+    this.streamingLimits = limits;
+    this.legacyInstance?.configureStreaming(limits);
   }
 
   setContextTokensProvider(provider: (() => number) | undefined): void {
     this.contextTokensProvider = provider;
-    this.legacy.setContextTokensProvider(provider);
+    this.legacyInstance?.setContextTokensProvider(provider);
     if (this.contextTimer) clearInterval(this.contextTimer);
     this.contextTimer = undefined;
     if (!provider || !this.app) return;
@@ -174,7 +192,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   }
 
   isInlineShell(): boolean {
-    return this.app !== undefined || this.legacy.isInlineShell();
+    return this.app !== undefined || (this.legacyInstance?.isInlineShell() ?? false);
   }
 
   setSessionInfo(session: Readonly<UISessionInfo>, announce = false): void {
@@ -222,7 +240,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   }
 
   emergencyRestore(): void {
-    this.legacy.emergencyRestore();
+    this.legacyInstance?.emergencyRestore();
     this.teardownApp();
   }
 
@@ -235,7 +253,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     this.externalOperation?.abort();
     this.externalOperation = undefined;
     this.teardownApp();
-    this.legacy.close();
+    this.legacyInstance?.close();
   }
 
   // ------------------------------------------------------------ presentation

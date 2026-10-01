@@ -23,7 +23,6 @@ import {
   type ResumeRecoverySummary,
 } from "./app/thread-recovery.js";
 import { consumeHarborProviderApiKeyFile, resolveHarborOuterSandbox } from "./benchmarks/swebench.js";
-import { Terminal } from "./cli/terminal.js";
 import { InkInteraction } from "./ui/ink/ink-interaction.js";
 import { ApprovalQueue, type ApprovalReview } from "./command/approval-agent.js";
 import { CommandRuntime } from "./command/runtime.js";
@@ -284,9 +283,7 @@ export class EasyCodeApp {
       credentialStore: harborProviderApiKey ? false : (credentialStore ?? false),
     });
     if (harborProviderApiKey) config.providers[benchmarkProvider]!.apiKey = harborProviderApiKey;
-    const terminal: AppInteractionPort =
-      options.terminal ??
-      (process.env.EASY_CODE_UI?.trim().toLowerCase() === "ink" ? new InkInteraction() : new Terminal());
+    const terminal: AppInteractionPort = options.terminal ?? new InkInteraction();
     if (options.approvalPolicy) config.approvalPolicy = options.approvalPolicy;
 
     let storage: EasyCodeStorage | undefined;
