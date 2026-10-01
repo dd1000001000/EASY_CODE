@@ -61,6 +61,8 @@ export interface StandaloneSubagentTask {
 export type SpawnSubagentRequest =
   | {
       action: "spawn";
+      /** User-facing display name; unique per parent Thread and never used for addressing. */
+      name: string;
       taskId: string;
       task?: never;
       instructions: string;
@@ -69,6 +71,7 @@ export type SpawnSubagentRequest =
     }
   | {
       action: "spawn";
+      name: string;
       taskId?: never;
       task: StandaloneSubagentTask;
       instructions: string;
@@ -126,6 +129,8 @@ export type ManageSubagentsInput =
 
 export interface SubagentRecord {
   id: string;
+  /** User-facing name chosen at spawn; absent only for children recorded before names existed. */
+  displayName?: string;
   childThreadId: string;
   environmentId: string;
   parentThreadId: string;
@@ -170,6 +175,7 @@ export interface SubagentArtifactView extends ResultArtifactRef {
 /** Bounded, user-facing snapshot. Private child prompts and context stay isolated. */
 export interface SubagentView {
   id: string;
+  displayName?: string;
   childThreadId: string;
   environmentId: string;
   assignmentKind: "dag" | "standalone";

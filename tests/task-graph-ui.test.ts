@@ -74,7 +74,21 @@ describe("task DAG terminal UI", () => {
     assert.match(colored, /\u001B\[/u);
   });
 
-  it("shows the Runtime-issued child ID on an assigned task", () => {
+  it("shows the child's display name instead of its ID when the view resolved one", () => {
+    const view = graph();
+    view.currentTask = null;
+    view.tasks[1] = {
+      ...view.tasks[1]!,
+      owner: "subagent",
+      assignedAgentId: "subagent_00000000-0000-4000-8000-000000000001",
+      assignedAgentName: "Feature Builder",
+    };
+    const rendered = renderTaskGraph(view, { color: false });
+    assert.match(rendered, /▶ 2\. \[implement\] Implement feature · child Feature Builder \(in progress\)/u);
+    assert.doesNotMatch(rendered, /subagent_0000/u);
+  });
+
+  it("falls back to the Runtime-issued child ID when no name is known", () => {
     const view = graph();
     view.currentTask = null;
     view.tasks[1] = {

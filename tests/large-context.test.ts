@@ -92,6 +92,7 @@ describe("configurable 1M context", () => {
     assert.equal(
       createManageSubagentsInputSchema(limits).parse({
         action: "spawn",
+        name: "Child 1",
         taskId: "task_a",
         instructions: "a".repeat(15000),
       }).action,
@@ -99,6 +100,7 @@ describe("configurable 1M context", () => {
     );
     const oversizedSpawn = createManageSubagentsInputSchema(limits).parse({
       action: "spawn",
+      name: "Child 2",
       taskId: "task_a",
       instructions: "a".repeat(16001),
     });

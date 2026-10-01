@@ -18,6 +18,7 @@ import {
 } from "../src/subagents/coordinator.js";
 import type { SpawnSubagentRequest } from "../src/subagents/types.js";
 import { applyTaskGraphOperation, taskGraphView } from "../src/tasks/task-graph.js";
+import { sameSubagentAssignmentIdentity, subagentAssignment } from "../src/threads/subagent-assignment.js";
 import { describe, it } from "./harness.js";
 
 const AGENT_ONE = "subagent_00000000-0000-4000-8000-000000000001";
@@ -162,6 +163,7 @@ describe("SubagentCoordinator", () => {
       const spawned = await coordinator.spawn(
         {
           action: "spawn",
+          name: "Child 1",
           task: {
             title: "Inspect",
             description: "Inspect an isolated source.",
@@ -183,9 +185,10 @@ describe("SubagentCoordinator", () => {
 
   it("rejects effort above the parent before allocating a child, for both assignment forms", async () => {
     const taskForms: SpawnSubagentRequest[] = [
-      { action: "spawn", taskId: "inspect", instructions: "Inspect only." },
+      { action: "spawn", name: "Child 2", taskId: "inspect", instructions: "Inspect only." },
       {
         action: "spawn",
+        name: "Child 3",
         task: {
           title: "Inspect",
           description: "Inspect an isolated source.",
@@ -219,6 +222,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 4",
         task: {
           title: "Inspect",
           description: "Inspect an isolated source.",
@@ -239,6 +243,71 @@ describe("SubagentCoordinator", () => {
       { deferActivation: true },
     );
     assert.equal(restored.snapshot("thread_subagent_coordinator")[0]?.thinkingEffort, "low");
+  });
+
+  it("keeps child names unique per parent Thread and carries them through views and restore", async () => {
+    const coordinator = new SubagentCoordinator({
+      createAgentId: idFactory([AGENT_ONE, AGENT_TWO, AGENT_THREE]),
+      run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
+    });
+    const task = {
+      title: "Inspect",
+      description: "Inspect an isolated source.",
+      completionChecks: ["Evidence is reported"],
+    };
+    const spawned = await coordinator.spawn(
+      { action: "spawn", name: "API Reviewer", task, instructions: "Inspect only." },
+      context(undefined),
+    );
+    assert.equal(spawned.subagentAssignment?.agentId, AGENT_ONE);
+    assert.equal(spawned.subagentAssignment?.displayName, "API Reviewer");
+    assert.equal(coordinator.snapshot("thread_subagent_coordinator")[0]?.displayName, "API Reviewer");
+    assert.equal(coordinator.displayLabel(AGENT_ONE), "API Reviewer");
+    assert.equal(coordinator.displayLabel(AGENT_THREE), "agent-00000000");
+
+    await assert.rejects(
+      coordinator.spawn({ action: "spawn", name: "api reviewer", task, instructions: "Inspect." }, context(undefined)),
+      /already exists in this Thread/u,
+    );
+    const elsewhere = await coordinator.spawn(
+      { action: "spawn", name: "API Reviewer", task, instructions: "Inspect only." },
+      context(undefined, { threadId: "thread_other_parent" }),
+    );
+    // The rejected duplicate did not consume an agent ID.
+    assert.equal(elsewhere.subagentAssignment?.agentId, AGENT_TWO);
+
+    const assignment = spawned.subagentAssignment;
+    assert.ok(assignment);
+    const restored = new SubagentCoordinator({
+      run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
+    });
+    restored.restore(
+      { parentThreadId: "thread_subagent_coordinator", createdByTurnId: "turn_subagent_coordinator", assignment },
+      { deferActivation: true },
+    );
+    assert.equal(restored.snapshot("thread_subagent_coordinator")[0]?.displayName, "API Reviewer");
+
+    const { displayName: _legacyName, ...legacy } = assignment;
+    const legacyRestore = new SubagentCoordinator({
+      run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
+    });
+    legacyRestore.restore(
+      {
+        parentThreadId: "thread_subagent_coordinator",
+        createdByTurnId: "turn_subagent_coordinator",
+        assignment: legacy,
+      },
+      { deferActivation: true },
+    );
+    assert.equal(legacyRestore.snapshot("thread_subagent_coordinator")[0]?.displayName, undefined);
+    assert.equal(legacyRestore.displayLabel(AGENT_ONE), "agent-00000000");
+
+    // Journal parsing keeps legacy unnamed assignments valid but rejects a tampered or empty name.
+    assert.equal(subagentAssignment(assignment)?.displayName, "API Reviewer");
+    assert.ok(subagentAssignment(legacy));
+    assert.equal(subagentAssignment(legacy)?.displayName, undefined);
+    assert.equal(subagentAssignment({ ...assignment, displayName: "" }), undefined);
+    assert.equal(sameSubagentAssignmentIdentity(assignment, { ...assignment, displayName: "Renamed" }), false);
   });
 
   it("scales the default concurrency limit as 2, 2, 4, and 8", async () => {
@@ -265,6 +334,7 @@ describe("SubagentCoordinator", () => {
         const spawned = await coordinator.spawn(
           {
             action: "spawn",
+            name: `Verifier ${index + 1}`,
             task: {
               title: `Standalone ${index + 1}`,
               description: "Perform isolated verification without a DAG.",
@@ -287,6 +357,7 @@ describe("SubagentCoordinator", () => {
         coordinator.spawn(
           {
             action: "spawn",
+            name: "Child 6",
             task: {
               title: "One too many",
               description: "This assignment must exceed the limit.",
@@ -309,10 +380,12 @@ describe("SubagentCoordinator", () => {
       createAgentId: idFactory([AGENT_ONE, AGENT_TWO, AGENT_THREE]),
       run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
     });
+    let spawnCount = 0;
     const spawn = (thinkingEffort: "low" | "medium") =>
       coordinator.spawn(
         {
           action: "spawn",
+          name: `Inspector ${++spawnCount}`,
           task: {
             title: "Inspect",
             description: "Inspect isolated source.",
@@ -372,6 +445,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 8",
         taskId: "inspect",
         instructions: "Inspect only the assigned task and return concise evidence.",
       },
@@ -468,6 +542,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 9",
         taskId: "inspect",
         instructions: "Inspect the bounded artifact lineage path.",
       },
@@ -542,6 +617,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 10",
         taskId: "inspect",
         instructions: "Produce the final DAG result.",
       },
@@ -615,6 +691,7 @@ describe("SubagentCoordinator", () => {
     const standaloneSpawned = await standalone.spawn(
       {
         action: "spawn",
+        name: "Child 11",
         task: {
           title: "Standalone delivery",
           description: "Produce an independent child result.",
@@ -674,6 +751,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 12",
         taskId: "inspect",
         instructions: "Complete one of two DAG leaves.",
       },
@@ -734,6 +812,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 13",
         task: {
           title: "Inspect authentication",
           description: "Inspect authentication without creating a task DAG.",
@@ -781,6 +860,7 @@ describe("SubagentCoordinator", () => {
       coordinator.spawn(
         {
           action: "spawn",
+          name: "Child 14",
           task: {
             title: "Bypass graph",
             description: "This must not bypass an active graph.",
@@ -796,6 +876,7 @@ describe("SubagentCoordinator", () => {
       coordinator.spawn(
         {
           action: "spawn",
+          name: "Child 15",
           taskId: "inspect",
           instructions: "A DAG task cannot be claimed without a graph.",
         },
@@ -819,6 +900,7 @@ describe("SubagentCoordinator", () => {
     const prepared = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 16",
         taskId: "first",
         instructions: "Prepare the first child.",
       },
@@ -831,6 +913,7 @@ describe("SubagentCoordinator", () => {
     const replacement = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 17",
         taskId: "second",
         instructions: "The rolled-back reservation must not consume the only slot.",
       },
@@ -857,6 +940,7 @@ describe("SubagentCoordinator", () => {
     const first = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 18",
         taskId: "backend",
         instructions: "Implement the backend branch.",
       },
@@ -866,6 +950,7 @@ describe("SubagentCoordinator", () => {
     const second = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 19",
         taskId: "frontend",
         instructions: "Implement the frontend branch.",
       },
@@ -877,6 +962,7 @@ describe("SubagentCoordinator", () => {
       coordinator.spawn(
         {
           action: "spawn",
+          name: "Child 20",
           taskId: "remaining",
           instructions: "Exceed the configured child limit.",
         },
@@ -952,7 +1038,7 @@ describe("SubagentCoordinator", () => {
       },
     });
     const spawned = await coordinator.spawn(
-      { action: "spawn", taskId: "backend", instructions: "Implement the backend branch." },
+      { action: "spawn", name: "Child 21", taskId: "backend", instructions: "Implement the backend branch." },
       context(taskGraph),
     );
     coordinator.commitLifecycle(lifecycle(spawned, "activate"));
@@ -994,6 +1080,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 22",
         taskId: "verify",
         instructions: "Run focused verification.",
       },
@@ -1050,6 +1137,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 23",
         taskId: "long_running",
         instructions: "Wait for a parent cancellation.",
       },
@@ -1094,6 +1182,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 24",
         taskId: "race",
         instructions: "Return only after the parent cancellation race.",
       },
@@ -1146,6 +1235,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 25",
         taskId: "pause_finalize_race",
         instructions: "Return the verified result after finalization settles.",
       },
@@ -1187,6 +1277,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 26",
         taskId: "durable_stop_race",
         instructions: "Exercise event-before-effect cancellation ordering.",
       },
@@ -1229,6 +1320,7 @@ describe("SubagentCoordinator", () => {
     const spawned = await coordinator.spawn(
       {
         action: "spawn",
+        name: "Child 27",
         taskId: "settled",
         instructions: "Finish after the discard guard is verified.",
       },

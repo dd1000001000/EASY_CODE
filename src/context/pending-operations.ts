@@ -24,6 +24,7 @@ const commandSchema = z
   .strict();
 const assignmentBase = z.object({
   agentId: z.string(),
+  displayName: z.string().optional(),
   childThreadId: z.string(),
   environmentId: z.string(),
   taskId: z.string(),

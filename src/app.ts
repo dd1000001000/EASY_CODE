@@ -1335,7 +1335,7 @@ export class EasyCodeApp {
 
   private requestSubagentApproval(
     request: ApprovalRequest,
-    source: { agentId: string; taskId: string },
+    source: { agentId: string; taskId: string; label: string },
   ): Promise<boolean> {
     return this.approvalFlow.requestSubagentApproval(request, source);
   }

@@ -113,7 +113,9 @@ export class InfoCommands {
   }
 
   printSubagents(): void {
-    const taskGraph = this.ctx.state.taskGraph ? taskGraphView(this.ctx.state.taskGraph) : undefined;
+    const taskGraph = this.ctx.state.taskGraph
+      ? taskGraphView(this.ctx.state.taskGraph, (agentId) => this.ctx.subagentCoordinator.displayLabel(agentId))
+      : undefined;
     const agents = this.ctx.subagentCoordinator.snapshot(this.ctx.state.threadId);
     const concurrencyLimit = this.ctx.config.limits.maxConcurrentSubagents[this.ctx.state.thinkingEffort];
     this.ctx.terminal.subagents(

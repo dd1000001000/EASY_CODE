@@ -24,6 +24,7 @@ import CommandPanel from "./components/CommandPanel.vue";
 import MessageRail from "./components/MessageRail.vue";
 import ConversationTurn from "./components/ConversationTurn.vue";
 import { compactionRunning } from "../ui/compaction.js";
+import { subagentDisplayLabel } from "../subagents/display-name.js";
 
 const view = ref<WebView>({
   session: null,
@@ -1094,8 +1095,9 @@ function noticePreview(text: string): string {
               <li v-for="task in view.tasks.tasks" :key="task.id">
                 {{ task.status === "completed" ? "✓" : "○" }} {{ task.title }}
                 <div v-if="agentForTask(task.id)" class="task-agent">
-                  {{ agentForTask(task.id)?.taskTitle }} · {{ agentStatus(agentForTask(task.id)!) }}
+                  {{ subagentDisplayLabel(agentForTask(task.id)!) }} · {{ agentStatus(agentForTask(task.id)!) }}
                 </div>
+                <div v-else-if="task.assignedAgentName" class="task-agent">{{ task.assignedAgentName }}</div>
               </li>
             </ul>
           </section>
@@ -1103,7 +1105,7 @@ function noticePreview(text: string): string {
             <h3>{{ t("ui.subagents") }}</h3>
             <ul>
               <li v-for="agent in unassignedAgents" :key="agent.id">
-                {{ agent.taskTitle }} · {{ agentStatus(agent) }}
+                {{ subagentDisplayLabel(agent) }} · {{ agent.taskTitle }} · {{ agentStatus(agent) }}
               </li>
             </ul>
           </section>

@@ -659,6 +659,8 @@ export interface TaskGraphView {
     status: TaskNodeStatus;
     owner: TaskNode["owner"];
     assignedAgentId?: string;
+    /** User-facing child name; only UI projections resolve it, model views keep IDs. */
+    assignedAgentName?: string;
     dependencies: string[];
     blockedBy: string[];
     inputs: string[];
@@ -670,7 +672,7 @@ export interface TaskGraphView {
   }>;
 }
 
-export function taskGraphView(graph: Readonly<TaskGraph>): TaskGraphView {
+export function taskGraphView(graph: Readonly<TaskGraph>, agentLabel?: (agentId: string) => string): TaskGraphView {
   const byId = new Map(graph.tasks.map((task) => [task.id, task]));
   const current = activeTask(graph);
   const tasks = graph.tasks.map((task) => {
@@ -682,6 +684,7 @@ export function taskGraphView(graph: Readonly<TaskGraph>): TaskGraphView {
       status: task.status,
       owner: task.owner,
       ...(task.assignedAgentId ? { assignedAgentId: task.assignedAgentId } : {}),
+      ...(task.assignedAgentId && agentLabel ? { assignedAgentName: agentLabel(task.assignedAgentId) } : {}),
       dependencies: [...task.dependencies],
       blockedBy,
       inputs: [...task.inputs],

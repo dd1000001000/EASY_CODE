@@ -158,6 +158,27 @@ describe("pure terminal UI views", () => {
     assert.ok(agentRows.some((row) => row.includes("agent-2")));
     assert.ok(!agentRows.some((row) => row.includes("agent-1") || row.includes("agent-3")));
   });
+  it("labels live children by their display name instead of their ID", () => {
+    const startedAt = "2026-08-29T00:00:00.000Z";
+    const child: SubagentView = { ...agent(0), assignmentKind: "dag", taskId: "task_1", displayName: "前端构建者" };
+    const loose: SubagentView = { ...agent(1), displayName: "Docs Writer" };
+    const state = applyEvents(createUIState(), [
+      { type: "tasks.set", tasks: graph() },
+      { type: "subagents.set", subagents: [child, loose] },
+    ]);
+    const nowMs = Date.parse(startedAt) + 5_000;
+    const taskRows = renderTaskStatusLines(
+      state.live.tasks,
+      { columns: 100, color: false },
+      undefined,
+      state.live.subagents,
+      nowMs,
+    );
+    assert.ok(taskRows.some((row) => row.includes("↳ 前端构建者 ·")));
+    const agentRows = renderAgentStatusLines(state, { columns: 100, color: false }, undefined, nowMs);
+    assert.ok(agentRows.some((row) => row.includes("Docs Writer")));
+    assert.ok(![...taskRows, ...agentRows].some((row) => row.includes("agent-1") || row.includes("agent-2")));
+  });
   it("renders review stages and real elapsed time in the fixed footer without replacing model activity", () => {
     const review = { id: "review_ui", startedAt: 1_000, phase: "independent_review" as const };
     const state = applyEvents(createUIState(), [

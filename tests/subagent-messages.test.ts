@@ -238,6 +238,7 @@ describe("child-to-parent messages", () => {
       const spawned = await coordinator.spawn(
         {
           action: "spawn",
+          name: "Child 1",
           task: {
             title: "Inspect source",
             description: "Inspect",

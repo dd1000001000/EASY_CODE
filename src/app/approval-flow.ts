@@ -137,8 +137,15 @@ export class ApprovalFlow {
     return true;
   }
 
-  requestSubagentApproval(request: ApprovalRequest, source: { agentId: string; taskId: string }): Promise<boolean> {
-    return this.requestToolApproval({ ...request, source, title: `[${source.agentId}] ${request.title}` });
+  requestSubagentApproval(
+    request: ApprovalRequest,
+    source: { agentId: string; taskId: string; label: string },
+  ): Promise<boolean> {
+    return this.requestToolApproval({
+      ...request,
+      source: { agentId: source.agentId, taskId: source.taskId },
+      title: `[${source.label}] ${request.title}`,
+    });
   }
 
   async authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {

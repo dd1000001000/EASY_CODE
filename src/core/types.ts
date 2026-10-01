@@ -784,6 +784,8 @@ export type SubagentTaskReport =
 
 interface SubagentAssignmentSnapshotBase {
   agentId: string;
+  /** User-facing name; absent for assignments journaled before names existed. */
+  displayName?: string;
   childThreadId: string;
   /** Runtime-preallocated physical environment binding. */
   environmentId: string;

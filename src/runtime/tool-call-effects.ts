@@ -152,6 +152,8 @@ function isSubagentAssignmentSnapshot(value: unknown): value is SubagentAssignme
     (assignment.kind === "dag" || assignment.kind === "standalone") &&
     typeof assignment.agentId === "string" &&
     assignment.agentId.length > 0 &&
+    (assignment.displayName === undefined ||
+      (typeof assignment.displayName === "string" && assignment.displayName.length > 0)) &&
     typeof assignment.taskId === "string" &&
     assignment.taskId.length > 0 &&
     typeof assignment.taskTitle === "string" &&

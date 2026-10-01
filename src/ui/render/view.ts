@@ -12,6 +12,7 @@ import { displayWidth, sanitizeTerminalText, truncateToWidth, wrapToWidth } from
 
 export const DEFAULT_VIEW_COLUMNS = 80;
 export const MAX_COMPACT_TASK_ROWS = 5;
+const MAX_AGENT_LABEL_COLUMNS = 24;
 export const MAX_COMPACT_AGENT_ROWS = 5;
 
 function localizedMode(language: Language, mode: string | undefined): string {
@@ -654,10 +655,9 @@ export function renderAgentStatusLines(
   const visible = agents.slice(0, itemCapacity);
   const lines = [heading];
   for (const agent of visible) {
-    // Full UUIDs consume the entire row in ordinary terminals and hide the
-    // assignment the user actually needs to monitor. Keep a stable short
-    // identity while reserving the row for the task title/status detail.
-    const label = shortAgentLabel(agent.id);
+    // Prefer the parent-chosen name. Full UUIDs consume the entire row in
+    // ordinary terminals, so legacy unnamed children keep a short identity.
+    const label = agentLabel(agent);
     const detail = agentDetail(agent, nowMs);
     const text = `  ${agentIcon(agent.status)} ${label}` + `${detail ? `  ${detail}` : ""}`;
     lines.push(styleAgentStatus(agent.status, truncateToWidth(text, columns, { preserveAnsi: false }), palette));
@@ -695,7 +695,7 @@ function appendTaskRows(
     if (child)
       lines.push(
         palette.gray(
-          truncateToWidth(`      ↳ ${shortAgentLabel(child.id)} · ${agentDetail(child, nowMs)}`, columns, {
+          truncateToWidth(`      ↳ ${agentLabel(child)} · ${agentDetail(child, nowMs)}`, columns, {
             preserveAnsi: false,
           }),
         ),
@@ -939,6 +939,11 @@ function progressDepth(
     current = known.get(current)?.parentId;
   }
   return depth;
+}
+
+function agentLabel(agent: Readonly<SubagentView>): string {
+  const name = agent.displayName ? safeInline(agent.displayName) : "";
+  return name ? truncateToWidth(name, MAX_AGENT_LABEL_COLUMNS, { preserveAnsi: false }) : shortAgentLabel(agent.id);
 }
 
 function shortAgentLabel(value: string): string {

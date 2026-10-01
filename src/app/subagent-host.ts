@@ -38,6 +38,7 @@ import {
   type SubagentExecutionOutcome,
   type SubagentExecutionRequest,
 } from "../subagents/coordinator.js";
+import { subagentDisplayLabel } from "../subagents/display-name.js";
 import { SubagentMessageMailbox } from "../subagents/messages.js";
 import { WorkspaceMutationLock } from "../subagents/workspace-mutation-lock.js";
 import { BuiltinToolSource } from "../tools/builtin-source.js";
@@ -77,7 +78,7 @@ export interface SubagentHostContext {
   readonly prepareProjectSandbox: (workspace: WorkspaceManager) => Promise<void>;
   readonly requestSubagentApproval: (
     request: ApprovalRequest,
-    source: { agentId: string; taskId: string },
+    source: { agentId: string; taskId: string; label: string },
   ) => Promise<boolean>;
   readonly save: () => void;
   readonly sharedTaskBudget: (threadId: string) => TaskBudget;
@@ -512,6 +513,7 @@ export class SubagentHost {
         this.ctx.requestSubagentApproval(approval, {
           agentId: request.record.id,
           taskId: request.task.id,
+          label: subagentDisplayLabel(request.record),
         }),
       takeAdditionalInstructions: request.drainFollowUps,
       onToolCompleted: async (_state, _toolName, result) => {
@@ -959,13 +961,13 @@ export class SubagentHost {
         this.ctx.terminal.fileDiff(presentation);
       } catch {
         this.ctx.terminal.info(
-          `Subagent ${artifacts.agentId} changed ${presentation.path}, but its diff preview could not be rendered.`,
+          `Subagent ${this.ctx.subagentCoordinator.displayLabel(artifacts.agentId)} changed ${presentation.path}, but its diff preview could not be rendered.`,
         );
       }
     }
     this.ctx.dirty = true;
     this.ctx.terminal.info(
-      `Collected subagent ${artifacts.agentId} for task ${artifacts.taskId}: ` +
+      `Collected subagent ${this.ctx.subagentCoordinator.displayLabel(artifacts.agentId)} for task ${artifacts.taskId}: ` +
         `${artifacts.changes.length} change(s), ${artifacts.commands.length} command(s)` +
         (isolated && artifacts.resultArtifact
           ? `; result ${artifacts.resultArtifact.id} is ready for DAG lineage or handoff.`

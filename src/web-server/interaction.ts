@@ -12,6 +12,7 @@ import type {
 } from "../core/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
 import type { SubagentView } from "../subagents/types.js";
+import { subagentDisplayLabel } from "../subagents/display-name.js";
 import type { UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
 import type {
   AppInteractionPort,
@@ -445,7 +446,7 @@ export class WebInteraction implements AppInteractionPort {
     this.append(
       "info",
       agents.length
-        ? `Subagents\n${agents.map((agent) => `${agent.status}: ${agent.taskTitle} (${agent.id})`).join("\n")}`
+        ? `Subagents\n${agents.map((agent) => `${agent.status}: ${subagentDisplayLabel(agent)} · ${agent.taskTitle}`).join("\n")}`
         : "No subagents in this Thread.",
     );
   }

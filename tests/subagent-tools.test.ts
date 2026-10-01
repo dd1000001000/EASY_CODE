@@ -107,6 +107,7 @@ describe("subagent control tools", () => {
     const result = await tool.execute(
       {
         action: "spawn",
+        name: "Child 1",
         taskId: "research",
         instructions: "Inspect without modifying files",
       },
@@ -119,6 +120,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 2",
             taskId: "research",
             instructions: "Inspect",
             mode: "code",
@@ -142,6 +144,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 3",
             taskId: "implementation",
             instructions: `START😀${"x".repeat(200)}END`,
           },
@@ -155,6 +158,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 4",
             task: { title: "Standalone", description: "Work", completionChecks: ["Done"] },
             instructions: `SECOND${"x".repeat(200)}END`,
           },
@@ -216,6 +220,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 5",
             taskId: "implementation",
             instructions: "Inspect the target and implement the focused change.",
             thinkingEffort: "low",
@@ -310,6 +315,7 @@ describe("subagent control tools", () => {
     const result = await tool.execute(
       {
         action: "spawn",
+        name: "Child 6",
         taskId: "implementation",
         instructions: "Inspect\u001b[31m the task\u202e\napi_key=super-secret-value before editing.",
       },
@@ -325,12 +331,42 @@ describe("subagent control tools", () => {
     assert.match(call.instructions, /api_key=\[REDACTED\]/u);
   });
 
+  it("requires a bounded single-line display name for every spawn", async () => {
+    const control = new RecordingControl();
+    const tool = new ManageSubagentsTool(control);
+    const task = {
+      title: "Inspect",
+      description: "Inspect an isolated source.",
+      completionChecks: ["Evidence is reported"],
+    };
+
+    for (const input of [
+      { action: "spawn", taskId: "implementation", instructions: "Do the task" },
+      { action: "spawn", task, instructions: "Do the task" },
+      { action: "spawn", name: ` \u001b[31m\u202e `, taskId: "implementation", instructions: "Do the task" },
+      { action: "spawn", name: "x".repeat(33), taskId: "implementation", instructions: "Do the task" },
+    ]) {
+      assert.equal((await tool.execute(input, context())).ok, false);
+    }
+    assert.equal(control.calls.length, 0);
+
+    const result = await tool.execute(
+      { action: "spawn", name: `  前端\n  审查员\u202e `, task, instructions: "Do the task" },
+      context(),
+    );
+    assert.equal(result.ok, true);
+    const call = control.calls[0];
+    if (call?.action !== "spawn") throw new Error("Expected spawn call");
+    assert.equal(call.name, "前端 审查员");
+  });
+
   it("accepts a standalone task contract and enforces exclusive spawn forms", async () => {
     const control = new RecordingControl();
     const tool = new ManageSubagentsTool(control);
     const standalone = await tool.execute(
       {
         action: "spawn",
+        name: "Child 7",
         task: {
           title: "Audit authentication\u001b[31m",
           description: "Inspect the login flow without a DAG.",
@@ -356,6 +392,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 8",
             instructions: "Missing both assignment forms.",
           },
           context(),
@@ -368,6 +405,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 9",
             taskId: "implementation",
             task: {
               title: "Conflicting task",
@@ -393,6 +431,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 10",
             taskId: "implementation",
             instructions: "Do the task",
             agentId: AGENT_ONE,
@@ -407,6 +446,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 11",
             taskId: "implementation",
             instructions: "Do the task",
             thinkingEffort: "ultra",
@@ -459,6 +499,7 @@ describe("subagent control tools", () => {
         await tool.execute(
           {
             action: "spawn",
+            name: "Child 12",
             taskId: "implementation",
             instructions: "Do the task",
           },

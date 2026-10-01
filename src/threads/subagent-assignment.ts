@@ -2,6 +2,7 @@
 
 import type { SubagentAssignmentSnapshot, ProviderName, ThinkingEffort } from "../core/types.js";
 import { isProviderIdentifier } from "../models/catalog.js";
+import { MAX_SUBAGENT_DISPLAY_NAME_CHARS } from "../subagents/display-name.js";
 import { asPayloadRecord } from "./event-values.js";
 
 export function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefined {
@@ -10,6 +11,10 @@ export function subagentAssignment(value: unknown): SubagentAssignmentSnapshot |
     (input?.kind !== "standalone" && input?.kind !== "dag") ||
     typeof input.agentId !== "string" ||
     !input.agentId ||
+    (input.displayName !== undefined &&
+      (typeof input.displayName !== "string" ||
+        !input.displayName ||
+        input.displayName.length > MAX_SUBAGENT_DISPLAY_NAME_CHARS)) ||
     typeof input.childThreadId !== "string" ||
     !input.childThreadId ||
     typeof input.environmentId !== "string" ||
@@ -42,6 +47,7 @@ export function subagentAssignment(value: unknown): SubagentAssignmentSnapshot |
   }
   const common = {
     agentId: input.agentId,
+    ...(typeof input.displayName === "string" ? { displayName: input.displayName } : {}),
     childThreadId: input.childThreadId,
     environmentId: input.environmentId,
     taskId: input.taskId,
@@ -72,6 +78,7 @@ export function sameSubagentAssignmentIdentity(
   if (
     activated.kind !== observed.kind ||
     activated.agentId !== observed.agentId ||
+    activated.displayName !== observed.displayName ||
     activated.taskId !== observed.taskId ||
     activated.taskTitle !== observed.taskTitle ||
     activated.taskDescription !== observed.taskDescription ||

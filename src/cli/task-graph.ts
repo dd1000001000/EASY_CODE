@@ -20,7 +20,10 @@ export function renderTaskGraph(graph: Readonly<TaskGraphView>, options: TaskGra
   const header = palette.bold(`Task DAG · ${graph.completed}/${graph.total} completed`);
   const goal = palette.gray(`Goal: ${safeInline(graph.goal)}`);
   const tasks = graph.tasks.map((task, index) => {
-    const assignment = task.owner === "subagent" ? ` · child ${safeInline(task.assignedAgentId ?? "unassigned")}` : "";
+    const assignment =
+      task.owner === "subagent"
+        ? ` · child ${safeInline(task.assignedAgentName ?? task.assignedAgentId ?? "unassigned")}`
+        : "";
     const label = `${index + 1}. [${safeInline(task.id)}] ${safeInline(task.title)}` + assignment;
     switch (task.status) {
       case "completed":

@@ -50,7 +50,10 @@ describe("Web tool detail targets", () => {
 
   it("resolves task and subagent titles", () => {
     assert.equal(show("manage_tasks", { action: "complete", taskId: "backend" })[1]?.value, "Inspect backend");
-    assert.equal(show("manage_subagents", { action: "spawn", taskId: "backend" })[1]?.value, "Inspect backend");
+    assert.equal(
+      show("manage_subagents", { action: "spawn", name: "Backend Inspector", taskId: "backend" })[1]?.value,
+      "Backend Inspector · Inspect backend",
+    );
     assert.equal(
       show(
         "submit_task_result",

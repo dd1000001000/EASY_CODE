@@ -375,7 +375,9 @@ export class RuntimeAssembly {
     }
     if ((toolName === "manage_tasks" || toolName === "manage_subagents") && result.ok && result.taskGraphUpdate) {
       try {
-        this.ctx.terminal.taskGraph(taskGraphView(result.taskGraphUpdate));
+        this.ctx.terminal.taskGraph(
+          taskGraphView(result.taskGraphUpdate, (agentId) => this.ctx.subagentCoordinator.displayLabel(agentId)),
+        );
       } catch {
         this.ctx.terminal.info("The task DAG was updated successfully, but its terminal view could not be rendered.");
       }

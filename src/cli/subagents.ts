@@ -2,6 +2,7 @@ import { Chalk, type ChalkInstance } from "chalk";
 
 import { sanitizeCommandOutput, stripTerminalControls } from "../command/output-stream.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { subagentDisplayLabel } from "../subagents/display-name.js";
 import type { SubagentStatus, SubagentView } from "../subagents/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
 
@@ -79,7 +80,9 @@ export function renderSubagents(
         ? `Standalone [${safeInline(agent.taskId)}]`
         : `${currentTaskIndex >= 0 ? `Task ${currentTaskIndex + 1} ` : "Task "}` + `[${safeInline(agent.taskId)}]`;
     const label =
-      `${index + 1}. ${safeInline(agent.id)} · ${taskLabel} ` + `${safeInline(agent.taskTitle)} ` + `(${agent.status})`;
+      `${index + 1}. ${safeInline(subagentDisplayLabel(agent))} · ${taskLabel} ` +
+      `${safeInline(agent.taskTitle)} ` +
+      `(${agent.status})`;
 
     let statusLine: string;
     switch (agent.status) {

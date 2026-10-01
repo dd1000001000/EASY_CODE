@@ -50,6 +50,13 @@ function taskTitle(state: SessionState, result: ToolExecutionResult, id: string)
   );
 }
 
+/** Child agents are shown by their user-facing name, falling back to the assignment title. */
+function agentNames(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((item) => string(record(item)?.displayName) ?? string(record(item)?.taskTitle) ?? [])
+    : [];
+}
+
 function names(value: unknown): string[] {
   return Array.isArray(value)
     ? value.flatMap((item) => string(record(item)?.title) ?? string(record(item)?.taskTitle) ?? [])
@@ -121,8 +128,13 @@ export function toolDisplayDetails(
     const id = string(input?.taskId);
     const data = record(result.data);
     const returnedAgent = record(data?.agent);
-    const returnedTitles = names(data?.agents);
+    const returnedTitles = agentNames(data?.agents);
     const assignedTask = state.taskGraph?.tasks.find((task) => task.assignedAgentId === input?.agentId);
+    const name =
+      result.subagentAssignment?.displayName ??
+      string(data?.displayName) ??
+      string(returnedAgent?.displayName) ??
+      string(input?.name);
     const title =
       result.subagentAssignment?.taskTitle ??
       string(task?.title) ??
@@ -133,7 +145,9 @@ export function toolDisplayDetails(
     const agentIds = Array.isArray(input?.agentIds)
       ? input.agentIds.filter((value): value is string => typeof value === "string")
       : [];
-    const label = title ?? (returnedTitles.slice(0, 8).join("; ") || string(input?.agentId) || agentIds.join(", "));
+    const label =
+      (name && title ? `${name} · ${title}` : (name ?? title)) ??
+      (returnedTitles.slice(0, 8).join("; ") || string(input?.agentId) || agentIds.join(", "));
     return [...detail("Action", action), ...detail("Subagent", label)];
   }
 

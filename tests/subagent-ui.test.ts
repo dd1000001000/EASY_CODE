@@ -57,18 +57,20 @@ function graph(): TaskGraphView {
 }
 
 describe("child-agent terminal UI", () => {
-  it("shows stable agent numbers, statuses, task numbers, IDs, and names", () => {
+  it("shows stable agent numbers, statuses, task numbers, display names, and task names", () => {
     const rendered = renderSubagents(
       [
-        agent("subagent_backend", "backend", "Implement backend", "running"),
+        { ...agent("subagent_backend", "backend", "Implement backend", "running"), displayName: "Backend Builder" },
+        // A child journaled before names existed keeps a short ID-derived label.
         agent("subagent_frontend", "frontend", "Implement frontend", "completed"),
       ],
       { color: false, taskGraph: graph() },
     );
 
     assert.match(rendered, /Child agents · 1 active · 2 total/u);
-    assert.match(rendered, /▶ 1\. subagent_backend · Task 1 \[backend\] Implement backend \(running\)/u);
-    assert.match(rendered, /✓ 2\. subagent_frontend · Task 2 \[frontend\] Implement frontend \(completed\)/u);
+    assert.match(rendered, /▶ 1\. Backend Builder · Task 1 \[backend\] Implement backend \(running\)/u);
+    assert.match(rendered, /✓ 2\. agent-frontend · Task 2 \[frontend\] Implement frontend \(completed\)/u);
+    assert.doesNotMatch(rendered, /\d\. subagent_/u);
     assert.match(
       rendered,
       /thread thread_subagent_backend · isolation auto → pending · environment environment_subagent_backend \(pending\)/u,
@@ -167,6 +169,7 @@ describe("child-agent terminal UI", () => {
   it("distinguishes standalone work and shows the current effort limit", () => {
     const standalone: SubagentView = {
       ...agent("subagent_standalone", "child_abc", "Audit authentication", "running"),
+      displayName: "Auth Auditor",
       assignmentKind: "standalone",
       taskGraphId: undefined,
     };
@@ -177,7 +180,7 @@ describe("child-agent terminal UI", () => {
     });
 
     assert.match(rendered, /Child agents · 1\/4 active · 1 total/u);
-    assert.match(rendered, /▶ 1\. subagent_standalone · Standalone \[child_abc\] Audit authentication \(running\)/u);
+    assert.match(rendered, /▶ 1\. Auth Auditor · Standalone \[child_abc\] Audit authentication \(running\)/u);
     assert.doesNotMatch(rendered, /Task 1 \[child_abc\]/u);
   });
 

@@ -13,6 +13,7 @@ import {
   type ManageSubagentsInput,
   type SubagentControl,
 } from "../subagents/types.js";
+import { MAX_SUBAGENT_DISPLAY_NAME_CHARS } from "../subagents/display-name.js";
 import { MAX_TASK_LIST_ITEMS, MAX_TASK_TEXT_CHARS } from "../tasks/task-graph.js";
 import { toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
@@ -42,6 +43,13 @@ function truncatedAgentMessage(maximum: number) {
     .pipe(z.string().min(1).max(maximum));
 }
 
+// A single display line: sanitized, whitespace-collapsed and bounded after cleanup.
+const displayNameSchema = z
+  .string()
+  .max(MAX_SUBAGENT_DISPLAY_NAME_CHARS * 4)
+  .transform((value) => sanitizeSubagentText(value).replace(/\s+/gu, " "))
+  .pipe(z.string().min(1).max(MAX_SUBAGENT_DISPLAY_NAME_CHARS));
+
 const agentIdsSchema = z
   .array(subagentIdSchema)
   .min(1)
@@ -63,6 +71,7 @@ export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS
     z
       .object({
         action: z.literal("spawn"),
+        name: displayNameSchema,
         taskId: taskIdSchema,
         instructions: truncatedAgentMessage(limits.subagentInstructionsMaxChars),
         isolation: isolationSchema.optional(),
@@ -72,6 +81,7 @@ export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS
     z
       .object({
         action: z.literal("spawn"),
+        name: displayNameSchema,
         task: standaloneTaskSchema,
         instructions: truncatedAgentMessage(limits.subagentInstructionsMaxChars),
         isolation: isolationSchema.optional(),
@@ -143,6 +153,11 @@ export class ManageSubagentsTool implements AgentTool {
             action: {
               type: "string",
               enum: ["spawn", "status", "wait", "follow_up", "stop", "handoff"],
+            },
+            name: {
+              type: "string",
+              minLength: 1,
+              maxLength: MAX_SUBAGENT_DISPLAY_NAME_CHARS,
             },
             taskId: {
               type: "string",

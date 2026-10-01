@@ -21,6 +21,7 @@ import { applySubagentTaskOperation, cloneTaskGraph, type SubagentTaskOperation 
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { createId } from "../utils/ids.js";
 import { sanitizeSubagentText } from "./types.js";
+import { MAX_SUBAGENT_DISPLAY_NAME_CHARS, subagentDisplayLabel, subagentDisplayNameKey } from "./display-name.js";
 import type {
   FollowUpSubagentRequest,
   HandoffSubagentRequest,
@@ -258,6 +259,18 @@ export class SubagentCoordinator implements SubagentControl {
         `The parent already has ${active} active subagent(s); the concurrency limit is ${concurrencyLimit}`,
       );
     }
+    const displayName = sanitizeSubagentText(request.name).replace(/\s+/gu, " ");
+    if (!displayName || displayName.length > MAX_SUBAGENT_DISPLAY_NAME_CHARS) {
+      throw new Error(`A child agent name must be 1-${MAX_SUBAGENT_DISPLAY_NAME_CHARS} characters`);
+    }
+    const nameKey = subagentDisplayNameKey(displayName);
+    if (
+      this.recordsForThread(context.threadId).some(
+        (record) => record.displayName !== undefined && subagentDisplayNameKey(record.displayName) === nameKey,
+      )
+    ) {
+      throw new Error(`A child agent named "${displayName}" already exists in this Thread; choose a distinct name`);
+    }
     const agentId = this.createAgentId();
     const childThreadId = createId("thread");
     const environmentId = createId("environment");
@@ -304,6 +317,7 @@ export class SubagentCoordinator implements SubagentControl {
     }
     const record: SubagentRecord = {
       id: agentId,
+      displayName,
       childThreadId,
       environmentId,
       parentThreadId: context.threadId,
@@ -344,8 +358,8 @@ export class SubagentCoordinator implements SubagentControl {
       ok: true,
       summary:
         assignmentKind === "dag"
-          ? `Assigned DAG task ${task.id} to child ${agentId}.`
-          : `Created standalone task ${task.id} for child ${agentId}.`,
+          ? `Assigned DAG task ${task.id} to child ${agentId} (${displayName}).`
+          : `Created standalone task ${task.id} for child ${agentId} (${displayName}).`,
       data: {
         agent: publicRecord(record),
         concurrency: { active: active + 1, limit: concurrencyLimit },
@@ -493,6 +507,7 @@ export class SubagentCoordinator implements SubagentControl {
       summary: `Queued follow-up guidance for ${request.agentId}.`,
       data: {
         agentId: request.agentId,
+        ...(job.record.displayName ? { displayName: job.record.displayName } : {}),
         taskTitle: job.record.taskTitle,
         followUpCount: job.record.followUpCount + 1,
         delivery: "next_model_request_boundary",
@@ -573,6 +588,7 @@ export class SubagentCoordinator implements SubagentControl {
           : `Artifact ${artifact.id} requires conflict resolution before handoff.`,
       data: {
         agentId: job.record.id,
+        ...(job.record.displayName ? { displayName: job.record.displayName } : {}),
         taskId: job.record.taskId,
         taskTitle: job.record.taskTitle,
         artifactId: artifact.id,
@@ -731,6 +747,7 @@ export class SubagentCoordinator implements SubagentControl {
       : "running";
     const record: SubagentRecord = {
       id: assignment.agentId,
+      ...(assignment.displayName ? { displayName: assignment.displayName } : {}),
       childThreadId: assignment.childThreadId,
       environmentId: assignment.environmentId,
       parentThreadId: input.parentThreadId,
@@ -835,6 +852,12 @@ export class SubagentCoordinator implements SubagentControl {
       return job;
     });
     for (const job of jobs) this.jobs.delete(job.record.id);
+  }
+
+  /** User-facing label for a known child; unknown IDs fall back to a short ID-derived label. */
+  displayLabel(agentId: string): string {
+    const record = this.jobs.get(agentId)?.record;
+    return subagentDisplayLabel(record ?? { id: agentId });
   }
 
   hasAgent(agentId: string, parentThreadId?: string): boolean {
@@ -1057,6 +1080,7 @@ function operationForObservedJob(job: SubagentJob): SubagentTaskOperation {
 function publicRecord(record: Readonly<SubagentRecord>): SubagentView {
   return {
     id: record.id,
+    ...(record.displayName ? { displayName: record.displayName } : {}),
     childThreadId: record.childThreadId,
     environmentId: record.environmentId,
     assignmentKind: record.assignmentKind,
@@ -1124,6 +1148,7 @@ function standaloneTask(definition: Readonly<StandaloneSubagentTask>, agentId: s
 function assignmentSnapshot(record: Readonly<SubagentRecord>, task: Readonly<TaskNode>): SubagentAssignmentSnapshot {
   const common = {
     agentId: record.id,
+    ...(record.displayName ? { displayName: record.displayName } : {}),
     childThreadId: record.childThreadId,
     environmentId: record.environmentId,
     taskId: task.id,

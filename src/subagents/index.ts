@@ -1,5 +1,6 @@
 export * from "./coordinator.js";
 export * from "./workspace-mutation-lock.js";
+export * from "./display-name.js";
 export {
   DEFAULT_SUBAGENT_WAIT_MS,
   MAX_SUBAGENT_AGENT_IDS_PER_CALL,

@@ -492,7 +492,9 @@ export class AppThreadSessions {
     this.ctx.terminal.setSessionInfo(this.terminalSessionInfo(), announceHeader);
     if (!this.ctx.terminal.isInlineShell()) return;
     if (this.ctx.state.taskGraph) {
-      this.ctx.terminal.taskGraph(taskGraphView(this.ctx.state.taskGraph));
+      this.ctx.terminal.taskGraph(
+        taskGraphView(this.ctx.state.taskGraph, (agentId) => this.ctx.subagentCoordinator.displayLabel(agentId)),
+      );
     } else {
       this.ctx.terminal.clearTaskGraph();
     }
