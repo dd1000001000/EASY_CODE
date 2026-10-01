@@ -734,7 +734,12 @@ describe("loopback Web service", () => {
     const service = new EasyCodeWebServer(app, host, directory, directory);
     try {
       const origin = await service.start(false);
-      assert.equal((await fetch(origin)).status, 200);
+      const page = await fetch(origin);
+      assert.equal(page.status, 200);
+      // Shiki's regex engine is WASM: the page may compile it, but scripts still may not eval.
+      const policy = page.headers.get("content-security-policy") ?? "";
+      assert.match(policy, /script-src 'self' 'wasm-unsafe-eval';/u);
+      assert.doesNotMatch(policy, /'unsafe-eval'/u);
       assert.equal((await fetch(`${origin}/api/state`)).status, 401);
       const wrongOrigin = await fetch(`${origin}/api/bootstrap`, {
         method: "POST",

@@ -1,161 +1,88 @@
-import type { ChalkInstance } from "chalk";
-import hljs from "highlight.js/lib/core";
-import bash from "highlight.js/lib/languages/bash";
-import c from "highlight.js/lib/languages/c";
-import cpp from "highlight.js/lib/languages/cpp";
-import csharp from "highlight.js/lib/languages/csharp";
-import css from "highlight.js/lib/languages/css";
-import dockerfile from "highlight.js/lib/languages/dockerfile";
-import go from "highlight.js/lib/languages/go";
-import ini from "highlight.js/lib/languages/ini";
-import java from "highlight.js/lib/languages/java";
-import javascript from "highlight.js/lib/languages/javascript";
-import json from "highlight.js/lib/languages/json";
-import kotlin from "highlight.js/lib/languages/kotlin";
-import lua from "highlight.js/lib/languages/lua";
-import makefile from "highlight.js/lib/languages/makefile";
-import markdown from "highlight.js/lib/languages/markdown";
-import php from "highlight.js/lib/languages/php";
-import powershell from "highlight.js/lib/languages/powershell";
-import python from "highlight.js/lib/languages/python";
-import ruby from "highlight.js/lib/languages/ruby";
-import rust from "highlight.js/lib/languages/rust";
-import scss from "highlight.js/lib/languages/scss";
-import shell from "highlight.js/lib/languages/shell";
-import sql from "highlight.js/lib/languages/sql";
-import swift from "highlight.js/lib/languages/swift";
-import typescript from "highlight.js/lib/languages/typescript";
-import xml from "highlight.js/lib/languages/xml";
-import yaml from "highlight.js/lib/languages/yaml";
+import { Chalk, supportsColor, type ChalkInstance } from "chalk";
 
-for (const [name, grammar] of Object.entries({
-  bash,
-  c,
-  cpp,
-  csharp,
-  css,
-  dockerfile,
-  go,
-  ini,
-  java,
-  javascript,
-  json,
-  kotlin,
-  lua,
-  makefile,
-  markdown,
-  php,
-  powershell,
-  python,
-  ruby,
-  rust,
-  scss,
-  shell,
-  sql,
-  swift,
-  typescript,
-  xml,
-  yaml,
-}))
-  hljs.registerLanguage(name, grammar);
+import {
+  CODE_THEMES,
+  codeThemeForeground,
+  codeTokensIfReady,
+  resolveCodeLanguage,
+  type CodeThemeName,
+} from "../../highlight/shiki.js";
 
-/** Larger blocks are shown plain; highlighting them would stall the frame. */
-const MAX_HIGHLIGHT_CHARS = 20_000;
-const DIFF_LANGUAGES = new Set(["diff", "patch", "udiff"]);
+export type CodeColorLevel = 0 | 1 | 2 | 3;
 
-type Paint = (palette: ChalkInstance) => (text: string) => string;
-
-/** highlight.js scopes in the terminal palette; unlisted scopes inherit their parent's colour. */
-const SCOPE_PAINT: Readonly<Record<string, Paint>> = {
-  keyword: (p) => p.magenta,
-  "meta-keyword": (p) => p.magenta,
-  "selector-tag": (p) => p.magenta,
-  doctag: (p) => p.magenta,
-  string: (p) => p.green,
-  regexp: (p) => p.green,
-  char: (p) => p.green,
-  "template-tag": (p) => p.green,
-  number: (p) => p.yellow,
-  literal: (p) => p.yellow,
-  symbol: (p) => p.yellow,
-  bullet: (p) => p.yellow,
-  title: (p) => p.cyan,
-  type: (p) => p.cyan,
-  built_in: (p) => p.cyan,
-  class: (p) => p.cyan,
-  tag: (p) => p.cyan,
-  name: (p) => p.cyan,
-  section: (p) => p.cyan.bold,
-  "selector-id": (p) => p.cyan,
-  "selector-class": (p) => p.cyan,
-  comment: (p) => p.gray,
-  quote: (p) => p.gray,
-  meta: (p) => p.gray,
-  addition: (p) => p.green,
-  deletion: (p) => p.red,
-  emphasis: (p) => p.italic,
-  strong: (p) => p.bold,
-};
-
-const ENTITIES: Readonly<Record<string, string>> = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&#x27;": "'",
-  "&#39;": "'",
-};
-
-function decode(text: string): string {
-  return text.replace(/&(?:amp|lt|gt|quot|#x27|#39);/gu, (entity) => ENTITIES[entity] ?? entity);
+export interface CodeStyle {
+  /** 3 is 24-bit colour; chalk maps the theme's colours down to 256 or 16 for lower levels. */
+  readonly level: CodeColorLevel;
+  readonly theme: CodeThemeName;
 }
 
-/** Turn highlight.js span markup into terminal colours. */
-function paintHighlighted(html: string, palette: ChalkInstance): string {
-  const stack: (Paint | undefined)[] = [];
-  let output = "";
-  for (const match of html.matchAll(/<span class="([^"]*)">|<\/span>|([^<]+)/gu)) {
-    if (match[1] !== undefined) {
-      const scope = match[1].split(/\s+/u)[0]!.replace(/^hljs-/u, "");
-      stack.push(SCOPE_PAINT[scope]);
-    } else if (match[2] !== undefined) {
-      const text = decode(match[2]);
-      let paint: Paint | undefined;
-      for (let index = stack.length - 1; index >= 0 && !paint; index -= 1) paint = stack[index];
-      output += paint ? paint(palette)(text) : text;
-    } else {
-      stack.pop();
-    }
-  }
-  return output;
+// Shiki's FontStyle bit flags.
+const ITALIC = 1;
+const BOLD = 2;
+const UNDERLINE = 4;
+const STRIKETHROUGH = 8;
+
+const palettes = new Map<CodeColorLevel, ChalkInstance>();
+
+function paletteFor(level: CodeColorLevel): ChalkInstance {
+  let palette = palettes.get(level);
+  if (!palette) palettes.set(level, (palette = new Chalk({ level })));
+  return palette;
 }
 
-/** Unified-diff lines in the same colours as the file-change previews. */
-function paintDiff(code: string, palette: ChalkInstance): string {
-  return code
-    .split("\n")
-    .map((line) => {
-      if (line.startsWith("+++") || line.startsWith("---")) return palette.bold(line);
-      if (line.startsWith("@@")) return palette.cyan(line);
-      if (line.startsWith("+")) return palette.green(line);
-      if (line.startsWith("-")) return palette.red(line);
-      if (line.startsWith("\\")) return palette.dim(line);
-      return line;
-    })
-    .join("\n");
+/** The richest colour the terminal supports, or none when colour is off (for example under NO_COLOR). */
+export function codeColorLevel(color: boolean): CodeColorLevel {
+  if (!color) return 0;
+  return supportsColor ? (Math.max(1, supportsColor.level) as CodeColorLevel) : 1;
 }
 
 /**
- * Colour a fenced code block by its info-string language. Code without a
- * known language keeps the plain yellow used for every block before.
+ * github-dark unless `EASY_CODE_CODE_THEME` names another theme, or the
+ * terminal reports a light background through `COLORFGBG` (`fg;bg`, where 7
+ * and 15 are white).
  */
-export function highlightCode(code: string, info: string | undefined, palette: ChalkInstance): string {
-  const language = info?.trim().split(/\s+/u)[0]?.toLowerCase() ?? "";
-  if (DIFF_LANGUAGES.has(language)) return paintDiff(code, palette);
-  if (!language || code.length > MAX_HIGHLIGHT_CHARS || !hljs.getLanguage(language)) return palette.yellow(code);
-  try {
-    return paintHighlighted(hljs.highlight(code, { language, ignoreIllegals: true }).value, palette);
-  } catch {
-    return palette.yellow(code);
-  }
+export function terminalCodeTheme(env: NodeJS.ProcessEnv = process.env): CodeThemeName {
+  const chosen = env.EASY_CODE_CODE_THEME?.trim().toLowerCase();
+  if (chosen && (CODE_THEMES as readonly string[]).includes(chosen)) return chosen as CodeThemeName;
+  const background = env.COLORFGBG?.split(";").at(-1);
+  return background === "7" || background === "15" ? "github-light" : "github-dark";
+}
+
+/** The style for code blocks in this terminal. */
+export function terminalCodeStyle(color: boolean): CodeStyle {
+  return { level: codeColorLevel(color), theme: terminalCodeTheme() };
+}
+
+/**
+ * Colour a fenced code block by its info-string language with the theme's own
+ * colours. Text in the theme's default colour keeps the terminal foreground.
+ * Code without a supported language, or whose grammar is still loading,
+ * keeps the plain yellow used for every block before.
+ */
+export function highlightCode(code: string, info: string | undefined, style: CodeStyle): string {
+  const palette = paletteFor(style.level);
+  const language = resolveCodeLanguage(info);
+  const lines = style.level > 0 && language ? codeTokensIfReady(code, language, style.theme) : undefined;
+  if (!lines) return palette.yellow(code);
+  const foreground = codeThemeForeground(style.theme)?.toLowerCase();
+  return lines
+    .map((tokens) =>
+      tokens
+        .map((token) => {
+          let paint: ChalkInstance | undefined;
+          const color = token.color?.slice(0, 7);
+          if (color && color.toLowerCase() !== foreground) paint = palette.hex(color);
+          const font = token.fontStyle ?? 0;
+          if (font > 0) {
+            paint ??= palette;
+            if (font & BOLD) paint = paint.bold;
+            if (font & ITALIC) paint = paint.italic;
+            if (font & UNDERLINE) paint = paint.underline;
+            if (font & STRIKETHROUGH) paint = paint.strikethrough;
+          }
+          return paint ? paint(token.content) : token.content;
+        })
+        .join(""),
+    )
+    .join("\n");
 }

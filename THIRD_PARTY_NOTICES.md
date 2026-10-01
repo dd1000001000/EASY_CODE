@@ -13,6 +13,19 @@ platform package are installed through the npm dependency tree.
 - Project: [OpenAI Codex](https://github.com/openai/codex)
 - License: [Apache License 2.0](https://github.com/openai/codex/blob/main/LICENSE)
 
+## Shiki syntax highlighting
+
+Code blocks in the terminal and the Web page are coloured by
+[Shiki](https://github.com/shikijs/shiki) with its Oniguruma WASM engine, the
+TextMate grammars from `@shikijs/langs`, and the GitHub Dark and GitHub Light
+themes from `@shikijs/themes`.
+
+- License: MIT (Shiki and its packages)
+- The grammars and themes are collected by Shiki from upstream projects
+  (largely VS Code and the GitHub VS Code theme); each keeps its upstream
+  license, as recorded by the
+  [tm-grammars](https://github.com/shikijs/textmate-grammars-themes) project.
+
 Other npm dependencies are governed by the license metadata and license files
 distributed with their respective packages.
 

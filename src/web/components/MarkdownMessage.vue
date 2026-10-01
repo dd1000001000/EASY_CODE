@@ -1,21 +1,24 @@
 <script setup lang="ts">
 import { onUnmounted, ref, watch } from "vue";
-import { renderAssistantMarkdown } from "../markdown.js";
+import { PENDING_HIGHLIGHT, renderAssistantMarkdown, subscribeCodeLanguages } from "../markdown.js";
 
 const props = defineProps<{ text: string }>();
 const html = ref(renderAssistantMarkdown(props.text));
 let renderTimer: ReturnType<typeof setTimeout> | undefined;
-watch(
-  () => props.text,
-  () => {
-    if (renderTimer) return;
-    renderTimer = setTimeout(() => {
-      html.value = renderAssistantMarkdown(props.text);
-      renderTimer = undefined;
-    }, 50);
-  },
-);
+function scheduleRender(): void {
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => {
+    html.value = renderAssistantMarkdown(props.text);
+    renderTimer = undefined;
+  }, 50);
+}
+watch(() => props.text, scheduleRender);
+// Code shows plain until its grammar loads; colour it once the grammar arrives.
+const unsubscribe = subscribeCodeLanguages(() => {
+  if (html.value.includes(PENDING_HIGHLIGHT)) scheduleRender();
+});
 onUnmounted(() => {
+  unsubscribe();
   if (renderTimer) clearTimeout(renderTimer);
 });
 

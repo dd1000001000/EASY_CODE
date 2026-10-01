@@ -576,9 +576,10 @@ export class EasyCodeWebServer {
       response.setHeader("X-Content-Type-Options", "nosniff");
       response.setHeader("Referrer-Policy", "no-referrer");
       response.setHeader("X-Frame-Options", "DENY");
+      // 'wasm-unsafe-eval' lets Shiki compile its WASM regex engine; it does not permit eval().
       response.setHeader(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
       );
       const pathname = new URL(request.url ?? "/", this.origin).pathname;
       if (request.method === "POST") {

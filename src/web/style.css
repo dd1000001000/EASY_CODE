@@ -458,11 +458,27 @@ button:disabled {
   margin: 0;
   overflow-x: auto;
 }
-.markdown-code-block pre code.hljs {
-  background: transparent;
+.markdown-code-block pre code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
   padding: 11px 13px;
   font-size: 12px;
   line-height: 1.55;
+}
+/* Shiki writes both GitHub themes as CSS variables; the page's theme picks one. */
+.markdown-code-block .shiki {
+  color: var(--shiki-light, #24292e);
+}
+.markdown-code-block .shiki span {
+  color: var(--shiki-light);
+}
+html.dark .markdown-code-block .shiki {
+  color: var(--shiki-dark, #e1e4e8);
+}
+html.dark .markdown-code-block .shiki span {
+  color: var(--shiki-dark);
 }
 .disclosure {
   border-left: 2px solid #cbd8f3;

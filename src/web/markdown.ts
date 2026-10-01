@@ -1,33 +1,10 @@
 import MarkdownIt from "markdown-it";
-import hljs from "highlight.js/lib/core";
-import bash from "highlight.js/lib/languages/bash";
-import css from "highlight.js/lib/languages/css";
-import diff from "highlight.js/lib/languages/diff";
-import javascript from "highlight.js/lib/languages/javascript";
-import json from "highlight.js/lib/languages/json";
-import markdown from "highlight.js/lib/languages/markdown";
-import powershell from "highlight.js/lib/languages/powershell";
-import python from "highlight.js/lib/languages/python";
-import sql from "highlight.js/lib/languages/sql";
-import typescript from "highlight.js/lib/languages/typescript";
-import xml from "highlight.js/lib/languages/xml";
-import yaml from "highlight.js/lib/languages/yaml";
+import { codeHtmlIfReady, resolveCodeLanguage } from "../highlight/shiki.js";
 
-for (const [name, grammar] of Object.entries({
-  bash,
-  css,
-  diff,
-  javascript,
-  json,
-  markdown,
-  powershell,
-  python,
-  sql,
-  typescript,
-  xml,
-  yaml,
-}))
-  hljs.registerLanguage(name, grammar);
+export { codeLanguageEpoch, subscribeCodeLanguages } from "../highlight/shiki.js";
+
+/** On code blocks rendered plain while their grammar loads. */
+export const PENDING_HIGHLIGHT = "data-highlight-pending";
 
 const markdownRenderer = new MarkdownIt({ html: false, linkify: false, typographer: false });
 markdownRenderer.renderer.rules.image = (tokens, index) =>
@@ -37,12 +14,12 @@ markdownRenderer.renderer.rules.fence = (tokens, index) => {
   if (!token) return "";
   const language = token.info.trim().split(/\s+/u)[0]?.toLowerCase() ?? "";
   const code = token.content;
-  const highlighted =
-    code.length <= 20_000 && language && hljs.getLanguage(language)
-      ? hljs.highlight(code, { language, ignoreIllegals: true }).value
-      : markdownRenderer.utils.escapeHtml(code);
+  const grammar = resolveCodeLanguage(language);
+  const highlighted = grammar ? codeHtmlIfReady(code, grammar) : undefined;
+  // Until its grammar has loaded the code shows plain, marked so the message renders again once it has.
+  const plain = `<pre class="shiki"${grammar ? ` ${PENDING_HIGHLIGHT}` : ""}><code>${markdownRenderer.utils.escapeHtml(code)}</code></pre>`;
   const label = markdownRenderer.utils.escapeHtml(language || "Code");
-  return `<div class="markdown-code-block"><div class="markdown-code-header"><span>${label}</span><button type="button" data-copy-code>Copy</button></div><pre><code class="hljs">${highlighted}</code></pre></div>`;
+  return `<div class="markdown-code-block"><div class="markdown-code-header"><span>${label}</span><button type="button" data-copy-code>Copy</button></div>${highlighted ?? plain}</div>`;
 };
 const defaultLinkOpen = markdownRenderer.renderer.rules.link_open;
 markdownRenderer.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
@@ -54,7 +31,7 @@ markdownRenderer.renderer.rules.link_open = (tokens, index, options, environment
   );
 };
 
-/** Model text is untrusted: raw HTML is disabled and fenced code is escaped or highlighted. */
+/** Model text is untrusted: raw HTML is disabled and fenced code is escaped or highlighted by Shiki. */
 export function renderAssistantMarkdown(text: string): string {
   return markdownRenderer.render(text);
 }

@@ -61,6 +61,7 @@ import { EditorHistory } from "./composer-editor.js";
 import type { InkActions, InkTerminalControl } from "./ink-actions.js";
 import { mountInkApp, type MountedInkApp } from "./ink-app.js";
 import { DISABLE_FOCUS_REPORTING, ENABLE_FOCUS_REPORTING, InputTranslator } from "./input-translator.js";
+import { preloadCodeLanguages } from "../../highlight/shiki.js";
 import { AttentionNotifier } from "../notify.js";
 import { LONG_TURN_NOTIFY_MS, formatDuration } from "../duration.js";
 import { SESSION_HEADER_ID_PREFIX, thinkingToggleHint, transcriptDocument } from "./entry-text.js";
@@ -221,6 +222,8 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     this.app = this.mount();
     // Focus reports tell the notifier whether the user is looking at this terminal.
     this.output.write(ENABLE_FOCUS_REPORTING);
+    // Grammars load in the background (about 0.1s in all), so answers' code blocks colour at once.
+    void preloadCodeLanguages();
     // VS Code Ctrl+click on a Thinking title arrives over the extension's bridge.
     this.bridge = createVsCodeMenuBridge();
     this.bridge?.onDisclosureToggle((kind, id) => {

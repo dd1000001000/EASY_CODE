@@ -1,23 +1,26 @@
 import { Chalk, type ChalkInstance } from "chalk";
 import { Box, Text, renderToString } from "ink";
 import { Lexer, type Token, type Tokens } from "marked";
-import { memo, type ReactElement } from "react";
+import { memo, useSyncExternalStore, type ReactElement } from "react";
 
+import { codeLanguageEpoch, subscribeCodeLanguages } from "../../highlight/shiki.js";
 import { displayWidth, stripAnsi } from "../render/layout.js";
-import { highlightCode } from "./code-highlight.js";
+import { highlightCode, terminalCodeStyle } from "./code-highlight.js";
 
 /**
  * Assistant answers rendered from Markdown with `marked`'s lexer and Ink's own
  * layout: the answer is one block, Ink does every line wrap, list items hang
  * under their bullets, and table columns share the width through flexbox.
  * The whole answer is re-lexed whenever its text changes, so a half-streamed
- * answer simply renders as far as it has arrived.
+ * answer simply renders as far as it has arrived. Code blocks repaint once
+ * their grammar finishes loading.
  */
 export const MarkdownView = memo(function MarkdownView(props: {
   readonly text: string;
   readonly width: number;
   readonly color: boolean;
 }): ReactElement {
+  useSyncExternalStore(subscribeCodeLanguages, codeLanguageEpoch);
   const palette = new Chalk({ level: props.color ? 1 : 0 });
   const tokens = Lexer.lex(props.text, { gfm: true });
   return <Blocks tokens={tokens} width={Math.max(4, props.width)} palette={palette} />;
@@ -79,7 +82,7 @@ function Block({
           paddingLeft={1}
         >
           {code.lang ? <Text>{palette.gray(code.lang)}</Text> : null}
-          <Text>{highlightCode(code.text, code.lang, palette)}</Text>
+          <Text>{highlightCode(code.text, code.lang, terminalCodeStyle(palette.level > 0))}</Text>
         </Box>
       );
     }
@@ -259,7 +262,7 @@ const answerCache = new Map<string, string>();
  * Ink's layout engine. The live tree renders `AnswerBlock` directly instead.
  */
 export function renderAnswer(text: string, width: number, color: boolean, continuation = false): string {
-  const key = `${width}:${color ? 1 : 0}:${continuation ? 1 : 0}:${text}`;
+  const key = `${codeLanguageEpoch()}:${width}:${color ? 1 : 0}:${continuation ? 1 : 0}:${text}`;
   const cached = answerCache.get(key);
   if (cached !== undefined) return cached;
   const rendered = renderToString(<AnswerBlock text={text} width={width} color={color} continuation={continuation} />, {
