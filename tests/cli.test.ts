@@ -8,11 +8,11 @@ import { assertSupportedNodeVersion, isDirectExecution } from "../src/index.js";
 import { describe, it } from "./harness.js";
 
 describe("CLI bootstrap", () => {
-  it("enforces the documented Node.js 20.11.0 minimum", () => {
-    assert.throws(() => assertSupportedNodeVersion("18.20.8"), /requires Node\.js >= 20\.11\.0/u);
-    assert.throws(() => assertSupportedNodeVersion("20.10.9"), /requires Node\.js >= 20\.11\.0/u);
-    assert.doesNotThrow(() => assertSupportedNodeVersion("20.11.0"));
+  it("enforces the documented Node.js 22.0.0 minimum", () => {
+    assert.throws(() => assertSupportedNodeVersion("18.20.8"), /requires Node\.js >= 22\.0\.0/u);
+    assert.throws(() => assertSupportedNodeVersion("20.20.2"), /requires Node\.js >= 22\.0\.0/u);
     assert.doesNotThrow(() => assertSupportedNodeVersion("22.0.0"));
+    assert.doesNotThrow(() => assertSupportedNodeVersion("24.1.0"));
   });
 
   it("starts only when the module is the process entry point", () => {

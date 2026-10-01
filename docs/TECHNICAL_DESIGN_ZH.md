@@ -37,7 +37,7 @@ CLI 和 Web 共用任务、权限和存储规则，但不提供完全相同的�
 
 ### 2.1 安装准备
 
-按 [README 安装步骤](../README_zh.md#安装) 准备 Node.js 20.11+、Python 3.10–3.14、npm 和源码安装所需的 Git。用于子 Agent 隔离的 worktree 也依赖 Git。
+按 [README 安装步骤](../README_zh.md#安装) 准备 Node.js 22+、Python 3.10–3.14、npm 和源码安装所需的 Git。用于子 Agent 隔离的 worktree 也依赖 Git。
 
 安装会准备 Prompt Bundle、本地检索资源、SQLite 运行资源、私有的 MarkItDown 和 Laya Python 环境、可用的 VS Code 集成及匹配版本的原生沙箱，并使用随包提供的微调权重实际验证一次决策。每次安装或重装会更新到最新稳定版 MarkItDown。首次依赖下载量可能较大；Windows 沙箱初始化可能请求管理员授权。安装并不保证能自动解决所有系统依赖、权限或组织安全策略问题。
 

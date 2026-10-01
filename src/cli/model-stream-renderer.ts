@@ -20,6 +20,8 @@ export interface ModelStreamHost {
   /** Show streamed tool-argument progress as the label of the active activity. */
   showToolArgumentProgress(text: string): void;
   colorEnabled(): boolean;
+  /** Overrides the Thinking marker hint for hosts without VS Code toggle links. */
+  readonly reasoningToggleHint?: string;
   safeInline(value: string, maximum: number): string;
   safeStreamText(value: string): string;
   commitTranscript(entry: Readonly<UITranscriptEntry>): void;
@@ -282,6 +284,7 @@ export class ModelStreamRenderer {
       id: state.reasoningEntryId,
       text: renderReasoningMarker(block, {
         color: this.host.colorEnabled(),
+        toggleHint: this.host.reasoningToggleHint,
         live: {
           sourceChars: state.reasoningSourceChars,
           previewLimitChars: this.previewMaxChars,
@@ -297,6 +300,7 @@ export class ModelStreamRenderer {
   private reasoningMarker(block: Readonly<ReasoningBlock>, state: ActiveModelStream): string {
     return renderReasoningMarker(block, {
       color: this.host.colorEnabled(),
+      toggleHint: this.host.reasoningToggleHint,
       ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined
         ? {}
         : {
@@ -460,7 +464,7 @@ export class ModelStreamRenderer {
         this.host.replaceTranscriptEntry(state.reasoningEntryId, {
           kind: "raw",
           id: state.reasoningEntryId,
-          text: `${renderReasoningMarker(block, { color: this.host.colorEnabled() })} [interrupted]`,
+          text: `${renderReasoningMarker(block, { color: this.host.colorEnabled(), toggleHint: this.host.reasoningToggleHint })} [interrupted]`,
           reasoning: block.text,
         });
     }

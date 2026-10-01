@@ -48,7 +48,7 @@ instead of resuming results from a different package/profile.
 - Allow at least 120 GB free for Docker images and benchmark artifacts.
 - Python 3.12 or newer. The integrated setup command installs the pinned
   Harbor and evaluator versions into an isolated environment on F:.
-- Node.js 20.11 or newer to build the local EASY CODE package.
+- Node.js 22 or newer to build the local EASY CODE package.
 
 Docker is required; EASY CODE's own process sandbox is not a replacement for
 the repository-specific SWE-bench images and grading environment.

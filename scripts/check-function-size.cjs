@@ -23,7 +23,7 @@ function sourceFiles(directory) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...sourceFiles(target));
-    else if (/\.(?:ts|vue)$/u.test(entry.name) && !entry.name.endsWith(".d.ts")) files.push(target);
+    else if (/\.(?:tsx?|vue)$/u.test(entry.name) && !entry.name.endsWith(".d.ts")) files.push(target);
   }
   return files;
 }
@@ -69,7 +69,13 @@ function lineCount(source, node) {
 }
 
 function measureFunctions(file, text) {
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const source = ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
   const measured = [];
   const seen = new Map();
   const visit = (node, scope) => {

@@ -3,11 +3,12 @@
     "target": "ES2021",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2021", "DOM"],
+    "lib": ["ES2021", "ES2022.Intl", "DOM"],
     "rootDir": "src",
     "outDir": "dist",
     "declaration": true,
     "sourceMap": true,
+    "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
@@ -20,6 +21,6 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": ["node_modules", "dist", "tests", "src/web"]
 }

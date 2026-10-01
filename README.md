@@ -35,7 +35,7 @@ Command approval and independent review continue to apply. See the [design and t
 
 ## Install
 
-Requirements: **Node.js 20.11+**, **Python 3.10–3.14**, npm, Git for the source installation below, and a supported provider account. Python creates EASY CODE's private document-conversion and Laya decision runtimes. Native sandbox availability depends on your operating system and architecture.
+Requirements: **Node.js 22+**, **Python 3.10–3.14**, npm, Git for the source installation below, and a supported provider account. Python creates EASY CODE's private document-conversion and Laya decision runtimes. Native sandbox availability depends on your operating system and architecture.
 
 ```sh
 git clone https://github.com/dd1000001000/EASY_CODE.git

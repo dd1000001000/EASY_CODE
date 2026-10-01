@@ -35,7 +35,7 @@ EASY CODE 是运行在本地的 AI 编程助手，同时提供终端和网页界
 
 ## 安装
 
-需要 **Node.js 20.11+**、**Python 3.10–3.14**、npm，以及可用的模型供应商账号。以下源码安装方式还需要 Git；Python 用于创建 EASY CODE 私有的文档转换和 Laya 决策运行环境。原生沙箱是否可用取决于操作系统和架构。
+需要 **Node.js 22+**、**Python 3.10–3.14**、npm，以及可用的模型供应商账号。以下源码安装方式还需要 Git；Python 用于创建 EASY CODE 私有的文档转换和 Laya 决策运行环境。原生沙箱是否可用取决于操作系统和架构。
 
 ```sh
 git clone https://github.com/dd1000001000/EASY_CODE.git

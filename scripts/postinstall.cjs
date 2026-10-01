@@ -1,6 +1,6 @@
 "use strict";
 
-const MINIMUM_NODE_VERSION = [20, 11, 0];
+const MINIMUM_NODE_VERSION = [22, 0, 0];
 
 function assertSupportedNodeVersion(version = process.versions.node) {
   const parts = version

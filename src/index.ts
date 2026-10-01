@@ -52,7 +52,7 @@ interface CliOptions {
   image?: string[];
 }
 
-const MINIMUM_NODE_VERSION = [20, 11, 0] as const;
+const MINIMUM_NODE_VERSION = [22, 0, 0] as const;
 
 export function assertSupportedNodeVersion(version = process.versions.node): void {
   const parts = version

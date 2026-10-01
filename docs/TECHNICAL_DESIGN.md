@@ -37,7 +37,7 @@ CLI and Web share task, permission and storage rules, but not every input method
 
 ### 2.1 Prepare the installation
 
-Follow the [README installation steps](../README.md#install) with Node.js 20.11+, Python 3.10–3.14, npm and Git for a source installation. Child-agent worktree isolation also requires Git.
+Follow the [README installation steps](../README.md#install) with Node.js 22+, Python 3.10–3.14, npm and Git for a source installation. Child-agent worktree isolation also requires Git.
 
 Installation prepares the Prompt Bundle, local retrieval resources, SQLite runtime resources, private MarkItDown and Laya Python environments, available VS Code integration and a matching native sandbox runtime. It verifies a real decision using the bundled fine-tuned weights. The converter is refreshed to the latest stable MarkItDown package on install or reinstall. Initial dependency downloads can be substantial. Windows sandbox initialization may request administrator confirmation. Installation cannot automatically resolve every OS dependency, permission restriction or organizational policy.
 

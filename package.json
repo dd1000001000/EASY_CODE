@@ -56,8 +56,8 @@
     "test:native-sandbox": "npm run build && node scripts/smoke-native-sandbox.mjs",
     "test:native-service": "npm run build && node scripts/smoke-native-service.mjs",
     "build:test": "npm run bundle:build && npm run clean:build:test && tsc -p tsconfig.test.json",
-    "format": "prettier --write \"{src,tests,scripts}/**/*.{ts,vue,js,cjs,mjs,css,html,json}\"",
-    "format:check": "prettier --check \"{src,tests,scripts}/**/*.{ts,vue,js,cjs,mjs,css,html,json}\"",
+    "format": "prettier --write \"{src,tests,scripts}/**/*.{ts,tsx,vue,js,cjs,mjs,css,html,json}\"",
+    "format:check": "prettier --check \"{src,tests,scripts}/**/*.{ts,tsx,vue,js,cjs,mjs,css,html,json}\"",
     "check:size": "node scripts/check-function-size.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && vue-tsc -p src/web/tsconfig.json --noEmit",
     "install:doctor": "node dist/index.js install doctor",
@@ -69,7 +69,7 @@
     "prepack": "npm run build && node scripts/verify-vscode-extension.cjs"
   },
   "engines": {
-    "node": ">=20.11.0"
+    "node": ">=22.0.0"
   },
   "keywords": [
     "coding-agent",
@@ -96,17 +96,21 @@
     "env-paths": "3.0.0",
     "execa": "8.0.1",
     "highlight.js": "11.12.0",
+    "ink": "7.1.1",
     "markdown-it": "15.0.2",
     "node-sqlite3-wasm": "0.8.60",
     "onnxruntime-node": "1.16.3",
+    "react": "19.3.0",
     "toml": "5.0.0",
     "yaml": "2.9.1",
     "zod": "3.25.76"
   },
   "devDependencies": {
     "@types/diff": "5.2.3",
-    "@types/node": "20.19.43",
+    "@types/node": "22.20.4",
+    "@types/react": "19.3.0",
     "@vitejs/plugin-vue": "5.2.4",
+    "ink-testing-library": "4.0.0",
     "prettier": "3.9.9",
     "typescript": "^5.4.5",
     "vite": "6.4.3",
