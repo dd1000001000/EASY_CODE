@@ -95,35 +95,10 @@ export interface UIProgressItem {
   readonly startedAt?: number;
 }
 
-interface UIThinkingPanelMetadata {
-  readonly id: number;
-  readonly sourceChars?: number;
-  readonly sourceLines?: number;
-  readonly truncated?: boolean;
-}
-
-/** Input may be a prepared ReasoningBlock or a caller-provided safe body. */
-export type UIThinkingPanelInput =
-  | (UIThinkingPanelMetadata & {
-      readonly body: string;
-      readonly text?: never;
-    })
-  | (UIThinkingPanelMetadata & {
-      readonly text: string;
-      readonly body?: never;
-    });
-
-/** The reducer stores one complete, terminal-safe Thinking body at a time. */
-export interface UIThinkingPanelState extends UIThinkingPanelMetadata {
-  readonly body: string;
-  readonly truncated: boolean;
-}
-
 export interface UILiveState {
   readonly activity: UIActivityState | null;
   readonly review: UIReviewState | null;
   readonly progress: readonly UIProgressItem[];
-  readonly thinking: UIThinkingPanelState | null;
   readonly tasks: TaskGraphView | null;
   readonly subagents: readonly SubagentView[];
 }
@@ -164,24 +139,17 @@ export interface UIPlanReviewOverlayState extends UIOverlayPickerFields {
 
 export type UIOverlayState = UIPickerOverlayState | UIApprovalOverlayState | UIPlanReviewOverlayState;
 
+/** Composer chrome shared with the status bar; the Ink editor owns its own draft. */
 export interface UIComposerState {
-  readonly text: string;
-  /** UTF-16 offset into text, matching Node readline/string indexing. */
-  readonly cursor: number;
-  /** Presentation-only completion suffix; never part of the submitted text. */
-  readonly completionSuffix?: string;
-  readonly busy: boolean;
   /** Steering submissions accepted by the editor but not yet acknowledged. */
   readonly pendingSubmissions: number;
   readonly placeholder: string;
-  readonly images: readonly Readonly<ImageAttachment>[];
 }
 
 export interface UIState {
   readonly header: UIHeaderState;
   readonly transcript: readonly UITranscriptEntry[];
   readonly live: UILiveState;
-  readonly overlay: UIOverlayState | null;
   readonly composer: UIComposerState;
 }
 
@@ -207,11 +175,6 @@ export type UIEvent =
       readonly progress: readonly UIProgressItem[];
     }
   | { readonly type: "progress.clear" }
-  | {
-      readonly type: "thinking.toggle";
-      readonly panel: UIThinkingPanelInput;
-    }
-  | { readonly type: "thinking.hide"; readonly id?: number }
   | { readonly type: "tasks.set"; readonly tasks: Readonly<TaskGraphView> }
   | { readonly type: "tasks.clear" }
   | {
@@ -219,7 +182,5 @@ export type UIEvent =
       readonly subagents: readonly Readonly<SubagentView>[];
     }
   | { readonly type: "subagents.clear" }
-  | { readonly type: "overlay.show"; readonly overlay: UIOverlayState }
-  | { readonly type: "overlay.hide"; readonly id?: string }
   | { readonly type: "composer.patch"; readonly patch: UIComposerPatch }
   | { readonly type: "composer.reset" };

@@ -14,11 +14,6 @@ export interface MenuSelectorOutput extends NodeJS.WritableStream {
   readonly rows?: number;
 }
 
-export interface MenuSelectorOverlay {
-  render(lines: string[]): void;
-  clear(): void;
-}
-
 export type MenuNavigationDirection = "up" | "down";
 
 export interface MenuSelectorNavigationActivation {
@@ -46,7 +41,6 @@ export interface MenuSelectorOptions {
   readonly input: MenuSelectorInput;
   readonly output: MenuSelectorOutput;
   readonly color?: boolean;
-  readonly overlay?: MenuSelectorOverlay;
   readonly navigation?: MenuSelectorNavigation;
   /** Resolve false to fail closed when a choice cannot be reviewed safely. */
   readonly canConfirm?: () => boolean;
@@ -157,10 +151,10 @@ class MenuSelector {
   private start(): void {
     const { input, options } = this;
     try {
-      if (!options.overlay) options.output.write(HIDE_CURSOR);
+      options.output.write(HIDE_CURSOR);
       // Make the selector the active input owner before exposing its first
       // frame. VS Code/ConPTY can deliver the first key immediately after the
-      // overlay becomes visible; rendering first left a small window where
+      // menu becomes visible; rendering first left a small window where
       // that key was still consumed by the previous prompt owner.
       // Reassert Raw Mode even when Node's cached `isRaw` flag is already true.
       // Windows ConPTY can leave the console input handle in cooked mode after
@@ -194,7 +188,7 @@ class MenuSelector {
       this.releaseNavigation = navigationActivation?.release.bind(navigationActivation);
       const navigationReady = navigationActivation?.ready;
       if (navigationReady) {
-        // Keep the overlay invisible until VS Code confirms that Up/Down have
+        // Keep the menu invisible until VS Code confirms that Up/Down have
         // been rebound. TTY input is already in Raw Mode, so an unavailable
         // host can safely resolve `false` and use the normal terminal path.
         void navigationReady
@@ -223,11 +217,6 @@ class MenuSelector {
     if (!this.renderEnabled) return;
     const { options } = this;
     const lines = this.renderLines(this.selectedIndex);
-    if (options.overlay) {
-      options.overlay.render(lines);
-      this.rendered = true;
-      return;
-    }
     if (this.rendered) options.output.write(`\u001B[${this.lineCount}A`);
     for (const line of lines) {
       if (this.rendered) options.output.write("\u001B[2K\r");
@@ -265,8 +254,7 @@ class MenuSelector {
     if (this.wasFlowing) input.resume();
     else input.pause();
     try {
-      if (options.overlay) options.overlay.clear();
-      else options.output.write(`${SHOW_CURSOR}\n`);
+      options.output.write(`${SHOW_CURSOR}\n`);
     } catch {
       // Selection is already settled; output cleanup is best effort.
     }
@@ -325,7 +313,7 @@ class MenuSelector {
   private confirm(): void {
     // Never accept a buffered Enter before the user has seen the first menu
     // frame. VS Code navigation readiness is asynchronous, so confirmation
-    // must remain fail-closed while the overlay is deliberately hidden.
+    // must remain fail-closed while the menu is deliberately hidden.
     if (!this.renderEnabled || !this.rendered) return;
     this.finish(this.confirmationAllowed() ? this.selectedIndex : undefined);
   }

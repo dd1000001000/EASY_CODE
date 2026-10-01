@@ -7,7 +7,7 @@ import { redactSensitiveInformation } from "../../memory/sensitive.js";
 import { providerLabel as catalogProviderLabel } from "../../models/catalog.js";
 import type { SubagentStatus, SubagentView } from "../../subagents/types.js";
 import type { TaskGraphView } from "../../tasks/task-graph.js";
-import type { UIOverlayState, UIProgressStatus, UISessionInfo, UIState, UIThinkingPanelInput } from "../contracts.js";
+import type { UIOverlayState, UIProgressStatus, UISessionInfo, UIState } from "../contracts.js";
 import { displayWidth, sanitizeTerminalText, truncateToWidth, wrapToWidth } from "./layout.js";
 import { LOGO_COLUMNS, renderEasyCodeLogo } from "./logo.js";
 
@@ -62,14 +62,11 @@ export interface RenderViewOptions {
   readonly maxTaskRows?: number;
   readonly maxAgentRows?: number;
   readonly maxProgressRows?: number;
-  readonly maxThinkingLines?: number;
-  readonly maxThinkingRows?: number;
   readonly maxOverlayRows?: number;
   /** Override the effort-derived child capacity shown in the Agents heading. */
   readonly agentConcurrencyLimit?: number;
   /** Deterministic spinner override, useful for a renderer-owned animation tick. */
   readonly spinnerFrame?: number | string;
-  readonly busyPlaceholder?: string;
 }
 
 /** Physical-row budgets for the persistent regions below the composer. */
@@ -169,31 +166,25 @@ function sessionHeaderBody(state: Readonly<UIState>, options: RenderViewOptions)
 }
 
 /**
- * Render the redrawable bottom region. An overlay is modal and therefore hides
- * progress, activity, Thinking, composer, and status until it is dismissed.
+ * Render a modal dialog card. It replaces progress, activity, composer, and
+ * status until dismissed; only the danger indicator stays visible beneath it.
  */
-export function renderLiveRegion(state: Readonly<UIState>, nowMs: number, options: RenderViewOptions = {}): string {
-  if (state.overlay) {
-    const danger = renderDangerIndicator(state, options);
-    const overlay = renderOverlay(state.overlay, options);
-    const rendered = danger ? `${overlay}\n\n${danger}` : overlay;
-    const rowBudget = viewRows(options);
-    if (rendered.split("\n").length <= rowBudget) return rendered;
+export function renderOverlayRegion(
+  overlay: Readonly<UIOverlayState>,
+  state: Readonly<UIState>,
+  options: RenderViewOptions = {},
+): string {
+  const danger = renderDangerIndicator(state, options);
+  const card = renderOverlay(overlay, options);
+  const rendered = danger ? `${card}\n\n${danger}` : card;
+  const rowBudget = viewRows(options);
+  if (rendered.split("\n").length <= rowBudget) return rendered;
 
-    const compactOverlay = renderOverlay(state.overlay, {
-      ...options,
-      rows: Math.max(1, rowBudget - (danger ? 1 : 0)),
-    });
-    return danger ? `${compactOverlay}\n${danger}` : compactOverlay;
-  }
-
-  const blocks: string[] = [];
-  const activityRegion = renderLiveActivityRegion(state, nowMs, options);
-  const statusRegion = renderComposerStatusRegion(state, options, nowMs);
-  if (activityRegion) blocks.push(activityRegion);
-  if (state.composer.busy) blocks.push(renderComposerPrompt(state, options));
-  if (statusRegion) blocks.push(statusRegion);
-  return blocks.join("\n\n");
+  const compactCard = renderOverlay(overlay, {
+    ...options,
+    rows: Math.max(1, rowBudget - (danger ? 1 : 0)),
+  });
+  return danger ? `${compactCard}\n${danger}` : compactCard;
 }
 
 /**
@@ -264,37 +255,6 @@ export function renderFixedBottomRegions(
   const agents = renderAgentStatusLines(state, options, allocation.agentRows, nowMs);
   const lines = [...status, ...tasks, ...agents];
   return { status, tasks, agents, lines };
-}
-
-/** Render the persistent, multiline input card (without a trailing newline). */
-export function renderComposerPrompt(state: Readonly<UIState>, options: RenderViewOptions = {}): string {
-  const columns = viewColumns(options);
-  const palette = viewPalette(options);
-  const innerWidth = boxContentWidth(columns);
-  const composer = state.composer;
-  const hasText = composer.text.length > 0;
-  const customPlaceholder = safeInline(composer.placeholder);
-  const defaultBusyPlaceholder =
-    customPlaceholder && customPlaceholder !== "Type your request…" ? customPlaceholder : "Working…";
-  const mainText = hasText
-    ? safeMultiline(composer.text)
-    : composer.busy
-      ? safeInline(options.busyPlaceholder ?? defaultBusyPlaceholder)
-      : customPlaceholder || "Type your request…";
-  const completionSuffix =
-    hasText && composer.cursor === composer.text.length ? safeInline(composer.completionSuffix ?? "") : "";
-  const imageBadges = composer.images.map((image) => `[${safeInline(image.label) || "Image"}]`).join(" ");
-  const payload =
-    `${mainText}${completionSuffix ? palette.gray(completionSuffix) : ""}` +
-    `${mainText && imageBadges ? " " : ""}${imageBadges}`;
-  const contentColumns = Math.max(1, innerWidth - 2);
-  const wrapped = wrapToWidth(payload, contentColumns, { preserveAnsi: true });
-  const lines = wrapped.map((line, index) => {
-    const prefixed = `${index === 0 ? "› " : "  "}${line}`;
-    if (hasText) return prefixed;
-    return composer.busy ? palette.yellow(prefixed) : palette.gray(prefixed);
-  });
-  return renderBox("", lines, columns, palette);
 }
 
 /** Render the compact activity plus mode/model/context/task/agent status bar. */
@@ -396,28 +356,6 @@ function renderDangerIndicator(state: Readonly<UIState>, options: RenderViewOpti
     viewColumns(options),
     { preserveAnsi: viewColor(options) },
   );
-}
-
-/** Render one expanded Thinking item in the same slot as its collapsed marker. */
-export function renderThinkingPanel(panel: Readonly<UIThinkingPanelInput>, options: RenderViewOptions = {}): string {
-  const columns = viewColumns(options);
-  const palette = viewPalette(options);
-  const innerWidth = Math.max(1, columns - 2);
-  const content = ("body" in panel ? panel.body : panel.text) || "(No visible Thinking text.)";
-  const body = wrapToWidth(content, innerWidth, { preserveAnsi: false }).map((line) => palette.gray(`  ${line}`));
-  if (panel.truncated) {
-    const source =
-      panel.sourceLines !== undefined && panel.sourceChars !== undefined
-        ? ` from ${panel.sourceLines} lines / ${panel.sourceChars} chars`
-        : panel.sourceLines !== undefined
-          ? ` from ${panel.sourceLines} lines`
-          : panel.sourceChars !== undefined
-            ? ` from ${panel.sourceChars} chars`
-            : "";
-    body.push(palette.gray(`  … [Thinking truncated${source}.]`));
-  }
-  const header = palette.gray(`↕ Thinking #${panel.id} · ` + "VS Code Ctrl/Cmd+click to toggle");
-  return [header, ...body].join("\n");
 }
 
 /** Render a modal picker card. All request/model/plan strings remain data. */

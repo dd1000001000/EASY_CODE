@@ -1,4 +1,10 @@
-import type { StatusPresentation } from "./terminal-types.js";
+import type { UIProgressItem, UITranscriptKind } from "../ui/contracts.js";
+
+export type StableStatusKind = Extract<UITranscriptKind, "info" | "success" | "warning" | "error">;
+
+export type StatusPresentation =
+  | { readonly destination: "live"; readonly kind: UIProgressItem["kind"] }
+  | { readonly destination: "stable"; readonly kind: StableStatusKind };
 
 /**
  * Runtime status defaults to durable scrollback. Only the finite, audited set

@@ -1,6 +1,7 @@
-import { Chalk, type ChalkInstance } from "chalk";
+import chalk, { Chalk, type ChalkInstance } from "chalk";
 
 import type { ToolDisplayDetail } from "../core/types.js";
+import type { UITranscriptEntry } from "../ui/contracts.js";
 
 /** Leading glyph of every assistant answer and tool call in the transcript. */
 export const TRANSCRIPT_BULLET = "●";
@@ -63,4 +64,22 @@ export function formatToolTranscript(input: Readonly<ToolTranscriptInput>): stri
 export function toolTarget(details: readonly ToolDisplayDetail[] | undefined): string | undefined {
   const values = (details ?? []).map((detail) => detail.value.replace(/\s+/gu, " ").trim()).filter(Boolean);
   return values.length > 0 ? values.join(" · ") : undefined;
+}
+
+/** `› request`, with later rows indented under the text. */
+export function formatSubmittedRequest(value: string): string {
+  const normalized = value.replace(/\r\n?/gu, "\n");
+  return normalized
+    .split("\n")
+    .map((line, index) => `${index === 0 ? `${chalk.cyan.bold("›")} ` : "  "}${line}`)
+    .join("\n");
+}
+
+/** A user request row, naming attached images that the text does not already mention. */
+export function formatUserTranscriptEntry(entry: Pick<UITranscriptEntry, "text" | "images">): string {
+  const images = entry.images
+    ?.map((image) => `[${image.label}]`)
+    .filter((label) => !entry.text.includes(label))
+    .join(" ");
+  return formatSubmittedRequest([entry.text, images].filter(Boolean).join(" "));
 }

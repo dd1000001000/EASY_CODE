@@ -1,6 +1,11 @@
 import { sanitizeTerminalText, truncateToWidth } from "../render/layout.js";
-import type { ScreenOutput } from "../render/screen-writer.js";
 import { OutputDrainMonitor } from "../render/output-drain-monitor.js";
+
+export interface ScreenOutput extends NodeJS.WritableStream {
+  readonly isTTY?: boolean;
+  readonly columns?: number;
+  readonly rows?: number;
+}
 
 const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;

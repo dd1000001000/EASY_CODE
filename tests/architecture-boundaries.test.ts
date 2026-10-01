@@ -67,7 +67,7 @@ describe("current protocol architecture boundaries", () => {
   });
 
   it("keeps VS Code disclosure actions on the authenticated bridge", () => {
-    for (const file of ["prompt-input.ts", "tui-input.ts"]) {
+    for (const file of ["prompt-input.ts"]) {
       const source = readFileSync(path.resolve("src", "cli", file), "utf8");
       for (const retired of RETIRED_PTY_DISCLOSURE_ACTIONS) {
         assert.equal(source.includes(retired), false, `${file} contains retired PTY action ${retired}`);

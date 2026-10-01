@@ -256,7 +256,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     this.openEntryIds.clear();
     this.retainedReasoning.clear();
     this.streams.forget();
-    this.store.replaceUi({ ...ui, transcript: [], live: { ...ui.live, thinking: null } });
+    this.store.replaceUi({ ...ui, transcript: [] });
     this.remount(CLEAR_DISPLAY);
     this.showSessionHeader();
   }
@@ -568,7 +568,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     this.settleAllEntries();
     this.store.dispatch({
       type: "composer.patch",
-      patch: { busy: false, text: "", cursor: 0, placeholder: "Type your request…", images: [], pendingSubmissions: 0 },
+      patch: { placeholder: "Type your request…", pendingSubmissions: 0 },
     });
     const submission = await new Promise<UserSubmission | null>((resolve) => {
       this.store.set({
@@ -607,15 +607,12 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     this.store.dispatch({
       type: "composer.patch",
       patch: {
-        busy: true,
-        text: "",
         pendingSubmissions: 0,
         placeholder: options.onSteer
           ? "Type an adjustment for the current task…"
           : summary
             ? `Working on: ${summary}`
             : "Working…",
-        images,
       },
     });
     this.store.set({ busy: { options, paused: false } });

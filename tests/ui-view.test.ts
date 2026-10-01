@@ -2,21 +2,18 @@ import assert from "node:assert/strict";
 
 import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
-import type { UIEvent, UIProgressStatus } from "../src/ui/contracts.js";
+import type { UIEvent, UIOverlayState, UIProgressStatus } from "../src/ui/contracts.js";
 import { displayWidth, stripAnsi } from "../src/ui/render/layout.js";
 import { LOGO_ROWS } from "../src/ui/render/logo.js";
-import { createDisclosureViewState, renderDisclosureView } from "../src/ui/tui/disclosure-view.js";
 import {
   renderAgentStatusLines,
   renderComposerStatusRegion,
   renderComposerFooter,
-  renderComposerPrompt,
   renderFixedBottomRegions,
   renderLiveActivityRegion,
-  renderLiveRegion,
+  renderOverlayRegion,
   renderSessionHeader,
   renderTaskStatusLines,
-  renderThinkingPanel,
 } from "../src/ui/render/view.js";
 import { applyEvent, applyEvents, createUIState } from "../src/ui/store.js";
 import { describe, it } from "./harness.js";
@@ -118,10 +115,6 @@ function populatedState(): ReturnType<typeof createUIState> {
         startedAt: 1_000,
       },
     },
-    {
-      type: "composer.patch",
-      patch: { busy: true },
-    },
   ];
   return applyEvents(createUIState(), events);
 }
@@ -159,6 +152,7 @@ describe("pure terminal UI views", () => {
     assert.ok(agentRows.some((row) => row.includes("agent-2")));
     assert.ok(!agentRows.some((row) => row.includes("agent-1") || row.includes("agent-3")));
   });
+
   it("labels live children by their display name instead of their ID", () => {
     const startedAt = "2026-08-29T00:00:00.000Z";
     const child: SubagentView = { ...agent(0), assignmentKind: "dag", taskId: "task_1", displayName: "前端构建者" };
@@ -180,6 +174,7 @@ describe("pure terminal UI views", () => {
     assert.ok(agentRows.some((row) => row.includes("Docs Writer")));
     assert.ok(![...taskRows, ...agentRows].some((row) => row.includes("agent-1") || row.includes("agent-2")));
   });
+
   it("renders review stages and real elapsed time in the fixed footer without replacing model activity", () => {
     const review = { id: "review_ui", startedAt: 1_000, phase: "independent_review" as const };
     const state = applyEvents(createUIState(), [
@@ -204,6 +199,7 @@ describe("pure terminal UI views", () => {
     assert.equal(stopped.live.review?.id, review.id);
     assert.equal(applyEvent(stopped, { type: "review.clear", id: review.id }).live.review, null);
   });
+
   it("renders a safe CJK-aware EASY CODE session card without color", () => {
     const initial = createUIState({
       header: { title: "EASY\u001B[2J CODE" },
@@ -319,7 +315,7 @@ describe("pure terminal UI views", () => {
   });
 
   it("keeps the red full-access warning visible while a modal overlay is open", () => {
-    let state = applyEvents(createUIState(), [
+    const state = applyEvents(createUIState(), [
       {
         type: "session.set",
         session: {
@@ -333,60 +329,49 @@ describe("pure terminal UI views", () => {
         },
       },
     ]);
-    state = applyEvent(state, {
-      type: "overlay.show",
-      overlay: {
-        id: "danger-model-picker",
-        kind: "picker",
-        title: "Select model",
-        rows: [{ id: "one", label: "One" }],
-        selectedIndex: 0,
-        hint: "Enter confirm",
-      },
-    });
+    const overlay: UIOverlayState = {
+      id: "danger-model-picker",
+      kind: "picker",
+      title: "Select model",
+      rows: [{ id: "one", label: "One" }],
+      selectedIndex: 0,
+      hint: "Enter confirm",
+    };
 
-    const rendered = renderLiveRegion(state, 0, { columns: 100, color: true });
+    const rendered = renderOverlayRegion(overlay, state, { columns: 100, color: true });
     assert.match(stripAnsi(rendered), /Select model/u);
     assert.match(stripAnsi(rendered), /! HOST FULL ACCESS/u);
     assert.match(rendered, /\u001B\[31m/u);
   });
 
-  it("renders compact progress, task, agent, activity, busy composer, and footer", () => {
+  it("renders compact progress, task, agent, activity, and footer", () => {
     const state = populatedState();
     const options = {
       columns: 72,
       color: false,
       spinnerFrame: "⠹",
     } as const;
-    const rendered = renderLiveRegion(state, 15_000, options);
+    const activity = renderLiveActivityRegion(state, 15_000, options);
+    const status = renderComposerStatusRegion(state, options, 15_000);
 
-    assert.match(rendered, /Progress/u);
-    assert.match(rendered, /Tasks 2\/7/u);
-    assert.match(rendered, /✓ 1\. Task 1/u);
-    assert.match(rendered, /▶ 2\. 实现后端认证/u);
-    assert.equal(rendered.includes("Task 6"), false);
-    assert.match(rendered, /Agents 2\/4/u);
-    assert.match(rendered, /● agent-1  Implement authentication API/u);
-    assert.equal(rendered.includes("agent-6"), false);
-    assert.match(rendered, /› Working…/u);
-    assert.match(rendered, /⠹ Waiting for deepseek-v4-pro \(14s\)/u);
-    assert.match(rendered, /auto · .*v4-pro · medium/u);
-    const blocks = rendered.split("\n\n");
-    assert.equal(blocks.length, 5);
-    assert.match(blocks[0] ?? "", /^Progress/u);
-    assert.match(blocks[0] ?? "", /Read static\/index\.html/u);
-    assert.match(blocks[0] ?? "", /⠹ Waiting for deepseek-v4-pro \(14s\)/u);
-    assert.match(blocks[1] ?? "", /^╭─/u);
-    assert.match(blocks[1] ?? "", /› Working…/u);
-    assert.match(blocks[2] ?? "", /^auto · .*v4-pro · medium/u);
-    assert.match(blocks[3] ?? "", /^Tasks 2\/7/u);
-    assert.match(blocks[4] ?? "", /^Agents 2\/4/u);
-    assert.doesNotMatch(blocks[0] ?? "", /Tasks/u);
-    assert.doesNotMatch(blocks[3] ?? "", /Reading workspace/u);
+    assert.match(activity, /^Progress/u);
+    assert.match(activity, /Read static\/index\.html/u);
+    assert.match(activity, /⠹ Waiting for deepseek-v4-pro \(14s\)/u);
+    assert.doesNotMatch(activity, /Tasks/u);
 
-    assert.equal(renderLiveActivityRegion(state, 15_000, options), blocks[0]);
-    assert.equal(renderComposerStatusRegion(state, options, 15_000), blocks.slice(2).join("\n\n"));
-    assertBoundedLines(rendered, 72);
+    const blocks = status.split("\n\n");
+    assert.equal(blocks.length, 3);
+    assert.match(blocks[0] ?? "", /^auto · .*v4-pro · medium/u);
+    assert.match(blocks[1] ?? "", /^Tasks 2\/7/u);
+    assert.match(blocks[1] ?? "", /✓ 1\. Task 1/u);
+    assert.match(blocks[1] ?? "", /▶ 2\. 实现后端认证/u);
+    assert.equal(status.includes("Task 6"), false);
+    assert.match(blocks[2] ?? "", /^Agents 2\/4/u);
+    assert.match(blocks[2] ?? "", /● agent-1  Implement authentication API/u);
+    assert.equal(status.includes("agent-6"), false);
+    assert.doesNotMatch(blocks[1] ?? "", /Reading workspace/u);
+    assertBoundedLines(activity, 72);
+    assertBoundedLines(status, 72);
   });
 
   it("budgets fixed bottom rows independently in status, Tasks, Agents order", () => {
@@ -449,61 +434,6 @@ describe("pure terminal UI views", () => {
     assertBoundedLines(narrow.lines.join("\n"), 8);
   });
 
-  it("composes an exact fixed-height Header, transcript, composer, status, Tasks, Agents frame", () => {
-    const state = populatedState();
-    const options = { columns: 72, color: false, spinnerFrame: "⠹" } as const;
-    const headerLines = renderSessionHeader(state, options).split("\n");
-    const composerLines = renderComposerPrompt(state, options).split("\n");
-    const bottom = renderFixedBottomRegions(state, options, 15_000, {
-      totalRows: 7,
-    });
-    const frame = renderDisclosureView(
-      createDisclosureViewState({
-        columns: 72,
-        rows: 24,
-        nodes: [
-          { id: "user", kind: "text", text: "> Add authentication" },
-          { id: "assistant", kind: "text", text: "Authentication is ready." },
-        ],
-        headerLines,
-        composerLines,
-        footerLines: bottom.lines,
-        preserveAnsi: false,
-      }),
-    );
-
-    assert.equal(frame.rows.length, 24);
-    assert.deepEqual(
-      frame.visibleRows.filter((row) => row.region === "header").map((row) => row.text),
-      headerLines,
-    );
-    const transcriptRows = frame.visibleRows.filter((row) => row.region === "transcript" && row.part !== "blank");
-    const composerRows = frame.visibleRows.filter((row) => row.region === "composer");
-    const footerRows = frame.visibleRows.filter((row) => row.region === "footer");
-    assert.deepEqual(
-      transcriptRows.map((row) => row.text),
-      ["> Add authentication", "Authentication is ready."],
-    );
-    assert.deepEqual(
-      composerRows.map((row) => row.text),
-      composerLines,
-    );
-    assert.deepEqual(
-      footerRows.map((row) => row.text),
-      bottom.lines,
-    );
-
-    const statusRow = footerRows.find((row) => /auto · .*v4-pro · medium/u.test(row.text));
-    const tasksRow = footerRows.find((row) => /^Tasks 2\/7/u.test(row.text));
-    const agentsRow = footerRows.find((row) => /^Agents 2\/4/u.test(row.text));
-    assert.ok(statusRow && tasksRow && agentsRow);
-    assert.ok((transcriptRows.at(-1)?.screenRow ?? -1) < (composerRows[0]?.screenRow ?? -1));
-    assert.ok((composerRows.at(-1)?.screenRow ?? -1) < statusRow.screenRow);
-    assert.ok(statusRow.screenRow < tasksRow.screenRow);
-    assert.ok(tasksRow.screenRow < agentsRow.screenRow);
-    assert.equal(footerRows.at(-1)?.screenRow, 23);
-  });
-
   it("keeps tool activity above Request while metadata remains in the footer", () => {
     const state = applyEvent(populatedState(), {
       type: "activity.start",
@@ -547,26 +477,22 @@ describe("pure terminal UI views", () => {
   });
 
   it("gives a safe boxed overlay exclusive priority over live status", () => {
-    const state = applyEvents(populatedState(), [
-      {
-        type: "overlay.show",
-        overlay: {
-          id: "picker",
-          kind: "picker",
-          title: "Select\u001B[2J model",
-          detail: "api_key=abcdefghijklmnop",
-          rows: [
-            { id: "a", label: "deepseek-v4-flash" },
-            { id: "b", label: "deepseek-v4-pro", detail: "Recommended" },
-            { id: "c", label: "bad\u001B]52;c;payload\u0007safe" },
-          ],
-          selectedIndex: 1,
-          hint: "↑/↓ select · Enter confirm",
-        },
-      },
-    ]);
+    const overlay: UIOverlayState = {
+      id: "picker",
+      kind: "picker",
+      title: "Select\u001B[2J model",
+      detail: "api_key=abcdefghijklmnop",
+      rows: [
+        { id: "a", label: "deepseek-v4-flash" },
+        { id: "b", label: "deepseek-v4-pro", detail: "Recommended" },
+        { id: "c", label: "bad\u001B]52;c;payload\u0007safe" },
+      ],
+      selectedIndex: 1,
+      hint: "↑/↓ select · Enter confirm",
+    };
+    const state = populatedState();
 
-    const rendered = renderLiveRegion(state, 15_000, {
+    const rendered = renderOverlayRegion(overlay, state, {
       columns: 54,
       color: false,
     });
@@ -576,11 +502,11 @@ describe("pure terminal UI views", () => {
     assert.match(rendered, /› deepseek-v4-pro · Recommended/u);
     assert.match(rendered, /badsafe/u);
     assert.equal(rendered.includes("Tasks"), false);
-    assert.equal(rendered.includes("Working"), false);
+    assert.equal(rendered.includes("Progress"), false);
     assert.equal(rendered.includes("\u001B"), false);
     assertBoundedLines(rendered, 54);
 
-    const colored = renderLiveRegion(state, 15_000, {
+    const colored = renderOverlayRegion(overlay, state, {
       columns: 54,
       color: true,
     });
@@ -608,24 +534,19 @@ describe("pure terminal UI views", () => {
       ],
       hint: "Use ↑/↓ to move, Enter to confirm",
     };
-    const first = applyEvent(createUIState(), {
-      type: "overlay.show",
-      overlay: { ...base, selectedIndex: 0 },
-    });
-    const second = applyEvent(createUIState(), {
-      type: "overlay.show",
-      overlay: { ...base, selectedIndex: 1 },
-    });
+    const ui = createUIState();
+    const first: UIOverlayState = { ...base, selectedIndex: 0 };
+    const second: UIOverlayState = { ...base, selectedIndex: 1 };
 
     const firstRendered = stripAnsi(
-      renderLiveRegion(first, 0, {
+      renderOverlayRegion(first, ui, {
         columns: 100,
         rows: 5,
         color: false,
       }),
     );
     const secondRendered = stripAnsi(
-      renderLiveRegion(second, 0, {
+      renderOverlayRegion(second, ui, {
         columns: 100,
         rows: 5,
         color: false,
@@ -639,7 +560,7 @@ describe("pure terminal UI views", () => {
     assert.notEqual(firstRendered, secondRendered);
 
     const fourRows = stripAnsi(
-      renderLiveRegion(first, 0, {
+      renderOverlayRegion(first, ui, {
         columns: 100,
         rows: 4,
         color: false,
@@ -649,7 +570,7 @@ describe("pure terminal UI views", () => {
     assert.match(fourRows, /› Yes, allow execute one time/u);
 
     const threeRows = stripAnsi(
-      renderLiveRegion(first, 0, {
+      renderOverlayRegion(first, ui, {
         columns: 100,
         rows: 3,
         color: false,
@@ -659,141 +580,11 @@ describe("pure terminal UI views", () => {
     assert.doesNotMatch(threeRows, /Yes, allow execute/u);
   });
 
-  it("renders a gray inline Thinking item while keeping generic live views separate", () => {
-    const secret = "abcdefghijklmnopqrstuvwxyz";
-    const state = applyEvents(populatedState(), [
-      {
-        type: "thinking.toggle",
-        panel: {
-          id: 4,
-          body:
-            "Inspect the repository before editing.\n" +
-            `api_key=abcde\u001B[31mfghijklmnopqrstuvwxyz\n` +
-            "Reuse the existing task types.\n" +
-            Array.from({ length: 8 }, (_, index) => `reasoning line ${index}`).join("\n"),
-        },
-      },
-    ]);
-    const rendered = renderLiveRegion(state, 15_000, {
-      columns: 72,
-      color: false,
-      spinnerFrame: "⠹",
-      maxThinkingRows: 3,
-    });
-
-    assert.equal(rendered.includes("Thinking #4"), false);
-    assert.ok(rendered.indexOf("Progress") < rendered.indexOf("Waiting for deepseek-v4-pro"));
-    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("› Working…"));
-    assert.ok(rendered.indexOf("› Working…") < rendered.lastIndexOf("v4-pro · medium"));
-    assert.ok(rendered.lastIndexOf("v4-pro · medium") < rendered.indexOf("Tasks 2/7"));
-    assert.ok(rendered.indexOf("Tasks 2/7") < rendered.indexOf("Agents 2/4"));
-    assertBoundedLines(rendered, 72);
-
-    const activeComposerState = applyEvents(state, [
-      {
-        type: "composer.patch",
-        patch: { busy: false },
-      },
-    ]);
-    const activeUpper = renderLiveActivityRegion(activeComposerState, 15_000, {
-      columns: 72,
-      color: false,
-      spinnerFrame: "⠹",
-    });
-    assert.match(activeUpper, /^Progress/u);
-    assert.match(activeUpper, /Waiting for deepseek-v4-pro/u);
-    assert.equal(activeUpper.includes("Thinking #4"), false);
-
-    const panel = state.live.thinking;
-    if (!panel) throw new Error("Expected an expanded Thinking panel");
-    const plainPanel = renderThinkingPanel(panel, {
-      columns: 72,
-      color: false,
-      maxThinkingRows: 3,
-    });
-    const coloredPanel = renderThinkingPanel(panel, {
-      columns: 72,
-      color: true,
-      maxThinkingRows: 3,
-    });
-    assert.match(plainPanel, /^↕ Thinking #4 · VS Code Ctrl\/Cmd\+click to toggle/u);
-    assert.match(plainPanel, /Inspect the repository before editing\./u);
-    assert.match(plainPanel, /api_key=\[REDACTED\]/u);
-    assert.doesNotMatch(plainPanel, new RegExp(secret, "u"));
-    assert.doesNotMatch(plainPanel, /more wrapped row\(s\)|shows all retained content/u);
-    assert.match(plainPanel, /VS Code Ctrl\/Cmd\+click to toggle/u);
-    assert.equal(plainPanel.includes("reasoning line 7"), true);
-    assert.match(coloredPanel, /\u001B\[90m/u);
-    assert.doesNotMatch(coloredPanel, /\u001B\[36m/u);
-    assert.equal(stripAnsi(coloredPanel), plainPanel);
-
-    const withOverlay = applyEvents(state, [
-      {
-        type: "overlay.show",
-        overlay: {
-          id: "thinking-priority",
-          kind: "picker",
-          title: "Choose another block",
-          rows: [{ id: "one", label: "Thinking #1" }],
-          selectedIndex: 0,
-          hint: "Enter confirm",
-        },
-      },
-    ]);
-    const modal = renderLiveRegion(withOverlay, 15_000, {
-      columns: 72,
-      color: false,
-    });
-    assert.match(modal, /^╭─ Choose another block/u);
-    assert.equal(modal.includes("Ctrl/Cmd+click the Thinking label to close"), false);
-    assert.equal(modal.includes("Working…"), false);
-  });
-
-  it("keeps composer and footer useful in a narrow terminal", () => {
-    const state = applyEvents(populatedState(), [
-      { type: "activity.stop", id: "model" },
-      {
-        type: "composer.patch",
-        patch: {
-          busy: false,
-          text: "添加登录\nsecond line\u001B[2J",
-          images: [
-            {
-              id: "image",
-              label: "Image #1 token=ghp_abcdefghijklmnopqrstuvwxyz",
-              mediaType: "image/png",
-              storageKey: "image.png",
-              sha256: "0".repeat(64),
-              byteSize: 1,
-              width: 1,
-              height: 1,
-            },
-          ],
-        },
-      },
-    ]);
-
-    const prompt = renderComposerPrompt(state, { columns: 24, color: false });
+  it("keeps the footer useful in a narrow terminal", () => {
+    const state = applyEvents(populatedState(), [{ type: "activity.stop", id: "model" }]);
     const footer = renderComposerFooter(state, { columns: 24, color: false });
 
-    assert.match(prompt, /› 添加登录/u);
-    assert.match(prompt.replace(/[\s│]/gu, ""), /\[REDACTEDTOKEN\]/u);
-    assert.equal(prompt.includes("\u001B"), false);
-    assertBoundedLines(prompt, 24);
     assertBoundedLines(footer, 24);
     assert.match(footer, /^auto · .*v4-pro · medium/u);
-  });
-
-  it("renders command completion without adding it to composer text", () => {
-    const state = applyEvent(createUIState(), {
-      type: "composer.patch",
-      patch: {
-        text: "/approv",
-        cursor: 7,
-        completionSuffix: "al",
-      },
-    });
-    assert.equal(state.composer.text, "/approv");
-    assert.match(renderComposerPrompt(state, { columns: 40, color: false }), /› \/approval/u);
   });
 });

@@ -1,6 +1,6 @@
 import chalk from "chalk";
 
-import { formatUserTranscriptEntry } from "../../cli/disclosure-render.js";
+import { formatUserTranscriptEntry } from "../../cli/transcript-format.js";
 import type { UIState, UITranscriptEntry } from "../contracts.js";
 import { truncateToWidth, wrapToWidth } from "../render/layout.js";
 import { renderSessionHeader, type RenderViewOptions } from "../render/view.js";

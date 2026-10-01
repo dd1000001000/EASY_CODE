@@ -6,7 +6,7 @@ import {
   FULL_SCREEN_EXIT_SEQUENCE,
   FullScreenWriter,
 } from "../src/ui/tui/full-screen-writer.js";
-import type { ScreenOutput } from "../src/ui/render/screen-writer.js";
+import type { ScreenOutput } from "../src/ui/tui/full-screen-writer.js";
 import { displayWidth, stripAnsi } from "../src/ui/render/layout.js";
 import { describe, it } from "./harness.js";
 

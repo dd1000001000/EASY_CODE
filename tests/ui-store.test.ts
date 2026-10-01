@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
 
-import type { ApprovalRequest, ImageAttachment, PlanProposal } from "../src/core/types.js";
 import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
 import type { UIEvent, UISessionInfo, UITranscriptKind } from "../src/ui/contracts.js";
 import {
   DEFAULT_COMPOSER_PLACEHOLDER,
-  MAX_COMPOSER_IMAGES,
   MAX_LIVE_SUBAGENTS,
   MAX_LIVE_PROGRESS_ITEMS,
   MAX_LIVE_TASKS,
-  MAX_OVERLAY_ROWS,
   applyEvent,
   applyEvents,
   createUIState,
@@ -67,19 +64,6 @@ function subagent(index: number): SubagentView {
   };
 }
 
-function image(index: number): ImageAttachment {
-  return {
-    id: `image_${index}`,
-    label: `Image #${index + 1}`,
-    mediaType: "image/png",
-    storageKey: `images/${index}.png`,
-    sha256: String(index).padStart(64, "0"),
-    byteSize: 4,
-    width: 1,
-    height: 1,
-  };
-}
-
 describe("pure terminal UI state", () => {
   it("creates defaults and updates header/session without mutating prior state", () => {
     const initial = createUIState({
@@ -92,7 +76,6 @@ describe("pure terminal UI state", () => {
       activity: null,
       review: null,
       progress: [],
-      thinking: null,
       tasks: null,
       subagents: [],
     });
@@ -265,182 +248,20 @@ describe("pure terminal UI state", () => {
     assert.deepEqual(applyEvent(withAgents, { type: "subagents.clear" }).live.subagents, []);
   });
 
-  it("toggles one complete, sanitized Thinking panel with stale-safe hiding", () => {
-    const secret = "abcdefghijklmnopqrstuvwxyz";
-    const lines = [
-      `Inspect api_key=abcde\u001B[31mfghijklmnopqrstuvwxyz`,
-      "x".repeat(1_020),
-      ...Array.from({ length: 123 }, (_, index) => `reasoning line ${index}`),
-    ];
-    const text = lines.join("\n");
-    const initial = createUIState();
-    const opened = applyEvent(initial, {
-      type: "thinking.toggle",
-      panel: {
-        id: 7,
-        text,
-        sourceChars: text.length,
-        sourceLines: lines.length,
-        truncated: false,
-      },
-    });
-
-    const panel = opened.live.thinking;
-    assert.equal(initial.live.thinking, null);
-    assert.equal(panel?.id, 7);
-    assert.equal(panel?.truncated, false);
-    assert.equal(panel?.sourceLines, lines.length);
-    assert.doesNotMatch(panel?.body ?? "", /\u001B/u);
-    assert.doesNotMatch(panel?.body ?? "", new RegExp(secret, "u"));
-    assert.match(panel?.body ?? "", /api_key=\[REDACTED\]/u);
-    const retainedLines = (panel?.body ?? "").split("\n");
-    assert.equal(retainedLines.length, lines.length);
-    assert.equal(retainedLines[1], "x".repeat(1_020));
-    assert.equal(retainedLines.at(-1), "reasoning line 122");
-
-    const closed = applyEvent(opened, {
-      type: "thinking.toggle",
-      panel: { id: 7, body: "The same marker closes the panel." },
-    });
-    assert.equal(closed.live.thinking, null);
-
-    const replacement = applyEvent(opened, {
-      type: "thinking.toggle",
-      panel: { id: 8, body: "A different block replaces the open panel." },
-    });
-    assert.equal(replacement.live.thinking?.id, 8);
-    assert.equal(applyEvent(replacement, { type: "thinking.hide", id: 7 }), replacement);
-    assert.equal(applyEvent(replacement, { type: "thinking.hide", id: 8 }).live.thinking, null);
-    assert.equal(
-      applyEvent(initial, {
-        type: "thinking.toggle",
-        panel: { id: Number.NaN, body: "invalid" },
-      }),
-      initial,
-    );
-  });
-
-  it("supports generic, approval, and plan-review overlays", () => {
-    const initial = createUIState();
-    const picker = applyEvent(initial, {
-      type: "overlay.show",
-      overlay: {
-        id: "model-picker",
-        kind: "picker",
-        title: "Select a model",
-        rows: Array.from({ length: MAX_OVERLAY_ROWS + 2 }, (_, index) => ({
-          id: String(index),
-          label: `Model ${index}`,
-        })),
-        selectedIndex: MAX_OVERLAY_ROWS + 20,
-        hint: "↑/↓ select · Enter confirm",
-        detail: "Provider models",
-      },
-    });
-    assert.equal(picker.overlay?.rows.length, MAX_OVERLAY_ROWS);
-    assert.equal(picker.overlay?.selectedIndex, MAX_OVERLAY_ROWS - 1);
-    assert.equal(applyEvent(picker, { type: "overlay.hide", id: "another-picker" }), picker);
-    assert.equal(applyEvent(picker, { type: "overlay.hide", id: "model-picker" }).overlay, null);
-
-    const request: ApprovalRequest = {
-      id: "approval_run",
-      title: "Run tests",
-      description: "Execute the project test command.",
-      risk: "workspace",
-      commandPrefix: "npm",
-      commandPreview: "npm test",
-    };
-    const approval = applyEvent(initial, {
-      type: "overlay.show",
-      overlay: {
-        kind: "approval",
-        title: request.title,
-        rows: [{ id: "once", label: "Allow once" }],
-        selectedIndex: -10,
-        hint: "Enter confirm",
-        request,
-      },
-    });
-    assert.equal(approval.overlay?.kind, "approval");
-    assert.equal(approval.overlay?.selectedIndex, 0);
-    if (approval.overlay?.kind === "approval") {
-      assert.notEqual(approval.overlay.request, request);
-    }
-
-    const proposal: PlanProposal = {
-      id: "plan_ui",
-      revision: 1,
-      proposedByTurnId: "turn_ui",
-      proposedAt: CREATED_AT,
-      title: "Add authentication",
-      overview: "Add login and registration.",
-      steps: [
-        {
-          title: "Implement",
-          description: "Build the feature.",
-          verification: "Run tests.",
-        },
-      ],
-    };
-    const review = applyEvent(initial, {
-      type: "overlay.show",
-      overlay: {
-        kind: "plan-review",
-        title: proposal.title,
-        rows: [{ id: "approve", label: "Approve" }],
-        selectedIndex: 0,
-        hint: "Enter confirm",
-        proposal,
-      },
-    });
-    assert.equal(review.overlay?.kind, "plan-review");
-    if (review.overlay?.kind === "plan-review") {
-      assert.notEqual(review.overlay.proposal, proposal);
-      assert.notEqual(review.overlay.proposal.steps, proposal.steps);
-    }
-  });
-
-  it("patches, clamps, bounds, and resets the persistent composer", () => {
-    const images = Array.from({ length: MAX_COMPOSER_IMAGES + 2 }, (_, index) => image(index));
+  it("patches, clamps, and resets the composer chrome", () => {
     const initial = createUIState();
     const populated = applyEvent(initial, {
       type: "composer.patch",
-      patch: {
-        text: "hello",
-        cursor: 999,
-        busy: true,
-        pendingSubmissions: 3,
-        placeholder: "Continue…",
-        images,
-      },
+      patch: { pendingSubmissions: 3, placeholder: "Continue…" },
     });
-    assert.deepEqual(initial.composer, {
-      text: "",
-      cursor: 0,
-      busy: false,
-      pendingSubmissions: 0,
-      placeholder: DEFAULT_COMPOSER_PLACEHOLDER,
-      images: [],
-    });
-    assert.equal(populated.composer.cursor, 5);
-    assert.equal(populated.composer.pendingSubmissions, 3);
-    assert.equal(populated.composer.images.length, MAX_COMPOSER_IMAGES);
-    assert.notEqual(populated.composer.images[0], images[0]);
+    assert.deepEqual(initial.composer, { pendingSubmissions: 0, placeholder: DEFAULT_COMPOSER_PLACEHOLDER });
+    assert.deepEqual(populated.composer, { pendingSubmissions: 3, placeholder: "Continue…" });
+    assert.equal(
+      applyEvent(populated, { type: "composer.patch", patch: { pendingSubmissions: -4 } }).composer.pendingSubmissions,
+      0,
+    );
 
-    const shortened = applyEvent(populated, {
-      type: "composer.patch",
-      patch: { text: "hi" },
-    });
-    assert.equal(shortened.composer.cursor, 2);
-
-    const reset = applyEvent(shortened, { type: "composer.reset" });
-    assert.deepEqual(reset.composer, {
-      text: "",
-      cursor: 0,
-      busy: false,
-      pendingSubmissions: 0,
-      placeholder: DEFAULT_COMPOSER_PLACEHOLDER,
-      images: [],
-    });
+    const reset = applyEvent(populated, { type: "composer.reset" });
+    assert.deepEqual(reset.composer, { pendingSubmissions: 0, placeholder: DEFAULT_COMPOSER_PLACEHOLDER });
   });
 });

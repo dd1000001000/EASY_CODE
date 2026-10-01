@@ -165,7 +165,7 @@ describe("plan review terminal UI", () => {
     terminal.close();
   });
 
-  it("keeps multiline feedback intact after choosing Adjust in the inline menu", async () => {
+  it("keeps multiline feedback intact after choosing Adjust in the menu", async () => {
     const previousCI = process.env.CI;
     const previousTerm = process.env.TERM;
     process.env.CI = "";
@@ -180,18 +180,6 @@ describe("plan review terminal UI", () => {
       });
       output.resume();
       const terminal = new Terminal(input, output);
-      assert.equal(
-        terminal.beginShell({
-          threadId: "thread_plan_review",
-          workspaceRoot: "F:\\projects\\plan-review",
-          mode: "auto",
-          provider: "deepseek",
-          model: "deepseek-v4-flash",
-          thinkingEffort: "medium",
-          contextTokens: 0,
-        }),
-        true,
-      );
       terminal.showPlan(plan());
       let settled = false;
       const review = terminal.reviewPlan().then((decision) => {
@@ -211,60 +199,6 @@ describe("plan review terminal UI", () => {
         action: "adjust",
         feedback: "First line\nSecond line",
       });
-      // The permanent conversation viewport remains the terminal input owner
-      // after the feedback editor completes.
-      assert.equal(input.isRaw, true);
-      terminal.close();
-    } finally {
-      if (previousCI === undefined) delete process.env.CI;
-      else process.env.CI = previousCI;
-      if (previousTerm === undefined) delete process.env.TERM;
-      else process.env.TERM = previousTerm;
-    }
-  });
-
-  it("records only accepted feedback when retained UI uses the numbered path", async () => {
-    const previousCI = process.env.CI;
-    const previousTerm = process.env.TERM;
-    process.env.CI = "";
-    process.env.TERM = "xterm-256color";
-    try {
-      const input = new TtyInput();
-      const output = new TtyOutput();
-      output.resume();
-      const terminal = new Terminal(input, output);
-      assert.equal(
-        terminal.beginShell({
-          threadId: "thread_numbered_plan_review",
-          workspaceRoot: "F:\\projects\\plan-review",
-          mode: "auto",
-          provider: "deepseek",
-          model: "deepseek-v4-flash",
-          thinkingEffort: "medium",
-          contextTokens: 0,
-        }),
-        true,
-      );
-
-      const review = terminal.reviewPlan();
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      input.write("3\r");
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      input.write("\u001B[200~A\nB\u001B[201~\r");
-
-      assert.deepEqual(await review, {
-        action: "adjust",
-        feedback: "A\nB",
-      });
-      const state = terminal as unknown as {
-        uiState: {
-          transcript: Array<{ kind: string; text: string }>;
-        };
-      };
-      assert.deepEqual(
-        state.uiState.transcript.filter((entry) => entry.kind === "user").map((entry) => entry.text),
-        ["A\nB"],
-      );
       terminal.close();
     } finally {
       if (previousCI === undefined) delete process.env.CI;

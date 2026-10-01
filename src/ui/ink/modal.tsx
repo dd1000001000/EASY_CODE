@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import type { UIOverlayState } from "../contracts.js";
 import { sanitizeTerminalText } from "../render/layout.js";
-import { renderLiveRegion, type RenderViewOptions } from "../render/view.js";
+import { renderOverlayRegion, type RenderViewOptions } from "../render/view.js";
 import type { UIState } from "../contracts.js";
 import { Composer } from "./composer.js";
 import type { MenuModal, SecretModal, TextModal } from "./ink-store.js";
@@ -76,7 +76,7 @@ export function renderMenuModal(modal: MenuModal, selectedIndex: number, ui: UIS
       : modal.variant === "plan-review" && modal.proposal
         ? { ...common, kind: "plan-review", proposal: modal.proposal }
         : { ...common, kind: "picker" };
-  return renderLiveRegion({ ...ui, overlay }, Date.now(), view);
+  return renderOverlayRegion(overlay, ui, view);
 }
 
 /** Fixed heights of the text-only dialogs, used to size the rest of the live region. */

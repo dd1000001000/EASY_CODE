@@ -307,27 +307,20 @@ describe("command approval selector", () => {
     assert.deepEqual(rawInput.rawModeTransitions, [true]);
 
     const failingInput = new TtyInput();
-    let renders = 0;
-    let cleared = false;
+    const failingOutput = new TtyOutput();
     const failingSelection = selectApproval("git", {
       input: failingInput,
-      output: new TtyOutput(),
+      output: failingOutput,
       color: false,
-      overlay: {
-        render: () => {
-          renders += 1;
-          if (renders > 1) throw new Error("terminal disappeared");
-        },
-        clear: () => {
-          cleared = true;
-        },
-      },
     });
+    // The first frame is painted; the terminal then goes away before the redraw.
+    failingOutput.write = (() => {
+      throw new Error("terminal disappeared");
+    }) as TtyOutput["write"];
     failingInput.write("\u001B[B");
     await assert.rejects(failingSelection, /Unable to process/u);
     assert.equal(failingInput.isRaw, false);
     assert.equal(failingInput.readableFlowing, false);
-    assert.equal(cleared, true);
   });
 
   it("fails closed if the terminal is too short to review an approval", async () => {

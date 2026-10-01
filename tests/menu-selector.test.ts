@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
-import {
-  renderMenu,
-  selectMenuIndex,
-  type MenuNavigationDirection,
-  type MenuSelectorOverlay,
-} from "../src/cli/menu-selector.js";
+import { renderMenu, selectMenuIndex, type MenuNavigationDirection } from "../src/cli/menu-selector.js";
+import { stripAnsi } from "../src/ui/render/layout.js";
 import { describe, it } from "./harness.js";
 
 class TtyInput extends PassThrough {
@@ -25,19 +21,6 @@ class TtyOutput extends PassThrough {
   readonly isTTY = true;
 }
 
-class RecordingOverlay implements MenuSelectorOverlay {
-  readonly frames: string[][] = [];
-  clearCount = 0;
-
-  render(lines: string[]): void {
-    this.frames.push([...lines]);
-  }
-
-  clear(): void {
-    this.clearCount += 1;
-  }
-}
-
 function captureOutput(output: PassThrough): () => string {
   let transcript = "";
   output.setEncoding("utf8");
@@ -47,85 +30,72 @@ function captureOutput(output: PassThrough): () => string {
   return () => transcript;
 }
 
-function selectWithOverlay(
-  input: TtyInput,
-  output: TtyOutput,
-  overlay: MenuSelectorOverlay,
-): Promise<number | undefined> {
+/** Whether the menu has painted a frame (anything besides the cursor-hide control). */
+function menuVisible(transcript: string): boolean {
+  return stripAnsi(transcript).trim().length > 0;
+}
+
+function select(input: TtyInput, output: TtyOutput): Promise<number | undefined> {
   const rows = ["First", "Second", "Third"];
   return selectMenuIndex(
     rows.length,
     1,
     (selectedIndex) => renderMenu("Choose", rows, selectedIndex, false),
-    { input, output, overlay, color: false },
+    { input, output, color: false },
     "No choices.",
   );
 }
 
-describe("menu selector overlay renderer", () => {
-  it("renders initial and changed selections in the overlay without writing terminal controls", async () => {
+describe("menu selector", () => {
+  it("redraws the selection in place and restores input state", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
     const transcript = captureOutput(output);
-    const overlay = new RecordingOverlay();
 
-    const selection = selectWithOverlay(input, output, overlay);
+    const selection = select(input, output);
     input.write("\u001B[B\r");
 
     assert.equal(await selection, 2);
-    assert.equal(overlay.frames.length, 2);
-    assert.match(overlay.frames[0]?.[2] ?? "", /› Second/u);
-    assert.match(overlay.frames[1]?.[3] ?? "", /› Third/u);
-    assert.equal(overlay.clearCount, 1);
-    assert.equal(transcript(), "");
+    const rendered = stripAnsi(transcript());
+    assert.match(rendered, /› Second/u);
+    assert.match(rendered, /› Third/u);
     assert.deepEqual(input.rawModeTransitions, [true, false]);
     assert.equal(input.readableFlowing, false);
   });
 
-  it("owns raw input before the first visible overlay frame", async () => {
+  it("owns raw input before the first visible frame", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
-    let firstRender = true;
-    const overlay: MenuSelectorOverlay = {
-      render: () => {
-        if (!firstRender) return;
-        firstRender = false;
-        // Model a terminal that delivers the user's first key as soon as the
-        // approval card is painted. Both bytes must reach this selector.
-        input.write("\u001B[B\r");
-      },
-      clear: () => undefined,
-    };
+    let delivered = false;
+    output.on("data", (chunk: Buffer) => {
+      if (delivered || !menuVisible(chunk.toString("utf8"))) return;
+      delivered = true;
+      // Model a terminal that delivers the user's first key as soon as the
+      // menu is painted. Both bytes must reach this selector.
+      input.write("\u001B[B\r");
+    });
 
-    const selection = selectWithOverlay(input, output, overlay);
-
-    assert.equal(await selection, 2);
+    assert.equal(await select(input, output), 2);
     assert.deepEqual(input.rawModeTransitions, [true, false]);
   });
 
-  it("clears the overlay and restores input state when cancelled", async () => {
+  it("restores a flowing input when cancelled", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
-    const transcript = captureOutput(output);
-    const overlay = new RecordingOverlay();
 
     input.resume();
-    const selection = selectWithOverlay(input, output, overlay);
+    const selection = select(input, output);
     input.write("\u0003");
 
     assert.equal(await selection, undefined);
-    assert.equal(overlay.frames.length, 1);
-    assert.equal(overlay.clearCount, 1);
-    assert.equal(transcript(), "");
     assert.deepEqual(input.rawModeTransitions, [true, false]);
     assert.equal(input.readableFlowing, true);
   });
 
-  it("accepts out-of-band navigation without writing a terminal key", async () => {
+  it("accepts out-of-band navigation without reading a terminal key", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
     const transcript = captureOutput(output);
-    const overlay = new RecordingOverlay();
     let navigate: ((direction: MenuNavigationDirection) => void) | undefined;
     let active = false;
 
@@ -137,7 +107,6 @@ describe("menu selector overlay renderer", () => {
       {
         input,
         output,
-        overlay,
         color: false,
         navigation: {
           activate: (listener) => {
@@ -157,8 +126,7 @@ describe("menu selector overlay renderer", () => {
 
     assert.equal(active, true);
     navigate?.("down");
-    assert.match(overlay.frames.at(-1)?.[2] ?? "", /› Second/u);
-    assert.equal(transcript(), "", "navigation must not be routed through stdout");
+    assert.match(stripAnsi(transcript()), /› Second/u);
     input.write("\r");
     assert.equal(await selection, 1);
     assert.equal(active, false);
@@ -168,7 +136,7 @@ describe("menu selector overlay renderer", () => {
   it("does not expose the menu until host navigation is ready", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
-    const overlay = new RecordingOverlay();
+    const transcript = captureOutput(output);
     let acknowledge: ((ready: boolean) => void) | undefined;
     const ready = new Promise<boolean>((resolve) => {
       acknowledge = resolve;
@@ -182,7 +150,6 @@ describe("menu selector overlay renderer", () => {
       {
         input,
         output,
-        overlay,
         navigation: {
           activate: () => ({ ready, release: () => undefined }),
         },
@@ -190,7 +157,8 @@ describe("menu selector overlay renderer", () => {
       "No choices.",
     );
 
-    assert.equal(overlay.frames.length, 0);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(menuVisible(transcript()), false);
     assert.equal(input.isRaw, true);
     let settled = false;
     void selection.then(() => {
@@ -201,14 +169,15 @@ describe("menu selector overlay renderer", () => {
     assert.equal(settled, false);
     acknowledge?.(false);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(overlay.frames.length, 1);
+    assert.equal(menuVisible(transcript()), true);
     input.write("\r");
     assert.equal(await selection, 0);
   });
+
   it("starts an unattended choice timeout only after the menu is visible", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
-    const overlay = new RecordingOverlay();
+    const transcript = captureOutput(output);
     let acknowledge: ((ready: boolean) => void) | undefined;
     const ready = new Promise<boolean>((resolve) => {
       acknowledge = resolve;
@@ -220,7 +189,6 @@ describe("menu selector overlay renderer", () => {
       {
         input,
         output,
-        overlay,
         navigation: { activate: () => ({ ready, release: () => undefined }) },
         idleTimeoutMs: 15,
         idleSelectionIndex: 0,
@@ -233,7 +201,7 @@ describe("menu selector overlay renderer", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(settled, false);
-    assert.equal(overlay.frames.length, 0);
+    assert.equal(menuVisible(transcript()), false);
     acknowledge?.(true);
     assert.equal(await selection, 0);
   });
