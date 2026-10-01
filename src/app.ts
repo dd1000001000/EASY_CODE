@@ -114,6 +114,7 @@ export {
 export class EasyCodeApp {
   private readonly taskBudgets = new Map<string, TaskBudget>();
   private workspace: WorkspaceManager;
+  private mentionManifestScan: Promise<void> | undefined;
   private state: SessionState;
   private readonly contextManager = new ContextManager();
   private readonly contextArtifactIndex: ContextArtifactIndex;
@@ -983,6 +984,22 @@ export class EasyCodeApp {
 
   private syncTerminalView(announceHeader = false): void {
     return this.threadSessions.syncTerminalView(announceHeader);
+  }
+
+  /** Files of the workspace manifest, for `@` references; empty until the first scan finishes. */
+  private workspaceMentionPaths(): readonly string[] {
+    const snapshot = this.workspace.getManifestSnapshot();
+    if (!snapshot) {
+      this.mentionManifestScan ??= this.workspace
+        .refreshManifest()
+        .then(() => undefined)
+        .catch(() => undefined)
+        .finally(() => {
+          this.mentionManifestScan = undefined;
+        });
+      return [];
+    }
+    return [...snapshot.files.values()].map((entry) => entry.path);
   }
 
   private resumableThreads(): ThreadSummary[] {
@@ -1917,6 +1934,8 @@ export class EasyCodeApp {
       },
       save: (...args) => host.save(...args),
       selectResumeThread: (...args) => host.selectResumeThread(...args),
+      resumableThreads: (...args) => host.resumableThreads(...args),
+      mentionPaths: () => host.workspaceMentionPaths(),
       showMcpServers: (...args) => host.showMcpServers(...args),
       startMemoryMaintenance: (...args) => host.startMemoryMaintenance(...args),
       get startupInteraction() {

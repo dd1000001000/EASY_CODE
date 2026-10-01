@@ -64,11 +64,19 @@ export interface WebView {
   decision: WebDecision | null;
   busy: boolean;
 }
+/** A finished request, so the page can notify a user who switched away. Live only; never replayed. */
+export interface WebTurnSummary {
+  durationMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  changedFiles: readonly string[];
+}
 export type WebPatch =
   | { kind: "entry.append"; entry: WebEntry }
   | { kind: "entry.replace"; entry: WebEntry }
   | { kind: "entries.reset"; entries: readonly WebEntry[]; history?: WebHistoryState }
   | { kind: "thread.title"; threadId: string; title: string }
+  | { kind: "turn.completed"; summary: WebTurnSummary }
   | { kind: "state"; state: Omit<WebView, "entries"> };
 export interface WebChange {
   sequence: number;

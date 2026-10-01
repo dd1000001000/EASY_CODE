@@ -13,7 +13,7 @@ import type {
 import type { TaskGraphView } from "../tasks/task-graph.js";
 import type { SubagentView } from "../subagents/types.js";
 import { subagentDisplayLabel } from "../subagents/display-name.js";
-import type { UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
+import type { TurnSummary, UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
 import type {
   AppInteractionPort,
   CompletedTurnTiming,
@@ -520,6 +520,18 @@ export class WebInteraction implements AppInteractionPort {
       this.emit({ kind: "entry.replace", entry });
     }
   }
+  turnCompleted(summary: Readonly<TurnSummary>): void {
+    this.emit({
+      kind: "turn.completed",
+      summary: {
+        durationMs: summary.durationMs,
+        ...(summary.inputTokens === undefined ? {} : { inputTokens: summary.inputTokens }),
+        ...(summary.outputTokens === undefined ? {} : { outputTokens: summary.outputTokens }),
+        changedFiles: summary.changedFiles.map((file) => this.safe(file.path)),
+      },
+    });
+  }
+
   finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean {
     const completedAt = timing?.completedAt ?? Date.now();
     const answerId = this.currentAnswerId ?? this.append("assistant", text);

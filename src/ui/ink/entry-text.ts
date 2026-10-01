@@ -3,6 +3,8 @@ import chalk from "chalk";
 import { formatUserTranscriptEntry } from "../../cli/transcript-format.js";
 import type { UIState, UITranscriptEntry } from "../contracts.js";
 import { truncateToWidth, wrapToWidth } from "../render/layout.js";
+import { DEFAULT_LANGUAGE } from "../../i18n/language.js";
+import { renderTurnSummary } from "../render/turn-summary.js";
 import { renderSessionHeader, type RenderViewOptions } from "../render/view.js";
 import { renderAnswer } from "./markdown-view.js";
 
@@ -48,8 +50,18 @@ export function thinkingIdOf(entry: Readonly<UITranscriptEntry>): number | undef
 export function entryDisplay(entry: Readonly<UITranscriptEntry>, ui: UIState, view: RenderViewOptions): string {
   const width = view.columns ?? 80;
   if (entry.id?.startsWith(SESSION_HEADER_ID_PREFIX)) return `\n${renderSessionHeader(ui, view)}\n`;
+  if (entry.turnSummary) {
+    return renderTurnSummary(entry.turnSummary, {
+      language: view.language ?? DEFAULT_LANGUAGE,
+      color: view.color ?? false,
+      columns: width,
+      links: false,
+    });
+  }
   // Answers hold the model's Markdown, rendered as one block by marked and Ink's layout.
-  if (entry.kind === "assistant") return `\n${renderAnswer(trimBlankRows(entry.text), width, view.color ?? false)}`;
+  if (entry.kind === "assistant") {
+    return `\n${renderAnswer(trimBlankRows(entry.text), width, view.color ?? false, entry.continuation === true)}`;
+  }
   const text = transcriptEntryText(entry);
   // Thinking previews are a teaser: cut them at the edge instead of wrapping mid-word.
   if (thinkingIdOf(entry) !== undefined) {

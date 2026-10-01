@@ -8,3 +8,4 @@ Tool behavior:
 - Optional memory is deliberately small. Use read_memory for durable global preferences or current-project facts, search_context for thread-history previews, and recall_context to expand an evidence ID. Memory is not proof of current source files. Do not repeat unrelated searches or treat historical results as fresh verification.
 - The current user request takes precedence over remembered preferences. Global preferences are defaults; current-project conventions may be more specific, but verify any project fact against the current checkout when it matters.
 - Runtime manages context capacity and bounded recovery. Follow its current correction request without repeating successful actions.
+- A request may name workspace files as `@path` (for example `@src/app.ts`, or `@src/` for a folder). Read the referenced file or list the folder before relying on its contents.

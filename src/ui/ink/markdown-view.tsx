@@ -4,6 +4,7 @@ import { Lexer, type Token, type Tokens } from "marked";
 import { memo, type ReactElement } from "react";
 
 import { displayWidth, stripAnsi } from "../render/layout.js";
+import { highlightCode } from "./code-highlight.js";
 
 /**
  * Assistant answers rendered from Markdown with `marked`'s lexer and Ink's own
@@ -78,7 +79,7 @@ function Block({
           paddingLeft={1}
         >
           {code.lang ? <Text>{palette.gray(code.lang)}</Text> : null}
-          <Text>{palette.yellow(code.text)}</Text>
+          <Text>{highlightCode(code.text, code.lang, palette)}</Text>
         </Box>
       );
     }
@@ -235,8 +236,10 @@ export const AnswerBlock = memo(function AnswerBlock(props: {
   readonly color: boolean;
   /** One blank row above, like every conversation item. */
   readonly spaced?: boolean;
+  /** Later blocks of an answer already started above: same gutter, no second bullet. */
+  readonly continuation?: boolean;
 }): ReactElement {
-  const bullet = new Chalk({ level: props.color ? 1 : 0 }).cyan("●");
+  const bullet = props.continuation ? " " : new Chalk({ level: props.color ? 1 : 0 }).cyan("●");
   return (
     <Box width={props.width} marginTop={props.spaced ? 1 : 0}>
       <Box width={2} flexShrink={0}>
@@ -255,11 +258,13 @@ const answerCache = new Map<string, string>();
  * Never call this while the live Ink tree renders: a nested render corrupts
  * Ink's layout engine. The live tree renders `AnswerBlock` directly instead.
  */
-export function renderAnswer(text: string, width: number, color: boolean): string {
-  const key = `${width}:${color ? 1 : 0}:${text}`;
+export function renderAnswer(text: string, width: number, color: boolean, continuation = false): string {
+  const key = `${width}:${color ? 1 : 0}:${continuation ? 1 : 0}:${text}`;
   const cached = answerCache.get(key);
   if (cached !== undefined) return cached;
-  const rendered = renderToString(<AnswerBlock text={text} width={width} color={color} />, { columns: width });
+  const rendered = renderToString(<AnswerBlock text={text} width={width} color={color} continuation={continuation} />, {
+    columns: width,
+  });
   answerCache.set(key, rendered);
   if (answerCache.size > ANSWER_CACHE_LIMIT) answerCache.delete(answerCache.keys().next().value!);
   return rendered;

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 
 import type { ApprovalRequest, ImageAttachment } from "../src/core/types.js";
 import type { UISessionInfo } from "../src/ui/contracts.js";
@@ -185,6 +187,66 @@ describe("Ink interaction", () => {
     });
   });
 
+  it("moves each finished Markdown block of a streaming answer into scrollback", async () => {
+    await withInk(async ({ ink, text }) => {
+      ink.configureStreaming({ streamFlushIntervalMs: 1, streamPreviewMaxChars: 4_000 });
+      ink.modelStream({ kind: "started", streamId: "blocks", sequence: 1 });
+      ink.modelStream({ kind: "reasoning_delta", streamId: "blocks", sequence: 2, text: "Plan the answer." });
+      ink.modelStream({ kind: "text_delta", streamId: "blocks", sequence: 3, text: "First paragraph." });
+      await wait(60);
+      // A single unfinished block stays redrawable, and so does the Thinking above it.
+      assert.equal(ink.store.getSnapshot().settled, 0);
+
+      ink.modelStream({
+        kind: "text_delta",
+        streamId: "blocks",
+        sequence: 4,
+        text: "\n\n- one\n- two\n\nTail first line\n",
+      });
+      await wait(60);
+      // The paragraph and list are final; only the last paragraph may still change.
+      const { ui, settled } = ink.store.getSnapshot();
+      const answers = ui.transcript.filter((entry) => entry.kind === "assistant");
+      assert.equal(answers.length, 2);
+      assert.match(answers[0]!.text, /First paragraph\.\s+- one\n- two/u);
+      assert.equal(answers[0]!.continuation, undefined);
+      assert.equal(answers[1]!.continuation, true);
+      assert.equal(settled, ui.transcript.indexOf(answers[1]!));
+
+      ink.modelStream({ kind: "text_delta", streamId: "blocks", sequence: 5, text: "second line." });
+      ink.modelStream({ kind: "completed", streamId: "blocks", sequence: 6, finishReason: "stop" });
+      assert.equal(
+        ink.finalizeStreamedAnswer("First paragraph.\n\n- one\n- two\n\nTail first line\nsecond line."),
+        true,
+      );
+      await wait(120);
+      const final = ink.store.ui.transcript.filter((entry) => entry.kind === "assistant");
+      assert.equal(final.length, 2);
+      assert.equal(final[1]!.text.trim(), "Tail first line\nsecond line.");
+      assert.equal(ink.store.getSnapshot().settled, ink.store.ui.transcript.length);
+      // One bullet for the whole answer, and each block printed once.
+      assert.equal((text().match(/● First paragraph\./gu) ?? []).length, 1);
+      assert.doesNotMatch(text(), /● Tail first line/u);
+      assert.match(text(), /second line\./u);
+    });
+  });
+
+  it("keeps settled blocks when the assembled answer differs from the stream", async () => {
+    await withInk(async ({ ink }) => {
+      ink.configureStreaming({ streamFlushIntervalMs: 1, streamPreviewMaxChars: 4_000 });
+      ink.modelStream({ kind: "started", streamId: "drift", sequence: 1 });
+      ink.modelStream({ kind: "text_delta", streamId: "drift", sequence: 2, text: "Intro.\n\nBody\n" });
+      await wait(60);
+      ink.modelStream({ kind: "completed", streamId: "drift", sequence: 3, finishReason: "stop" });
+      assert.equal(ink.finalizeStreamedAnswer("Different intro.\n\nBody"), true);
+      const answers = ink.store.ui.transcript.filter((entry) => entry.kind === "assistant");
+      assert.deepEqual(
+        answers.map((entry) => entry.text.trim()),
+        ["Intro.", "Body"],
+      );
+    });
+  });
+
   it("settles an answer that turned into a tool call without waiting for reconciliation", async () => {
     await withInk(async ({ ink }) => {
       ink.configureStreaming({ streamFlushIntervalMs: 1, streamPreviewMaxChars: 4_000 });
@@ -362,7 +424,7 @@ describe("Ink interaction", () => {
       await wait(200);
       const startClears = raw().split("\u001B[2J").length - 1;
       assert.match(text(), /item 60/u);
-      assert.match(text(), /earlier rows are shown when the answer completes/u);
+      assert.match(text(), /earlier rows of this block are shown when it completes/u);
       ink.modelStream({ kind: "text_delta", streamId: "tall", sequence: 3, text: "- item 61\n" });
       await wait(200);
       // Staying shorter than the window means Ink never falls back to clearing the screen.
@@ -482,6 +544,125 @@ describe("Ink interaction", () => {
       );
       assert.match(text(), /EASY CODE/u);
       assert.equal(ink.store.getSnapshot().epoch, 1);
+    });
+  });
+
+  it("opens a slash-command menu, fills in arguments, and runs the chosen command", async () => {
+    await withInk(async ({ ink, type, text }) => {
+      const pending = ink.readPrompt("> ", { captureImage: async () => IMAGE });
+      await wait();
+      await type("/mo");
+      assert.match(text(), /› \/mode\s+Switch working mode/u);
+      assert.match(text(), /\/model\s+Pick a model/u);
+
+      // /mode needs an argument: Enter fills it in and shows the argument menu.
+      await type("\r");
+      assert.equal(ink.store.getSnapshot().prompt !== null, true);
+      assert.match(text(), /› plan\s+Propose a plan/u);
+      await type("\u001B[B");
+      await type("\r");
+      assert.equal((await pending)?.text, "/mode auto");
+    });
+  });
+
+  it("browses history with arrows and labels the entry instead of opening the command menu", async () => {
+    await withInk(async ({ ink, type, text }) => {
+      const first = ink.readPrompt("> ", { captureImage: async () => IMAGE });
+      await wait();
+      await type("/help");
+      await type("\r");
+      assert.equal((await first)?.text, "/help");
+
+      const second = ink.readPrompt("> ", { captureImage: async () => IMAGE });
+      await wait();
+      await type("\u001B[A");
+      assert.match(text(), /History 1\/1/u);
+      // ↓ returns to the empty draft rather than moving through a command menu.
+      await type("\u001B[B");
+      await type("\u001B[A");
+      await type("\r");
+      assert.equal((await second)?.text, "/help");
+    });
+  });
+
+  it("clears a draft only on a second Escape", async () => {
+    await withInk(async ({ ink, type, text }) => {
+      const pending = ink.readPrompt("> ", { captureImage: async () => IMAGE });
+      await wait();
+      await type("keep this draft");
+      await type("\u001B");
+      await wait(80);
+      assert.match(text(), /Press Esc again to clear/u);
+      await type(" too");
+      await type("\u001B");
+      await wait(80);
+      await type("\u001B");
+      await wait(80);
+      await type("fresh");
+      await type("\r");
+      assert.equal((await pending)?.text, "fresh");
+    });
+  });
+
+  it("completes @ file references from the workspace listing", async () => {
+    await withInk(async ({ ink, type, text }) => {
+      const pending = ink.readPrompt("> ", {
+        captureImage: async () => IMAGE,
+        mentionPaths: () => ["src/app.ts", "src/store.ts", "README.md"],
+      });
+      await wait();
+      await type("@sr");
+      assert.match(text(), /› src\//u);
+      await type("\r");
+      assert.match(text(), /› src\/app\.ts/u);
+      await type("\u001B[B");
+      await type("\r");
+      await type("check it");
+      await type("\r");
+      assert.equal((await pending)?.text, "@src/store.ts check it");
+    });
+  });
+
+  it("prints a turn summary with linked file names", async () => {
+    await withInk(async ({ ink, text, raw }) => {
+      const absolutePath = path.resolve("project", "src", "app.ts");
+      ink.turnCompleted({
+        durationMs: 72_000,
+        inputTokens: 1_500,
+        outputTokens: 300,
+        changedFiles: [{ path: "src/app.ts", absolutePath, deleted: false }],
+      });
+      await wait(120);
+      assert.match(text(), /took 1m 12s · ↑ 1\.5k ↓ 300 tokens · 1 file changed: src\/app\.ts/u);
+      assert.ok(
+        raw().includes(`\u001B]8;;${pathToFileURL(absolutePath).href}\u0007src/app.ts\u001B]8;;\u0007`),
+        "the file name links to its absolute file URL",
+      );
+    });
+  });
+
+  it("closes the slash menu on Escape without clearing the draft, and offers host threads", async () => {
+    await withInk(async ({ ink, type, text }) => {
+      const first = ink.readPrompt("> ", { captureImage: async () => IMAGE });
+      await wait();
+      await type("/he");
+      await type("\u001B");
+      await wait(80);
+      await type("\r");
+      // Escape dismissed the menu, so Enter submits exactly what was typed.
+      assert.equal((await first)?.text, "/he");
+
+      const second = ink.readPrompt("> ", {
+        captureImage: async () => IMAGE,
+        slashArguments: (command) =>
+          command === "resume" ? [{ value: "thread_old", description: "Add authentication" }] : undefined,
+      });
+      await wait();
+      await type("/resume ");
+      assert.match(text(), /› thread_old\s+Add authentication/u);
+      await type("\t");
+      await type("\r");
+      assert.equal((await second)?.text, "/resume thread_old");
     });
   });
 });

@@ -1,6 +1,7 @@
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import type { ProviderStreamEvent } from "../core/types.js";
 import type { UITranscriptEntry } from "../ui/contracts.js";
+import { settledMarkdownLength } from "../ui/markdown-blocks.js";
 import {
   prepareReasoningText,
   renderReasoningMarker,
@@ -32,6 +33,12 @@ export interface ModelStreamHost {
   retainReasoningDisclosure(entryId: string, block: Readonly<ReasoningBlock>): void;
   refreshDisclosureViewer(nodesChanged: boolean): void;
   failTerminalUi(stage: string, value: unknown): void;
+  /**
+   * Make an entry permanent output. A host that supports this receives each
+   * finished Markdown block of a streaming answer as its own settled entry, so
+   * only the block still being written stays redrawable.
+   */
+  settleTranscriptEntry?(id: string): void;
 }
 
 interface ActiveModelStream {
@@ -43,6 +50,11 @@ interface ActiveModelStream {
   reasoningId?: number;
   reasoningEntryId?: string;
   answerEntryId?: string;
+  /** Leading answer characters already settled as finished blocks. */
+  answerSettledChars: number;
+  /** Settled block entries so far; later entries continue the first one's bullet. */
+  answerParts: number;
+  reasoningSettled: boolean;
   toolCallSeen: boolean;
   readonly toolCalls: Map<number, { name: string; argumentChars: number }>;
   toolProgressDirty: boolean;
@@ -74,6 +86,9 @@ export class ModelStreamRenderer {
     streamId: string;
     entryId: string;
     text: string;
+    /** Raw answer prefix already settled above the candidate entry. */
+    settledPrefix: string;
+    continuation: boolean;
   }>;
   private reasoningCandidate?: Readonly<{
     streamId: string;
@@ -169,12 +184,19 @@ export class ModelStreamRenderer {
     const candidate = this.answerCandidate;
     this.answerCandidate = undefined;
     if (!candidate || !this.host.hasDisclosureDocument()) return false;
-    const complete = this.host.safeStreamText(text).trim();
+    if (candidate.settledPrefix && !text.startsWith(candidate.settledPrefix)) {
+      // Finished blocks are already permanent. When the assembled answer does not
+      // extend them, the streamed (complete) tail stands rather than repeating them.
+      this.streams.delete(candidate.streamId);
+      return true;
+    }
+    const complete = this.host.safeStreamText(text.slice(candidate.settledPrefix.length)).trim();
     if (!complete) return false;
     this.host.replaceTranscriptEntry(candidate.entryId, {
       kind: "assistant",
       id: candidate.entryId,
       text: `\n${this.formatAnswer(complete)}\n\n`,
+      ...(candidate.continuation ? { continuation: true } : {}),
     });
     this.streams.delete(candidate.streamId);
     return true;
@@ -271,6 +293,7 @@ export class ModelStreamRenderer {
   private renderLiveReasoningProgress(state: ActiveModelStream, nowMs = Date.now()): void {
     if (
       state.completed ||
+      state.reasoningSettled ||
       state.finalDisplay ||
       state.reasoningSourceChars <= this.previewMaxChars ||
       state.reasoningLastDeltaAtMs === undefined ||
@@ -336,6 +359,9 @@ export class ModelStreamRenderer {
         ...(activityId ? { activityId } : {}),
         reasoningText: "",
         answerText: "",
+        answerSettledChars: 0,
+        answerParts: 0,
+        reasoningSettled: false,
         toolCallSeen: false,
         toolCalls: new Map(),
         toolProgressDirty: false,
@@ -358,26 +384,14 @@ export class ModelStreamRenderer {
     }
 
     if (event.kind === "text_delta") {
-      const previewWasFull = state.answerText.length > this.previewMaxChars;
+      const previewWasFull = state.answerText.length - state.answerSettledChars > this.previewMaxChars;
       state.answerText += event.text;
-      if (previewWasFull && state.renderedAnswer && !state.finalDisplay) return;
-      const safe = this.liveStreamText(state.answerText, state.finalDisplay);
+      const settled = this.settleFinishedBlocks(state, event.streamId);
+      if (!settled && previewWasFull && state.renderedAnswer && !state.finalDisplay) return;
+      const safe = this.liveStreamText(state.answerText.slice(state.answerSettledChars), state.finalDisplay);
       if (!safe || safe === state.renderedAnswer) return;
       state.renderedAnswer = safe;
-      if (!state.answerEntryId) {
-        state.answerEntryId = `model_stream_${event.streamId}_answer`;
-        this.host.commitTranscript({
-          kind: "assistant",
-          id: state.answerEntryId,
-          text: `\n${this.formatAnswer(safe)}`,
-        });
-      } else {
-        this.host.replaceTranscriptEntry(state.answerEntryId, {
-          kind: "assistant",
-          id: state.answerEntryId,
-          text: `\n${this.formatAnswer(safe)}`,
-        });
-      }
+      this.writeAnswerEntry(state, event.streamId, `\n${this.formatAnswer(safe)}`);
       return;
     }
 
@@ -408,12 +422,79 @@ export class ModelStreamRenderer {
           streamId: event.streamId,
           entryId: state.answerEntryId,
           text: this.host.safeStreamText(state.answerText),
+          settledPrefix: state.answerText.slice(0, state.answerSettledChars),
+          continuation: state.answerParts > 0,
         };
       }
       return;
     }
 
     if (event.kind === "interrupted") this.applyInterrupted(state, event.streamId);
+  }
+
+  /** Create or update the entry holding the answer's unfinished tail. */
+  private writeAnswerEntry(state: ActiveModelStream, streamId: string, text: string): void {
+    const entry: UITranscriptEntry = {
+      kind: "assistant",
+      id:
+        state.answerEntryId ??
+        (state.answerParts === 0
+          ? `model_stream_${streamId}_answer`
+          : `model_stream_${streamId}_part${state.answerParts}_answer`),
+      text,
+      ...(state.answerParts > 0 ? { continuation: true } : {}),
+    };
+    if (state.answerEntryId) {
+      this.host.replaceTranscriptEntry(entry.id!, entry);
+    } else {
+      state.answerEntryId = entry.id!;
+      this.host.commitTranscript(entry);
+    }
+  }
+
+  /**
+   * Turn the answer's finished Markdown blocks into a permanent entry and start a
+   * new entry for the rest. Returns whether anything was settled.
+   */
+  private settleFinishedBlocks(state: ActiveModelStream, streamId: string): boolean {
+    if (!this.host.settleTranscriptEntry || state.finalDisplay) return false;
+    const pending = state.answerText.slice(state.answerSettledChars);
+    const length = settledMarkdownLength(pending);
+    if (length === 0) return false;
+    const finished = this.host.safeStreamText(pending.slice(0, length)).trim();
+    if (!finished) return false;
+
+    this.settleReasoning(state);
+    this.writeAnswerEntry(state, streamId, `\n${this.formatAnswer(finished)}`);
+    this.host.settleTranscriptEntry(state.answerEntryId!);
+    state.answerSettledChars += length;
+    state.answerParts += 1;
+    state.answerEntryId = undefined;
+    state.renderedAnswer = undefined;
+    return true;
+  }
+
+  /**
+   * Answer text means the Thinking before it is done. Show its final marker and
+   * make it permanent, so the answer's settled blocks can follow it into scrollback.
+   */
+  private settleReasoning(state: ActiveModelStream): void {
+    if (state.reasoningSettled || !state.reasoningId || !state.reasoningEntryId) return;
+    state.reasoningSettled = true;
+    const block = this.host.reasoning.replace(state.reasoningId, this.liveStreamText(state.reasoningText, true));
+    if (block) {
+      this.host.retainReasoningDisclosure(state.reasoningEntryId, block);
+      this.host.replaceTranscriptEntry(state.reasoningEntryId, {
+        kind: "raw",
+        id: state.reasoningEntryId,
+        text: renderReasoningMarker(block, {
+          color: this.host.colorEnabled(),
+          toggleHint: this.host.reasoningToggleHint,
+        }),
+        reasoning: block.text,
+      });
+    }
+    this.host.settleTranscriptEntry?.(state.reasoningEntryId);
   }
 
   private applyReasoningDelta(state: ActiveModelStream, text: string): void {
@@ -479,6 +560,7 @@ export class ModelStreamRenderer {
         kind: "assistant",
         id: state.answerEntryId,
         text: `\n${this.formatAnswer(`${state.renderedAnswer ?? ""}\n${interrupted}`)}\n`,
+        ...(state.answerParts > 0 ? { continuation: true } : {}),
       });
     } else {
       this.host.commitTranscript({

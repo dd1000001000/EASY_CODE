@@ -24,6 +24,8 @@ import CommandPanel from "./components/CommandPanel.vue";
 import MessageRail from "./components/MessageRail.vue";
 import ConversationTurn from "./components/ConversationTurn.vue";
 import { compactionRunning } from "../ui/compaction.js";
+import { LONG_TURN_NOTIFY_MS, formatDuration } from "../ui/duration.js";
+import { notifyAttention, requestAttentionPermission } from "./attention.js";
 import { subagentDisplayLabel } from "../subagents/display-name.js";
 
 const view = ref<WebView>({
@@ -203,6 +205,34 @@ function notify(text: string, kind: "success" | "warning" | "error"): void {
     position: "top-right",
   });
 }
+/** Decisions already announced (or already on screen when the page loaded), by ID. */
+const announcedDecisions = new Set<string>();
+/**
+ * Notify a user who switched away when any thread finishes a long request or
+ * waits on a decision. Checked before the active-thread filter: a task in a
+ * background conversation is exactly the one the user is not watching.
+ */
+function announce(threadId: string, patch: WebPatch): void {
+  const thread = threads.value.find((item) => item.threadId === threadId)?.title;
+  const withThread = (message: string): string => (thread ? `${thread}\n${message}` : message);
+  if (patch.kind === "turn.completed") {
+    if (patch.summary.durationMs < LONG_TURN_NOTIFY_MS) return;
+    notifyAttention(
+      withThread(t("ui.taskFinishedNotice", { elapsed: formatDuration(patch.summary.durationMs) })),
+      `turn-${threadId}`,
+    );
+    return;
+  }
+  const decision = patch.kind === "state" ? patch.state.decision : undefined;
+  if (!decision || announcedDecisions.has(decision.id)) return;
+  announcedDecisions.add(decision.id);
+  const message =
+    decision.kind === "approval"
+      ? t("ui.approvalNeededNotice", { title: decision.title })
+      : t("ui.decisionNeededNotice", { title: decision.title });
+  notifyAttention(withThread(message), `decision-${decision.id}`);
+}
+
 function resetCommandOutput(): void {
   commandCaptureThreadId = undefined;
   commandRunSeen = false;
@@ -255,6 +285,7 @@ function applySnapshot(snapshot: WebSnapshot): void {
     selectedProjectId.value = undefined;
   }
   plan.value = snapshot.plan;
+  if (snapshot.view.decision) announcedDecisions.add(snapshot.view.decision.id);
   loading.value = false;
 }
 function applyPatch(patch: WebPatch, nextSequence: number): void {
@@ -306,7 +337,7 @@ function applyPatch(patch: WebPatch, nextSequence: number): void {
     threads.value = threads.value.map((thread) =>
       thread.threadId === patch.threadId ? { ...thread, title: patch.title, canRename: false } : thread,
     );
-  else view.value = { ...view.value, ...patch.state };
+  else if (patch.kind === "state") view.value = { ...view.value, ...patch.state };
 }
 async function refresh(): Promise<void> {
   try {
@@ -324,6 +355,7 @@ function connect(): void {
   events.addEventListener("patch", (event) => {
     const message = event as MessageEvent;
     const update = JSON.parse(message.data) as { threadId: string; sequence: number; patch: WebPatch };
+    announce(update.threadId, update.patch);
     if (update.threadId !== activeThread.value) return;
     const before = view.value.busy;
     const beforeThread = view.value.session?.threadId;
@@ -537,6 +569,8 @@ async function returnToLatest(): Promise<void> {
 }
 async function send(text: string, imageIds: string[], resourceIds: string[]): Promise<void> {
   if (!activeThread.value) return;
+  // Sending is a user action, the only moment a browser lets a page ask to show notifications.
+  requestAttentionPermission();
   if (compacting.value) {
     composer.value?.failed();
     return;

@@ -1,4 +1,5 @@
 import type { ImageAttachment, PlanProposal } from "../../core/types.js";
+import type { SlashArgumentSource } from "../../cli/slash-suggestions.js";
 import type { Language } from "../../i18n/language.js";
 import type { UIEvent, UIState } from "../contracts.js";
 import type { CurrentRequestOptions, UserSubmission } from "../interaction-port.js";
@@ -10,6 +11,8 @@ export interface PromptRequest {
   readonly initialImageCount: number;
   readonly captureImage: (index: number, signal?: AbortSignal) => Promise<ImageAttachment>;
   readonly captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
+  readonly slashArguments?: SlashArgumentSource;
+  readonly mentionPaths?: () => readonly string[];
   readonly resolve: (submission: UserSubmission | null) => void;
 }
 

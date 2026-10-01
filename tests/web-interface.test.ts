@@ -179,6 +179,27 @@ describe("Web interaction host", () => {
     assert.deepEqual(appended, [true, true]);
     host.close();
   });
+  it("sends a finished request's summary as a live patch without touching the transcript", () => {
+    const host = new WebInteraction();
+    const patches: unknown[] = [];
+    host.subscribe((change) => {
+      if (change.patch?.kind === "turn.completed") patches.push(change.patch.summary);
+    });
+    host.turnCompleted({
+      durationMs: 45_000,
+      inputTokens: 900,
+      outputTokens: 120,
+      changedFiles: [
+        { path: "src/app.ts", absolutePath: path.resolve("src/app.ts"), deleted: false },
+        { path: "bad\u001B[2Jname.ts", absolutePath: path.resolve("bad.ts"), deleted: true },
+      ],
+    });
+    assert.deepEqual(patches, [
+      { durationMs: 45_000, inputTokens: 900, outputTokens: 120, changedFiles: ["src/app.ts", "badname.ts"] },
+    ]);
+    assert.deepEqual(host.snapshot().view.entries, []);
+    host.close();
+  });
   it("does not duplicate a proposed plan or expose its transport JSON", () => {
     const host = new WebInteraction();
     host.showPlan({

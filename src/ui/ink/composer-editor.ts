@@ -247,4 +247,10 @@ export class EditorHistory {
   detach(): void {
     this.position = -1;
   }
+
+  /** While a recalled entry is shown: its place counted from the newest (1) and the entry count. */
+  get browsing(): { readonly index: number; readonly total: number } | undefined {
+    if (this.position === -1) return undefined;
+    return { index: this.entries.length - this.position, total: this.entries.length };
+  }
 }

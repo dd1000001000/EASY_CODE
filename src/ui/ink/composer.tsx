@@ -2,10 +2,11 @@ import chalk from "chalk";
 import { Box, Text, useBoxMetrics, useCursor, useInput, usePaste, type DOMElement } from "ink";
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 
-import { completeSlashCommandPrefix } from "../../cli/slash-command.js";
+import type { SlashSuggestion } from "../../cli/slash-suggestions.js";
 import type { ImageAttachment } from "../../core/types.js";
+import type { Language } from "../../i18n/language.js";
 import type { UserSubmission } from "../interaction-port.js";
-import { sanitizeTerminalText } from "../render/layout.js";
+import { displayWidth, sanitizeTerminalText, truncateToWidth } from "../render/layout.js";
 import {
   EMPTY_EDITOR,
   atVerticalEdge,
@@ -33,14 +34,26 @@ const MAX_PASTE_CHARS = 256 * 1024;
 /** Pastes taller than this collapse to a one-line marker; the full text is sent on submit. */
 const COLLAPSE_PASTE_LINES = 6;
 const MAX_VISIBLE_ROWS = 8;
+/** Most suggestion rows shown at once; the menu scrolls to keep the selection visible. */
+const MAX_MENU_ROWS = 8;
+const MAX_MENU_LABEL_COLUMNS = 28;
+/** A second Esc within this window clears the draft. */
+const CLEAR_CONFIRM_MS = 2_000;
 
 export interface ComposerProps {
   readonly width: number;
   readonly placeholder: string;
   readonly history?: EditorHistory;
-  readonly slashCompletion?: boolean;
+  /** Slash-command menu entries for the draft; empty when the draft is not a command. */
+  readonly suggest?: (text: string, cursor: number) => readonly SlashSuggestion[];
+  /** Rows free below the first draft row, shared by further draft rows and the menu. */
+  readonly menuSpace?: number;
+  /** Rows the suggestion menu occupies below the card (0 when closed). */
+  readonly onMenuRowsChange?: (rows: number) => void;
   readonly disabled?: boolean;
   readonly color: boolean;
+  /** Language of the hints shown in the box border. */
+  readonly language?: Language;
   /** Prompt label shown in the box border, when any. */
   readonly title?: string;
   /** Most draft rows shown at once; taller drafts scroll inside the card. */
@@ -82,6 +95,33 @@ export interface DraftAttachments {
   pasteCounter: number;
   pendingCaptures: number;
   submitWhenIdle: boolean;
+}
+
+interface MenuState {
+  /** Draft the selection and dismissal apply to; any edit resets both. */
+  readonly text: string;
+  readonly index: number;
+  readonly dismissed: boolean;
+}
+
+const CLOSED_MENU: MenuState = { text: "", index: 0, dismissed: false };
+
+function menuFor(state: MenuState, text: string): MenuState {
+  return state.text === text ? state : { text, index: 0, dismissed: false };
+}
+
+/** The card's top border, with an optional label set into it: `╭─ History 1/3 ───╮`. */
+function topBorder(width: number, label: string | undefined, color: boolean): string {
+  const inner = Math.max(0, width - 2);
+  const title = label ? truncateToWidth(` ${label} `, Math.max(0, inner - 1)) : "";
+  const fill = "─".repeat(Math.max(0, inner - (title ? 1 : 0) - displayWidth(title)));
+  if (!color) return `╭${title ? "─" : ""}${title}${fill}╮`;
+  return `${chalk.cyan(`╭${title ? "─" : ""}`)}${chalk.gray(title)}${chalk.cyan(`${fill}╮`)}`;
+}
+
+function padToWidth(value: string, columns: number): string {
+  const clipped = truncateToWidth(value, columns);
+  return clipped + " ".repeat(Math.max(0, columns - displayWidth(clipped)));
 }
 
 function newAttachments(initialImageCount: number): DraftAttachments {
@@ -131,6 +171,23 @@ export function Composer(props: ComposerProps): ReactElement {
   const boxRef = useRef<DOMElement | null>(null);
   const metrics = useBoxMetrics(boxRef);
   const { setCursorPosition } = useCursor();
+  const [clearArmed, setClearArmed] = useState(false);
+  const clearArmedRef = useRef(false);
+  const clearTimer = useRef<NodeJS.Timeout | undefined>(undefined);
+  const armClear = useCallback((armed: boolean): void => {
+    clearTimeout(clearTimer.current);
+    clearTimer.current = undefined;
+    if (clearArmedRef.current === armed) return;
+    clearArmedRef.current = armed;
+    setClearArmed(armed);
+  }, []);
+  useEffect(() => () => clearTimeout(clearTimer.current), []);
+  const [menuState, setMenuState] = useState<MenuState>(CLOSED_MENU);
+  const menuRef = useRef<MenuState>(CLOSED_MENU);
+  const setMenu = useCallback((next: MenuState): void => {
+    menuRef.current = next;
+    setMenuState(next);
+  }, []);
 
   // Border (2) + padding (2) + the "› " gutter (2).
   const textWidth = Math.max(1, width - 6);
@@ -275,6 +332,8 @@ export function Composer(props: ComposerProps): ReactElement {
         }
       };
 
+      // Any key other than Esc cancels a pending "press Esc again to clear".
+      if (!key.escape) armClear(false);
       if ((key.ctrl || key.super) && input.toLowerCase() === "v") return pasteFromClipboard();
       if (key.ctrl) {
         switch (input) {
@@ -308,6 +367,26 @@ export function Composer(props: ComposerProps): ReactElement {
             return;
         }
       }
+      // A recalled history entry is browsed with ↑/↓, never re-opened as a command menu.
+      const suggestions = props.history?.browsing ? [] : (props.suggest?.(current.text, current.cursor) ?? []);
+      const menu = menuFor(menuRef.current, current.text);
+      if (suggestions.length > 0 && !menu.dismissed) {
+        if (key.upArrow || key.downArrow) {
+          const step = key.upArrow ? -1 : 1;
+          setMenu({ ...menu, index: (menu.index + step + suggestions.length) % suggestions.length });
+          return;
+        }
+        if (key.escape) {
+          setMenu({ ...menu, dismissed: true });
+          return;
+        }
+        if (key.tab || (key.return && !key.shift && !key.meta)) {
+          const chosen = suggestions[Math.min(menu.index, suggestions.length - 1)]!;
+          edit({ text: chosen.replacement, cursor: chosen.cursor ?? chosen.replacement.length });
+          if (key.return && chosen.submit) submit();
+          return;
+        }
+      }
       if (key.return) {
         if (key.shift || key.meta) return edit(insertText(current, "\n"));
         // A trailing backslash continues the line, like a shell.
@@ -318,22 +397,22 @@ export function Composer(props: ComposerProps): ReactElement {
       }
       if (input === "\n") return edit(insertText(current, "\n"));
       if (key.escape) {
-        if (current.text.length > 0) clearDraft();
+        if (current.text.length === 0 && attachments.current.images.length === 0) return;
+        // One stray Esc must not throw away a long draft; a second one confirms.
+        if (clearArmedRef.current) {
+          armClear(false);
+          clearDraft();
+          return;
+        }
+        armClear(true);
+        clearTimer.current = setTimeout(() => armClear(false), CLEAR_CONFIRM_MS);
         return;
       }
-      if (key.tab) {
-        const completion = props.slashCompletion ? completeSlashCommandPrefix(current.text, current.cursor) : undefined;
-        if (completion) edit({ text: completion.replacement, cursor: completion.replacement.length });
-        return;
-      }
+      if (key.tab) return;
       if (key.backspace) return edit(deleteBackward(current));
       if (key.delete) return edit(deleteForward(current));
       if (key.leftArrow) return setEditor(key.meta || key.ctrl ? moveWordLeft(current) : moveLeft(current));
-      if (key.rightArrow) {
-        const completion = props.slashCompletion ? completeSlashCommandPrefix(current.text, current.cursor) : undefined;
-        if (completion) return edit({ text: completion.replacement, cursor: completion.replacement.length });
-        return setEditor(key.meta || key.ctrl ? moveWordRight(current) : moveRight(current));
-      }
+      if (key.rightArrow) return setEditor(key.meta || key.ctrl ? moveWordRight(current) : moveRight(current));
       if (key.home) return setEditor(moveLineStart(current));
       if (key.end) return setEditor(moveLineEnd(current));
       if (key.upArrow || key.downArrow) {
@@ -365,18 +444,32 @@ export function Composer(props: ComposerProps): ReactElement {
   const rows = layoutRows(editor.text, textWidth);
   const cursorRow = rowIndexOfCursor(rows, editor.cursor);
   const showPlaceholder = editor.text.length === 0;
-  const completion = props.slashCompletion ? completeSlashCommandPrefix(editor.text, editor.cursor) : undefined;
   const images = attachments.current.images;
   const lines = showPlaceholder
     ? [chalk.gray(props.placeholder)]
-    : rows.map((row, index) => {
-        const text = editor.text.slice(row.start, row.end);
-        return index === rows.length - 1 && completion ? `${text}${chalk.gray(completion.suffix)}` : text;
-      });
+    : rows.map((row) => editor.text.slice(row.start, row.end));
   const badges = images.length > 0 ? ` ${images.map((image) => `[${image.label}]`).join(" ")}` : "";
   // A tall draft scrolls inside the card so the live region never outgrows the terminal.
   const first = showPlaceholder ? 0 : Math.max(0, Math.min(cursorRow - maxVisible + 1, lines.length - maxVisible));
   const visible = lines.slice(first, first + maxVisible);
+
+  const browsing = props.history?.browsing;
+  const suggestions = disabled || browsing ? [] : (props.suggest?.(editor.text, editor.cursor) ?? []);
+  const menu = menuFor(menuState, editor.text);
+  const menuCapacity = Math.max(
+    0,
+    Math.min(MAX_MENU_ROWS, Math.floor(props.menuSpace ?? MAX_MENU_ROWS) - (visible.length - 1)),
+  );
+  const menuCount = menu.dismissed ? 0 : Math.min(suggestions.length, menuCapacity);
+  const selected = Math.min(menu.index, Math.max(0, suggestions.length - 1));
+  const menuFirst = Math.min(Math.max(0, selected - menuCount + 1), Math.max(0, suggestions.length - menuCount));
+  const menuItems = suggestions.slice(menuFirst, menuFirst + menuCount);
+  // Labels share the row with descriptions; file paths have none and may use all of it.
+  const labelLimit = menuItems.some((item) => item.description) ? MAX_MENU_LABEL_COLUMNS : Math.max(8, width - 6);
+  const labelColumns = Math.min(labelLimit, Math.max(0, ...menuItems.map((item) => displayWidth(item.label))));
+  const onMenuRowsChange = props.onMenuRowsChange;
+  useEffect(() => onMenuRowsChange?.(menuCount), [onMenuRowsChange, menuCount]);
+  useEffect(() => () => onMenuRowsChange?.(0), [onMenuRowsChange]);
 
   // The terminal's own caret sits on the edit position so IME composition and
   // candidate windows follow it. Ink applies the position with the frame being
@@ -387,17 +480,42 @@ export function Composer(props: ComposerProps): ReactElement {
   const caretY = (top ?? 0) + 1 + (showPlaceholder ? 0 : cursorRow - first);
   setCursorPosition(disabled || top === undefined ? undefined : { x: Math.min(caretX, width - 3), y: caretY });
 
+  const zh = props.language === "zh_cn";
+  const borderLabel = clearArmed
+    ? zh
+      ? "再按一次 Esc 清空"
+      : "Press Esc again to clear"
+    : browsing
+      ? `${zh ? "历史" : "History"} ${browsing.index}/${browsing.total}`
+      : props.title;
+
   return (
-    <Box ref={boxRef} width={width} borderStyle="round" borderColor={color ? "cyan" : undefined} paddingX={1}>
-      <Box flexDirection="column" width={Math.max(1, width - 4)}>
-        {visible.map((line, index) => (
-          <Text key={first + index} wrap="truncate-end">
-            {first + index === 0 ? `${color ? chalk.cyan.bold("›") : "›"} ` : "  "}
-            {line}
-            {first + index === lines.length - 1 && badges ? chalk.gray(badges) : ""}
-          </Text>
-        ))}
+    <Box flexDirection="column" width={width}>
+      <Box ref={boxRef} flexDirection="column" width={width}>
+        <Text wrap="truncate-end">{topBorder(width, borderLabel, color)}</Text>
+        <Box width={width} borderStyle="round" borderTop={false} borderColor={color ? "cyan" : undefined} paddingX={1}>
+          <Box flexDirection="column" width={Math.max(1, width - 4)}>
+            {visible.map((line, index) => (
+              <Text key={first + index} wrap="truncate-end">
+                {first + index === 0 ? `${color ? chalk.cyan.bold("›") : "›"} ` : "  "}
+                {line}
+                {first + index === lines.length - 1 && badges ? chalk.gray(badges) : ""}
+              </Text>
+            ))}
+          </Box>
+        </Box>
       </Box>
+      {menuItems.map((item, index) => {
+        const active = menuFirst + index === selected;
+        const label = padToWidth(item.label, labelColumns);
+        const description = item.description ? `  ${color ? chalk.gray(item.description) : item.description}` : "";
+        return (
+          <Text key={item.replacement} wrap="truncate-end">
+            {active ? `  ${color ? chalk.cyan.bold(`› ${label}`) : `› ${label}`}` : `    ${label}`}
+            {description}
+          </Text>
+        );
+      })}
     </Box>
   );
 }

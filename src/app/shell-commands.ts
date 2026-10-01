@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { helpText, parseModelCommand, parseSlashCommand } from "../cli/slash-command.js";
+import type { SlashArgument } from "../cli/slash-suggestions.js";
 import { printBanner } from "../cli/terminal.js";
 import { formatTokenCount } from "../cli/token-count.js";
 import { ContextManager } from "../context/manager.js";
@@ -24,7 +25,7 @@ import { type ProviderContextSnapshot } from "../runtime/agent.js";
 import { runSandboxStartupGuide, type SandboxStartupService } from "../sandbox/startup.js";
 import { type EasyCodeStorage } from "../storage/database.js";
 import { SubagentCoordinator } from "../subagents/coordinator.js";
-import { ThreadStore } from "../threads/thread-store.js";
+import { ThreadStore, type ThreadSummary } from "../threads/thread-store.js";
 import type { UISessionInfo } from "../ui/contracts.js";
 import type { AppInteractionPort, PlanReviewDecision, UserSubmission } from "../ui/interaction-port.js";
 import { InfoCommands } from "./info-commands.js";
@@ -69,6 +70,8 @@ export interface AppShellCommandsContext {
   readonly sandboxStartupService: SandboxStartupService | undefined;
   readonly save: () => void;
   readonly selectResumeThread: () => Promise<string | undefined>;
+  readonly resumableThreads: () => readonly ThreadSummary[];
+  readonly mentionPaths: () => readonly string[];
   readonly showMcpServers: (requested?: { serverId: string; action: string }) => Promise<void>;
   readonly startMemoryMaintenance: () => void;
   readonly startupInteraction: "none" | "select-model" | "ensure-api-key";
@@ -149,6 +152,8 @@ export class AppShellCommands {
             return attachment;
           },
           captureText: async (signal) => this.ctx.clipboardImageReader.readText?.(signal),
+          slashArguments: (command) => (command === "resume" ? this.resumeArguments() : undefined),
+          mentionPaths: () => this.ctx.mentionPaths(),
         });
       } catch (error) {
         await this.ctx.discardImages(promptImages);
@@ -659,6 +664,17 @@ export class AppShellCommands {
       this.ctx.subagentCoordinator.hasOutstanding(this.ctx.state.threadId) ||
       this.ctx.hasRunningCommands()
     );
+  }
+
+  /** Previous threads offered after `/resume`, labelled by their goal. */
+  private resumeArguments(): readonly SlashArgument[] {
+    return this.ctx
+      .resumableThreads()
+      .filter((session) => session.threadId !== this.ctx.state.threadId)
+      .map((session) => ({
+        value: session.threadId,
+        description: session.goal?.trim() || `${session.provider}/${session.model} · ${session.updatedAt}`,
+      }));
   }
 
   private prompt(): string {

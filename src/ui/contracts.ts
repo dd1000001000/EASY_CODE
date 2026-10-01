@@ -58,6 +58,27 @@ export interface UITranscriptEntry {
   readonly toolName?: ToolName;
   readonly toolCallId?: string;
   readonly presentation?: ToolPresentation;
+  /** An assistant entry that continues the answer above it, so it has no bullet of its own. */
+  readonly continuation?: boolean;
+  /** The one-line summary printed after a completed request. */
+  readonly turnSummary?: TurnSummary;
+}
+
+/** One workspace file the turn created, edited or deleted. */
+export interface TurnChangedFile {
+  /** Workspace-relative path, as shown to the user. */
+  readonly path: string;
+  readonly absolutePath: string;
+  readonly deleted: boolean;
+}
+
+/** What one completed request cost and changed, shown as a single line after it. */
+export interface TurnSummary {
+  readonly durationMs: number;
+  /** Provider-reported tokens across every model request of the turn; absent when none were reported. */
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly changedFiles: readonly TurnChangedFile[];
 }
 
 export type UIActivityKind = "model" | "tool" | "command" | "waiting" | "other";

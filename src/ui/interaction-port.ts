@@ -8,11 +8,14 @@ import type {
   ProviderStreamEvent,
   ThinkingEffort,
 } from "../core/types.js";
+import type { SlashArgumentSource } from "../cli/slash-suggestions.js";
 import type { Language } from "../i18n/language.js";
 import type { VisionSupport } from "../models/catalog.js";
 import type { SubagentView } from "../subagents/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
-import type { UIActivityKind, UIReviewPhase, UISessionInfo } from "./contracts.js";
+import type { TurnSummary, UIActivityKind, UIReviewPhase, UISessionInfo } from "./contracts.js";
+
+export type { TurnChangedFile, TurnSummary } from "./contracts.js";
 
 /** A submitted user message, independent of how its editor captured it. */
 export interface UserSubmission {
@@ -80,6 +83,10 @@ export interface RequestInputOptions {
   readonly initialImageCount?: number;
   readonly captureImage: (index: number, signal?: AbortSignal) => Promise<ImageAttachment>;
   readonly captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
+  /** Session-dependent values offered in the slash-command menu. */
+  readonly slashArguments?: SlashArgumentSource;
+  /** Workspace-relative file paths offered after `@`. */
+  readonly mentionPaths?: () => readonly string[];
 }
 
 /** Runtime-to-user notifications; no ANSI, stdin, or browser protocol here. */
@@ -121,6 +128,8 @@ export interface AgentPresentationPort {
   addQueuedAdjustment(sequence: number, text: string, images?: readonly Readonly<ImageAttachment>[]): void;
   peerMessage?(threadId: string, text: string, outgoing?: boolean): void;
   finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean;
+  /** A request finished: its duration, token use and changed files. */
+  turnCompleted?(summary: Readonly<TurnSummary>): void;
   startActivity(text: string, kind?: UIActivityKind, toolName?: string): string | undefined;
   stopActivity(activityId?: string): void;
   startReview(): string;

@@ -9,6 +9,9 @@ const { pathToFileURL } = require("node:url");
 // Terminal under test connects to the real extension and defers its modal overlays until the host
 // acknowledges, which breaks synchronous UI assertions. Bridge tests pass their own environment.
 for (const name of ["EASY_CODE_VSCODE_BRIDGE_ENDPOINT", "EASY_CODE_VSCODE_BRIDGE_TOKEN"]) delete process.env[name];
+// Approvals and long requests raise desktop notifications; a test run must not pop real ones.
+// Notifier tests pass their own environment.
+process.env.EASY_CODE_NOTIFICATIONS = "off";
 
 async function main() {
   const projectRoot = path.resolve(__dirname, "..");

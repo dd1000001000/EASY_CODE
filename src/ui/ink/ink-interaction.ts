@@ -33,7 +33,14 @@ import { redactImageDataUrls } from "../../providers/errors.js";
 import type { SubagentView } from "../../subagents/types.js";
 import type { TaskGraphView } from "../../tasks/task-graph.js";
 import { compactionActivityLabel, compactionLabel, compactionRunning, type CompactionProgress } from "../compaction.js";
-import type { UIActivityKind, UIProgressItem, UIReviewPhase, UISessionInfo, UITranscriptEntry } from "../contracts.js";
+import type {
+  TurnSummary,
+  UIActivityKind,
+  UIProgressItem,
+  UIReviewPhase,
+  UISessionInfo,
+  UITranscriptEntry,
+} from "../contracts.js";
 import { DECISION_TIMEOUT_MS } from "../decision-timeout.js";
 import type {
   AppInteractionPort,
@@ -53,7 +60,9 @@ import type { ComposerDraft } from "./composer.js";
 import { EditorHistory } from "./composer-editor.js";
 import type { InkActions, InkTerminalControl } from "./ink-actions.js";
 import { mountInkApp, type MountedInkApp } from "./ink-app.js";
-import { InputTranslator } from "./input-translator.js";
+import { DISABLE_FOCUS_REPORTING, ENABLE_FOCUS_REPORTING, InputTranslator } from "./input-translator.js";
+import { AttentionNotifier } from "../notify.js";
+import { LONG_TURN_NOTIFY_MS, formatDuration } from "../duration.js";
 import { SESSION_HEADER_ID_PREFIX, thinkingToggleHint, transcriptDocument } from "./entry-text.js";
 import { ThinkingViewer } from "./thinking-viewer.js";
 import { createVsCodeMenuBridge, type VsCodeMenuBridge } from "../../cli/vscode-menu-bridge.js";
@@ -136,6 +145,9 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   private externalOperation: AbortController | undefined;
   private lastPlan: Readonly<PlanProposal> | undefined;
   private fatalFailure = false;
+  private turnSummarySequence = 0;
+  /** Bell and desktop notification when the user may be in another window. */
+  private readonly notifier: AttentionNotifier;
 
   constructor(
     private readonly input: NodeJS.ReadStream = process.stdin,
@@ -143,6 +155,9 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   ) {
     this.store = new InkStore(this.language);
     this.streams = new ModelStreamRenderer(this.streamHost());
+    this.notifier = new AttentionNotifier((text) => {
+      if (this.app && !this.output.destroyed) this.output.write(text);
+    });
     this.viewer = new ThinkingViewer({
       output,
       document: (expanded, columns) => this.viewerDocument(expanded, columns),
@@ -204,6 +219,8 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     // Start on a clean screen, like a full-screen app, while keeping native scrollback.
     this.output.write(CLEAR_DISPLAY);
     this.app = this.mount();
+    // Focus reports tell the notifier whether the user is looking at this terminal.
+    this.output.write(ENABLE_FOCUS_REPORTING);
     // VS Code Ctrl+click on a Thinking title arrives over the extension's bridge.
     this.bridge = createVsCodeMenuBridge();
     this.bridge?.onDisclosureToggle((kind, id) => {
@@ -576,6 +593,8 @@ export class InkInteraction implements AppInteractionPort, InkActions {
           initialImageCount: options.initialImageCount ?? 0,
           captureImage: options.captureImage,
           ...(options.captureText ? { captureText: options.captureText } : {}),
+          ...(options.slashArguments ? { slashArguments: options.slashArguments } : {}),
+          ...(options.mentionPaths ? { mentionPaths: options.mentionPaths } : {}),
           resolve,
         },
       });
@@ -675,6 +694,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     const preview = request.commandPreview
       ? redactSensitiveInformation(sanitizeCommandOutput(request.commandPreview)).replace(/[\r\n]+/gu, " ")
       : undefined;
+    this.notifyAttention(this.language === "zh_cn" ? `需要你的审批：${title}` : `Approval needed: ${title}`);
     // The bounded selector card is only a navigation aid; the complete request
     // is durable scrollback so a security decision never rests on a clipped copy.
     this.write(
@@ -830,6 +850,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     if (!this.app) return this.legacy.reviewPlan(options);
     const plan = options.plan ?? this.lastPlan;
     if (!plan || this.closed) return { action: "defer" };
+    this.notifyAttention(this.language === "zh_cn" ? "计划已就绪，等待你确认" : "A plan is ready for your review");
     const index = await this.menu({
       variant: "plan-review",
       id: plan.id,
@@ -852,6 +873,28 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   }
 
   // ------------------------------------------------------------- InkActions
+
+  /** A request finished: print its one-line summary, and notify when it ran long. */
+  turnCompleted(summary: Readonly<TurnSummary>): void {
+    if (!this.app) return this.legacy.turnCompleted(summary);
+    this.turnSummarySequence += 1;
+    this.commit({
+      kind: "info",
+      id: `turn_summary_${this.turnSummarySequence}`,
+      text: "",
+      turnSummary: { ...summary, changedFiles: summary.changedFiles.map((file) => ({ ...file })) },
+    });
+    if (summary.durationMs >= LONG_TURN_NOTIFY_MS) {
+      const elapsed = formatDuration(summary.durationMs);
+      this.notifyAttention(
+        this.language === "zh_cn" ? `任务已完成 · 用时 ${elapsed}` : `Task finished · took ${elapsed}`,
+      );
+    }
+  }
+
+  private notifyAttention(body: string): void {
+    if (this.app) this.notifier.notify({ title: "EASY CODE", body });
+  }
 
   colorEnabled(): boolean {
     const forceColor = process.env.FORCE_COLOR;
@@ -1223,7 +1266,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   };
 
   private mount(): MountedInkApp {
-    this.inputProxy ??= new InputTranslator(this.input);
+    this.inputProxy ??= new InputTranslator(this.input, (focused) => this.notifier.setFocused(focused));
     this.printedColumns = this.output.columns;
     this.output.removeListener("resize", this.onResize);
     this.output.on("resize", this.onResize);
@@ -1246,7 +1289,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
       app?.unmount();
       this.inputProxy?.release();
       this.inputProxy = undefined;
-      if (app) this.output.write("\u001B[?25h");
+      if (app) this.output.write(`\u001B[?25h${DISABLE_FOCUS_REPORTING}`);
       this.input.setRawMode?.(false);
     } catch {
       // Cleanup is best effort; the terminal may already be gone.
@@ -1295,6 +1338,10 @@ export class InkInteraction implements AppInteractionPort, InkActions {
       },
       refreshDisclosureViewer: () => undefined,
       failTerminalUi: (stage, value) => this.failUi(stage, value),
+      settleTranscriptEntry: (id) => {
+        this.openEntryIds.delete(id);
+        this.store.set({ settled: this.nextSettled(this.store.ui.transcript) });
+      },
     };
   }
 }

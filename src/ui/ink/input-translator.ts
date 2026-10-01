@@ -4,7 +4,14 @@ import { Transform, type TransformCallback } from "node:stream";
 export const VSCODE_IMAGE_PASTE_SEQUENCE = "\u001B]6973;easy-code;paste-image\u0007";
 /** The key a user would press for the same intent; Ink reports it as Ctrl+V. */
 const CTRL_V = "\u0016";
+/** Focus reports a terminal sends once DEC mode 1004 is enabled. */
+export const FOCUS_IN_SEQUENCE = "\u001B[I";
+export const FOCUS_OUT_SEQUENCE = "\u001B[O";
+export const ENABLE_FOCUS_REPORTING = "\u001B[?1004h";
+export const DISABLE_FOCUS_REPORTING = "\u001B[?1004l";
 const PARTIAL_FLUSH_MS = 60;
+const SEQUENCES = [VSCODE_IMAGE_PASTE_SEQUENCE, FOCUS_IN_SEQUENCE, FOCUS_OUT_SEQUENCE] as const;
+const SEQUENCE_PATTERN = /\u001B\]6973;easy-code;paste-image\u0007|\u001B\[I|\u001B\[O/gu;
 
 /** Longest suffix of `value` that could still become the start of `sequence`. */
 function partialSequenceLength(value: string, sequence: string): number {
@@ -18,13 +25,17 @@ function partialSequenceLength(value: string, sequence: string): number {
  * Sits between the real stdin and Ink. Ink's key parser knows nothing about
  * EASY CODE's private OSC message and would type its payload into the editor,
  * so it is translated into the equivalent Ctrl+V keystroke before Ink sees it.
- * Everything else passes through byte-for-byte, even when split across chunks.
+ * Terminal focus reports are taken out and passed to `onFocus`. Everything
+ * else passes through byte-for-byte, even when split across chunks.
  */
 export class InputTranslator extends Transform {
   private pending = "";
   private timer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly source: NodeJS.ReadStream) {
+  constructor(
+    private readonly source: NodeJS.ReadStream,
+    private readonly onFocus?: (focused: boolean) => void,
+  ) {
     super({ decodeStrings: false, encoding: "utf8" });
     source.setEncoding?.("utf8");
     source.pipe(this);
@@ -64,8 +75,12 @@ export class InputTranslator extends Transform {
   override _transform(chunk: Buffer | string, _encoding: BufferEncoding, callback: TransformCallback): void {
     this.clearTimer();
     const input = this.pending + (typeof chunk === "string" ? chunk : chunk.toString("utf8"));
-    const translated = input.split(VSCODE_IMAGE_PASTE_SEQUENCE).join(CTRL_V);
-    const held = partialSequenceLength(translated, VSCODE_IMAGE_PASTE_SEQUENCE);
+    const translated = input.replace(SEQUENCE_PATTERN, (sequence) => {
+      if (sequence === VSCODE_IMAGE_PASTE_SEQUENCE) return CTRL_V;
+      this.onFocus?.(sequence === FOCUS_IN_SEQUENCE);
+      return "";
+    });
+    const held = Math.max(...SEQUENCES.map((sequence) => partialSequenceLength(translated, sequence)));
     this.pending = held > 0 ? translated.slice(translated.length - held) : "";
     if (held > 0) {
       this.timer = setTimeout(() => this.flushPending(), PARTIAL_FLUSH_MS);

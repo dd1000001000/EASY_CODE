@@ -11,7 +11,10 @@ import {
   useWindowSize,
   type DOMElement,
 } from "ink";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
+
+import { MentionIndex, mentionSuggestions } from "../../cli/mention-suggestions.js";
+import { slashSuggestions } from "../../cli/slash-suggestions.js";
 
 import type { UIState, UITranscriptEntry } from "../contracts.js";
 import {
@@ -21,6 +24,8 @@ import {
   renderSessionHeader,
   type RenderViewOptions,
 } from "../render/view.js";
+import { DEFAULT_LANGUAGE } from "../../i18n/language.js";
+import { renderTurnSummary } from "../render/turn-summary.js";
 import { Composer } from "./composer.js";
 import { entryDisplay } from "./entry-text.js";
 import { AnswerBlock } from "./markdown-view.js";
@@ -72,8 +77,29 @@ function TranscriptRow(props: {
   readonly view: RenderViewOptions;
 }): ReactElement {
   const { entry, ui, view } = props;
+  if (entry.turnSummary) {
+    // Rendered by Ink directly: the file names carry OSC 8 links, which the transcript wrapper would strip.
+    return (
+      <Text>
+        {renderTurnSummary(entry.turnSummary, {
+          language: view.language ?? DEFAULT_LANGUAGE,
+          color: view.color ?? false,
+          columns: view.columns ?? 80,
+          links: true,
+        })}
+      </Text>
+    );
+  }
   if (entry.kind === "assistant") {
-    return <AnswerBlock text={entry.text} width={view.columns ?? 80} color={view.color ?? false} spaced />;
+    return (
+      <AnswerBlock
+        text={entry.text}
+        width={view.columns ?? 80}
+        color={view.color ?? false}
+        spaced
+        continuation={entry.continuation === true}
+      />
+    );
   }
   return <Text>{entryDisplay(entry, ui, view)}</Text>;
 }
@@ -106,6 +132,9 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
   const width = Math.max(MIN_COLUMNS, columns - 1);
   const color = actions.colorEnabled();
   const { ui, prompt, busy, modal } = snapshot;
+  // Rows of the slash-command menu under the composer; it takes the status bar's place while open.
+  const [menuRows, setMenuRows] = useState(0);
+  const menuOpen = menuRows > 0 && Boolean(prompt);
 
   // Raw mode must stay on for the whole session so keys never echo into the display.
   // Ctrl+C is forwarded only when no editor or dialog is already handling it.
@@ -142,6 +171,7 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
   let activity = "";
   let status = "";
   let composerRows = MAX_COMPOSER_ROWS;
+  let menuSpace = 0;
   let reserved: number;
   if (modal?.kind === "menu") {
     reserved = lineCount(renderMenuModal(modal, modal.initialIndex, ui, modalView));
@@ -152,11 +182,13 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
     reserved = composerRows + TEXT_MODAL_CHROME_ROWS;
   } else {
     activity = renderLiveActivityRegion(ui, now, view);
-    status = statusRegion(ui, view, now, budget);
+    status = menuOpen ? "" : statusRegion(ui, view, now, budget);
     const fixed = lineCount(activity) + lineCount(status);
     const composerShown = Boolean(prompt || busy);
-    composerRows = clamp(budget - fixed - COMPOSER_FRAME_ROWS, 1, MAX_COMPOSER_ROWS);
-    reserved = fixed + (composerShown ? composerRows + COMPOSER_FRAME_ROWS : 0);
+    composerRows = clamp(budget - fixed - (menuOpen ? menuRows : 0) - COMPOSER_FRAME_ROWS, 1, MAX_COMPOSER_ROWS);
+    // Everything below the first draft row that the card and menu may still use.
+    menuSpace = Math.max(0, budget - fixed - COMPOSER_FRAME_ROWS - 1);
+    reserved = fixed + (composerShown ? composerRows + COMPOSER_FRAME_ROWS : 0) + (menuOpen ? menuRows : 0);
   }
   const previewRows = budget - reserved;
 
@@ -182,7 +214,7 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
           {open.length > 0 && previewRows > 0 ? (
             <Box ref={previewRef} flexDirection="column" width={width}>
               {previewOverflows ? (
-                <Text>{chalk.gray("  … earlier rows are shown when the answer completes")}</Text>
+                <Text>{chalk.gray("  … earlier rows of this block are shown when it completes")}</Text>
               ) : null}
               <Box
                 flexDirection="column"
@@ -226,6 +258,8 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
                   width={width}
                   color={color}
                   maxRows={composerRows}
+                  menuSpace={menuSpace}
+                  onMenuRowsChange={setMenuRows}
                   top={composerTop}
                 />
               ) : null}
@@ -244,10 +278,28 @@ function ComposerSlot(props: {
   readonly width: number;
   readonly color: boolean;
   readonly maxRows: number;
+  readonly menuSpace: number;
+  readonly onMenuRowsChange: (rows: number) => void;
   readonly top: number;
 }): ReactElement {
-  const { snapshot, actions, width, color, maxRows, top } = props;
+  const { snapshot, actions, width, color, maxRows, menuSpace, onMenuRowsChange, top } = props;
   const { prompt, busy, ui } = snapshot;
+  const language = snapshot.language;
+  const provider = ui.header.session?.provider;
+  const slashArguments = prompt?.slashArguments;
+  const mentionPaths = prompt?.mentionPaths;
+  const mentions = useMemo(() => (mentionPaths ? new MentionIndex(mentionPaths) : undefined), [mentionPaths]);
+  const suggest = useCallback(
+    (text: string, cursor: number) => {
+      const commands = slashSuggestions(text, cursor, {
+        language,
+        ...(provider ? { provider } : {}),
+        ...(slashArguments ? { dynamicArguments: slashArguments } : {}),
+      });
+      return commands.length > 0 || !mentions ? commands : mentionSuggestions(text, cursor, mentions);
+    },
+    [language, provider, slashArguments, mentions],
+  );
   const [exitArmed, setExitArmed] = useState(false);
   const exitTimer = useRef<NodeJS.Timeout | undefined>(undefined);
   useEffect(() => () => clearTimeout(exitTimer.current), []);
@@ -256,6 +308,7 @@ function ComposerSlot(props: {
     return (
       <Composer
         key="prompt"
+        language={language}
         draft={actions.draftFor(prompt)}
         takeInitialInput={() => actions.takeTypeAhead()}
         width={width}
@@ -265,7 +318,9 @@ function ComposerSlot(props: {
         placeholder={exitArmed ? "Press Ctrl+C again to exit" : "Type your request…"}
         history={actions.history}
         onShowThinking={() => actions.showLatestThinking()}
-        slashCompletion
+        suggest={suggest}
+        menuSpace={menuSpace}
+        onMenuRowsChange={onMenuRowsChange}
         clipboard={{
           initialImageCount: prompt.initialImageCount,
           captureImage: prompt.captureImage,
@@ -296,6 +351,7 @@ function ComposerSlot(props: {
   return (
     <Composer
       key={`busy-${steerable}`}
+      language={language}
       {...(options ? { draft: actions.draftFor(options) } : {})}
       width={width}
       color={color}

@@ -25,8 +25,9 @@ import {
   compactionRunning,
   type CompactionProgress,
 } from "../ui/compaction.js";
-import type { UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
+import type { TurnSummary, UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
 import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
+import { renderTurnSummary } from "../ui/render/turn-summary.js";
 import type {
   AppInteractionPort,
   CurrentRequestOptions,
@@ -308,6 +309,14 @@ export class Terminal implements AppInteractionPort {
       ),
     );
     this.write(`${body}\n\n`);
+  }
+
+  /** One plain line after each request; line mode has no hyperlinks. */
+  turnCompleted(summary: Readonly<TurnSummary>): void {
+    const columns = Number((this.output as NodeJS.WriteStream).columns) || 120;
+    this.write(
+      `${renderTurnSummary(summary, { language: this.language, color: this.colorEnabled(), columns, links: false })}\n`,
+    );
   }
 
   showPlan(plan: Readonly<PlanProposal>): void {
