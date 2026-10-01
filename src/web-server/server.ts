@@ -401,7 +401,7 @@ export class EasyCodeWebServer {
     );
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
     try {
-      await Promise.all(
+      const closed = await Promise.allSettled(
         [...this.hosts.values()].map(async (host) => {
           host.unsubscribe();
           try {
@@ -411,6 +411,8 @@ export class EasyCodeWebServer {
           }
         }),
       );
+      const failed = closed.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
     } finally {
       this.projectStorage.close();
     }
@@ -1100,7 +1102,8 @@ export async function serveWeb(
 ): Promise<void> {
   const server = new EasyCodeWebServer(undefined, port, dataDir, undefined, createApp);
   const stop = () => {
-    void server.stop();
+    // serve() and the finally block observe the shared shutdown result.
+    void server.stop().catch(() => undefined);
   };
   signal?.addEventListener("abort", stop, { once: true });
   try {

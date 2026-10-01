@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -528,6 +529,121 @@ describe("Web interaction host", () => {
 });
 
 describe("loopback Web service", () => {
+  it("handles static-file stream errors without crashing the service", () => {
+    const serverUrl = new URL("../src/web-server/server.js", import.meta.url).href;
+    const interactionUrl = new URL("../src/web-server/interaction.js", import.meta.url).href;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `
+      import assert from "node:assert/strict";
+      import fs from "node:fs";
+      import os from "node:os";
+      import path from "node:path";
+      import { Readable } from "node:stream";
+      import { syncBuiltinESMExports } from "node:module";
+      const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "easy-code-static-error-"));
+      const filename = path.join(directory, "index.html");
+      await fs.promises.writeFile(filename, "<title>test</title>");
+      const originalRead = fs.createReadStream;
+      fs.createReadStream = (target, options) => target === filename
+        ? new Readable({ read() { this.destroy(new Error("simulated static read failure")); } })
+        : originalRead(target, options);
+      syncBuiltinESMExports();
+      const { EasyCodeWebServer } = await import(${JSON.stringify(serverUrl)});
+      const { WebInteraction } = await import(${JSON.stringify(interactionUrl)});
+      const interaction = new WebInteraction();
+      const service = new EasyCodeWebServer(undefined, interaction, directory, directory);
+      try {
+        const origin = await service.start(false);
+        await assert.rejects(async () => { const response = await fetch(origin); await response.text(); });
+        assert.equal((await fetch(origin, { method: "HEAD" })).status, 200);
+      } finally {
+        await service.stop();
+        interaction.close();
+        await fs.promises.rm(directory, { recursive: true, force: true });
+      }
+    `,
+      ],
+      { encoding: "utf8", timeout: 20_000 },
+    );
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("makes all shutdown callers wait for every host and releases ports when closing fails", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-web-shutdown-"));
+    const interaction = new WebInteraction();
+    const service = new EasyCodeWebServer(undefined, interaction, directory, directory);
+    const ports = [new WebInteraction(), new WebInteraction()];
+    const failure = new Error("simulated close failure");
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const closing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let closedPorts = 0;
+    let completed = false;
+    const hosts = (service as unknown as { hosts: Map<string, unknown> }).hosts;
+    for (const [index, port] of ports.entries()) {
+      const close = port.close.bind(port);
+      port.close = () => {
+        closedPorts += 1;
+        close();
+      };
+      hosts.set(`thread_${index}`, {
+        app: {
+          cancelActiveRequest: () => false,
+          closeAsync: async () => {
+            if (index === 0) throw failure;
+            entered();
+            await blocked;
+            completed = true;
+          },
+        },
+        port,
+        staged: new Map(),
+        stagedResources: new Map(),
+        unsubscribe: () => undefined,
+      });
+    }
+    let settled = 0;
+    const observe = (work: Promise<void>) =>
+      work.then(
+        () => {
+          settled += 1;
+          return undefined;
+        },
+        (error: unknown) => {
+          settled += 1;
+          return error;
+        },
+      );
+    const first = observe(service.stop());
+    try {
+      await closing;
+      const second = observe(service.stop());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, 0);
+      assert.equal(completed, false);
+      release();
+      assert.deepEqual(await Promise.all([first, second]), [failure, failure]);
+      assert.equal(completed, true);
+      assert.equal(closedPorts, 2);
+    } finally {
+      release();
+      await service.stop().catch(() => undefined);
+      interaction.close();
+      for (const port of ports) port.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("requires the local bootstrap token and cookie for session APIs", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-web-test-"));
     const projectRoot = path.join(directory, "project");

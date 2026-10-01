@@ -1,5 +1,4 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { requestPublic } from "./public-http.js";
 
 const MAX_REDIRECTS = 5;
 export const MAX_WEBPAGE_BYTES = 10 * 1024 * 1024;
@@ -22,84 +21,26 @@ function stripTags(value: string): string {
   return decodeEntities(value.replace(/<[^>]*>/gu, ""));
 }
 
-function privateAddress(address: string): boolean {
-  if (
-    address === "::1" ||
-    address === "0:0:0:0:0:0:0:1" ||
-    address.startsWith("fc") ||
-    address.startsWith("fd") ||
-    address.startsWith("fe80:")
-  )
-    return true;
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/iu.exec(address)?.[1];
-  const ipv4 = mapped ?? (isIP(address) === 4 ? address : undefined);
-  if (!ipv4) return false;
-  const [a = 0, b = 0] = ipv4.split(".").map(Number);
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    a >= 224 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 100 && b >= 64 && b <= 127)
-  );
-}
-
-async function assertPublicUrl(value: string): Promise<URL> {
-  const url = new URL(value);
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Only HTTP and HTTPS URLs are supported.");
-  if (url.username || url.password) throw new Error("URLs with embedded credentials are not supported.");
-  const addresses = await lookup(url.hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some((item) => privateAddress(item.address)))
-    throw new Error("Private or local network destinations are not allowed.");
-  return url;
-}
-
 export async function fetchPublic(
   urlValue: string,
   options: { signal?: AbortSignal; accept?: string; maxBytes?: number } = {},
 ): Promise<{ url: string; mediaType: string; data: Buffer }> {
-  let url = await assertPublicUrl(urlValue);
+  const maxBytes = options.maxBytes ?? MAX_WEBPAGE_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+    throw new RangeError("maxBytes must be a positive safe integer.");
+  let url = new URL(urlValue);
   for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
-    const response = await fetch(url, {
-      redirect: "manual",
-      signal: options.signal,
-      headers: {
-        Accept: options.accept ?? "text/html, text/plain;q=0.9, application/xhtml+xml;q=0.8",
-        "User-Agent": "EASY-CODE/0.1 (+local coding agent)",
-      },
-    });
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get("location");
+    const response = await requestPublic(url, { ...options, maxBytes });
+    if ("redirect" in response) {
+      const location = response.redirect;
       if (!location || redirect === MAX_REDIRECTS) throw new Error("Web page redirected too many times.");
-      url = await assertPublicUrl(new URL(location, url).href);
+      url = new URL(location, url);
       continue;
-    }
-    if (!response.ok) throw new Error(`Web request failed with HTTP ${response.status}.`);
-    const declared = Number(response.headers.get("content-length"));
-    const maxBytes = options.maxBytes ?? MAX_WEBPAGE_BYTES;
-    if (Number.isFinite(declared) && declared > maxBytes)
-      throw new Error(`Web response exceeds the ${maxBytes}-byte limit.`);
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("Web response has no body.");
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    while (true) {
-      const part = await reader.read();
-      if (part.done) break;
-      total += part.value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        throw new Error(`Web response exceeds the ${maxBytes}-byte limit.`);
-      }
-      chunks.push(part.value);
     }
     return {
       url: url.href,
-      mediaType: response.headers.get("content-type")?.split(";")[0]?.toLowerCase() || "application/octet-stream",
-      data: Buffer.concat(chunks),
+      mediaType: response.mediaType,
+      data: response.data,
     };
   }
   throw new Error("Web page redirected too many times.");

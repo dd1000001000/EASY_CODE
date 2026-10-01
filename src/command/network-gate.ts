@@ -127,6 +127,7 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
     shared,
   };
   const server = createServer({ maxHeaderSize: 16384 }, (req, res) => {
+    req.once("error", () => res.destroy());
     void (async () => {
       const session = sessionFor(req, gate);
       if (!session || session.closed) throw new Error("Network capability rejected");
@@ -151,6 +152,9 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
           timeout: 60000,
         },
         (response) => {
+          // IncomingMessage does not forward an aborted response through pipe.
+          // Close the client side instead of leaving the command waiting forever.
+          response.once("error", () => res.destroy());
           res.writeHead(response.statusCode ?? 502, response.headers);
           response.pipe(res);
           meter(session, response);
@@ -159,7 +163,11 @@ async function startGateServer(listenPort: number, shared: boolean): Promise<Gat
       upstream.on("socket", (socket) => track(session, socket));
       upstream.once("timeout", () => upstream.destroy());
       upstream.once("error", () => {
-        if (!res.headersSent) res.writeHead(502);
+        if (res.headersSent) {
+          res.destroy();
+          return;
+        }
+        res.writeHead(502);
         res.end("Network request failed");
       });
       res.once("close", () => upstream.destroy());

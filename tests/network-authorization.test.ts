@@ -290,6 +290,63 @@ describe("network authorization", () => {
     }
   });
 
+  it("terminates a truncated upstream response and remains usable for later requests", async () => {
+    const server = createServer((req, res) => {
+      if (req.url === "/broken") {
+        res.writeHead(200, { "content-length": 100 });
+        res.write("short");
+        setImmediate(() => res.destroy());
+      } else res.end("accepted");
+    });
+    const port = await listen(server);
+    const gate = await createCommandNetworkGate({
+      authorize: async () => true,
+      record: () => {},
+      resolveHost: async () => "127.0.0.1",
+    });
+    const url = new URL(gate.proxyURL);
+    let connection: ReturnType<typeof request> | undefined;
+    try {
+      await assert.rejects(
+        new Promise<void>((resolve, reject) => {
+          connection = request(
+            {
+              hostname: url.hostname,
+              port: url.port,
+              path: `http://fixture.test:${port}/broken`,
+              headers: {
+                "proxy-authorization": `Basic ${Buffer.from(`${url.username}:${url.password}`).toString("base64")}`,
+              },
+            },
+            (response) => {
+              response.resume();
+              response.once("end", resolve);
+              response.once("error", reject);
+            },
+          );
+          connection.setTimeout(2000, () => {
+            connection?.destroy();
+            reject(new Error("proxy did not terminate the truncated response"));
+          });
+          connection.once("error", reject);
+          connection.end();
+        }),
+        (error: unknown) => {
+          assert.notEqual((error as Error).message, "proxy did not terminate the truncated response");
+          return true;
+        },
+      );
+      assert.deepEqual(await proxyRequest(gate.proxyURL, `http://fixture.test:${port}/plain`), {
+        status: 200,
+        text: "accepted",
+      });
+    } finally {
+      connection?.destroy();
+      await gate.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("preserves early CONNECT data and closes tunnel sockets with the command", async () => {
     const server = createTcpServer((socket) => socket.pipe(socket));
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
