@@ -54,6 +54,7 @@ export const runtimeLimitsSchema = z
       .strict(),
     maxSubagentsPerTurn: integer(1, 128),
     maxDagNodes: integer(1, 32),
+    maxDagRevisionEdits: integer(1, 64),
     maxModelRequests: integer(1, 10000),
     maxTaskTokens: integer(0, Number.MAX_SAFE_INTEGER),
     // Effort-aware local output reservation; never a server generation limit.

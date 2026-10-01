@@ -47,6 +47,7 @@
   "maxConcurrentSubagents": { "none": 2, "low": 2, "medium": 4, "high": 8 },
   "maxSubagentsPerTurn": 8,
   "maxDagNodes": 16,
+  "maxDagRevisionEdits": 32,
   "maxModelRequests": 120,
   "maxTaskTokens": 0,
   "maxResponseTokens": { "none": 32768, "low": 32768, "medium": 65536, "high": 131072 },

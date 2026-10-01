@@ -5,9 +5,11 @@ import path from "node:path";
 
 import type { ResultArtifact, TaskGraph, ToolContext, ToolExecutionResult } from "../src/core/types.js";
 import { toResultArtifactRef } from "../src/subagents/coordinator.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { createStorage } from "../src/storage/database.js";
 import {
   MAX_TASK_GRAPH_DEFINITION_CHARS,
+  MAX_TASK_REVISION_EDITS,
   activeTask,
   activeTaskByOwner,
   activeTaskForAgent,
@@ -15,9 +17,13 @@ import {
   applySubagentTaskOperation,
   applyTaskGraphOperation,
   isTaskGraph,
+  revisionTouchesActiveMainTask,
+  taskGraphRevisionChanges,
   taskGraphView,
   validateSubagentTaskTransition,
+  validateTaskGraphTransition,
   type TaskDefinitionInput,
+  type TaskGraphEdit,
 } from "../src/tasks/task-graph.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { EventJournal } from "../src/threads/event-journal.js";
@@ -899,6 +905,312 @@ describe("single-agent task DAG", () => {
       state.taskGraph = graph;
       threads.save(state);
       assert.equal(threads.recover(state.threadId).taskGraph?.id, graph.id);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("task DAG revision", () => {
+  const at = (second: number) => () => new Date(`2026-09-30T02:00:${String(second).padStart(2, "0")}.000Z`);
+  const graphId = () => "task_graph_00000000-0000-4000-8000-000000000010";
+
+  function created(tasks: TaskDefinitionInput[] = [task("plan"), task("build", ["plan"]), task("ship", ["build"])]) {
+    return applyTaskGraphOperation(
+      undefined,
+      { action: "create", goal: "Ship the feature", tasks },
+      { turnId: "turn_revise_create", now: at(0), graphId },
+    );
+  }
+
+  function revise(graph: TaskGraph, edits: TaskGraphEdit[], second = 10): TaskGraph {
+    return applyTaskGraphOperation(
+      graph,
+      { action: "revise", reason: "The plan changed", edits },
+      { turnId: `turn_revise_${second}`, now: at(second) },
+    );
+  }
+
+  it("adds, updates, and retargets open tasks and the goal in one atomic batch", () => {
+    const next = revise(created(), [
+      { op: "add_task", task: task("migrate", ["plan"]) },
+      {
+        op: "update_task",
+        taskId: "build",
+        patch: { description: "Build on the migrated schema", dependencies: ["migrate"] },
+      },
+      { op: "set_goal", goal: "Ship the feature on the new schema" },
+    ]);
+    assert.equal(next.id, graphId());
+    assert.equal(next.goal, "Ship the feature on the new schema");
+    assert.deepEqual(
+      next.tasks.map((entry) => [entry.id, entry.status, entry.dependencies.join(",")]),
+      [
+        ["plan", "pending", ""],
+        ["build", "pending", "migrate"],
+        ["ship", "pending", "build"],
+        ["migrate", "pending", "plan"],
+      ],
+    );
+    assert.equal(next.tasks[1]?.description, "Build on the migrated schema");
+    assert.equal(next.updatedByTurnId, "turn_revise_10");
+    assert.deepEqual(taskGraphRevisionChanges(created(), next), {
+      added: ["migrate"],
+      removed: [],
+      updated: ["build"],
+      returnedToPending: [],
+      goalChanged: true,
+    });
+  });
+
+  it("applies nothing when any edit in the batch is invalid", () => {
+    const graph = created();
+    const snapshot = structuredClone(graph);
+    assert.throws(
+      () =>
+        revise(graph, [
+          { op: "add_task", task: task("extra") },
+          { op: "update_task", taskId: "plan", patch: { dependencies: ["ship"] } },
+        ]),
+      /acyclic/u,
+    );
+    assert.throws(() => revise(graph, [{ op: "add_task", task: task("plan") }]), /already exists/u);
+    assert.throws(() => revise(graph, [{ op: "update_task", taskId: "missing", patch: { title: "X" } }]), /missing/u);
+    assert.deepEqual(graph, snapshot);
+  });
+
+  it("requires dependents of a removed task to be rewired, or inherits its dependencies", () => {
+    const graph = created();
+    assert.throws(
+      () => revise(graph, [{ op: "remove_task", taskId: "build" }]),
+      /ship still depends on removed task build/u,
+    );
+    const rewired = revise(graph, [
+      { op: "remove_task", taskId: "build" },
+      { op: "update_task", taskId: "ship", patch: { dependencies: [] } },
+    ]);
+    assert.deepEqual(
+      rewired.tasks.map((entry) => entry.id),
+      ["plan", "ship"],
+    );
+    const inherited = revise(graph, [{ op: "remove_task", taskId: "build", rewire: "inherit" }]);
+    assert.deepEqual(inherited.tasks.find((entry) => entry.id === "ship")?.dependencies, ["plan"]);
+    assert.throws(
+      () =>
+        revise(graph, [
+          { op: "remove_task", taskId: "plan", rewire: "inherit" },
+          { op: "remove_task", taskId: "build", rewire: "inherit" },
+          { op: "remove_task", taskId: "ship" },
+        ]),
+      /at least one task/u,
+    );
+    const replaced = revise(graph, [
+      { op: "remove_task", taskId: "build" },
+      { op: "add_task", task: { ...task("build", ["plan"]), title: "Rebuild" } },
+    ]);
+    assert.equal(replaced.tasks.find((entry) => entry.id === "build")?.title, "Rebuild");
+  });
+
+  it("returns a started or blocked main-agent task to pending when revised, but never removes an active one", () => {
+    const started = applyTaskGraphOperation(
+      created(),
+      { action: "start", taskId: "plan" },
+      { turnId: "t", now: at(1) },
+    );
+    const untouched = {
+      action: "revise" as const,
+      reason: "Add docs",
+      edits: [{ op: "add_task" as const, task: task("docs") }],
+    };
+    assert.equal(revisionTouchesActiveMainTask(started, untouched), false);
+    const touching = {
+      action: "revise" as const,
+      reason: "Clarify the plan",
+      edits: [{ op: "update_task" as const, taskId: "plan", patch: { title: "Plan again" } }],
+    };
+    assert.equal(revisionTouchesActiveMainTask(started, touching), true);
+    const revised = applyTaskGraphOperation(started, touching, { turnId: "t2", now: at(2) });
+    const plan = revised.tasks[0]!;
+    assert.equal(plan.status, "pending");
+    assert.equal(plan.startedAt, undefined);
+    assert.equal(activeTask(revised), undefined);
+    assert.deepEqual(taskGraphRevisionChanges(started, revised).returnedToPending, ["plan"]);
+    assert.throws(() => revise(started, [{ op: "remove_task", taskId: "plan" }]), /in progress; block it/u);
+
+    const blocked = applyTaskGraphOperation(
+      started,
+      { action: "block", taskId: "plan", reason: "Waiting for credentials" },
+      { turnId: "t3", now: at(3) },
+    );
+    const unblocked = revise(blocked, [{ op: "update_task", taskId: "plan", patch: { description: "Plan offline" } }]);
+    assert.equal(unblocked.tasks[0]?.status, "pending");
+    assert.equal(unblocked.tasks[0]?.blockerDetails, undefined);
+    assert.equal(revise(blocked, [{ op: "remove_task", taskId: "plan", rewire: "inherit" }]).tasks.length, 2);
+  });
+
+  it("keeps completed and child-held tasks immutable", () => {
+    let graph = created([task("plan"), task("build"), task("ship", ["plan", "build"])]);
+    graph = applyTaskGraphOperation(graph, { action: "start", taskId: "plan" }, { turnId: "t1", now: at(1) });
+    graph = applyTaskGraphOperation(
+      graph,
+      { action: "complete", taskId: "plan", evidence: ["Planned"] },
+      { turnId: "t2", now: at(2) },
+    );
+    graph = applySubagentTaskOperation(
+      graph,
+      { action: "claim", taskId: "build", agentId: "subagent_builder" },
+      { turnId: "t3", now: at(3) },
+    );
+    for (const edit of [
+      { op: "update_task" as const, taskId: "plan", patch: { title: "Replan" } },
+      { op: "remove_task" as const, taskId: "plan" },
+    ]) {
+      assert.throws(() => revise(graph, [edit]), /plan is completed and cannot be revised; add a follow-up task/u);
+    }
+    for (const edit of [
+      { op: "update_task" as const, taskId: "build", patch: { title: "Rebuild" } },
+      { op: "remove_task" as const, taskId: "build" },
+    ]) {
+      assert.throws(() => revise(graph, [edit]), /held by child subagent_builder; stop and collect/u);
+    }
+    const followUp = revise(graph, [{ op: "add_task", task: task("fix_plan", ["plan", "build"]) }]);
+    assert.equal(followUp.tasks.find((entry) => entry.id === "build")?.assignedAgentId, "subagent_builder");
+    assert.deepEqual(taskGraphView(followUp).startableTasks, []);
+
+    const released = applySubagentTaskOperation(
+      graph,
+      { action: "release", taskId: "build", agentId: "subagent_builder" },
+      { turnId: "t4", now: at(4) },
+    );
+    const rebuilt = revise(released, [{ op: "update_task", taskId: "build", patch: { title: "Rebuild" } }]);
+    assert.equal(rebuilt.tasks[1]?.title, "Rebuild");
+  });
+
+  it("recovers a terminally blocked DAG and extends a completed one by adding work", () => {
+    let graph = created([task("only")]);
+    graph = applyTaskGraphOperation(graph, { action: "start", taskId: "only" }, { turnId: "t1", now: at(1) });
+    const stuck = applyTaskGraphOperation(
+      graph,
+      { action: "block", taskId: "only", reason: "API was removed", recoverable: false },
+      { turnId: "t2", now: at(2) },
+    );
+    assert.equal(stuck.status, "terminal_blocked");
+    const recovered = revise(stuck, [
+      { op: "remove_task", taskId: "only" },
+      { op: "add_task", task: task("alternative") },
+    ]);
+    assert.equal(recovered.status, "active");
+
+    const done = applyTaskGraphOperation(
+      graph,
+      { action: "complete", taskId: "only", evidence: ["Done"] },
+      { turnId: "t3", now: at(3) },
+    );
+    assert.equal(done.status, "completed");
+    const extended = revise(done, [{ op: "add_task", task: task("polish", ["only"]) }]);
+    assert.equal(extended.status, "active");
+    assert.deepEqual(taskGraphView(extended).startableTasks, ["polish"]);
+  });
+
+  it("rejects malformed revisions at the tool boundary and enforces the configured node limit", async () => {
+    const tool = new ManageTasksTool();
+    const graph = created();
+    const call = (input: unknown, limits?: ToolContext["limits"]) =>
+      tool.execute(input, { ...toolContext(graph), selectedMode: "code", ...(limits ? { limits } : {}) });
+    assert.equal((await call({ action: "revise", reason: "x", edits: [] })).ok, false);
+    const emptyPatch = { action: "revise", reason: "x", edits: [{ op: "update_task", taskId: "plan", patch: {} }] };
+    assert.equal((await call(emptyPatch)).ok, false);
+    assert.equal((await call({ action: "revise", edits: [{ op: "set_goal", goal: "g" }] })).ok, false);
+
+    const ok = await call({
+      action: "revise",
+      reason: "Split the build",
+      edits: [{ op: "add_task", task: task("docs", ["build"]) }],
+    });
+    assert.equal(ok.ok, true);
+    assert.match(ok.summary ?? "", /Revised the task DAG: added docs\./u);
+    assert.deepEqual((ok.data as { changes: { added: string[] } }).changes.added, ["docs"]);
+    assert.equal(ok.taskGraphUpdate?.tasks.length, 4);
+
+    const limited = await call(
+      { action: "revise", reason: "Too much", edits: [{ op: "add_task", task: task("docs") }] },
+      { ...DEFAULT_RUNTIME_LIMITS, maxDagNodes: 3 },
+    );
+    assert.equal(limited.ok, false);
+    assert.match(limited.error ?? "", /3-node limit/u);
+
+    assert.equal(DEFAULT_RUNTIME_LIMITS.maxDagRevisionEdits, 32);
+    const twoEdits = {
+      action: "revise",
+      reason: "Rename two tasks",
+      edits: [
+        { op: "update_task", taskId: "plan", patch: { title: "Plan v2" } },
+        { op: "update_task", taskId: "build", patch: { title: "Build v2" } },
+      ],
+    };
+    const overBudget = await call(twoEdits, { ...DEFAULT_RUNTIME_LIMITS, maxDagRevisionEdits: 1 });
+    assert.equal(overBudget.ok, false);
+    assert.match(overBudget.error ?? "", /configured 1-edit limit; split it/u);
+    assert.equal((await call(twoEdits, { ...DEFAULT_RUNTIME_LIMITS, maxDagRevisionEdits: 2 })).ok, true);
+    const ceiling = Array.from({ length: MAX_TASK_REVISION_EDITS + 1 }, () => ({ op: "set_goal", goal: "Goal" }));
+    const overCeiling = await call(
+      { action: "revise", reason: "Too many", edits: ceiling },
+      { ...DEFAULT_RUNTIME_LIMITS, maxDagRevisionEdits: 64 },
+    );
+    assert.equal(overCeiling.ok, false);
+  });
+
+  it("validates revise transitions on replay and rejects tampered snapshots", () => {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), "easy-code-task-dag-revise-"));
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      threads.create({
+        threadId: "thread_task_revise",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "code",
+        provider: "qwen",
+        model: "qwen3.7-max",
+      });
+      const createOperation = { action: "create" as const, goal: "Ship the feature", tasks: [task("plan")] };
+      const graph = applyTaskGraphOperation(undefined, createOperation, { turnId: "turn_create", now: at(0), graphId });
+      const append = (turnId: string, taskGraph: TaskGraph, taskGraphOperation: unknown) =>
+        threads.appendEvent("thread_task_revise", {
+          type: "tool.result",
+          turnId,
+          phase: "completed",
+          payload: {
+            callId: `call_${turnId}`,
+            tool: "manage_tasks",
+            message: { role: "tool", tool_call_id: `call_${turnId}`, name: "manage_tasks", content: '{"ok":true}' },
+            taskGraph,
+            taskGraphOperation,
+          },
+        });
+      append("turn_create", graph, createOperation);
+
+      const reviseOperation = {
+        action: "revise" as const,
+        reason: "Add verification",
+        edits: [{ op: "add_task" as const, task: task("verify", ["plan"]) }],
+      };
+      const revised = applyTaskGraphOperation(graph, reviseOperation, { turnId: "turn_revise", now: at(5) });
+      const tampered = structuredClone(revised);
+      tampered.tasks[1]!.title = "Silently renamed";
+      assert.throws(() => append("turn_revise", tampered, reviseOperation), /does not match the declared legal/u);
+      assert.throws(
+        () => validateTaskGraphTransition(graph, reviseOperation, tampered, "turn_revise"),
+        /does not match the declared legal/u,
+      );
+      append("turn_revise", revised, reviseOperation);
+
+      const recovered = threads.recover("thread_task_revise").taskGraph;
+      assert.deepEqual(
+        recovered?.tasks.map((entry) => entry.id),
+        ["plan", "verify"],
+      );
+      assert.equal(recovered?.updatedByTurnId, "turn_revise");
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });

@@ -25,6 +25,7 @@ import { observeToolResult } from "../progress/observation.js";
 import {
   activeTask,
   cloneTaskGraph,
+  revisionTouchesActiveMainTask,
   taskGraphOperationSchema,
   type TaskGraphTransitionOperation,
 } from "../tasks/task-graph.js";
@@ -216,7 +217,9 @@ export class ToolCalls {
       if (toolName === "manage_tasks") {
         const parsedOperation = taskGraphOperationSchema.parse(rawInput);
         if (
-          (parsedOperation.action === "complete" || parsedOperation.action === "block") &&
+          (parsedOperation.action === "complete" ||
+            parsedOperation.action === "block" ||
+            revisionTouchesActiveMainTask(state.taskGraph, parsedOperation)) &&
           this.ctx.dependencies.hasOpenCommandHandles?.()
         ) {
           updates.finishRejectedReason = backgroundCommandFinalizationInstruction();

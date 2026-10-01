@@ -4,10 +4,13 @@ import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from
 import {
   MAX_TASK_EVIDENCE_CHARS,
   MAX_TASK_GRAPH_NODES,
+  MAX_TASK_REVISION_EDITS,
   MAX_TASK_TEXT_CHARS,
   applyTaskGraphOperation,
+  taskGraphRevisionChanges,
   taskGraphOperationSchema,
   taskGraphView,
+  type TaskGraphRevisionChanges,
 } from "../tasks/task-graph.js";
 import { toolFailure, toolSuccess } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
@@ -30,10 +33,104 @@ function summaryFor(action: ManageTasksInput["action"], status: string): string 
       return "Blocked the active task with a recorded reason.";
     case "resume":
       return "Returned the blocked task to pending so it can be started again.";
+    case "revise":
+      return "Revised the task DAG.";
     case "list":
       return "Returned the current task DAG.";
   }
 }
+
+function revisionSummary(changes: TaskGraphRevisionChanges): string {
+  const parts = [
+    changes.added.length ? `added ${changes.added.join(", ")}` : "",
+    changes.removed.length ? `removed ${changes.removed.join(", ")}` : "",
+    changes.updated.length ? `updated ${changes.updated.join(", ")}` : "",
+    changes.goalChanged ? "changed the goal" : "",
+  ].filter(Boolean);
+  const restart = changes.returnedToPending.length
+    ? ` Returned ${changes.returnedToPending.join(", ")} to pending; start a task again before using work tools.`
+    : "";
+  return `Revised the task DAG: ${parts.join("; ") || "no structural change"}.${restart}`;
+}
+
+const TASK_ID_JSON_PATTERN = "^[A-Za-z][A-Za-z0-9_-]{0,39}$";
+
+const taskDefinitionJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    id: {
+      type: "string",
+      pattern: TASK_ID_JSON_PATTERN,
+    },
+    title: { type: "string", minLength: 1, maxLength: 120 },
+    description: {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_TASK_TEXT_CHARS,
+    },
+    dependencies: {
+      type: "array",
+      maxItems: 16,
+      items: {
+        type: "string",
+        pattern: TASK_ID_JSON_PATTERN,
+      },
+    },
+    inputs: {
+      type: "array",
+      maxItems: 16,
+      items: { type: "string", minLength: 1, maxLength: MAX_TASK_TEXT_CHARS },
+    },
+    expectedArtifacts: {
+      type: "array",
+      maxItems: 16,
+      items: { type: "string", minLength: 1, maxLength: MAX_TASK_TEXT_CHARS },
+    },
+    completionChecks: {
+      type: "array",
+      minItems: 1,
+      maxItems: 16,
+      items: { type: "string", minLength: 1, maxLength: MAX_TASK_TEXT_CHARS },
+    },
+    failureHandling: {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_TASK_TEXT_CHARS,
+    },
+  },
+  required: [
+    "id",
+    "title",
+    "description",
+    "dependencies",
+    "inputs",
+    "expectedArtifacts",
+    "completionChecks",
+    "failureHandling",
+  ],
+};
+
+const { id: _taskIdJsonSchema, ...taskPatchJsonProperties } = taskDefinitionJsonSchema.properties;
+
+const taskEditJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    op: { type: "string", enum: ["add_task", "update_task", "remove_task", "set_goal"] },
+    task: taskDefinitionJsonSchema,
+    taskId: { type: "string", pattern: TASK_ID_JSON_PATTERN },
+    patch: {
+      type: "object",
+      additionalProperties: false,
+      minProperties: 1,
+      properties: taskPatchJsonProperties,
+    },
+    rewire: { type: "string", enum: ["inherit"] },
+    goal: { type: "string", minLength: 1, maxLength: MAX_TASK_TEXT_CHARS },
+  },
+  required: ["op"],
+};
 
 /** Model-facing control surface; Runtime remains authoritative for the transition. */
 export class ManageTasksTool implements AgentTool {
@@ -51,7 +148,7 @@ export class ManageTasksTool implements AgentTool {
         properties: {
           action: {
             type: "string",
-            enum: ["create", "list", "start", "complete", "block", "resume"],
+            enum: ["create", "list", "start", "complete", "block", "resume", "revise"],
           },
           goal: {
             type: "string",
@@ -62,65 +159,11 @@ export class ManageTasksTool implements AgentTool {
             type: "array",
             minItems: 1,
             maxItems: MAX_TASK_GRAPH_NODES,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                id: {
-                  type: "string",
-                  pattern: "^[A-Za-z][A-Za-z0-9_-]{0,39}$",
-                },
-                title: { type: "string", minLength: 1, maxLength: 120 },
-                description: {
-                  type: "string",
-                  minLength: 1,
-                  maxLength: MAX_TASK_TEXT_CHARS,
-                },
-                dependencies: {
-                  type: "array",
-                  maxItems: 16,
-                  items: {
-                    type: "string",
-                    pattern: "^[A-Za-z][A-Za-z0-9_-]{0,39}$",
-                  },
-                },
-                inputs: {
-                  type: "array",
-                  maxItems: 16,
-                  items: { type: "string", minLength: 1, maxLength: MAX_TASK_TEXT_CHARS },
-                },
-                expectedArtifacts: {
-                  type: "array",
-                  maxItems: 16,
-                  items: { type: "string", minLength: 1, maxLength: MAX_TASK_TEXT_CHARS },
-                },
-                completionChecks: {
-                  type: "array",
-                  minItems: 1,
-                  maxItems: 16,
-                  items: { type: "string", minLength: 1, maxLength: MAX_TASK_TEXT_CHARS },
-                },
-                failureHandling: {
-                  type: "string",
-                  minLength: 1,
-                  maxLength: MAX_TASK_TEXT_CHARS,
-                },
-              },
-              required: [
-                "id",
-                "title",
-                "description",
-                "dependencies",
-                "inputs",
-                "expectedArtifacts",
-                "completionChecks",
-                "failureHandling",
-              ],
-            },
+            items: taskDefinitionJsonSchema,
           },
           taskId: {
             type: "string",
-            pattern: "^[A-Za-z][A-Za-z0-9_-]{0,39}$",
+            pattern: TASK_ID_JSON_PATTERN,
           },
           evidence: {
             type: "array",
@@ -132,6 +175,12 @@ export class ManageTasksTool implements AgentTool {
             type: "string",
             minLength: 1,
             maxLength: MAX_TASK_EVIDENCE_CHARS,
+          },
+          edits: {
+            type: "array",
+            minItems: 1,
+            maxItems: MAX_TASK_REVISION_EDITS,
+            items: taskEditJsonSchema,
           },
           kind: {
             type: "string",
@@ -183,12 +232,23 @@ export class ManageTasksTool implements AgentTool {
           : toolSuccess("No task DAG exists in this thread.", { graph: null });
       }
 
+      if (parsed.action === "revise" && context.limits && parsed.edits.length > context.limits.maxDagRevisionEdits) {
+        throw new Error(
+          `A revise exceeds the configured ${context.limits.maxDagRevisionEdits}-edit limit; split it into smaller revisions`,
+        );
+      }
       const next = applyTaskGraphOperation(context.taskGraph, parsed, {
         turnId: context.turnId,
       });
+      if (parsed.action === "revise" && context.limits && next.tasks.length > context.limits.maxDagNodes) {
+        throw new Error(`DAG exceeds the configured ${context.limits.maxDagNodes}-node limit`);
+      }
+      const changes =
+        parsed.action === "revise" && context.taskGraph ? taskGraphRevisionChanges(context.taskGraph, next) : undefined;
       return {
-        ...toolSuccess(summaryFor(parsed.action, next.status), {
+        ...toolSuccess(changes ? revisionSummary(changes) : summaryFor(parsed.action, next.status), {
           graph: taskGraphView(next),
+          ...(changes ? { changes } : {}),
         }),
         taskGraphUpdate: next,
       };

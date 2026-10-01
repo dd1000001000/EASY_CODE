@@ -67,6 +67,8 @@ command_install_timeout_max_ms = 1200000
 max_managed_worktrees = 15
 max_subagents_per_turn = 8
 max_dag_nodes = 16
+# Edits accepted in one atomic manage_tasks revise call.
+max_dag_revision_edits = 32
 # 0 = disabled. Nonzero uses conservative reservations, settled by reported usage.
 max_task_tokens = 0
 # Independent transport safety ceiling, not a summary/display limit (16 MiB).

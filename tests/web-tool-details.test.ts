@@ -67,6 +67,27 @@ describe("Web tool detail targets", () => {
     );
   });
 
+  it("summarizes a DAG revision with its reason and change counts", () => {
+    const details = show(
+      "manage_tasks",
+      { action: "revise", reason: "Backend needs a migration first", edits: [] },
+      {
+        ...result,
+        data: {
+          changes: { added: ["migrate", "verify"], removed: ["old"], updated: ["a", "b", "c"], goalChanged: true },
+        },
+      },
+    );
+    assert.deepEqual(
+      details.map((item) => [item.label, item.value]),
+      [
+        ["Action", "revise"],
+        ["Reason", "Backend needs a migration first"],
+        ["Changes", "+2 −1 ~3 · goal"],
+      ],
+    );
+  });
+
   it("shows the exact MCP server and invoked tool without arguments", () => {
     const tool = {
       metadata: {

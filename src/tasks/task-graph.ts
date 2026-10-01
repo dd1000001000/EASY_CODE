@@ -20,6 +20,8 @@ export const MAX_TASK_EVIDENCE_CHARS = 1_000;
 export const MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS = 4_000;
 export const MAX_TASK_GRAPH_SERIALIZED_CHARS = 48_000;
 export const MAX_TASK_GRAPH_DEFINITION_CHARS = 20_000;
+/** Parser ceiling for one revise; the configured `maxDagRevisionEdits` budget applies below it. */
+export const MAX_TASK_REVISION_EDITS = 64;
 
 const TASK_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/u;
 const AGENT_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u;
@@ -79,6 +81,22 @@ export const taskDefinitionInputSchema = z
 
 export type TaskDefinitionInput = z.infer<typeof taskDefinitionInputSchema>;
 
+const taskPatchSchema = taskDefinitionInputSchema
+  .omit({ id: true })
+  .partial()
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, { message: "A task patch must change at least one field" });
+
+/** One structural edit inside an atomic `revise`; completed and child-held tasks stay immutable. */
+export const taskGraphEditSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("add_task"), task: taskDefinitionInputSchema }).strict(),
+  z.object({ op: z.literal("update_task"), taskId: taskIdSchema, patch: taskPatchSchema }).strict(),
+  z.object({ op: z.literal("remove_task"), taskId: taskIdSchema, rewire: z.literal("inherit").optional() }).strict(),
+  z.object({ op: z.literal("set_goal"), goal: boundedTaskText() }).strict(),
+]);
+
+export type TaskGraphEdit = z.infer<typeof taskGraphEditSchema>;
+
 export const taskGraphOperationSchema = z.discriminatedUnion("action", [
   z
     .object({
@@ -107,6 +125,13 @@ export const taskGraphOperationSchema = z.discriminatedUnion("action", [
     })
     .strict(),
   z.object({ action: z.literal("resume"), taskId: taskIdSchema }).strict(),
+  z
+    .object({
+      action: z.literal("revise"),
+      reason: boundedTaskText(MAX_TASK_EVIDENCE_CHARS),
+      edits: z.array(taskGraphEditSchema).min(1).max(MAX_TASK_REVISION_EDITS),
+    })
+    .strict(),
 ]);
 
 export type TaskGraphOperation = z.infer<typeof taskGraphOperationSchema>;
@@ -469,6 +494,7 @@ export function applyTaskGraphOperation(
   }
 
   if (!current) throw new Error("No task DAG exists in this thread");
+  if (operation.action === "revise") return reviseTaskGraph(current, operation, options.turnId, now);
   const graph = cloneTaskGraph(current);
   const task = taskById(graph, operation.taskId);
 
@@ -520,6 +546,177 @@ export function applyTaskGraphOperation(
   graph.updatedByTurnId = options.turnId;
   assertTaskGraphInvariants(graph);
   return graph;
+}
+
+type TaskGraphReviseOperation = Extract<TaskGraphTransitionOperation, { action: "revise" }>;
+type TaskPatch = Extract<TaskGraphEdit, { op: "update_task" }>["patch"];
+
+/**
+ * Applies an atomic batch of structural edits. Intermediate states may be
+ * inconsistent (remove a node, then rewire its dependents); only the final
+ * graph must satisfy every invariant.
+ */
+function reviseTaskGraph(
+  current: Readonly<TaskGraph>,
+  operation: TaskGraphReviseOperation,
+  turnId: string,
+  now: string,
+): TaskGraph {
+  assertSafeText(operation.reason);
+  if (JSON.stringify(operation.edits).length > MAX_TASK_GRAPH_DEFINITION_CHARS) {
+    throw new Error(`Task DAG revisions exceed ${MAX_TASK_GRAPH_DEFINITION_CHARS} serialized characters`);
+  }
+  const graph = cloneTaskGraph(current);
+  const removed = new Set<string>();
+  for (const edit of operation.edits) applyTaskGraphEdit(graph, edit, removed);
+  if (graph.tasks.length === 0) throw new Error("A task DAG must keep at least one task");
+  if (graph.tasks.length > MAX_TASK_GRAPH_NODES) {
+    throw new Error(`A task DAG cannot exceed ${MAX_TASK_GRAPH_NODES} tasks`);
+  }
+  const remaining = new Set(graph.tasks.map((task) => task.id));
+  for (const task of graph.tasks) {
+    if (task.dependencies.length > MAX_TASK_DEPENDENCIES) {
+      throw new Error(`Task ${task.id} cannot have more than ${MAX_TASK_DEPENDENCIES} dependencies`);
+    }
+    const dangling = task.dependencies.find((dependency) => removed.has(dependency) && !remaining.has(dependency));
+    if (dangling) {
+      throw new Error(
+        `Task ${task.id} still depends on removed task ${dangling}; ` +
+          `update its dependencies in the same revise or remove with rewire "inherit"`,
+      );
+    }
+  }
+  graph.status = derivedGraphStatus(graph.tasks);
+  graph.updatedAt = now;
+  graph.updatedByTurnId = turnId;
+  assertTaskGraphInvariants(graph);
+  if (!isTaskGraph(graph)) throw new Error("The revised task DAG is invalid");
+  return graph;
+}
+
+function applyTaskGraphEdit(graph: TaskGraph, edit: TaskGraphEdit, removed: Set<string>): void {
+  switch (edit.op) {
+    case "add_task":
+      assertSafeDefinition(edit.task);
+      if (graph.tasks.some((task) => task.id === edit.task.id)) {
+        throw new Error(`Task ${edit.task.id} already exists in the active DAG`);
+      }
+      graph.tasks.push({
+        ...edit.task,
+        dependencies: [...edit.task.dependencies],
+        inputs: [...edit.task.inputs],
+        expectedArtifacts: [...edit.task.expectedArtifacts],
+        completionChecks: [...edit.task.completionChecks],
+        owner: "main_agent",
+        status: "pending",
+      });
+      return;
+    case "update_task": {
+      const task = taskById(graph, edit.taskId);
+      assertRevisableTask(task);
+      applyTaskPatch(task, edit.patch);
+      assertSafeDefinition(task);
+      task.status = "pending";
+      delete task.startedAt;
+      delete task.blockerDetails;
+      return;
+    }
+    case "remove_task":
+      removeTask(graph, edit.taskId, edit.rewire === "inherit");
+      removed.add(edit.taskId);
+      return;
+    case "set_goal":
+      assertSafeText(edit.goal);
+      graph.goal = edit.goal;
+  }
+}
+
+/** Completed history and child-held work are immutable; only main-owned open tasks may change. */
+function assertRevisableTask(task: Readonly<TaskNode>): void {
+  if (task.status === "completed") {
+    throw new Error(`Task ${task.id} is completed and cannot be revised; add a follow-up task that depends on it`);
+  }
+  if (task.owner === "subagent") {
+    throw new Error(
+      `Task ${task.id} is held by child ${task.assignedAgentId}; stop and collect the child before revising it`,
+    );
+  }
+}
+
+function applyTaskPatch(task: TaskNode, patch: TaskPatch): void {
+  if (patch.title !== undefined) task.title = patch.title;
+  if (patch.description !== undefined) task.description = patch.description;
+  if (patch.failureHandling !== undefined) task.failureHandling = patch.failureHandling;
+  if (patch.dependencies) task.dependencies = [...patch.dependencies];
+  if (patch.inputs) task.inputs = [...patch.inputs];
+  if (patch.expectedArtifacts) task.expectedArtifacts = [...patch.expectedArtifacts];
+  if (patch.completionChecks) task.completionChecks = [...patch.completionChecks];
+}
+
+function removeTask(graph: TaskGraph, taskId: string, inheritDependencies: boolean): void {
+  const task = taskById(graph, taskId);
+  assertRevisableTask(task);
+  if (task.status === "in_progress") {
+    throw new Error(`Task ${task.id} is in progress; block it before removing it`);
+  }
+  graph.tasks.splice(graph.tasks.indexOf(task), 1);
+  if (!inheritDependencies) return;
+  for (const dependent of graph.tasks) {
+    const index = dependent.dependencies.indexOf(task.id);
+    if (index < 0) continue;
+    dependent.dependencies = [
+      ...new Set([
+        ...dependent.dependencies.slice(0, index),
+        ...task.dependencies,
+        ...dependent.dependencies.slice(index + 1),
+      ]),
+    ];
+  }
+}
+
+export interface TaskGraphRevisionChanges {
+  added: string[];
+  removed: string[];
+  updated: string[];
+  /** Started or blocked tasks a revision returned to pending; they must be started again. */
+  returnedToPending: string[];
+  goalChanged: boolean;
+}
+
+/** Summarize a revise transition for the model and the transcript. */
+export function taskGraphRevisionChanges(
+  before: Readonly<TaskGraph>,
+  after: Readonly<TaskGraph>,
+): TaskGraphRevisionChanges {
+  const previous = new Map(before.tasks.map((task) => [task.id, task]));
+  const next = new Set(after.tasks.map((task) => task.id));
+  const changes: TaskGraphRevisionChanges = {
+    added: [],
+    removed: before.tasks.filter((task) => !next.has(task.id)).map((task) => task.id),
+    updated: [],
+    returnedToPending: [],
+    goalChanged: before.goal !== after.goal,
+  };
+  for (const task of after.tasks) {
+    const prior = previous.get(task.id);
+    if (!prior) changes.added.push(task.id);
+    else if (!isDeepStrictEqual(prior, task)) changes.updated.push(task.id);
+    if (prior && prior.status !== "pending" && task.status === "pending") changes.returnedToPending.push(task.id);
+  }
+  return changes;
+}
+
+/** True when a revise would return the main agent's in-progress task to pending. */
+export function revisionTouchesActiveMainTask(
+  graph: Readonly<TaskGraph> | undefined,
+  operation: TaskGraphOperation,
+): boolean {
+  const active = activeTask(graph);
+  return (
+    operation.action === "revise" &&
+    active !== undefined &&
+    operation.edits.some((edit) => edit.op === "update_task" && edit.taskId === active.id)
+  );
 }
 
 /**

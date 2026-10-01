@@ -110,6 +110,14 @@ export function toolDisplayDetails(
 
   if (toolName === "manage_tasks") {
     const action = string(input?.action);
+    if (action === "revise") {
+      const changes = record(record(result.data)?.changes);
+      const count = (key: string): number => (Array.isArray(changes?.[key]) ? (changes[key] as unknown[]).length : 0);
+      const summary = changes
+        ? `+${count("added")} −${count("removed")} ~${count("updated")}${changes.goalChanged === true ? " · goal" : ""}`
+        : undefined;
+      return [...detail("Action", action), ...detail("Reason", string(input?.reason)), ...detail("Changes", summary)];
+    }
     const created = names(input?.tasks);
     const id = string(input?.taskId);
     const titles = created.length
