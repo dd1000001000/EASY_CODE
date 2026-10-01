@@ -8,11 +8,15 @@ import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { WorkspaceToolObserver } from "../src/coordination/observer.js";
+import { coordinationPath } from "../src/coordination/store.js";
+import { CommandPolicy, CommandRuntime } from "../src/command/index.js";
+import type { CommandExecutionBackend, PreparedCommand } from "../src/sandbox/index.js";
+import { CreateFileTool, RunCommandTool, StartCommandTool } from "../src/tools/index.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import { FindFileEditorsTool, SendThreadMessageTool } from "../src/tools/thread-coordination.js";
 import { ToolCatalog, StaticToolSource } from "../src/tools/catalog.js";
-import { builtinToolMetadata } from "../src/tools/capabilities.js";
-import type { AgentTool, ToolContext } from "../src/core/types.js";
+import { bindBuiltinToolMetadata, builtinToolMetadata } from "../src/tools/capabilities.js";
+import type { AgentTool, FileChangeRecord, ToolContext } from "../src/core/types.js";
 import { projectWebHistory } from "../src/web-server/history.js";
 import { WebInteraction } from "../src/web-server/interaction.js";
 import { describe, it } from "./harness.js";
@@ -62,6 +66,34 @@ async function fixture(
   }
 }
 
+/** Runs commands directly on the host; test-only. */
+class HostTestBackend implements CommandExecutionBackend {
+  describe(): PreparedCommand["metadata"] {
+    return { backend: "host-test-only", enforced: false, filesystem: "host", network: "host" };
+  }
+
+  async prepare(request: Parameters<CommandExecutionBackend["prepare"]>[0]): Promise<PreparedCommand> {
+    return {
+      executablePath: request.command.executablePath,
+      args: [...request.command.args],
+      cwdAbsolute: request.command.cwdAbsolute,
+      environment: { ...request.command.environment },
+      metadata: this.describe(),
+      cleanup: async () => undefined,
+    };
+  }
+}
+
+function change(filename: string, operation: FileChangeRecord["operation"]): FileChangeRecord {
+  return {
+    path: filename,
+    operation,
+    source: operation === "generated" ? "command" : "file_tool",
+    status: "applied",
+    timestamp: new Date().toISOString(),
+  };
+}
+
 function fakeTool(execute: AgentTool["execute"]): AgentTool {
   return {
     name: "read_file",
@@ -89,7 +121,7 @@ describe("Thread coordination", () => {
     host.close();
   });
 
-  it("observes every catalog tool including read-only and external tools; errors preserve changes", async () =>
+  it("indexes changes reported by builtin tools without scanning, and scans around external tools", async () =>
     fixture(async (f) => {
       const warnings: string[] = [];
       const observer = new WorkspaceToolObserver(
@@ -102,14 +134,16 @@ describe("Thread coordination", () => {
       catalog.registerSource(
         new StaticToolSource("builtin", [
           fakeTool(async () => {
-            await writeFile(path.join(f.root, "observed.txt"), "changed by concurrent activity");
+            await writeFile(path.join(f.root, "unreported.txt"), "changed by concurrent activity");
+            f.workspace.recordChange(change("reported.txt", "create"));
             throw new Error("original tool failure");
           }),
         ]),
       );
       await assert.rejects((await catalog.snapshot()).tools[0]!.execute({}, f.context), /original tool failure/);
       assert.deepEqual(warnings, []);
-      assert.equal(f.threads.coordination.find(path.join(f.root, "observed.txt"), "thread_b")[0]!.threadId, "thread_a");
+      assert.equal(f.threads.coordination.find(path.join(f.root, "reported.txt"), "thread_b")[0]!.threadId, "thread_a");
+      assert.deepEqual(f.threads.coordination.find(path.join(f.root, "unreported.txt"), "thread_b"), []);
       const external: AgentTool = {
         name: "external",
         mutating: false,
@@ -125,7 +159,7 @@ describe("Thread coordination", () => {
         },
         definition: { type: "function", function: { name: "external", description: "external", parameters: {} } },
         execute: async () => {
-          await rm(path.join(f.root, "observed.txt"));
+          await rm(path.join(f.root, "unreported.txt"));
           return { ok: true, summary: "done" };
         },
       };
@@ -144,10 +178,9 @@ describe("Thread coordination", () => {
       const observer = new WorkspaceToolObserver(f.workspace, f.threads.coordination, defaultRuntimeLimits(), () => {});
       const result = await observer.execute(
         fakeTool(async () => {
-          for (const dir of [".easycode", "node_modules"]) {
-            await mkdir(path.join(f.root, dir));
-            await writeFile(path.join(f.root, dir, "internal"), "x");
-          }
+          f.workspace.recordChange(change(".easycode/internal", "create"));
+          f.workspace.recordChange(change("node_modules/pkg/index.js", "update"));
+          f.workspace.recordChange({ ...change("rejected.txt", "update"), status: "conflict" });
           return { ok: true, summary: "done" };
         }),
         {},
@@ -160,13 +193,51 @@ describe("Thread coordination", () => {
       };
       const success = await observer.execute(
         fakeTool(async () => {
-          await writeFile(path.join(f.root, "real.txt"), "x");
+          f.workspace.recordChange(change("real.txt", "create"));
           return { ok: true, summary: "original" };
         }),
         {},
         f.context,
       );
       assert.equal(success.summary, "original");
+    }));
+
+  it("indexes the net effect of each call and keeps concurrent calls apart", async () =>
+    fixture(async (f) => {
+      const observer = new WorkspaceToolObserver(f.workspace, f.threads.coordination, defaultRuntimeLimits(), () => {});
+      let releaseFirst!: () => void;
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const first = observer.execute(
+        fakeTool(async () => {
+          await firstGate;
+          f.workspace.recordChange(change("first.txt", "create"));
+          f.workspace.recordChange(change("first.txt", "update"));
+          f.workspace.recordChange(change("transient.txt", "create"));
+          f.workspace.recordChange(change("transient.txt", "delete"));
+          return { ok: true, summary: "first" };
+        }),
+        {},
+        { ...f.context, toolCallId: "call_first" },
+      );
+      await observer.execute(
+        fakeTool(async () => {
+          f.workspace.recordChange(change("second.txt", "update"));
+          return { ok: true, summary: "second" };
+        }),
+        {},
+        { ...f.context, toolCallId: "call_second" },
+      );
+      releaseFirst();
+      await first;
+      const rows = f.storage.db
+        .prepare("SELECT call_id AS callId, operation FROM file_observations ORDER BY call_id")
+        .all() as Array<{ callId: string; operation: string }>;
+      assert.deepEqual(rows, [
+        { callId: "call_first", operation: "created" },
+        { callId: "call_second", operation: "modified" },
+      ]);
     }));
 
   it("observes background changes after start returns without needing poll_command", async () =>
@@ -183,14 +254,68 @@ describe("Thread coordination", () => {
         () => completion,
       );
       const tool = {
-        ...fakeTool(async () => ({ ok: true, summary: "started", data: { commandId: "cmd", status: "running" } })),
+        ...fakeTool(async () => {
+          // The command reports its delta from a continuation started by this call.
+          void completion.then(() => f.workspace.recordChange(change("later.txt", "generated")));
+          return { ok: true, summary: "started", data: { commandId: "cmd", status: "running" } };
+        }),
         name: "start_command",
       };
       await observer.execute(tool, {}, f.context);
-      await writeFile(path.join(f.root, "later.txt"), "later");
+      // A change recorded outside any tool call is not attributed to the earlier call.
+      f.workspace.recordChange(change("unrelated.txt", "generated"));
       settle();
       await observer.drain();
       assert.equal(f.threads.coordination.find(path.join(f.root, "later.txt"), "thread_b").length, 1);
+      assert.deepEqual(f.threads.coordination.find(path.join(f.root, "unrelated.txt"), "thread_b"), []);
+    }));
+
+  it("indexes real file-tool, command and background-command changes per call", async () =>
+    fixture(async (f) => {
+      const backend = new HostTestBackend();
+      const runtime = new CommandRuntime(f.workspace, new CommandPolicy(), backend, backend, {});
+      const observer = new WorkspaceToolObserver(
+        f.workspace,
+        f.threads.coordination,
+        defaultRuntimeLimits(),
+        () => {},
+        (id) => runtime.whenSettled(id),
+      );
+      const context = { ...f.context, requestApproval: async () => true, commandTimeoutMs: 60_000 };
+      const create = bindBuiltinToolMetadata(new CreateFileTool(f.workspace));
+      const created = await observer.execute(
+        create,
+        { path: "src/new.ts", content: "export {};\n" },
+        { ...context, toolCallId: "call_create" },
+      );
+      assert.equal(created.ok, true, created.summary);
+      const run = bindBuiltinToolMetadata(new RunCommandTool(f.workspace, runtime));
+      const ran = await observer.execute(
+        run,
+        { program: "node", args: ["-e", "require('fs').writeFileSync('ran.txt', 'x')"], intent: "run" },
+        { ...context, toolCallId: "call_run" },
+      );
+      assert.equal(ran.ok, true, ran.summary);
+      const start = bindBuiltinToolMetadata(new StartCommandTool(f.workspace, runtime));
+      const started = await observer.execute(
+        start,
+        {
+          program: "node",
+          args: ["-e", "setTimeout(() => require('fs').writeFileSync('later.txt', 'x'), 300)"],
+          intent: "run",
+        },
+        { ...context, toolCallId: "call_start" },
+      );
+      assert.equal(started.ok, true, started.summary);
+      await observer.drain();
+      const rows = f.storage.db
+        .prepare("SELECT call_id AS callId, path, operation FROM file_observations ORDER BY call_id")
+        .all() as Array<{ callId: string; path: string; operation: string }>;
+      assert.deepEqual(rows, [
+        { callId: "call_create", path: coordinationPath(path.join(f.root, "src", "new.ts")), operation: "created" },
+        { callId: "call_run", path: coordinationPath(path.join(f.root, "ran.txt")), operation: "created" },
+        { callId: "call_start", path: coordinationPath(path.join(f.root, "later.txt")), operation: "created" },
+      ]);
     }));
 
   it("queries only relative paths, including deleted parents, with no directory creation", async () =>

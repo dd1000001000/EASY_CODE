@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { FileChangeRecord, FileVersion } from "../core/types.js";
 import type { ProjectWorkspace } from "../projects/types.js";
 import {
@@ -56,6 +57,18 @@ export interface VerifiedWorkspaceFileState {
   readonly hash: string;
   readonly size: number;
   readonly mtimeMs?: number;
+}
+
+/** Receives each change recorded by any WorkspaceManager inside its async context. */
+export type WorkspaceChangeSink = (workspace: WorkspaceManager, change: Readonly<FileChangeRecord>) => void;
+
+const changeSinks = new AsyncLocalStorage<WorkspaceChangeSink>();
+
+/** Route every change recorded while `run` executes to `sink`, including
+ * continuations it started that settle later (such as a background command
+ * reporting its delta on exit). A nested call replaces the outer sink. */
+export function withWorkspaceChangeSink<T>(sink: WorkspaceChangeSink, run: () => T): T {
+  return changeSinks.run(sink, run);
 }
 
 /** Owns the workspace manifest, read versions and current ChangeSet. */
@@ -212,6 +225,7 @@ export class WorkspaceManager {
 
   recordChange(change: FileChangeRecord): void {
     this.changes.push({ ...change });
+    changeSinks.getStore()?.(this, { ...change });
   }
 
   getChangeSet(): FileChangeRecord[] {
