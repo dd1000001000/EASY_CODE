@@ -180,6 +180,17 @@ Or restart with `easy-code --resume <thread-id>`. If another process owns the ta
 
 `/clear` clears terminal display, not history. `/new` creates another conversation rather than resuming the original one. Stopping does not automatically roll back completed file changes.
 
+### See what a request changed
+
+When a request finishes, a summary shows its duration, provider-reported tokens and the files it changed. Each file is listed once as created, modified or deleted, with the net lines added and removed since the request began.
+
+- **CLI:** the summary line shows the file count and total `+added -removed`, followed by up to 8 file rows with their own counts; remaining files are counted on a final row. Long paths keep their file name, and existing files are hyperlinks in terminals that support them. The CLI does not show diffs.
+- **Web:** every changed file is listed. Open a file that has a diff to see its changed lines. The diff is loaded only when you open it, so long file lists do not slow the page.
+
+Line counts and diffs come from edits made through file tools. Files changed by commands, such as build output or formatter results, are listed with their status only. Failed changes, files created and then removed in the same request, and paths outside the workspace are left out. Files inside folders whose names start with `.` (for example `.pytest_cache/` or `.github/`) or inside `__pycache__/` are also left out, as are editor and system temporary files such as `*.tmp`, `*.swp`, `*~`, `~$*`, `.DS_Store` and `Thumbs.db`. Dotfiles directly in a project folder, such as `.gitignore`, are still listed.
+
+Each file keeps at most 2,000 diff lines and each request at most 50,000, with lines longer than 400 characters shortened; larger diffs are marked as truncated, while the line counts still cover the whole change. Diffs are saved in the conversation's own data directory and removed with the conversation. Sensitive values are redacted when a diff is shown.
+
 ## 5. Approvals, sandboxing and commands
 
 ### 5.1 Approval modes
@@ -244,6 +255,8 @@ Use `/model` in CLI to choose the model and thinking effort, or `/model <provide
 Effort `none/low/medium/high` affects local budgets and provider reasoning parameters where supported. “Saved, not applied” means the local selection is retained but no corresponding provider parameter is applied; it does not prove the model stopped reasoning.
 
 Streaming distinguishes answer text, thinking and tool preparation. **Tools execute only after their full arguments have been received and validated**, never from a partial file body or half a command. A preview limit affects display, not whether the request is finished. Image attachments likewise require a model with the corresponding capability.
+
+Web receives streamed answer and thinking text in batches about every 50 ms, each carrying only the newly added text, so a long answer does not resend everything already shown. Secrets are redacted across the whole text before each batch is sent; if a later token completes a secret, the entry is replaced with its redacted version. A page that stops reading events, for example a suspended background tab, is disconnected once more than 16 MiB is waiting for it; the browser reconnects and loads the current conversation again.
 
 Current default request deadlines:
 
@@ -532,6 +545,7 @@ To reduce consumption, narrow task scope, choose appropriate effort, cap one-sho
 | `easy-code` not found | Confirm global installation succeeded and npm's executable directory is on PATH; reopen the terminal. Building alone does not install the global command. |
 | Missing dependencies after installation failure | Fix the first failed step before building/installing again. On Windows, active processes can hold native dependency files open. |
 | Long API wait | Check meaningful stream progress and distinguish thinking, tool preparation and actual execution; then inspect provider and timeout messages. |
+| A changed file cannot be opened in Web | Only files edited through file tools have a saved diff; files changed by commands show only their status. Inspect them directly or with Git. |
 | Missing model or authentication failure | Check the registry, selected provider, corresponding key and account access. |
 | Sandbox unavailable or repeated setup requests | Run `sandbox doctor`, address its findings and explicitly run `sandbox setup`; do not conceal the cause by choosing Full access. |
 | Quarantined command environment | Inspect execution/cleanup evidence with `sandbox recover` before considering `--apply`. |
