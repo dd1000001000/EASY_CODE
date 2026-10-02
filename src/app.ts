@@ -987,7 +987,7 @@ export class EasyCodeApp {
   }
 
   /** Files of the workspace manifest, for `@` references; empty until the first scan finishes. */
-  private workspaceMentionPaths(): readonly string[] {
+  workspaceMentionPaths(): readonly string[] {
     const snapshot = this.workspace.getManifestSnapshot();
     if (!snapshot) {
       this.mentionManifestScan ??= this.workspace

@@ -10,7 +10,8 @@ import { describe, it } from "./harness.js";
 const ROOT = path.resolve("workspace-root");
 
 function file(relative: string, deleted = false) {
-  return { path: relative, absolutePath: path.join(ROOT, relative), deleted };
+  const change = deleted ? ("deleted" as const) : ("modified" as const);
+  return { path: relative, absolutePath: path.join(ROOT, relative), change };
 }
 
 const SUMMARY: TurnSummary = {

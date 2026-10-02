@@ -50,6 +50,8 @@ interface HostedThread {
   stagedResources: Map<string, ThreadResourceAttachment>;
   unsubscribe: () => void;
 }
+/** Enough for large repositories while keeping the response small. */
+const MAX_MENTION_PATHS = 20_000;
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -144,6 +146,7 @@ export class EasyCodeWebServer {
     ["/api/state", (_request, response) => json(response, 200, this.snapshot())],
     ["/api/history", (request, response) => this.apiHistory(request, response)],
     ["/api/commands", (_request, response) => this.apiCommands(response)],
+    ["/api/mentions", (request, response) => this.apiMentions(request, response)],
     ["/api/events", (request, response) => this.apiEvents(request, response)],
   ]);
   private readonly uploadRoutes = new Map<
@@ -683,6 +686,13 @@ export class EasyCodeWebServer {
   }
 
   /** Slash commands the Web composer offers. */
+  /** Workspace files for `@` references; empty until the conversation's first manifest scan finishes. */
+  private apiMentions(request: IncomingMessage, response: ServerResponse): void {
+    const params = new URL(request.url ?? "/api/mentions", this.origin).searchParams;
+    const host = this.hostFor(params.get("threadId"));
+    json(response, 200, { paths: host.app.workspaceMentionPaths().slice(0, MAX_MENTION_PATHS) });
+  }
+
   private apiCommands(response: ServerResponse): void {
     json(response, 200, {
       commands: SLASH_COMMAND_NAMES.filter(

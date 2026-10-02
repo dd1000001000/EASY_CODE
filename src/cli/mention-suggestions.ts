@@ -19,6 +19,7 @@ interface MentionEntry {
  */
 export class MentionIndex {
   private entries: readonly MentionEntry[] | undefined;
+  private byPath: ReadonlyMap<string, MentionEntry> | undefined;
 
   constructor(private readonly load: () => readonly string[]) {}
 
@@ -49,6 +50,20 @@ export class MentionIndex {
       ...[...files].filter((path) => !directories.has(path)).map((path) => entry(path, false)),
     ];
     return this.entries;
+  }
+
+  /** The workspace file or directory a reference names (case-insensitive), if there is one. */
+  find(path: string): { readonly path: string; readonly directory: boolean } | undefined {
+    const entries = this.all();
+    if (!this.byPath || this.byPath.size !== entries.length)
+      this.byPath = new Map(entries.map((entry) => [entry.lower, entry]));
+    const normalized = path
+      .replace(/\\/gu, "/")
+      .replace(/^\.\/+/u, "")
+      .replace(/\/+$/u, "")
+      .toLowerCase();
+    const entry = this.byPath.get(normalized);
+    return entry ? { path: entry.path, directory: entry.directory } : undefined;
   }
 
   /** Entries for a query: a directory's children after `/`, otherwise every path containing it. */
@@ -109,4 +124,41 @@ export function mentionSuggestions(text: string, cursor: number, index: MentionI
       submit: false,
     };
   });
+}
+
+export interface MentionReference {
+  /** The workspace path as listed, without a trailing slash. */
+  readonly path: string;
+  readonly directory: boolean;
+  /** Offsets of the whole `@path` token in the draft. */
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * The `@path` references in a draft that name a workspace file or directory,
+ * in order, each path once. Trailing sentence punctuation is not part of a path.
+ */
+export function mentionReferences(text: string, index: MentionIndex): readonly MentionReference[] {
+  const references: MentionReference[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(/(^|\s)@([^\s@]+)/gu)) {
+    const start = match.index + match[1]!.length;
+    let raw = match[2]!;
+    let found = index.find(raw);
+    while (!found && /[,.;:!?)\]}'"，。；：！？）]$/u.test(raw)) {
+      raw = raw.slice(0, -1);
+      found = index.find(raw);
+    }
+    if (!found || seen.has(found.path)) continue;
+    seen.add(found.path);
+    references.push({ ...found, start, end: start + 1 + raw.length });
+  }
+  return references;
+}
+
+/** The draft without one reference, and without the space that followed it. */
+export function removeMentionReference(text: string, reference: MentionReference): string {
+  const after = text.slice(reference.end);
+  return text.slice(0, reference.start) + (after.startsWith(" ") ? after.slice(1) : after);
 }

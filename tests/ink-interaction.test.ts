@@ -630,7 +630,7 @@ describe("Ink interaction", () => {
         durationMs: 72_000,
         inputTokens: 1_500,
         outputTokens: 300,
-        changedFiles: [{ path: "src/app.ts", absolutePath, deleted: false }],
+        changedFiles: [{ path: "src/app.ts", absolutePath, change: "modified" }],
       });
       await wait(120);
       assert.match(text(), /took 1m 12s · ↑ 1\.5k ↓ 300 tokens · 1 file changed: src\/app\.ts/u);

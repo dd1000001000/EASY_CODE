@@ -1,10 +1,11 @@
 import type { EventRecord, ImageAttachment } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
-import type { WebEntry, WebEntryKind } from "../web-contracts.js";
+import type { WebEntry, WebEntryKind, WebTurnSummary } from "../web-contracts.js";
 import { safeToolDisplayDetails } from "../runtime/tool-display-details.js";
 import { compactionLabel, compactionNoticeKind, type CompactionProgress } from "../ui/compaction.js";
 import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
+import type { FileChangeKind } from "../ui/contracts.js";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -39,6 +40,29 @@ function toolDetails(value: unknown): WebEntry["toolDetails"] {
   return details.length ? details : undefined;
 }
 
+const MAX_SUMMARY_FILES = 200;
+const FILE_CHANGES: ReadonlySet<FileChangeKind> = new Set(["created", "modified", "deleted"]);
+
+/** A recorded turn summary, or undefined when the payload is not one. */
+function turnSummary(payload: unknown): WebTurnSummary | undefined {
+  const value = object(payload);
+  if (typeof value?.durationMs !== "number" || !Array.isArray(value.changedFiles)) return undefined;
+  const count = (field: unknown) => (typeof field === "number" && Number.isFinite(field) ? field : undefined);
+  const inputTokens = count(value.inputTokens);
+  const outputTokens = count(value.outputTokens);
+  const changedFiles = value.changedFiles.slice(0, MAX_SUMMARY_FILES).flatMap((item) => {
+    const file = object(item);
+    if (typeof file?.path !== "string" || !FILE_CHANGES.has(file.change as FileChangeKind)) return [];
+    return [{ path: safe(file.path), change: file.change as FileChangeKind }];
+  });
+  return {
+    durationMs: Math.max(0, value.durationMs),
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    changedFiles,
+  };
+}
+
 /** Project only user-facing conversation facts; never expose raw Journal payloads or credentials. */
 export function projectWebHistory(events: readonly EventRecord[], language: Language = DEFAULT_LANGUAGE): WebEntry[] {
   const chinese = language === "zh_cn";
@@ -48,8 +72,13 @@ export function projectWebHistory(events: readonly EventRecord[], language: Lang
   const compactions = new Map<string, WebEntry>();
   const turnStartedAt = new Map<string, number>();
   const turnCompletedAt = new Map<string, number>();
+  const turnSummaries = new Map<string, WebTurnSummary>();
   for (const event of events) {
     if (!event.turnId) continue;
+    if (event.type === "turn.summary") {
+      const summary = turnSummary(event.payload);
+      if (summary) turnSummaries.set(event.turnId, summary);
+    }
     const timestamp = Date.parse(event.timestamp) || 0;
     if ((event.type === "turn.started" || event.type === "message.user") && !turnStartedAt.has(event.turnId)) {
       turnStartedAt.set(event.turnId, timestamp);
@@ -206,6 +235,8 @@ export function projectWebHistory(events: readonly EventRecord[], language: Lang
       if (entry.kind === "assistant" && entry.answerState === "finalizing") entry.answerState = "streaming";
     }
     terminal.turnCompletedAt = completedAt;
+    const summary = turnSummaries.get(turnId);
+    if (summary) terminal.turnSummary = summary;
     if (finalAnswer) finalAnswer.answerState = "confirmed";
   }
   return entries;

@@ -1,5 +1,5 @@
 import type { ImageAttachment, PlanProposal, ToolDisplayDetail } from "./core/types.js";
-import type { UISessionInfo, UIActivityKind, UIReviewPhase } from "./ui/contracts.js";
+import type { FileChangeKind, UISessionInfo, UIActivityKind, UIReviewPhase } from "./ui/contracts.js";
 import type { TaskGraphView } from "./tasks/task-graph.js";
 import type { SubagentView } from "./subagents/types.js";
 import type { InteractionChoice } from "./ui/interaction-port.js";
@@ -28,6 +28,8 @@ export interface WebEntry {
   images?: readonly Pick<ImageAttachment, "id" | "label" | "mediaType">[];
   resources?: readonly Pick<ThreadResourceAttachment, "id" | "filename" | "kind" | "mediaType" | "uri">[];
   toolDetails?: readonly ToolDisplayDetail[];
+  /** On the entry that ends a finished turn: its duration, tokens and changed files. */
+  turnSummary?: WebTurnSummary;
   timestamp: number;
 }
 export interface WebHistoryMarker {
@@ -64,12 +66,17 @@ export interface WebView {
   decision: WebDecision | null;
   busy: boolean;
 }
-/** A finished request, so the page can notify a user who switched away. Live only; never replayed. */
+export interface WebTurnChangedFile {
+  /** Workspace-relative path. */
+  path: string;
+  change: FileChangeKind;
+}
+/** A finished request: shown under its answer, and announced to a user who switched away. */
 export interface WebTurnSummary {
   durationMs: number;
   inputTokens?: number;
   outputTokens?: number;
-  changedFiles: readonly string[];
+  changedFiles: readonly WebTurnChangedFile[];
 }
 export type WebPatch =
   | { kind: "entry.append"; entry: WebEntry }

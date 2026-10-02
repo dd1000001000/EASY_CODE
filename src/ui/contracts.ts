@@ -65,11 +65,14 @@ export interface UITranscriptEntry {
 }
 
 /** One workspace file the turn created, edited or deleted. */
+/** How a request left a file: new, changed, or removed. */
+export type FileChangeKind = "created" | "modified" | "deleted";
+
 export interface TurnChangedFile {
   /** Workspace-relative path, as shown to the user. */
   readonly path: string;
   readonly absolutePath: string;
-  readonly deleted: boolean;
+  readonly change: FileChangeKind;
 }
 
 /** What one completed request cost and changed, shown as a single line after it. */

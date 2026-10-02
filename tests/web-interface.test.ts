@@ -96,6 +96,39 @@ describe("Web conversation projection", () => {
     assert.equal(entries.filter((entry) => entry.answerState === "confirmed").length, 1);
     assert.equal(entries.at(-1)?.answerState, "confirmed");
     assert.equal(entries.at(-1)?.turnCompletedAt, Date.parse("2026-09-20T00:00:09.000Z"));
+    assert.equal(entries.at(-1)?.turnSummary, undefined);
+  });
+  it("restores a recorded turn summary on the turn's final answer", () => {
+    const turnId = "turn_summary";
+    const entries = projectWebHistory([
+      { ...event(1, "message.user", { message: { role: "user", content: "Fix it" } }), turnId },
+      { ...event(2, "message.assistant", { role: "assistant", content: "Done." }), turnId },
+      { ...event(3, "turn.completed", { reason: "success" }), turnId, phase: "completed" as const },
+      {
+        ...event(4, "turn.summary", {
+          durationMs: 8_000,
+          inputTokens: 1_200,
+          outputTokens: 80,
+          changedFiles: [
+            { path: "src/app.ts", change: "created" },
+            { path: "old\u001B[2J.ts", change: "deleted" },
+            { path: "unknown.ts", change: "renamed" },
+            { nonsense: true },
+          ],
+        }),
+        turnId,
+      },
+    ]);
+    assert.deepEqual(entries.at(-1)?.turnSummary, {
+      durationMs: 8_000,
+      inputTokens: 1_200,
+      outputTokens: 80,
+      changedFiles: [
+        { path: "src/app.ts", change: "created" },
+        { path: "old.ts", change: "deleted" },
+      ],
+    });
+    assert.equal(entries[0]?.turnSummary, undefined);
   });
   it("restores an explicit final phase before the turn completion event exists", () => {
     const turnId = "turn_finalizing";
@@ -179,7 +212,7 @@ describe("Web interaction host", () => {
     assert.deepEqual(appended, [true, true]);
     host.close();
   });
-  it("sends a finished request's summary as a live patch without touching the transcript", () => {
+  it("sends a finished request's summary as a live patch and keeps it on the turn's last entry", () => {
     const host = new WebInteraction();
     const patches: unknown[] = [];
     host.subscribe((change) => {
@@ -190,14 +223,29 @@ describe("Web interaction host", () => {
       inputTokens: 900,
       outputTokens: 120,
       changedFiles: [
-        { path: "src/app.ts", absolutePath: path.resolve("src/app.ts"), deleted: false },
-        { path: "bad\u001B[2Jname.ts", absolutePath: path.resolve("bad.ts"), deleted: true },
+        { path: "src/app.ts", absolutePath: path.resolve("src/app.ts"), change: "modified" },
+        { path: "bad\u001B[2Jname.ts", absolutePath: path.resolve("bad.ts"), change: "deleted" },
       ],
     });
-    assert.deepEqual(patches, [
-      { durationMs: 45_000, inputTokens: 900, outputTokens: 120, changedFiles: ["src/app.ts", "badname.ts"] },
-    ]);
+    const summary = {
+      durationMs: 45_000,
+      inputTokens: 900,
+      outputTokens: 120,
+      changedFiles: [
+        { path: "src/app.ts", change: "modified" },
+        { path: "badname.ts", change: "deleted" },
+      ],
+    };
+    assert.deepEqual(patches, [summary]);
+    // Without a finished turn on screen there is no entry to carry it.
     assert.deepEqual(host.snapshot().view.entries, []);
+
+    host.presentUser("Fix it");
+    host.finalizeStreamedAnswer("Done.", { startedAt: 1_000, completedAt: 46_000 });
+    host.turnCompleted({ durationMs: 45_000, changedFiles: [] });
+    const answer = host.snapshot().view.entries.at(-1);
+    assert.equal(answer?.text, "Done.");
+    assert.deepEqual(answer?.turnSummary, { durationMs: 45_000, changedFiles: [] });
     host.close();
   });
   it("does not duplicate a proposed plan or expose its transport JSON", () => {
@@ -685,6 +733,7 @@ describe("loopback Web service", () => {
       allThreads: () => [],
       closeAsync: async () => {},
       startHostedSession() {},
+      workspaceMentionPaths: () => ["src/app.ts", "README.md"],
       cancelActiveRequest: () => false,
       isRequestActive: () => compacting,
       isCompacting: () => compacting,
@@ -764,6 +813,9 @@ describe("loopback Web service", () => {
       assert.ok(cookie);
       const initialState = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
       assert.equal(initialState.status, 200);
+      assert.equal((await fetch(`${origin}/api/mentions?threadId=thread_test`)).status, 401);
+      const mentions = await fetch(`${origin}/api/mentions?threadId=thread_test`, { headers: { Cookie: cookie } });
+      assert.deepEqual(await mentions.json(), { paths: ["src/app.ts", "README.md"] });
       const initialProjects = ((await initialState.json()) as { projects: { id: string; name: string }[] }).projects;
       assert.equal(initialProjects.length, 0);
       for (let index = 0; index < WEB_HISTORY_PAGE_SIZE + 5; index += 1) host.presentUser(`History ${index}`);

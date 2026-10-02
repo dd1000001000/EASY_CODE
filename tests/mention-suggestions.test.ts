@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 
-import { MentionIndex, mentionSuggestions } from "../src/cli/mention-suggestions.js";
+import {
+  MentionIndex,
+  mentionReferences,
+  mentionSuggestions,
+  removeMentionReference,
+} from "../src/cli/mention-suggestions.js";
 import { describe, it } from "./harness.js";
 
 const FILES = [
@@ -72,5 +77,30 @@ describe("@ file mentions", () => {
     assert.equal(mentionSuggestions("@READ", 5, index)[0]?.label, "README.md");
     mentionSuggestions("@pack", 5, index);
     assert.equal(calls, 2);
+  });
+
+  it("finds the files and folders a draft references, once each", () => {
+    const index = new MentionIndex(() => FILES);
+    const text = "Compare @SRC/app.ts with @src/ui/, then @src/app.ts again; @missing.ts and me@example.com stay text.";
+    const references = mentionReferences(text, index);
+    assert.deepEqual(
+      references.map(({ path, directory }) => ({ path, directory })),
+      [
+        { path: "src/app.ts", directory: false },
+        { path: "src/ui", directory: true },
+      ],
+    );
+    // Offsets cover the token as written, without the trailing comma.
+    assert.equal(text.slice(references[1]!.start, references[1]!.end), "@src/ui/");
+    assert.deepEqual(index.find("./src\\ui\\store.ts"), { path: "src/ui/store.ts", directory: false });
+    assert.equal(index.find("src/nothing.ts"), undefined);
+  });
+
+  it("removes one reference and the space after it", () => {
+    const index = new MentionIndex(() => FILES);
+    const text = "open @README.md and @src/app.ts now";
+    const [readme, app] = mentionReferences(text, index);
+    assert.equal(removeMentionReference(text, readme!), "open and @src/app.ts now");
+    assert.equal(removeMentionReference(text, app!), "open @README.md and now");
   });
 });

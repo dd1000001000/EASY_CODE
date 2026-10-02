@@ -115,6 +115,7 @@ export const CURRENT_JOURNAL_EVENT_TYPES = [
   "turn.steering.applied",
   "turn.steering.queued",
   "turn.steering.sealed",
+  "turn.summary",
 ] as const;
 
 export type JournalEventType = (typeof CURRENT_JOURNAL_EVENT_TYPES)[number];

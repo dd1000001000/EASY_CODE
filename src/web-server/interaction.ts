@@ -44,6 +44,7 @@ import type {
   WebHistoryPage,
   WebHistoryState,
   WebPatch,
+  WebTurnSummary,
   WebView,
 } from "../web-contracts.js";
 import type { ThreadResourceAttachment } from "../resources/types.js";
@@ -521,15 +522,19 @@ export class WebInteraction implements AppInteractionPort {
     }
   }
   turnCompleted(summary: Readonly<TurnSummary>): void {
-    this.emit({
-      kind: "turn.completed",
-      summary: {
-        durationMs: summary.durationMs,
-        ...(summary.inputTokens === undefined ? {} : { inputTokens: summary.inputTokens }),
-        ...(summary.outputTokens === undefined ? {} : { outputTokens: summary.outputTokens }),
-        changedFiles: summary.changedFiles.map((file) => this.safe(file.path)),
-      },
-    });
+    const web: WebTurnSummary = {
+      durationMs: summary.durationMs,
+      ...(summary.inputTokens === undefined ? {} : { inputTokens: summary.inputTokens }),
+      ...(summary.outputTokens === undefined ? {} : { outputTokens: summary.outputTokens }),
+      changedFiles: summary.changedFiles.map((file) => ({ path: this.safe(file.path), change: file.change })),
+    };
+    // The entry that closed the turn carries the summary, as history replay does.
+    const terminal = [...this.entries].reverse().find((entry) => entry.turnCompletedAt !== undefined);
+    if (terminal) {
+      terminal.turnSummary = web;
+      this.emit({ kind: "entry.replace", entry: terminal });
+    }
+    this.emit({ kind: "turn.completed", summary: web });
   }
 
   finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean {

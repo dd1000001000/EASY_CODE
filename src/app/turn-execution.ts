@@ -4,7 +4,6 @@ import type {
   ChatMessage,
   CommandExecutionMode,
   EasyCodeConfig,
-  FileChangeRecord,
   ImageAttachment,
   SessionState,
   TurnSteeringEntry,
@@ -26,11 +25,12 @@ import { TurnSteeringAttemptNotifier } from "../runtime/turn-steering-notifier.j
 import { type EasyCodeStorage } from "../storage/database.js";
 import { SubagentCoordinator } from "../subagents/coordinator.js";
 import { ThreadStore } from "../threads/thread-store.js";
-import type { AppInteractionPort, PlanReviewDecision, TurnChangedFile, TurnSummary } from "../ui/interaction-port.js";
+import type { AppInteractionPort, PlanReviewDecision, TurnSummary } from "../ui/interaction-port.js";
 import { createId } from "../utils/ids.js";
 import { WorkspaceManager } from "../workspace/manager.js";
 import { ModelSelection } from "./model-selection.js";
 import { SubagentHost } from "./subagent-host.js";
+import { turnChangedFiles } from "./turn-changes.js";
 import { renderPromptBundleText, stripPasteFailureMarkers } from "./text.js";
 import type { ActiveTurnSteering, ExecutePromptOptions } from "./types.js";
 
@@ -519,13 +519,13 @@ export class AppTurnExecution {
       if (!this.ctx.terminal.finalizeStreamedAnswer(result.text, timing)) {
         this.ctx.terminal.write(`\n${result.text.trim()}\n\n`);
       }
-      this.ctx.terminal.turnCompleted?.(
-        this.turnSummary(
-          timing ? timing.completedAt - timing.startedAt : Date.now() - runStartedAt,
-          usageBefore,
-          changesBefore,
-        ),
+      const summary = this.turnSummary(
+        timing ? timing.completedAt - timing.startedAt : Date.now() - runStartedAt,
+        usageBefore,
+        changesBefore,
       );
+      this.recordTurnSummary(result.threadId, result.turnId, summary);
+      this.ctx.terminal.turnCompleted?.(summary);
       return result;
     } finally {
       try {
@@ -552,6 +552,24 @@ export class AppTurnExecution {
     }
   }
 
+  /** Keep the summary with the turn, so a reopened conversation can show it again. Best effort. */
+  private recordTurnSummary(threadId: string, turnId: string, summary: TurnSummary): void {
+    try {
+      this.ctx.threadStore.appendEvent(threadId, {
+        type: "turn.summary",
+        turnId,
+        payload: {
+          durationMs: summary.durationMs,
+          ...(summary.inputTokens === undefined ? {} : { inputTokens: summary.inputTokens }),
+          ...(summary.outputTokens === undefined ? {} : { outputTokens: summary.outputTokens }),
+          changedFiles: summary.changedFiles.map((file) => ({ path: file.path, change: file.change })),
+        },
+      });
+    } catch {
+      // The summary is presentation only; a failed append must not fail the finished turn.
+    }
+  }
+
   /** Duration, tokens and files of the turn that just finished, from counters taken before it ran. */
   private turnSummary(
     durationMs: number,
@@ -560,25 +578,9 @@ export class AppTurnExecution {
   ): TurnSummary {
     const usageAfter = this.usageTotals();
     const reported = usageAfter.reported > usageBefore.reported;
-    const latest = new Map<string, FileChangeRecord>();
-    for (const change of this.ctx.workspace.getChangeSet().slice(changesBefore)) {
-      if (change.status === "failed" || change.status === "policy_violation" || change.status === "conflict") continue;
-      latest.set(change.path, change);
-    }
-    const changedFiles: TurnChangedFile[] = [];
-    for (const [relative, change] of latest) {
-      let absolutePath: string;
-      try {
-        absolutePath = this.ctx.workspace.pathGuard.resolveLexical(relative);
-      } catch {
-        continue;
-      }
-      changedFiles.push({
-        path: relative,
-        absolutePath,
-        deleted: change.operation === "delete" || change.operation === "deleted_by_command",
-      });
-    }
+    const changedFiles = turnChangedFiles(this.ctx.workspace.getChangeSet().slice(changesBefore), (relative) =>
+      this.ctx.workspace.pathGuard.resolveLexical(relative),
+    );
     return {
       durationMs: Math.max(0, durationMs),
       ...(reported

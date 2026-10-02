@@ -24,7 +24,7 @@ function hyperlink(label: string, target: string): string {
 
 function fileLabel(file: TurnChangedFile, zh: boolean): string {
   const name = sanitizeTerminalText(file.path, { allowSgr: false }).replace(/\\/gu, "/");
-  return file.deleted ? `${name} ${zh ? "(已删除)" : "(deleted)"}` : name;
+  return file.change === "deleted" ? `${name} ${zh ? "(已删除)" : "(deleted)"}` : name;
 }
 
 /**
@@ -59,7 +59,7 @@ export function renderTurnSummary(summary: Readonly<TurnSummary>, options: TurnS
   }
   const names = shown.map((file) => {
     const label = fileLabel(file, zh);
-    return options.links && !file.deleted ? hyperlink(label, pathToFileURL(file.absolutePath).href) : label;
+    return options.links && file.change !== "deleted" ? hyperlink(label, pathToFileURL(file.absolutePath).href) : label;
   });
   const hidden = files.length - shown.length;
   const tail = hidden > 0 ? `${separator}${zh ? `等 ${hidden} 个` : `+${hidden} more`}` : "";
