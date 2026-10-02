@@ -68,11 +68,36 @@ export interface UITranscriptEntry {
 /** How a request left a file: new, changed, or removed. */
 export type FileChangeKind = "created" | "modified" | "deleted";
 
+/** Lines a request added to and removed from one file, net over all its edits. */
+export interface TurnLineCounts {
+  readonly added: number;
+  readonly removed: number;
+}
+
+/** One region of a file's net change, with up to three unchanged lines around it. */
+export interface TurnDiffHunk {
+  /** First line of the region before and after the request, 1-based (0 for an empty side). */
+  readonly oldStart: number;
+  readonly newStart: number;
+  /** Each line starts with " " (unchanged), "+" (added) or "-" (removed). */
+  readonly lines: readonly string[];
+}
+
+export interface TurnFileDiff {
+  readonly hunks: readonly TurnDiffHunk[];
+  /** Lines were left out to keep the summary small; the counts still cover the whole change. */
+  readonly truncated: boolean;
+}
+
 export interface TurnChangedFile {
   /** Workspace-relative path, as shown to the user. */
   readonly path: string;
   readonly absolutePath: string;
   readonly change: FileChangeKind;
+  /** Known when the file was changed through the file tools only. */
+  readonly lines?: TurnLineCounts;
+  /** The request's net change of the file, when its lines are known. */
+  readonly diff?: TurnFileDiff;
 }
 
 /** What one completed request cost and changed, shown as a single line after it. */

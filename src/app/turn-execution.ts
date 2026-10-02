@@ -30,7 +30,7 @@ import { createId } from "../utils/ids.js";
 import { WorkspaceManager } from "../workspace/manager.js";
 import { ModelSelection } from "./model-selection.js";
 import { SubagentHost } from "./subagent-host.js";
-import { turnChangedFiles } from "./turn-changes.js";
+import { turnChangedFiles, turnFileText } from "./turn-changes.js";
 import { renderPromptBundleText, stripPasteFailureMarkers } from "./text.js";
 import type { ActiveTurnSteering, ExecutePromptOptions } from "./types.js";
 
@@ -481,6 +481,7 @@ export class AppTurnExecution {
       });
       const usageBefore = this.usageTotals();
       const changesBefore = this.ctx.workspace.getChangeSet().length;
+      turnFileText(this.ctx.workspace).clear();
       const runStartedAt = Date.now();
       const runtime = await this.ctx.createRuntime(presentReasoning, steeringNotifier);
       const result = await runtime.run(
@@ -562,7 +563,12 @@ export class AppTurnExecution {
           durationMs: summary.durationMs,
           ...(summary.inputTokens === undefined ? {} : { inputTokens: summary.inputTokens }),
           ...(summary.outputTokens === undefined ? {} : { outputTokens: summary.outputTokens }),
-          changedFiles: summary.changedFiles.map((file) => ({ path: file.path, change: file.change })),
+          changedFiles: summary.changedFiles.map((file) => ({
+            path: file.path,
+            change: file.change,
+            ...(file.lines ? { lines: file.lines } : {}),
+            ...(file.diff ? { diff: file.diff } : {}),
+          })),
         },
       });
     } catch {
@@ -578,8 +584,10 @@ export class AppTurnExecution {
   ): TurnSummary {
     const usageAfter = this.usageTotals();
     const reported = usageAfter.reported > usageBefore.reported;
-    const changedFiles = turnChangedFiles(this.ctx.workspace.getChangeSet().slice(changesBefore), (relative) =>
-      this.ctx.workspace.pathGuard.resolveLexical(relative),
+    const changedFiles = turnChangedFiles(
+      this.ctx.workspace.getChangeSet().slice(changesBefore),
+      (relative) => this.ctx.workspace.pathGuard.resolveLexical(relative),
+      turnFileText(this.ctx.workspace),
     );
     return {
       durationMs: Math.max(0, durationMs),

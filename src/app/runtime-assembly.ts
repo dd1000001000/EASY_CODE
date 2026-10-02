@@ -50,6 +50,7 @@ import { json } from "./text.js";
 import { InfoCommands } from "./info-commands.js";
 import { SubagentHost } from "./subagent-host.js";
 import { runtimeContextDependencies } from "./runtime-context.js";
+import { turnFileText } from "./turn-changes.js";
 
 /** What RuntimeAssembly needs from its host; live values are forwarded through getters. */
 export interface RuntimeAssemblyContext {
@@ -393,6 +394,7 @@ export class RuntimeAssembly {
       }
     }
     if (result.ok && result.presentation?.type === "file_diff") {
+      turnFileText(this.ctx.workspace).record(result.presentation);
       try {
         this.ctx.terminal.fileDiff(result.presentation);
       } catch {

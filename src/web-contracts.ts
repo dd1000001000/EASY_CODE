@@ -1,5 +1,12 @@
 import type { ImageAttachment, PlanProposal, ToolDisplayDetail } from "./core/types.js";
-import type { FileChangeKind, UISessionInfo, UIActivityKind, UIReviewPhase } from "./ui/contracts.js";
+import type {
+  FileChangeKind,
+  TurnFileDiff,
+  TurnLineCounts,
+  UISessionInfo,
+  UIActivityKind,
+  UIReviewPhase,
+} from "./ui/contracts.js";
 import type { TaskGraphView } from "./tasks/task-graph.js";
 import type { SubagentView } from "./subagents/types.js";
 import type { InteractionChoice } from "./ui/interaction-port.js";
@@ -70,6 +77,9 @@ export interface WebTurnChangedFile {
   /** Workspace-relative path. */
   path: string;
   change: FileChangeKind;
+  lines?: TurnLineCounts;
+  /** The request's net change of the file, secrets redacted line by line. */
+  diff?: TurnFileDiff;
 }
 /** A finished request: shown under its answer, and announced to a user who switched away. */
 export interface WebTurnSummary {

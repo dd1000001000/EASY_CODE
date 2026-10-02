@@ -226,3 +226,42 @@ export function codeHtmlIfReady(code: string, language: CodeLanguage): string | 
 export function codeThemeForeground(theme: CodeThemeName): string | undefined {
   return highlighter?.getTheme(theme).fg;
 }
+
+const lineHtmlCache = new Map<string, readonly string[]>();
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/gu, (char) => `&#${char.charCodeAt(0)};`);
+}
+
+/**
+ * Each line of `code` as HTML spans carrying both GitHub themes as CSS
+ * variables, like `codeHtmlIfReady` but without the surrounding `<pre>`, for
+ * views that lay lines out themselves (diffs). Text is escaped. Undefined
+ * while the grammar is still loading.
+ */
+export function codeLinesHtmlIfReady(code: string, language: CodeLanguage): readonly string[] | undefined {
+  const instance = readyFor(code, language);
+  if (!instance) return undefined;
+  try {
+    return cached(lineHtmlCache, `${language}\0${code}`, () =>
+      instance
+        .codeToTokens(code, {
+          lang: language,
+          themes: { light: "github-light", dark: "github-dark" },
+          defaultColor: false,
+        })
+        .tokens.map((line) =>
+          line
+            .map((token) => {
+              const style = Object.entries(token.htmlStyle ?? {})
+                .map(([name, value]) => `${name}:${value}`)
+                .join(";");
+              return `<span style="${escapeHtml(style)}">${escapeHtml(token.content)}</span>`;
+            })
+            .join(""),
+        ),
+    );
+  } catch {
+    return undefined;
+  }
+}

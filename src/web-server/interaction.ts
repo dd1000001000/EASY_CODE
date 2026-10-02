@@ -35,6 +35,7 @@ import { canGrantCommandPrefix, formatCommandApprovalPrefix } from "../command/a
 import type { Language } from "../i18n/language.js";
 import { translate } from "../i18n/catalog.js";
 import { toolRunContinuesAcross, turnContinuesAcross } from "../web-tool-run.js";
+import { safeDiff } from "./turn-diff.js";
 import type {
   WebChange,
   WebDecision,
@@ -526,7 +527,12 @@ export class WebInteraction implements AppInteractionPort {
       durationMs: summary.durationMs,
       ...(summary.inputTokens === undefined ? {} : { inputTokens: summary.inputTokens }),
       ...(summary.outputTokens === undefined ? {} : { outputTokens: summary.outputTokens }),
-      changedFiles: summary.changedFiles.map((file) => ({ path: this.safe(file.path), change: file.change })),
+      changedFiles: summary.changedFiles.map((file) => ({
+        path: this.safe(file.path),
+        change: file.change,
+        ...(file.lines ? { lines: { added: file.lines.added, removed: file.lines.removed } } : {}),
+        ...(file.diff ? { diff: safeDiff(file.diff, (line) => this.safe(line)) } : {}),
+      })),
     };
     // The entry that closed the turn carries the summary, as history replay does.
     const terminal = [...this.entries].reverse().find((entry) => entry.turnCompletedAt !== undefined);

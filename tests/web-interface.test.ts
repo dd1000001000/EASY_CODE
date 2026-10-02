@@ -110,8 +110,21 @@ describe("Web conversation projection", () => {
           inputTokens: 1_200,
           outputTokens: 80,
           changedFiles: [
-            { path: "src/app.ts", change: "created" },
-            { path: "old\u001B[2J.ts", change: "deleted" },
+            {
+              path: "src/app.ts",
+              change: "created",
+              lines: { added: 12, removed: 0 },
+              diff: {
+                truncated: true,
+                hunks: [{ oldStart: 0, newStart: 1, lines: ["+token=ghp_1234567890123456789012345"] }],
+              },
+            },
+            {
+              path: "old\u001B[2J.ts",
+              change: "deleted",
+              lines: { added: "many", removed: 3 },
+              diff: { truncated: false, hunks: [{ oldStart: 1, newStart: 0, lines: ["not a diff line"] }] },
+            },
             { path: "unknown.ts", change: "renamed" },
             { nonsense: true },
           ],
@@ -124,7 +137,17 @@ describe("Web conversation projection", () => {
       inputTokens: 1_200,
       outputTokens: 80,
       changedFiles: [
-        { path: "src/app.ts", change: "created" },
+        {
+          path: "src/app.ts",
+          change: "created",
+          lines: { added: 12, removed: 0 },
+          // Diff lines reach the page with secrets redacted.
+          diff: {
+            truncated: true,
+            hunks: [{ oldStart: 0, newStart: 1, lines: ["+token=[REDACTED TOKEN]"] }],
+          },
+        },
+        // A malformed diff is dropped, the file kept.
         { path: "old.ts", change: "deleted" },
       ],
     });

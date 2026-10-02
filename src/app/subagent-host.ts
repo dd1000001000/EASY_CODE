@@ -57,6 +57,7 @@ import type { ProjectWorkspace } from "../projects/types.js";
 import { repairInterruptedTurn } from "./thread-recovery.js";
 import { json, renderPromptBundleText, promptBundleText } from "./text.js";
 import { samePath } from "../utils/paths.js";
+import { turnFileText } from "./turn-changes.js";
 import type { ToolSourceFactory } from "../app.js";
 
 /** What SubagentHost needs from its host; live values are forwarded through getters. */
@@ -950,6 +951,7 @@ export class SubagentHost {
     }
     for (const presentation of artifacts.presentations) {
       if (presentation.type !== "file_diff") continue;
+      turnFileText(this.ctx.workspace).record(presentation);
       try {
         this.ctx.terminal.fileDiff(presentation);
       } catch {

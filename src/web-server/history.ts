@@ -6,6 +6,7 @@ import { safeToolDisplayDetails } from "../runtime/tool-display-details.js";
 import { compactionLabel, compactionNoticeKind, type CompactionProgress } from "../ui/compaction.js";
 import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
 import type { FileChangeKind } from "../ui/contracts.js";
+import { parseTurnDiff, safeDiff } from "./turn-diff.js";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -53,7 +54,18 @@ function turnSummary(payload: unknown): WebTurnSummary | undefined {
   const changedFiles = value.changedFiles.slice(0, MAX_SUMMARY_FILES).flatMap((item) => {
     const file = object(item);
     if (typeof file?.path !== "string" || !FILE_CHANGES.has(file.change as FileChangeKind)) return [];
-    return [{ path: safe(file.path), change: file.change as FileChangeKind }];
+    const lines = object(file.lines);
+    const diff = parseTurnDiff(file.diff);
+    const added = count(lines?.added);
+    const removed = count(lines?.removed);
+    return [
+      {
+        path: safe(file.path),
+        change: file.change as FileChangeKind,
+        ...(added !== undefined && removed !== undefined ? { lines: { added, removed } } : {}),
+        ...(diff ? { diff: safeDiff(diff, safe) } : {}),
+      },
+    ];
   });
   return {
     durationMs: Math.max(0, value.durationMs),
