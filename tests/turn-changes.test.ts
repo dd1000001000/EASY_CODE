@@ -52,6 +52,32 @@ describe("files changed by one request", () => {
     assert.equal(files[0]?.absolutePath, path.join(ROOT, "src/new.ts"));
   });
 
+  it("leaves out files in hidden folders and temporary files", () => {
+    const files = turnChangedFiles(
+      [
+        change(".pytest_cache/v/cache/nodeids", "generated"),
+        change(".easy-code-runtime/command-1/payload.json", "generated"),
+        change("src\\.cache\\index.json", "generated"),
+        change(".github/workflows/ci.yml", "update", { beforeHash: "a" }),
+        change("pkg/__pycache__/mod.cpython-312.pyc", "generated"),
+        change("notes.txt.tmp", "generated"),
+        change("src/app.ts.tmp-4821", "generated"),
+        change("src/.app.ts.swp", "generated"),
+        change("README.md~", "generated"),
+        change("docs/~$report.docx", "generated"),
+        change("src/.DS_Store", "generated"),
+        change(".gitignore", "update", { beforeHash: "b" }),
+        change("src/temp.ts", "create"),
+        change("src/tmp/fixture.json", "create"),
+      ],
+      resolve,
+    );
+    assert.deepEqual(
+      files.map(({ path: file }) => file),
+      [".gitignore", "src/temp.ts", "src/tmp/fixture.json"],
+    );
+  });
+
   it("leaves out failed changes, files created and removed again, and paths outside the workspace", () => {
     const files = turnChangedFiles(
       [

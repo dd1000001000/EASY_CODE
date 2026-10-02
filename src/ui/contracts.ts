@@ -100,7 +100,7 @@ export interface TurnChangedFile {
   readonly diff?: TurnFileDiff;
 }
 
-/** What one completed request cost and changed, shown as a single line after it. */
+/** What one completed request cost and changed, shown after it. */
 export interface TurnSummary {
   readonly durationMs: number;
   /** Provider-reported tokens across every model request of the turn; absent when none were reported. */

@@ -4,9 +4,9 @@ import { Chalk } from "chalk";
 
 import { formatTokenCount } from "../../cli/token-count.js";
 import type { Language } from "../../i18n/language.js";
-import type { TurnChangedFile, TurnSummary } from "../contracts.js";
+import type { TurnChangedFile, TurnLineCounts, TurnSummary } from "../contracts.js";
 import { formatDuration } from "../duration.js";
-import { displayWidth, sanitizeTerminalText } from "./layout.js";
+import { displayWidth, sanitizeTerminalText, truncateToWidth } from "./layout.js";
 
 export { formatDuration };
 
@@ -18,6 +18,10 @@ export interface TurnSummaryRenderOptions {
   readonly links: boolean;
 }
 
+/** Files listed under the summary line; the rest are counted. */
+const MAX_FILE_ROWS = 8;
+const FILE_INDENT = "    ";
+
 function hyperlink(label: string, target: string): string {
   return `\u001B]8;;${target}\u0007${label}\u001B]8;;\u0007`;
 }
@@ -27,10 +31,32 @@ function fileLabel(file: TurnChangedFile, zh: boolean): string {
   return file.change === "deleted" ? `${name} ${zh ? "(已删除)" : "(deleted)"}` : name;
 }
 
+/** Keep the end of a path, where the file name is, within `columns`. */
+function keepEnd(value: string, columns: number): string {
+  if (displayWidth(value) <= columns) return value;
+  const characters = Array.from(value);
+  let kept = "";
+  let width = 1;
+  for (let index = characters.length - 1; index >= 0; index -= 1) {
+    const next = displayWidth(characters[index]!);
+    if (width + next > columns) break;
+    kept = characters[index] + kept;
+    width += next;
+  }
+  return `…${kept}`;
+}
+
+function lineCounts(lines: TurnLineCounts, palette: InstanceType<typeof Chalk>): { text: string; width: number } {
+  const added = `+${lines.added}`;
+  const removed = `-${lines.removed}`;
+  return { text: `${palette.green(added)} ${palette.red(removed)}`, width: added.length + 1 + removed.length };
+}
+
 /**
- * The gray line after a completed request: how long it took, the tokens the
- * provider reported, and the files it changed. File names are as many as fit
- * the width, the rest counted; existing files link to themselves.
+ * The gray block after a completed request: one line with how long it took,
+ * the tokens the provider reported and how many files changed, then a row per
+ * file with its added and removed lines when they are known. Rows never wrap;
+ * long paths keep their end. Existing files link to themselves.
  */
 export function renderTurnSummary(summary: Readonly<TurnSummary>, options: TurnSummaryRenderOptions): string {
   const zh = options.language === "zh_cn";
@@ -40,28 +66,36 @@ export function renderTurnSummary(summary: Readonly<TurnSummary>, options: TurnS
     parts.push(`↑ ${formatTokenCount(summary.inputTokens)} ↓ ${formatTokenCount(summary.outputTokens)} tokens`);
   }
   const files = summary.changedFiles;
-  if (files.length > 0)
-    parts.push(zh ? `改动 ${files.length} 个文件` : `${files.length} file${files.length === 1 ? "" : "s"} changed`);
-  const head = `  ${parts.join(" · ")}`;
-  if (files.length === 0) return palette.gray(head);
+  if (files.length === 0) return palette.gray(`  ${parts.join(" · ")}`);
 
-  // Plain widths decide how many names fit; links are added afterwards, as they take no columns.
-  const separator = zh ? "、" : ", ";
-  let used = displayWidth(head) + displayWidth(zh ? "：" : ": ");
-  const shown: TurnChangedFile[] = [];
-  for (const [index, file] of files.entries()) {
-    const remaining = files.length - index - 1;
-    const more = remaining > 0 ? displayWidth(`${separator}${zh ? `等 ${remaining} 个` : `+${remaining} more`}`) : 0;
-    const width = (shown.length > 0 ? displayWidth(separator) : 0) + displayWidth(fileLabel(file, zh));
-    if (shown.length > 0 && used + width + more > options.columns) break;
-    shown.push(file);
-    used += width;
-  }
-  const names = shown.map((file) => {
-    const label = fileLabel(file, zh);
-    return options.links && file.change !== "deleted" ? hyperlink(label, pathToFileURL(file.absolutePath).href) : label;
+  parts.push(zh ? `改动 ${files.length} 个文件` : `${files.length} file${files.length === 1 ? "" : "s"} changed`);
+  const counted = files.flatMap((file) => (file.lines ? [file.lines] : []));
+  const total = counted.reduce(
+    (sum, lines) => ({ added: sum.added + lines.added, removed: sum.removed + lines.removed }),
+    {
+      added: 0,
+      removed: 0,
+    },
+  );
+  const head =
+    palette.gray(`  ${parts.join(" · ")}`) + (counted.length > 0 ? ` ${lineCounts(total, palette).text}` : "");
+
+  const shown = files.length > MAX_FILE_ROWS ? files.slice(0, MAX_FILE_ROWS - 1) : files;
+  const counts = shown.map((file) => (file.lines ? lineCounts(file.lines, palette) : undefined));
+  const countWidth = Math.max(0, ...counts.map((count) => count?.width ?? 0));
+  // Names share one column so the counts line up; a name too wide for the row keeps its end.
+  const nameWidth = Math.max(1, options.columns - FILE_INDENT.length - (countWidth > 0 ? countWidth + 2 : 0));
+  const labels = shown.map((file) => keepEnd(fileLabel(file, zh), nameWidth));
+  const column = Math.min(nameWidth, Math.max(...labels.map(displayWidth)));
+  const rows = shown.map((file, index) => {
+    const label = labels[index]!;
+    const name =
+      options.links && file.change !== "deleted" ? hyperlink(label, pathToFileURL(file.absolutePath).href) : label;
+    const count = counts[index];
+    if (!count) return palette.gray(`${FILE_INDENT}${name}`);
+    return `${palette.gray(`${FILE_INDENT}${name}${" ".repeat(column - displayWidth(label) + 2)}`)}${count.text}`;
   });
   const hidden = files.length - shown.length;
-  const tail = hidden > 0 ? `${separator}${zh ? `等 ${hidden} 个` : `+${hidden} more`}` : "";
-  return palette.gray(`${head}${zh ? "：" : ": "}${names.join(separator)}${tail}`);
+  if (hidden > 0) rows.push(palette.gray(`${FILE_INDENT}${zh ? `等 ${hidden} 个文件` : `+${hidden} more`}`));
+  return [truncateToWidth(head, options.columns), ...rows].join("\n");
 }

@@ -15,6 +15,22 @@ function normalizePath(path: string): string {
   return path.replace(/\\/gu, "/").replace(/^\.\/+/u, "");
 }
 
+/** Editor swap and backup files, atomic-write leftovers, Office locks and OS folder metadata. */
+const TEMPORARY_FILE =
+  /^(?:.*\.(?:tmp|temp)(?:-\w+)?|.*\.sw[a-p]|.*~|~\$.*|\.#.*|#.*#|\.ds_store|thumbs\.db|desktop\.ini)$/iu;
+
+/**
+ * Files the summary leaves out: anything under a folder whose name starts with
+ * a dot (tool caches, VCS and editor state, runtime scratch) or `__pycache__`,
+ * and temporary files. The workspace change set still records them; only the
+ * summary shown to the user skips them.
+ */
+function hiddenFromSummary(path: string): boolean {
+  const segments = normalizePath(path).split("/");
+  const name = segments.pop() ?? "";
+  return segments.some((segment) => segment.startsWith(".") || segment === "__pycache__") || TEMPORARY_FILE.test(name);
+}
+
 export interface TurnFileChange {
   readonly lines: TurnLineCounts;
   /** Every hunk, uncapped; the summary trims it. */
@@ -113,7 +129,8 @@ function deletesFile(change: Readonly<FileChangeRecord>): boolean {
  * The files one request left changed, each once, in first-touched order: new
  * when the request's first change created it, deleted when its last change
  * removed it. A file both created and removed within the request is left out,
- * as is one whose path no longer resolves inside the workspace. Line counts
+ * as are hidden-folder and temporary files and any whose path no longer
+ * resolves inside the workspace. Line counts
  * and diffs come from the file tools' text; a file a command also changed has
  * neither, since its text was not seen.
  */
@@ -127,6 +144,7 @@ export function turnChangedFiles(
   const byCommand = new Set<string>();
   for (const change of changes) {
     if (change.status === "failed" || change.status === "policy_violation" || change.status === "conflict") continue;
+    if (hiddenFromSummary(change.path)) continue;
     if (!first.has(change.path)) first.set(change.path, change);
     last.set(change.path, change);
     if (change.source === "command") byCommand.add(change.path);

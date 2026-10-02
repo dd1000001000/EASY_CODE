@@ -630,10 +630,10 @@ describe("Ink interaction", () => {
         durationMs: 72_000,
         inputTokens: 1_500,
         outputTokens: 300,
-        changedFiles: [{ path: "src/app.ts", absolutePath, change: "modified" }],
+        changedFiles: [{ path: "src/app.ts", absolutePath, change: "modified", lines: { added: 5, removed: 2 } }],
       });
       await wait(120);
-      assert.match(text(), /took 1m 12s · ↑ 1\.5k ↓ 300 tokens · 1 file changed: src\/app\.ts/u);
+      assert.match(text(), /took 1m 12s · ↑ 1\.5k ↓ 300 tokens · 1 file changed \+5 -2\n {4}src\/app\.ts {2}\+5 -2/u);
       assert.ok(
         raw().includes(`\u001B]8;;${pathToFileURL(absolutePath).href}\u0007src/app.ts\u001B]8;;\u0007`),
         "the file name links to its absolute file URL",

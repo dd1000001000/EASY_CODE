@@ -311,7 +311,7 @@ export class Terminal implements AppInteractionPort {
     this.write(`${body}\n\n`);
   }
 
-  /** One plain line after each request; line mode has no hyperlinks. */
+  /** The summary after each request; line mode has no hyperlinks. */
   turnCompleted(summary: Readonly<TurnSummary>): void {
     const columns = Number((this.output as NodeJS.WriteStream).columns) || 120;
     this.write(
