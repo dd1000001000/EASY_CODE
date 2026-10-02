@@ -307,8 +307,8 @@
       "bytes": 534
     },
     "system/common-tools.md": {
-      "sha256": "sha256:9a27d2ee07723324671f18b24eaad1fc848fabffec9baa3f6e0bf185cc758036",
-      "bytes": 2038
+      "sha256": "sha256:bb661a9ef0467daf4e76a893ec809a7d2efe07e786672bf8fa3fe7dcac202a4f",
+      "bytes": 2129
     },
     "system/environment.md": {
       "sha256": "sha256:0400369612ec6aeb15e374b51fa1f22179750108ad352156f93b1f7a17e5e9a5",
@@ -411,8 +411,8 @@
       "bytes": 647
     },
     "tools/read_memory.json": {
-      "sha256": "sha256:afed8efce2dd378df121fee9ed81ade1e5d8b0a1dba2c97ab57a927d4fa2b5a6",
-      "bytes": 1103
+      "sha256": "sha256:8a35fb589cdb10dbce836aba100098ae01481a6ad7bfaa052958ba7ec6dc1fd3",
+      "bytes": 1273
     },
     "tools/read_skill.json": {
       "sha256": "sha256:14c298c66dcd2ff13294c61e430642a2a68095db6196f50f0b558c2f06a10b32",
@@ -605,7 +605,7 @@
     "read_memory": {
       "path": "tools/read_memory.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:afed8efce2dd378df121fee9ed81ade1e5d8b0a1dba2c97ab57a927d4fa2b5a6"
+      "contentHash": "sha256:8a35fb589cdb10dbce836aba100098ae01481a6ad7bfaa052958ba7ec6dc1fd3"
     },
     "read_skill": {
       "path": "tools/read_skill.json",
@@ -703,5 +703,5 @@
       "contentHash": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049"
     }
   },
-  "bundleHash": "sha256:b2481335252ebfbe3d371c94a2a726074aa9825812c445a3656e04b51370b54b"
+  "bundleHash": "sha256:57284c4168ce828d0a967f07f4967d7ae8a87338ea4134641ff9e8644342ee78"
 }

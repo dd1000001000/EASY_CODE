@@ -14,6 +14,7 @@ import {
   ElTabPane,
   ElTabs,
   ElTag,
+  type MessageBoxInputData,
 } from "element-plus";
 import { Refresh } from "@element-plus/icons-vue";
 import type { WebEntry, WebDecision } from "../../web-contracts.js";
@@ -95,14 +96,19 @@ const skills = computed(() => {
     }
   return sections;
 });
-const memoryRows = computed(() => {
-  const value = objectData.value;
+// A listing replaces the rows; a single record (one ID, or the result of an
+// edit or forget) replaces its own row so the rest of the listing stays.
+const memoryRows = ref<Record<string, unknown>[]>([]);
+watch(objectData, (value) => {
   if (Array.isArray(value.global) || Array.isArray(value.project))
-    return [
+    memoryRows.value = [
       ...(Array.isArray(value.global) ? value.global : []),
       ...(Array.isArray(value.project) ? value.project : []),
     ] as Record<string, unknown>[];
-  return value.id ? [value] : [];
+  else if (typeof value.id === "string")
+    memoryRows.value = memoryRows.value.some((row) => row.id === value.id)
+      ? memoryRows.value.map((row) => (row.id === value.id ? value : row))
+      : [value];
 });
 const grantRows = computed(() =>
   Array.isArray(objectData.value.threadExecutableGrants)
@@ -159,7 +165,41 @@ async function revoke(index: number, prefix: string): Promise<void> {
 function memoryQuery(): void {
   if (memoryTab.value === "short") {
     if (validMemoryLimit.value) execute(`/memory short ${memoryLimit.value}`);
-  } else execute(`/memory long ${memoryScope.value}`);
+  } else {
+    memoryRows.value = [];
+    execute(`/memory long ${memoryScope.value}`);
+  }
+}
+const longTermMemory = computed(() => props.command.name === "memory" && memoryTab.value === "long");
+function memoryActive(memory: Record<string, unknown>): boolean {
+  return memory.status === "active" || memory.status === "needs_verification";
+}
+async function editMemory(memory: Record<string, unknown>): Promise<void> {
+  try {
+    const { value } = (await ElMessageBox.prompt("", t("ui.editMemory"), {
+      inputType: "textarea",
+      inputValue: String(memory.content ?? ""),
+      inputValidator: (text) => text.trim().length > 0,
+      confirmButtonText: t("ui.save"),
+      cancelButtonText: t("ui.cancel"),
+    })) as MessageBoxInputData;
+    // A slash command is one line; the memory keeps one sentence anyway.
+    execute(`/memory edit ${String(memory.id)} ${value.replace(/\s+/gu, " ").trim()}`);
+  } catch {
+    /* Edit dismissed. */
+  }
+}
+async function forgetMemory(memory: Record<string, unknown>): Promise<void> {
+  try {
+    await ElMessageBox.confirm(t("ui.forgetMemoryPrompt"), t("ui.forgetMemory"), {
+      type: "warning",
+      confirmButtonText: t("ui.forgetMemory"),
+      cancelButtonText: t("ui.cancel"),
+    });
+    execute(`/memory forget ${String(memory.id)}`);
+  } catch {
+    /* Confirmation dismissed. */
+  }
 }
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
@@ -255,7 +295,25 @@ useOutsideDismiss(panelRoot, close);
                 ><ElTag size="small" :type="memory.status === 'active' ? 'success' : 'info'">{{ memory.status }}</ElTag>
               </div>
               <p>{{ memory.content }}</p>
-              <small>{{ memory.updatedAt }}</small>
+              <div class="web-command-record-footer">
+                <small>{{ memory.updatedAt }}</small
+                ><span
+                  ><ElButton
+                    text
+                    size="small"
+                    :disabled="running || memory.status === 'superseded'"
+                    @click="editMemory(memory)"
+                    >{{ t("ui.edit") }}</ElButton
+                  ><ElButton
+                    text
+                    size="small"
+                    type="danger"
+                    :disabled="running || !memoryActive(memory)"
+                    @click="forgetMemory(memory)"
+                    >{{ t("ui.forgetMemory") }}</ElButton
+                  ></span
+                >
+              </div>
             </div>
           </div>
         </template>
@@ -336,12 +394,13 @@ useOutsideDismiss(panelRoot, close);
           <p v-if="!skills[skillsTab]?.items.length" class="web-command-note">{{ t("ui.noSkills") }}</p></template
         >
         <template v-if="!['mcp', 'tools', 'skills', 'help'].includes(command.name)">
-          <ElDescriptions v-if="plainFields.length" :column="1" border size="small"
+          <!-- Long-term memory records are shown above; repeating their raw fields adds nothing. -->
+          <ElDescriptions v-if="plainFields.length && !longTermMemory" :column="1" border size="small"
             ><ElDescriptionsItem v-for="[key, value] in plainFields" :key="key" :label="key">{{
               formatValue(value)
             }}</ElDescriptionsItem></ElDescriptions
           >
-          <div v-for="[key, value] in nestedFields" :key="key" class="web-command-nested">
+          <div v-for="[key, value] in longTermMemory ? [] : nestedFields" :key="key" class="web-command-nested">
             <strong>{{ key }}</strong>
             <pre>{{ formatValue(value) }}</pre>
           </div>

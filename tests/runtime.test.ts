@@ -470,13 +470,25 @@ describe("AgentRuntime", () => {
     assert.equal(traces[0]?.appliedDecision, "CHALLENGE");
     assert.equal(events.filter((event) => event.type === "decision.delivery.challenge_requested").length, 1);
   });
-  it("records a selected long-term memory only after a successful model request", async () => {
+  it("records a selected long-term memory only after a successful model request, and only a confident match", async () => {
     const remembered = {
       id: "memory_12345678-1234-4234-8234-123456789abc",
       workspaceId: "memory_global",
       scope: "global",
       category: "preference",
       content: "Always answer in concise Chinese.",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      countsAsUse: true,
+    };
+    // Delivered alongside, but a weak match does not count as using it.
+    const incidental = {
+      id: "memory_12345678-1234-4234-8234-123456789abd",
+      workspaceId: "memory_global",
+      scope: "global",
+      category: "convention",
+      content: "Release notes are written in British English.",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -496,7 +508,7 @@ describe("AgentRuntime", () => {
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
-      searchMemories: async () => [remembered],
+      searchMemories: async () => [remembered, incidental],
       recordMemoryRecall: (threadId, turnId, ids) => recalls.push({ threadId, turnId, ids }),
       appendEvent: async () => {},
       requestApproval: async () => false,

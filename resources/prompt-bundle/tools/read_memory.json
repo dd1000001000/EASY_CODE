@@ -8,5 +8,5 @@
     "scope": "all (default), global user memory, or current-project memory. The model cannot select another project.",
     "includeInactive": "Include superseded and expired audit-history entries. Leave false for ordinary work."
   },
-  "guidance": "Use read_memory for global user and current-project long-term memory. Search before revise, forget, or move so write_memory receives an ID returned in the same turn. Each result names its scope. Do not treat a remembered fact as proof of the current checkout; inspect current files or run validation when freshness matters. Use search_context and recall_context for current-thread history."
+  "guidance": "Use read_memory for global user and current-project long-term memory. Search before revise, forget, or move so write_memory receives an ID returned in the same turn. Each result names its scope. Do not treat a remembered fact as proof of the current checkout; inspect current files or run validation when freshness matters. A memory with status needs_verification contradicts another memory: before relying on it, check the current files or the user, then revise it to confirm it or forget it. Use search_context and recall_context for current-thread history."
 }

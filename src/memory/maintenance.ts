@@ -12,6 +12,8 @@ import { GLOBAL_MEMORY_WORKSPACE_ID, type MemoryManager, projectMemoryIdFromRoot
 
 const MAX_CANDIDATES = 6;
 const IDLE_DELAY_MS = 2 * 60 * 1000;
+/** A job still marked running after this long belongs to a process that stopped. */
+const STALE_RUNNING_MS = 15 * 60 * 1000;
 
 const consolidationSchema = z
   .object({
@@ -24,7 +26,7 @@ const consolidationSchema = z
               .int()
               .min(0)
               .max(MAX_CANDIDATES - 1),
-            action: z.enum(["merge", "skip"]),
+            action: z.enum(["merge", "conflict", "skip"]),
             memoryId: z.string().optional(),
             content: z.string().min(8).max(16_000).optional(),
           })
@@ -45,6 +47,7 @@ interface CandidateMemory {
   scope: "project" | "global";
   category: "preference" | "convention" | "architecture" | "decision" | "environment";
   content: string;
+  created_at: string;
 }
 
 function parseJsonResponse(text: string): unknown {
@@ -68,48 +71,53 @@ export class MemoryMaintenance {
     this.projectId = projectId ?? projectMemoryIdFromRoot(workspaceRoot);
   }
 
-  recover(threadId: string): void {
+  /** Requeue jobs left running by a process that stopped; a live process claims a job just before working on it. */
+  recover(now = new Date()): void {
     this.storage.db
       .prepare(
-        "UPDATE memory_maintenance_jobs SET status = 'queued', updated_at = ? WHERE thread_id = ? AND status = 'running'",
+        "UPDATE memory_maintenance_jobs SET status = 'queued', updated_at = ? WHERE status = 'running' AND updated_at < ?",
       )
-      .run(new Date().toISOString(), threadId);
+      .run(now.toISOString(), new Date(now.getTime() - STALE_RUNNING_MS).toISOString());
   }
 
-  enqueueCompleted(threadId: string, now = new Date()): number {
+  /** Queue every finished turn that wrote memory for this project, whichever conversation it belongs to. */
+  enqueueCompleted(now = new Date()): number {
     const before = new Date(now.getTime() - IDLE_DELAY_MS).toISOString();
     return this.storage.db
       .prepare(
         `INSERT OR IGNORE INTO memory_maintenance_jobs(turn_id, thread_id, status, updated_at)
-       SELECT id, thread_id, 'queued', ? FROM turns
-       WHERE thread_id = ? AND status = 'completed' AND result_reason IN ('success', 'planned')
-         AND completed_at <= ?
-         AND EXISTS (SELECT 1 FROM memories m WHERE m.source_turn_id = turns.id
-           AND m.source_thread_id = turns.thread_id AND m.status = 'active')
-         AND NOT EXISTS (SELECT 1 FROM memory_maintenance_jobs j WHERE j.turn_id = turns.id)
-       ORDER BY completed_at DESC LIMIT 24`,
+       SELECT DISTINCT t.id, t.thread_id, 'queued', ? FROM memories m
+         JOIN turns t ON t.id = m.source_turn_id AND t.thread_id = m.source_thread_id
+       WHERE m.workspace_id IN (?, ?) AND m.status = 'active'
+         AND t.status = 'completed' AND t.result_reason IN ('success', 'planned') AND t.completed_at <= ?
+         AND NOT EXISTS (SELECT 1 FROM memory_maintenance_jobs j WHERE j.turn_id = t.id)
+       ORDER BY t.completed_at DESC LIMIT 24`,
       )
-      .run(now.toISOString(), threadId, before).changes;
+      .run(now.toISOString(), this.projectId, GLOBAL_MEMORY_WORKSPACE_ID, before).changes;
   }
 
-  private next(threadId: string): JobRow | undefined {
+  /** The oldest queued job whose memories all belong to this project or to global memory. */
+  private next(): JobRow | undefined {
     return this.storage.db
-      .prepare<[string], JobRow>(
+      .prepare<[string, string], JobRow>(
         `SELECT j.turn_id, j.thread_id, t.result_reason
        FROM memory_maintenance_jobs j JOIN turns t ON t.id = j.turn_id
-       WHERE j.thread_id = ? AND j.status = 'queued' ORDER BY t.completed_at LIMIT 1`,
+       WHERE j.status = 'queued'
+         AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.source_turn_id = j.turn_id
+           AND m.source_thread_id = j.thread_id AND m.workspace_id NOT IN (?, ?))
+       ORDER BY t.completed_at LIMIT 1`,
       )
-      .get(threadId);
+      .get(this.projectId, GLOBAL_MEMORY_WORKSPACE_ID);
   }
 
-  hasPending(threadId: string): boolean {
-    return this.next(threadId) !== undefined;
+  hasPending(): boolean {
+    return this.next() !== undefined;
   }
 
   private candidates(threadId: string, turnId: string): CandidateMemory[] {
     return this.storage.db
       .prepare<[string, string, string, string, number], CandidateMemory>(
-        `SELECT id, scope, category, content FROM memories
+        `SELECT id, scope, category, content, created_at FROM memories
        WHERE source_thread_id = ? AND source_turn_id = ? AND status = 'active'
          AND workspace_id IN (?, ?)
        ORDER BY id LIMIT ?`,
@@ -148,23 +156,20 @@ export class MemoryMaintenance {
     return parseJsonResponse(response.message.content ?? "");
   }
 
-  async processNext(
-    threadId: string,
-    state: Readonly<SessionState>,
-    provider: ModelProvider,
-    signal?: AbortSignal,
-  ): Promise<boolean> {
-    if (state.threadId !== threadId || state.activeTurnId || signal?.aborted) return false;
-    const job = this.next(threadId);
+  async processNext(state: Readonly<SessionState>, provider: ModelProvider, signal?: AbortSignal): Promise<boolean> {
+    if (state.activeTurnId || signal?.aborted) return false;
+    const job = this.next();
     if (!job) return false;
     const now = new Date().toISOString();
-    this.storage.db
+    // Another process open on this project may have claimed the job first.
+    const claimed = this.storage.db
       .prepare(
         "UPDATE memory_maintenance_jobs SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE turn_id = ? AND status = 'queued'",
       )
-      .run(now, job.turn_id);
+      .run(now, job.turn_id).changes;
+    if (!claimed) return true;
     try {
-      const candidates = this.candidates(threadId, job.turn_id);
+      const candidates = this.candidates(job.thread_id, job.turn_id);
       if (signal?.aborted) throw new Error("Memory maintenance interrupted");
       if (!candidates.length) {
         this.complete(job.turn_id);
@@ -183,7 +188,12 @@ export class MemoryMaintenance {
               excludeMemoryId: candidate.id,
             },
           });
-          return found.map((item) => ({ id: item.id, category: item.category, content: item.content }));
+          return found.map((item) => ({
+            id: item.id,
+            category: item.category,
+            content: item.content,
+            createdAt: item.createdAt,
+          }));
         }),
       );
       if (matches.every((items) => items.length === 0)) {
@@ -195,10 +205,18 @@ export class MemoryMaintenance {
           job.turn_id,
           provider,
           "Consolidate only memories already created by the agent's write_memory tool. Never create a new memory or change its scope. " +
-            'Return only JSON {"decisions":[{"index":0,"action":"merge|skip","memoryId":"matching existing ID","content":"concise merged statement"}]}. ' +
-            "Merge only equivalent or compatible statements and preserve both qualifications; skip conflicts. " +
-            "Identify the older matching record to revise and the new candidate to expire. Each index appears at most once.",
-          { candidates: candidates.map((candidate, index) => ({ index, ...candidate, matches: matches[index] })) },
+            'Return only JSON {"decisions":[{"index":0,"action":"merge|conflict|skip","memoryId":"matching existing ID","content":"concise merged statement"}]}. ' +
+            "Merge only equivalent or compatible statements and preserve both qualifications: name the matching record to revise and give the merged content; the candidate expires. " +
+            "Use conflict, naming the matching record, when the candidate and that record cannot both be true; the older of the two is flagged for verification. " +
+            "Skip anything else. Each index appears at most once.",
+          {
+            candidates: candidates.map(({ created_at: createdAt, ...candidate }, index) => ({
+              index,
+              ...candidate,
+              createdAt,
+              matches: matches[index],
+            })),
+          },
           signal,
         ),
       );
@@ -210,19 +228,26 @@ export class MemoryMaintenance {
         if (seen.has(decision.index)) continue;
         seen.add(decision.index);
         const candidate = candidates[decision.index];
-        if (
-          !candidate ||
-          decision.action !== "merge" ||
-          !decision.memoryId ||
-          !decision.content ||
-          !matches[decision.index]?.some((item) => item.id === decision.memoryId) ||
-          decision.content.length > this.manager.limits.memoryContentMaxChars
-        )
+        const match = matches[decision.index]?.find((item) => item.id === decision.memoryId);
+        if (!candidate || !match || decision.action === "skip") continue;
+        if (decision.action === "conflict") {
+          // The newer statement is the likelier one; the older is offered as needing verification.
+          const older = match.createdAt < candidate.created_at ? match.id : candidate.id;
+          if (mutations.some((mutation) => "memoryId" in mutation && mutation.memoryId === older)) continue;
+          if (mutations.length + 1 > MAX_MEMORY_MUTATIONS_PER_TURN) break;
+          mutations.push({
+            action: "flag",
+            memoryId: older,
+            scope: candidate.scope,
+            reason: "Contradicted by another memory; verify before relying on it",
+          });
           continue;
+        }
+        if (!decision.content || decision.content.length > this.manager.limits.memoryContentMaxChars) continue;
         if (mutations.length + 2 > MAX_MEMORY_MUTATIONS_PER_TURN) break;
         mutations.push({
           action: "revise",
-          memoryId: decision.memoryId,
+          memoryId: match.id,
           scope: candidate.scope,
           category: candidate.category,
           content: decision.content,
@@ -240,7 +265,7 @@ export class MemoryMaintenance {
         {
           workspaceId: this.projectId,
           workspaceRoot: state.workspaceRoot,
-          threadId,
+          threadId: job.thread_id,
           turnId: job.turn_id,
           outcome: job.result_reason,
           mutations,

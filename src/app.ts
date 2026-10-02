@@ -589,14 +589,14 @@ export class EasyCodeApp {
           this.workspace.root,
           this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root),
         );
-        maintenance.recover(this.state.threadId);
+        maintenance.recover();
         this.memoryManager.expireDueMemories(this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root));
         this.memoryManager.expireDueMemories(GLOBAL_MEMORY_WORKSPACE_ID);
-        maintenance.enqueueCompleted(this.state.threadId);
-        if (!maintenance.hasPending(this.state.threadId)) return;
+        maintenance.enqueueCompleted();
+        if (!maintenance.hasPending()) return;
         this.modelSelection.requireProviderApiKey(this.state.provider);
         const provider = createProvider(this.effectiveConfig(), this.state.provider, this.state.model);
-        await maintenance.processNext(this.state.threadId, this.state, provider, controller.signal);
+        await maintenance.processNext(this.state, provider, controller.signal);
       } catch {
         // Idle maintenance must never interrupt input or the main agent.
       }

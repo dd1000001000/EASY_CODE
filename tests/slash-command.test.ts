@@ -113,7 +113,9 @@ describe("parseSlashCommand", () => {
     assert.match(HELP_TEXT, /\/model/u);
     assert.match(HELP_TEXT, /qwen\|deepseek\|kimi\|glm\|glm-coding-plan/u);
     assert.match(HELP_TEXT, /\/memory short \[limit\]/u);
-    assert.doesNotMatch(HELP_TEXT, /\/memory (?:move|forget)/u);
+    assert.match(HELP_TEXT, /\/memory edit <id> <content>/u);
+    assert.match(HELP_TEXT, /\/memory forget <id>/u);
+    assert.doesNotMatch(HELP_TEXT, /\/memory move/u);
     assert.match(HELP_TEXT, /\/usage/u);
     assert.match(HELP_TEXT, /\/approval/u);
     assert.match(HELP_TEXT, /full host access/u);

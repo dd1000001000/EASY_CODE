@@ -15,6 +15,6 @@ export const WEB_COMMAND_DESCRIPTIONS: Partial<Record<SlashCommandName, string>>
   context: "Inspect the context window and compaction budget.",
   compact: "Deeply compact the current conversation while it is idle.",
   usage: "Review provider-reported token usage.",
-  memory: "Inspect short-term and scoped long-term memory.",
+  memory: "Inspect short-term memory; inspect, edit or forget long-term memory.",
   help: "Browse available commands and their syntax.",
 };

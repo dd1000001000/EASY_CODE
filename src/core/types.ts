@@ -444,6 +444,13 @@ export type MemoryMutationRequest =
       memoryId: string;
       scope: LongTermMemoryScope;
       reason: string;
+    }
+  | {
+      /** Background consolidation only: another memory contradicts this one, so it needs verification. */
+      action: "flag";
+      memoryId: string;
+      scope?: LongTermMemoryScope;
+      reason: string;
     };
 
 export interface FileDiffPresentation {
@@ -987,6 +994,8 @@ export interface LongTermMemory {
   evidence?: string;
   createdAt: string;
   updatedAt: string;
+  /** Set by retrieval when delivering this memory to the model counts as using it, which defers its expiry. */
+  countsAsUse?: boolean;
 }
 
 export interface AgentRunResult {

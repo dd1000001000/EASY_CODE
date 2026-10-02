@@ -4,18 +4,18 @@ interface SchemaSection {
   readonly sql: string;
 }
 
-const CURRENT_SCHEMA_VERSION = 7;
-const CURRENT_SCHEMA_ID = "easy-code-0.1.0-thread-coordination";
+const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_ID = "easy-code-0.1.0-memory-search-terms";
 
 const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   {
     sql: `
       CREATE TABLE easy_code_schema (
-        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 7),
+        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 8),
         schema_id TEXT NOT NULL UNIQUE
       );
       INSERT INTO easy_code_schema(schema_version, schema_id)
-      VALUES (7, 'easy-code-0.1.0-thread-coordination');
+      VALUES (8, 'easy-code-0.1.0-memory-search-terms');
 
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
@@ -133,6 +133,7 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
         category TEXT NOT NULL,
         content TEXT NOT NULL,
         normalized_content TEXT NOT NULL,
+        search_text TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active',
         evidence TEXT,
         source_thread_id TEXT,
@@ -148,7 +149,7 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
         ON memories(workspace_id, status, updated_at DESC);
 
       CREATE VIRTUAL TABLE memories_fts USING fts5(
-        content,
+        search_text,
         category,
         content='memories',
         content_rowid='rowid',
@@ -156,20 +157,20 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
       );
 
       CREATE TRIGGER memories_fts_insert AFTER INSERT ON memories BEGIN
-        INSERT INTO memories_fts(rowid, content, category)
-        VALUES (new.rowid, new.content, new.category);
+        INSERT INTO memories_fts(rowid, search_text, category)
+        VALUES (new.rowid, new.search_text, new.category);
       END;
 
       CREATE TRIGGER memories_fts_delete AFTER DELETE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, content, category)
-        VALUES ('delete', old.rowid, old.content, old.category);
+        INSERT INTO memories_fts(memories_fts, rowid, search_text, category)
+        VALUES ('delete', old.rowid, old.search_text, old.category);
       END;
 
-      CREATE TRIGGER memories_fts_update AFTER UPDATE OF content, category ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, content, category)
-        VALUES ('delete', old.rowid, old.content, old.category);
-        INSERT INTO memories_fts(rowid, content, category)
-        VALUES (new.rowid, new.content, new.category);
+      CREATE TRIGGER memories_fts_update AFTER UPDATE OF search_text, category ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, search_text, category)
+        VALUES ('delete', old.rowid, old.search_text, old.category);
+        INSERT INTO memories_fts(rowid, search_text, category)
+        VALUES (new.rowid, new.search_text, new.category);
       END;
 
       CREATE TABLE tool_audit (

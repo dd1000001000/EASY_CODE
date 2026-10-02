@@ -35,7 +35,6 @@ function context(root: string, manager?: MemoryManager, mode: ToolContext["mode"
               ? [exact]
               : manager.searchHybrid(workspaceId, query, {
                   workspaceRoot: root,
-                  readOnly: true,
                   limit: 20,
                 });
           },

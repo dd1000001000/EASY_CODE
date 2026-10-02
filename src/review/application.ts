@@ -544,7 +544,6 @@ function reviewerToolContext(run: ReviewerRun): ToolContext {
     searchProjectMemory: (query, options) =>
       deps.memory.searchScoped(projectMemoryId, query, {
         workspaceRoot: root,
-        readOnly: true,
         limit: options?.limit ?? deps.limits.memorySearchLimit,
         includeInactive: options?.includeInactive,
         scope: options?.scope,

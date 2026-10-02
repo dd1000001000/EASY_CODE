@@ -332,6 +332,12 @@
 .web-command-record .el-button {
   margin-left: 0;
 }
+.web-command-record-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .web-command-record > .el-button {
   margin-top: 8px;
 }

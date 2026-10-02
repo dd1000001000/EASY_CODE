@@ -18,8 +18,6 @@ export interface RuntimeContextScope {
   readonly workspaceRoot: string;
   /** Prepended to memory and history queries; a child uses its task title and description. */
   readonly queryPrefix?: string;
-  /** A child reads project memory without recording use or changing it. */
-  readonly readOnlyMemory?: boolean;
   /** The thread whose archive owns an evidence id. */
   readonly evidenceOwner: (state: Readonly<SessionState>, id: string) => string;
 }
@@ -40,7 +38,6 @@ export function runtimeContextDependencies(
         workspaceRoot: scope.workspaceRoot,
         limit: options?.limit ?? limits.memorySearchLimit,
         includeInactive: options?.includeInactive,
-        ...(scope.readOnlyMemory ? { readOnly: true } : {}),
         scope: options?.scope,
         includeGlobalPreferences: options === undefined,
       }),

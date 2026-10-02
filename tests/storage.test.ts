@@ -218,10 +218,10 @@ describe("storage", () => {
           )
           .get();
         assert.deepEqual(identity, {
-          schema_version: 7,
-          schema_id: "easy-code-0.1.0-thread-coordination",
+          schema_version: 8,
+          schema_id: "easy-code-0.1.0-memory-search-terms",
         });
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 7);
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 8);
       } finally {
         reopened.close();
       }

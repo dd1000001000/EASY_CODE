@@ -163,6 +163,50 @@ describe("global and project long-term memory", () => {
       const selected = selectMemoryContext({ state, memories: found, evidence: [], tokenBudget: 1000 });
       assert.equal(selected.memories.length, 1);
       assert.equal(selected.memories[0]?.scope, "global");
+      // A standing preference applies to every request, so delivering it counts as use.
+      assert.equal(selected.memories[0]?.countsAsUse, true);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("picks standing preferences by when they were stated, not by when they were last delivered", async () => {
+    const f = fixture();
+    try {
+      const contents = [
+        "The user prefers replies in Chinese.",
+        "The user prefers short commit messages.",
+        "The user prefers tabs over spaces in shell scripts.",
+        "The user prefers dark terminal themes.",
+      ];
+      const { memoryIds } = f.manager.applyModelMutations({
+        workspaceRoot: f.a,
+        threadId: "thread_alpha",
+        turnId: "turn_global",
+        outcome: "success",
+        mutations: contents.map((content) => ({
+          action: "remember" as const,
+          scope: "global" as const,
+          category: "preference" as const,
+          content,
+          reason: "Explicit user preference.",
+        })),
+      });
+      memoryIds.forEach((id, index) =>
+        f.storage.db
+          .prepare("UPDATE memories SET updated_at = ? WHERE id = ?")
+          .run(new Date(Date.UTC(2026, 0, index + 1)).toISOString(), id),
+      );
+      // Delivering the oldest one again must not keep it ahead of newer preferences.
+      f.manager.recordRecall("thread_alpha", "turn_later", [memoryIds[0]!]);
+      const found = await f.manager.searchScoped(projectMemoryIdFromRoot(f.a), "zzz", {
+        workspaceRoot: f.a,
+        includeGlobalPreferences: true,
+      });
+      assert.deepEqual(
+        found.map((memory) => memory.content),
+        [contents[3], contents[2], contents[1]],
+      );
     } finally {
       f.dispose();
     }

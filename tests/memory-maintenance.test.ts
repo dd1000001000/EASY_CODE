@@ -36,10 +36,11 @@ function fixture(userInput = "Inspect the project", limits: Readonly<RuntimeLimi
         { action: "remember", scope, category: "convention", content, reason: "Agent-selected durable memory" },
       ],
     }).memoryIds[0]!;
-  const enqueue = () => maintenance.enqueueCompleted(state.threadId, new Date(Date.now() + 3 * 60_000));
+  const enqueue = () => maintenance.enqueueCompleted(new Date(Date.now() + 3 * 60_000));
   return {
     root,
     storage,
+    store,
     state,
     turnId,
     manager,
@@ -75,7 +76,7 @@ describe("idle memory maintenance", () => {
     try {
       const provider = model();
       assert.equal(f.enqueue(), 0);
-      assert.equal(await f.maintenance.processNext(f.state.threadId, f.state, provider), false);
+      assert.equal(await f.maintenance.processNext(f.state, provider), false);
       assert.equal(provider.calls, 0);
       assert.equal(f.manager.list(GLOBAL_MEMORY_WORKSPACE_ID).length, 0);
     } finally {
@@ -89,7 +90,7 @@ describe("idle memory maintenance", () => {
       const id = f.write("Use concise explanations across projects.", f.turnId, "global");
       const provider = model();
       assert.equal(f.enqueue(), 1);
-      assert.equal(await f.maintenance.processNext(f.state.threadId, f.state, provider), true);
+      assert.equal(await f.maintenance.processNext(f.state, provider), true);
       assert.equal(provider.calls, 0);
       assert.equal(f.manager.get(GLOBAL_MEMORY_WORKSPACE_ID, id)?.status, "active");
       assert.deepEqual(
@@ -129,7 +130,7 @@ describe("idle memory maintenance", () => {
         }),
       );
       f.enqueue();
-      assert.equal(await f.maintenance.processNext(f.state.threadId, f.state, provider), true);
+      assert.equal(await f.maintenance.processNext(f.state, provider), true);
       assert.equal(provider.calls, 1);
       assert.deepEqual(observedLimits, [2]);
       assert.equal(observedOptions[0]?.ranking, "consolidation");
@@ -148,6 +149,97 @@ describe("idle memory maintenance", () => {
     }
   });
 
+  it("flags the older of two contradicting memories for verification", async () => {
+    const f = fixture();
+    try {
+      const oldId = f.write("This project formats code with tabs.", "turn_seed");
+      const newId = f.write("This project formats code with two spaces.");
+      f.storage.db
+        .prepare("UPDATE memories SET created_at = ? WHERE id = ?")
+        .run(new Date(Date.now() - 86_400_000).toISOString(), oldId);
+      f.enqueue();
+      const provider = model(JSON.stringify({ decisions: [{ index: 0, action: "conflict", memoryId: oldId }] }));
+      assert.equal(await f.maintenance.processNext(f.state, provider), true);
+      const projectId = projectMemoryIdFromRoot(f.root);
+      assert.equal(f.manager.get(projectId, oldId)?.status, "needs_verification");
+      assert.equal(f.manager.get(projectId, newId)?.status, "active");
+      // A flagged memory is still offered, marked, so the agent can confirm or forget it.
+      assert.equal(f.manager.list(projectId, { status: "needs_verification" }).length, 1);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("consolidates memory written in another conversation of the same project", async () => {
+    const f = fixture();
+    try {
+      const other = f.store.create({
+        threadId: "thread_other_conversation",
+        workspaceRoot: f.root,
+        mode: "code",
+        provider: "deepseek",
+        model: "test",
+        thinkingEffort: "low",
+      });
+      const { turnId } = f.store.startTurn(other.threadId, "Add linting");
+      f.store.completeTurn(other.threadId, turnId, { role: "assistant", content: "Done." }, "success");
+      const oldId = f.write("This project uses strict TypeScript.", "turn_seed");
+      const candidateId = f.manager.applyModelMutations({
+        workspaceRoot: f.root,
+        threadId: other.threadId,
+        turnId,
+        outcome: "success",
+        mutations: [
+          {
+            action: "remember",
+            category: "convention",
+            content: "This project uses ESLint and strict TypeScript.",
+            reason: "Agent-selected durable memory",
+          },
+        ],
+      }).memoryIds[0]!;
+      f.enqueue();
+      const provider = model(
+        JSON.stringify({
+          decisions: [
+            { index: 0, action: "merge", memoryId: oldId, content: "This project uses strict TypeScript and ESLint." },
+          ],
+        }),
+      );
+      // The idle process is in the first conversation; the job belongs to the other one.
+      assert.equal(await f.maintenance.processNext(f.state, provider), true);
+      assert.equal(provider.calls, 1);
+      assert.equal(f.manager.get(projectMemoryIdFromRoot(f.root), candidateId)?.status, "expired");
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("requeues only jobs left running by a process that stopped", () => {
+    const f = fixture();
+    try {
+      f.write("This project uses strict TypeScript.");
+      f.enqueue();
+      const now = new Date("2026-10-02T12:00:00.000Z");
+      const setRunning = (updatedAt: string) =>
+        f.storage.db
+          .prepare("UPDATE memory_maintenance_jobs SET status = 'running', updated_at = ? WHERE turn_id = ?")
+          .run(updatedAt, f.turnId);
+      const status = () =>
+        f.storage.db
+          .prepare<[string], { status: string }>("SELECT status FROM memory_maintenance_jobs WHERE turn_id = ?")
+          .get(f.turnId)?.status;
+      setRunning("2026-10-02T11:55:00.000Z");
+      f.maintenance.recover(now);
+      assert.equal(status(), "running");
+      setRunning("2026-10-02T11:30:00.000Z");
+      f.maintenance.recover(now);
+      assert.equal(status(), "queued");
+    } finally {
+      f.dispose();
+    }
+  });
+
   it("does not merge the same statement across project and global scope", async () => {
     const f = fixture();
     try {
@@ -155,7 +247,7 @@ describe("idle memory maintenance", () => {
       f.write("Use strict TypeScript across projects.");
       const provider = model();
       f.enqueue();
-      await f.maintenance.processNext(f.state.threadId, f.state, provider);
+      await f.maintenance.processNext(f.state, provider);
       assert.equal(provider.calls, 0);
       assert.equal(f.manager.list(projectMemoryIdFromRoot(f.root)).length, 1);
       assert.equal(f.manager.list(GLOBAL_MEMORY_WORKSPACE_ID).length, 1);
@@ -170,7 +262,7 @@ describe("idle memory maintenance", () => {
       const oldId = f.write("This project uses strict TypeScript.", "turn_seed");
       f.write("This project uses ESLint and strict TypeScript.");
       f.enqueue();
-      await f.maintenance.processNext(f.state.threadId, f.state, model("not-json"));
+      await f.maintenance.processNext(f.state, model("not-json"));
       assert.equal(f.manager.list(projectMemoryIdFromRoot(f.root)).length, 2);
       assert.equal(
         f.storage.db
@@ -179,7 +271,6 @@ describe("idle memory maintenance", () => {
         "queued",
       );
       await f.maintenance.processNext(
-        f.state.threadId,
         f.state,
         model(
           JSON.stringify({

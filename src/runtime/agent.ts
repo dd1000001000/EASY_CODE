@@ -714,17 +714,16 @@ export class AgentRuntime {
         return { kind: "retry" };
       }
       const response = attempted.value;
+      const usedMemoryIds = (selectedForStep?.memories ?? [])
+        .filter((memory) => memory.countsAsUse)
+        .map((memory) => memory.id);
       if (
         agentIdentity.role === "main_agent" &&
-        selectedForStep?.memories.length &&
+        usedMemoryIds.length &&
         messages.some((message) => message.role === "user" && message.content === stepRuntimeContext)
       ) {
         try {
-          this.dependencies.recordMemoryRecall?.(
-            state.threadId,
-            turnId,
-            selectedForStep.memories.map((memory) => memory.id),
-          );
+          this.dependencies.recordMemoryRecall?.(state.threadId, turnId, usedMemoryIds);
         } catch {
           // Recall accounting is derived state, never a reason to discard a model response.
         }

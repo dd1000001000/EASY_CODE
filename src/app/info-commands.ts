@@ -288,7 +288,19 @@ export class InfoCommands {
       return;
     }
 
-    throw new Error("Usage: /memory short [limit] | /memory long [global|project] [id] (read-only)");
+    if ((kind === "edit" && args.length >= 3) || (kind === "forget" && args.length === 2)) {
+      const projectId = this.ctx.state.projectId ?? projectMemoryIdFromRoot(this.ctx.workspace.root);
+      const memory =
+        kind === "edit"
+          ? this.ctx.memoryManager.editByUser(projectId, args[1]!, args.slice(2).join(" "))
+          : this.ctx.memoryManager.forgetByUser(projectId, args[1]!);
+      this.ctx.terminal.write(`${json(memory)}\n`);
+      return;
+    }
+
+    throw new Error(
+      "Usage: /memory short [limit] | /memory long [global|project] [id] | /memory edit <id> <content> | /memory forget <id>",
+    );
   }
 
   printSessions(): void {

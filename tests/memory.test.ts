@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "./harness.js";
 import { MemoryManager, MemoryVectorIndex } from "../src/memory/index.js";
+import { memorySearchTerms } from "../src/memory/search-terms.js";
 import { createStorage } from "../src/storage/index.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 
@@ -135,6 +136,188 @@ describe("model-managed long-term memory", () => {
       const lexical = await fallbackManager.searchHybrid("workspace_a", "documentation spelling");
       assert.match(lexical[0]?.content ?? "", /documentation/iu);
       assert.equal(reportedError, true);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("splits CJK runs into bigrams so a word inside a Chinese sentence is searchable", () => {
+    assert.deepEqual(memorySearchTerms("pnpm管理依赖 utils/validate.ts 库"), [
+      "pnpm",
+      "管理",
+      "理依",
+      "依赖",
+      "utils",
+      "validate",
+      "ts",
+    ]);
+  });
+
+  it("finds Chinese memories by words in the middle of a sentence", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const manager = new MemoryManager(storage);
+      const { memoryIds } = manager.applyModelMutations({
+        ...mutationContext(),
+        mutations: [
+          {
+            action: "remember",
+            category: "convention",
+            content: "项目使用 pnpm 管理依赖，不要用 npm 安装",
+            reason: "用户说明了包管理约定。",
+          },
+          {
+            action: "remember",
+            category: "architecture",
+            content: "登录页的表单校验放在 src/utils/validate.ts",
+            reason: "实现中确认了校验的位置。",
+          },
+        ],
+      });
+      const [pnpm, login] = memoryIds;
+      // The full-text index holds the bigrams, not one token per sentence.
+      const indexed = storage.db
+        .prepare<[string], { id: string }>(
+          "SELECT m.id FROM memories_fts JOIN memories AS m ON m.rowid = memories_fts.rowid WHERE memories_fts MATCH ?",
+        )
+        .all('"表单"* OR "校验"*');
+      assert.deepEqual(
+        indexed.map((row) => row.id),
+        [login],
+      );
+
+      const edit = manager.search("workspace_a", "帮我把登录页的表单校验改一下");
+      assert.equal(edit[0]?.id, login);
+      assert.equal(edit[0]?.countsAsUse, true);
+      // Two of nine terms is enough to offer the memory, not to count it as used.
+      const install = manager.search("workspace_a", "安装一个新的依赖包 lodash");
+      assert.equal(install[0]?.id, pnpm);
+      assert.equal(install[0]?.countsAsUse, undefined);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the user's own edits in place and keeps them out of conversation history", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const manager = new MemoryManager(storage);
+      const { memoryIds } = manager.applyModelMutations({
+        ...mutationContext(),
+        mutations: [
+          {
+            action: "remember",
+            category: "convention",
+            content: "Builds run with npm run build.",
+            reason: "The agent recorded the build command.",
+          },
+          {
+            action: "remember",
+            category: "convention",
+            content: "Tests run with npm test.",
+            reason: "The agent recorded the test command.",
+          },
+        ],
+      });
+      const [build, tests] = memoryIds;
+      const edited = manager.editByUser("workspace_a", build!, "构建命令是 pnpm build");
+      assert.deepEqual([edited.id, edited.content, edited.status], [build, "构建命令是 pnpm build", "active"]);
+      // The search text follows the edit.
+      assert.equal(manager.search("workspace_a", "构建命令")[0]?.id, build);
+      assert.throws(() => manager.editByUser("workspace_a", build!, "Tests run with npm test."), /already holds/u);
+      assert.throws(() => manager.editByUser("workspace_b", build!, "Builds use pnpm."), /not found/u);
+
+      assert.equal(manager.forgetByUser("workspace_a", tests!).status, "expired");
+      assert.throws(() => manager.forgetByUser("workspace_a", tests!), /already expired/u);
+      // Editing a forgotten memory brings it back.
+      assert.equal(manager.editByUser("workspace_a", tests!, "Tests run with npm run test:unit.").status, "active");
+      assert.deepEqual(
+        storage.db
+          .prepare<[string], { thread_id: string }>(
+            "SELECT DISTINCT thread_id FROM memory_revisions WHERE memory_id = ?",
+          )
+          .all(tests!)
+          .map((row) => row.thread_id)
+          .sort(),
+        ["thread_a", "user"],
+      );
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves memories past their expiry out of recall without writing during the search", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const manager = new MemoryManager(storage);
+      const { memoryIds } = manager.applyModelMutations({
+        ...mutationContext(),
+        mutations: [
+          {
+            action: "remember",
+            category: "convention",
+            content: "Release branches are cut on Mondays.",
+            reason: "The team convention was stated.",
+          },
+        ],
+      });
+      storage.db
+        .prepare("UPDATE memories SET created_at = ?, last_accessed_at = NULL WHERE id = ?")
+        .run("2020-01-01T00:00:00.000Z", memoryIds[0]!);
+      assert.equal(manager.search("workspace_a", "release branches").length, 0);
+      assert.equal(manager.get("workspace_a", memoryIds[0]!)?.status, "active");
+      assert.equal(manager.search("workspace_a", "release branches", { includeInactive: true }).length, 1);
+      assert.equal(manager.expireDueMemories("workspace_a"), 1);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts only confident semantic or lexical matches as use", async () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const { memoryIds } = new MemoryManager(storage).applyModelMutations({
+        ...mutationContext(),
+        mutations: [
+          {
+            action: "remember",
+            category: "environment",
+            content: "Windows sandbox probes can trigger UAC prompts.",
+            reason: "Observed while testing the sandbox.",
+          },
+          {
+            action: "remember",
+            category: "architecture",
+            content: "The web UI uses Vue 3 with Element Plus.",
+            reason: "Verified in the web package.",
+          },
+        ],
+      });
+      const [sandbox, web] = memoryIds;
+      const manager = new MemoryManager(storage, {
+        vectorIndex: {
+          search: async () => [
+            { id: sandbox!, score: 0.48 },
+            { id: web!, score: 0.34 },
+          ],
+        },
+      });
+      const found = await manager.searchHybrid("workspace_a", "为什么沙箱启动时弹出了管理员权限提示");
+      assert.deepEqual(
+        found.map((memory) => [memory.id, memory.countsAsUse]),
+        [
+          [sandbox, true],
+          [web, undefined],
+        ],
+      );
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });

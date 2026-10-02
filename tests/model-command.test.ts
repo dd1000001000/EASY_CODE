@@ -817,19 +817,43 @@ describe("/model", () => {
 });
 
 describe("memory commands", () => {
-  it("rejects manual long-term memory changes while retaining read access", async () => {
+  it("lets the user edit or forget a long-term memory, but not move it", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
     try {
       const offset = fixture.output().length;
       await fixture.app.handleSlashCommand("/memory long");
       assert.match(fixture.output().slice(offset), /No long-term memories|"global"/u);
 
-      for (const command of [
-        "/memory move memory_00000000-0000-4000-8000-000000000001 global",
-        "/memory forget memory_00000000-0000-4000-8000-000000000001",
-      ]) {
-        await assert.rejects(fixture.app.handleSlashCommand(command), /read-only/u);
-      }
+      const internal = fixture.app as unknown as {
+        state: SessionState;
+        memoryManager: import("../src/memory/index.js").MemoryManager;
+      };
+      const [memoryId] = internal.memoryManager.applyModelMutations({
+        workspaceRoot: internal.state.workspaceRoot,
+        ...(internal.state.projectId ? { workspaceId: internal.state.projectId } : {}),
+        threadId: internal.state.threadId,
+        turnId: "turn_memory_command",
+        outcome: "success",
+        mutations: [
+          {
+            action: "remember",
+            category: "convention",
+            content: "Tests run with npm test.",
+            reason: "The agent recorded the test command.",
+          },
+        ],
+      }).memoryIds;
+
+      const edited = fixture.output().length;
+      await fixture.app.handleSlashCommand(`/memory edit ${memoryId} Tests run with  npm run test:unit.`);
+      const record = JSON.parse(fixture.output().slice(edited)) as { content: string; status: string };
+      assert.deepEqual([record.content, record.status], ["Tests run with npm run test:unit.", "active"]);
+
+      const forgotten = fixture.output().length;
+      await fixture.app.handleSlashCommand(`/memory forget ${memoryId}`);
+      assert.equal((JSON.parse(fixture.output().slice(forgotten)) as { status: string }).status, "expired");
+      await assert.rejects(fixture.app.handleSlashCommand(`/memory forget ${memoryId}`), /already expired/u);
+      await assert.rejects(fixture.app.handleSlashCommand(`/memory move ${memoryId} global`), /Usage: \/memory/u);
     } finally {
       fixture.close();
     }

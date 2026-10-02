@@ -89,7 +89,7 @@
   "memoryMaxItems": 6,
   "memoryMaxQueries": 3,
   "memorySearchLimit": 6,
-  "memoryVectorMinSimilarity": 0.1,
+  "memoryVectorMinSimilarity": 0.3,
   "memoryConsolidationMatchLimit": 6,
   "memoryProjectExpiryDays": 90,
   "memoryGlobalExpiryDays": 180,

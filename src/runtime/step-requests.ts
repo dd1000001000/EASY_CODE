@@ -239,7 +239,10 @@ export class StepRequests {
           )),
         );
       }
-      retrieval.memories = [...new Map(found.map((memory) => [memory.id, memory])).values()];
+      // Keep each memory at its first rank, as the copy whose delivery counts as use when any query matched it confidently.
+      const merged = new Map<string, Readonly<LongTermMemory>>();
+      for (const memory of found) if (!merged.get(memory.id)?.countsAsUse) merged.set(memory.id, memory);
+      retrieval.memories = [...merged.values()];
       retrieval.rememberedQueryKey = queryKey;
     }
     return { calls, durationMs: Date.now() - started };

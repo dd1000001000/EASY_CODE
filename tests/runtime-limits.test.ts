@@ -82,7 +82,7 @@ describe("central runtime limits", () => {
     void legacySteps;
     void legacyMaxModelRequests;
     assert.deepEqual(JSON.parse(JSON.stringify(example.limits)), documentedLimits);
-    assert.equal(example.limits?.memoryVectorMinSimilarity, 0.1);
+    assert.equal(example.limits?.memoryVectorMinSimilarity, 0.3);
     assert.equal(example.limits?.memoryConsolidationMatchLimit, 6);
     assert.equal("maxSubagentFollowUps" in defaultRuntimeLimits(), false);
     const retired = normalizeCurrentTomlConfig(

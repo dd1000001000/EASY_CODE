@@ -176,7 +176,9 @@ EASY CODE 指令
   /usage                     查看模型报告的 Token 用量
   /memory short [limit]      查看近期对话预览（默认 8 条，最多 500 条）
   /memory long [global|project] [id]
-                              按范围或 ID 查看长期记忆（只读）
+                              按范围或 ID 查看长期记忆
+  /memory edit <id> <内容>   修改一条长期记忆
+  /memory forget <id>        让一条长期记忆失效
   /sessions                  列出历史对话
   /resume [id]               恢复对话
   /new                       新建对话
@@ -222,7 +224,9 @@ EASY CODE commands
   /context                   Show context budget
   /usage                     Show cumulative provider-reported Token usage
   /memory short [limit]      Show recent short-term memory previews (default 8, max 500)
-  /memory long [global|project] [id]  Show scoped long-term memory (read-only)
+  /memory long [global|project] [id]  Show scoped long-term memory
+  /memory edit <id> <content> Rewrite a long-term memory
+  /memory forget <id>        Expire a long-term memory
   /sessions                  List previous threads
   /resume [id]               Pick or resume a thread
   /new                       Start a new thread

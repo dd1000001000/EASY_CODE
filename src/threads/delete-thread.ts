@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { EasyCodeStorage } from "../storage/database.js";
+import { memorySearchText } from "../memory/search-terms.js";
 import { sha256 } from "../utils/hash.js";
 import type { ThreadLease, ThreadStore, ThreadSummary } from "./thread-store.js";
 
@@ -65,7 +66,7 @@ export function deleteStoredThreads(
             storage.db
               .prepare(
                 `UPDATE memories SET workspace_id = ?, scope = ?, category = ?, content = ?, normalized_content = ?,
-                 status = ?, evidence = ?, source_thread_id = ?, source_turn_id = ?, updated_at = ? WHERE id = ?`,
+                 search_text = ?, status = ?, evidence = ?, source_thread_id = ?, source_turn_id = ?, updated_at = ? WHERE id = ?`,
               )
               .run(
                 memory.workspace_id,
@@ -73,6 +74,7 @@ export function deleteStoredThreads(
                 memory.category,
                 memory.content,
                 memory.normalized_content,
+                memorySearchText(memory.content),
                 memory.status,
                 memory.evidence,
                 memory.source_thread_id,

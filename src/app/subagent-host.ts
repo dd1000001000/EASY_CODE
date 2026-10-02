@@ -472,7 +472,6 @@ export class SubagentHost {
           projectMemoryId,
           workspaceRoot: childWorkspace.root,
           queryPrefix: `${request.task.title}\n${request.task.description}\n`,
-          readOnlyMemory: true,
           evidenceOwner: (state) => state.threadId,
         },
       ),
