@@ -116,7 +116,16 @@ describe("Web conversation projection", () => {
               lines: { added: 12, removed: 0 },
               diff: {
                 truncated: true,
-                hunks: [{ oldStart: 0, newStart: 1, lines: ["+token=ghp_1234567890123456789012345"] }],
+                hunks: [
+                  {
+                    oldStart: 0,
+                    newStart: 1,
+                    lines: [
+                      "+token=ghp_1234567890123456789012345",
+                      "+const token = 'token=ghp_1234567890123456789012345';",
+                    ],
+                  },
+                ],
               },
             },
             {
@@ -144,7 +153,13 @@ describe("Web conversation projection", () => {
           // Diff lines reach the page with secrets redacted.
           diff: {
             truncated: true,
-            hunks: [{ oldStart: 0, newStart: 1, lines: ["+token=[REDACTED TOKEN]"] }],
+            hunks: [
+              {
+                oldStart: 0,
+                newStart: 1,
+                lines: ["+token=[REDACTED TOKEN]", "+const token = '[REDACTED TOKEN]';"],
+              },
+            ],
           },
         },
         // A malformed diff is dropped, the file kept.
@@ -246,7 +261,15 @@ describe("Web interaction host", () => {
       inputTokens: 900,
       outputTokens: 120,
       changedFiles: [
-        { path: "src/app.ts", absolutePath: path.resolve("src/app.ts"), change: "modified" },
+        {
+          path: "src/app.ts",
+          absolutePath: path.resolve("src/app.ts"),
+          change: "modified",
+          diff: {
+            truncated: false,
+            hunks: [{ oldStart: 3, newStart: 3, lines: ["+const token = 'token=ghp_1234567890123456789012345';"] }],
+          },
+        },
         { path: "bad\u001B[2Jname.ts", absolutePath: path.resolve("bad.ts"), change: "deleted" },
       ],
     });
@@ -255,7 +278,14 @@ describe("Web interaction host", () => {
       inputTokens: 900,
       outputTokens: 120,
       changedFiles: [
-        { path: "src/app.ts", change: "modified" },
+        {
+          path: "src/app.ts",
+          change: "modified",
+          diff: {
+            truncated: false,
+            hunks: [{ oldStart: 3, newStart: 3, lines: ["+const token = '[REDACTED TOKEN]';"] }],
+          },
+        },
         { path: "badname.ts", change: "deleted" },
       ],
     };

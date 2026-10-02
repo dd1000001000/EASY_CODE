@@ -182,6 +182,26 @@ describe("command security floor", () => {
     assert.equal(redactSensitiveInformation(text), text);
     assert.equal(text, "token=[REDACTED TOKEN]");
   });
+  it("leaves one well-formed placeholder when an assignment's value was already redacted", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["const token = 'token=ghp_1234567890123456789012345';", "const token = '[REDACTED TOKEN]';"],
+      ['const token = "token=ghp_1234567890123456789012345";', 'const token = "[REDACTED TOKEN]";'],
+      ["const token = 'abcdefgh';", "const token = '[REDACTED]';"],
+      ['api_key: "sk-abcdefghijklmnop"', 'api_key: "[REDACTED API KEY]"'],
+      ['api_key: "hunter2hunter2"', 'api_key: "[REDACTED]"'],
+      ["TOKEN=ghp_1234567890123456789012345", "TOKEN=[REDACTED TOKEN]"],
+      ["TOKEN=abcdefgh123", "TOKEN=[REDACTED]"],
+      ["authorization: Bearer abcdefghijklmnop", "authorization: Bearer [REDACTED]"],
+      // Text around a placeholder may itself be secret, and two placeholders are not one value.
+      ["password=x-ghp_1234567890123456789012345-sk-abcdefghijklmnop", "password=[REDACTED]"],
+      ["token=abc", "token=abc"],
+    ];
+    for (const [input, expected] of cases) {
+      const text = redactSensitiveInformation(input);
+      assert.equal(text, expected, input);
+      assert.equal(redactSensitiveInformation(text), text, input);
+    }
+  });
   it("keeps historical interpreter grants inert and disallows new blanket grants", () => {
     for (const filename of ["C:\\tools\\cmd.exe", "/usr/bin/python3", "/usr/bin/npm", process.execPath]) {
       const platform = filename.startsWith("C:") ? "win32" : filename.startsWith("/") ? "linux" : process.platform;

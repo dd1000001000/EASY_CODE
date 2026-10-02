@@ -12,6 +12,21 @@ export function containsSensitiveInformation(value: string): boolean {
   return SENSITIVE_TESTS.some((pattern) => pattern.test(value));
 }
 
+/** A placeholder left by an earlier rule; the assignment rule reads it as one unit, so it is never split. */
+const PLACEHOLDER_SOURCE = String.raw`Bearer \[REDACTED\]|\[REDACTED(?: [A-Z]+)*\]`;
+const PLACEHOLDER = new RegExp(PLACEHOLDER_SOURCE, "gi");
+const SECRET_ASSIGNMENT = new RegExp(
+  String.raw`\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|password|passwd|secret|authorization)(\s*[:=]\s*)(["']?)((?:${PLACEHOLDER_SOURCE}|[^\s"'])+)`,
+  "gi",
+);
+
+/** `name = value` with the value redacted; a value holding exactly one placeholder collapses to it, keeping the opening quote. */
+function redactAssignment(match: string, name: string, separator: string, quote: string, value: string): string {
+  const placeholders = value.match(PLACEHOLDER) ?? [];
+  if (placeholders.length === 0 && value.length < 6) return match;
+  return `${name}${separator}${quote}${placeholders.length === 1 ? placeholders[0] : "[REDACTED]"}`;
+}
+
 export function redactSensitiveInformation(value: string): string {
   return value
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]")
@@ -19,9 +34,6 @@ export function redactSensitiveInformation(value: string): string {
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/gi, "[REDACTED API KEY]")
     .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/gi, "[REDACTED TOKEN]")
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED ACCESS KEY]")
-    .replace(
-      /\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|password|passwd|secret|authorization)(\s*[:=]\s*)(?!["']?\[REDACTED(?: [A-Z ]+)?\])["']?[^\s"']{6,}/gi,
-      "$1$2[REDACTED]",
-    )
+    .replace(SECRET_ASSIGNMENT, redactAssignment)
     .replace(/:\/\/([^\s/:@]+):([^\s/@]+)@/g, "://$1:[REDACTED]@");
 }
