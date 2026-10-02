@@ -10,19 +10,22 @@ import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import { describe, it } from "./harness.js";
 
 describe("command timeout budget", () => {
-  it("makes the requested, configured, capability, and effective limits explicit", () => {
+  it("uses the configured timeout as a default that an explicit request may extend to the class cap", () => {
     assert.deepEqual(resolveCommandTimeoutBudget(30 * 60_000, 2 * 60_000, "workspace_exec"), {
       requestedMs: 30 * 60_000,
-      effectiveMs: 2 * 60_000,
-      configuredLimitMs: 2 * 60_000,
+      effectiveMs: 15 * 60_000,
+      defaultMs: 2 * 60_000,
       capabilityLimitMs: 15 * 60_000,
     });
+    assert.deepEqual(resolveCommandTimeoutBudget(5 * 60_000, 2 * 60_000, "workspace_exec").effectiveMs, 5 * 60_000);
+    assert.deepEqual(resolveCommandTimeoutBudget(undefined, 2 * 60_000, "workspace_exec").effectiveMs, 2 * 60_000);
     assert.deepEqual(resolveCommandTimeoutBudget(undefined, 2 * 60_000, "safe_inspect"), {
       requestedMs: 2 * 60_000,
       effectiveMs: 60_000,
-      configuredLimitMs: 2 * 60_000,
+      defaultMs: 2 * 60_000,
       capabilityLimitMs: 60_000,
     });
+    assert.equal(resolveCommandTimeoutBudget(30 * 60_000, 2 * 60_000, "registry_install").effectiveMs, 20 * 60_000);
   });
 
   it("uses one capability cap table for every command class", () => {
@@ -42,7 +45,7 @@ describe("command timeout budget", () => {
   it("renders every limiting value for model-visible command summaries", () => {
     assert.equal(
       formatCommandTimeoutBudget(resolveCommandTimeoutBudget(1_800_000, 120_000, "workspace_exec")),
-      "timeout requested=1800000ms, effective=120000ms, " + "configured limit=120000ms, capability limit=900000ms",
+      "timeout requested=1800000ms, effective=900000ms, default=120000ms, capability limit=900000ms",
     );
   });
 

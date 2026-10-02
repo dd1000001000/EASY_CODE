@@ -40,7 +40,7 @@ export function commandVerificationKind(
 }
 
 export interface RunCommandInput {
-  /** Compatibility requirements only: these never grant permissions. [] explicitly declares no IPC requirement. */
+  /** Runtime-internal compatibility requirements, not a model tool argument; they never grant permissions. */
   requiredCapabilities?: import("../sandbox/capabilities.js").ExecutionCapability[];
   program: string;
   args?: string[];
@@ -102,6 +102,10 @@ export interface ResolvedCommand {
   approvalMaterialHash?: string;
   /** Canonical executable content identity for reusable network grants. */
   executableHash?: string;
+  /** npx target found in a project node_modules/.bin, so no package download is expected. */
+  localPackageBinary?: boolean;
+  /** Resolver adjustments to the requested argv that the model must know about. */
+  notices?: string[];
 }
 
 export interface CommandPolicyDecision {
@@ -194,6 +198,8 @@ export interface RunCommandOutput {
   };
   /** Present for every unsuccessful terminal execution result. */
   failure?: CommandFailure;
+  /** Runtime adjustments to the requested invocation, such as added npm safety flags. */
+  notices?: string[];
   executed: {
     program: string;
     args: string[];
@@ -217,6 +223,7 @@ export interface RunningCommandOutput {
   policyDecision: CommandPolicyDecision;
   sandbox: SandboxExecutionMetadata;
   timeout: CommandTimeoutBudget;
+  notices?: string[];
   executed: RunCommandOutput["executed"];
 }
 

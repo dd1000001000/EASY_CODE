@@ -14,7 +14,6 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
-import { EXECUTION_CAPABILITIES } from "../sandbox/capabilities.js";
 
 const commandInvocationObjectSchema = z
   .object({
@@ -26,7 +25,6 @@ const commandInvocationObjectSchema = z
     timeoutMs: z.number().int().positive().optional(),
     reason: z.string().max(2_000).optional(),
     executionScope: z.enum(["workspace", "host"]).optional(),
-    requiredCapabilities: z.array(z.enum(EXECUTION_CAPABILITIES)).max(EXECUTION_CAPABILITIES.length).optional(),
   })
   .strict();
 
@@ -74,13 +72,6 @@ function commandInvocationDefinition(includeBackgroundKind = false): Record<stri
         enum: ["workspace", "host"],
         description:
           "Default workspace sandbox. Request host only when this exact command needs permissions outside the workspace; approval includes this escalation. Benchmark always stays container-confined.",
-      },
-      requiredCapabilities: {
-        type: "array",
-        items: { type: "string", enum: [...EXECUTION_CAPABILITIES] },
-        maxItems: EXECUTION_CAPABILITIES.length,
-        description:
-          "Compatibility requirements, NOT permissions. Test/verify defaults to requiring loopback TCP for runtime IPC. Set [] only for checks known not to need IPC; otherwise request host scope with normal approval if the sandbox reports missing capabilities. Never rewrite libraries to bypass isolation.",
       },
       ...(includeBackgroundKind
         ? {
@@ -152,7 +143,7 @@ function commandResult(output: CommandExecutionOutput, operation: CommandOperati
   const baseSummary =
     boundarySummary ??
     (outputLimited
-      ? "Command output exceeded the 32 MiB bridge limit. Cleanup and execution are reported separately; do not automatically rerun it."
+      ? "Command output exceeded the sandbox bridge output limit. Cleanup and execution are reported separately; do not automatically rerun it."
       : output.status === "running"
         ? `Command ${output.commandId} is running; use poll_command with commandId and optional waitMs`
         : operation === "cancel" && output.status === "canceled"

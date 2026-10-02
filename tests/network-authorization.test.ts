@@ -77,11 +77,9 @@ async function listen(server: Server): Promise<number> {
 }
 
 describe("network authorization", () => {
-  it("applies the mode/effect matrix without treating downloads as reads", () => {
+  it("auto-approves network access only in full-access mode, whatever the effect", () => {
     for (const mode of ["manual", "auto_approve", "unrestricted"] as const) {
-      for (const effect of ["read", "download", "upload", "unknown"] as const) {
-        assert.equal(autoApproveNetwork(mode, effect), mode === "unrestricted");
-      }
+      assert.equal(autoApproveNetwork(mode), mode === "unrestricted");
     }
   });
 
@@ -112,12 +110,7 @@ describe("network authorization", () => {
     assert.equal(inspectNetworkOperation(command("node", ["script.js"])), undefined);
     assert.equal(inspectNetworkOperation(command("curl", ["-q", "--version"])), undefined);
     assert.equal(
-      new CommandPolicy().classify(
-        { program: "curl", intent: "inspect" },
-        command("curl", ["-q", "--version"]),
-        "plan",
-        true,
-      ).effect,
+      new CommandPolicy().classify({ program: "curl", intent: "inspect" }, command("curl", ["-q", "--version"])).effect,
       "ask",
     );
     assert.equal(

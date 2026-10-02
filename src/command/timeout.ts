@@ -1,18 +1,26 @@
 import type { CommandCapability } from "./types.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 
-export interface CommandTimeoutBudget {
-  /** Background jobs have an independent lifetime instead of a foreground command timeout. */
-  kind?: "background";
-  /** Per-invocation request, or the configured default when omitted. */
-  requestedMs: number;
-  /** Wall-clock budget actually applied after every Runtime cap. */
-  effectiveMs: number;
-  /** Foreground ToolContext ceiling, or independent background lifetime ceiling. */
-  configuredLimitMs: number;
-  /** Foreground-only safety ceiling selected from the classified command capability. */
-  capabilityLimitMs?: number;
-}
+export type CommandTimeoutBudget =
+  | {
+      kind?: undefined;
+      /** Per-invocation request, or the configured default when omitted. */
+      requestedMs: number;
+      /** Wall-clock budget actually applied after the capability cap. */
+      effectiveMs: number;
+      /** Configured foreground timeout used when the invocation requests none. */
+      defaultMs: number;
+      /** Ceiling selected from the classified command capability; explicit requests may reach it. */
+      capabilityLimitMs: number;
+    }
+  | {
+      /** Background jobs have an independent lifetime instead of a foreground command timeout. */
+      kind: "background";
+      requestedMs: number;
+      effectiveMs: number;
+      /** Independent background lifetime ceiling. */
+      configuredLimitMs: number;
+    };
 
 export function resolveBackgroundCommandTimeoutBudget(
   requestedTimeoutMs: number | undefined,
@@ -37,18 +45,19 @@ export function commandCapabilityTimeoutLimitMs(
   return limits.commandExecuteTimeoutMaxMs;
 }
 
+/** The configured timeout is a default; an explicit request may extend it up to the capability ceiling. */
 export function resolveCommandTimeoutBudget(
   requestedTimeoutMs: number | undefined,
-  configuredLimitMs: number,
+  defaultMs: number,
   capability: CommandCapability,
   limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
 ): CommandTimeoutBudget {
-  const requestedMs = requestedTimeoutMs ?? configuredLimitMs;
+  const requestedMs = requestedTimeoutMs ?? defaultMs;
   const capabilityLimitMs = commandCapabilityTimeoutLimitMs(capability, limits);
   return {
     requestedMs,
-    effectiveMs: Math.max(1, Math.min(requestedMs, configuredLimitMs, capabilityLimitMs)),
-    configuredLimitMs,
+    effectiveMs: Math.max(1, Math.min(requestedMs, capabilityLimitMs)),
+    defaultMs,
     capabilityLimitMs,
   };
 }
@@ -62,7 +71,6 @@ export function formatCommandTimeoutBudget(timeout: CommandTimeoutBudget): strin
   }
   return (
     `timeout requested=${timeout.requestedMs}ms, effective=${timeout.effectiveMs}ms, ` +
-    `configured limit=${timeout.configuredLimitMs}ms, ` +
-    `capability limit=${timeout.capabilityLimitMs}ms`
+    `default=${timeout.defaultMs}ms, capability limit=${timeout.capabilityLimitMs}ms`
   );
 }

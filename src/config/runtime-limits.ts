@@ -36,6 +36,15 @@ export const runtimeLimitsSchema = z
     commandArchiveMaxBytes: integer(1024, 268435456),
     commandThreadArchiveMaxBytes: integer(1024, 2147483648),
     commandTimeoutMs: integer(1, 1200000),
+    commandEnvironmentPassthrough: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .max(128)
+          .regex(/^[A-Za-z_][A-Za-z0-9_()]*$/u),
+      )
+      .max(64),
     commandBackgroundLifetimeMaxMs: integer(1, 86400000),
     sandboxStartupWindowsMs: integer(1000, 300000),
     sandboxStartupPosixMs: integer(1000, 300000),

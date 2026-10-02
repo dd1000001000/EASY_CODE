@@ -4,7 +4,6 @@
   "description": "Start a supervised background job or persistent service using run_command's native sandbox and approval rules. Poll or cancel the handle. Final delivery requires every handle to be terminal.",
   "propertyDescriptions": {
     "executionScope": "Default workspace sandbox. Request host only for an explicit per-command host escalation approved with this invocation. Benchmark remains container-confined.",
-    "requiredCapabilities": "Compatibility requirements only, never permission grants. test/verify assumes loopback_tcp for runtime IPC. Set [] for checks known not to need IPC. Verify actual cross-command localhost reachability with a bounded probe; do not infer network isolation from a stopped service. Missing capabilities require explicit approval for host execution; Benchmark never escapes.",
     "program": "Executable name, path relative to cwd, or absolute local executable. Same resolution and isolation as run_command.",
     "args": "Literal structured argv, including multiline code. For cmd /c the complete command must be one argument; no automatic shell-string joining.",
     "cwd": "Normal CLI workspace: /workspace or a relative path; other Linux container directories are allowed. Host scope/Full access uses host paths. Benchmark keeps its offline worker paths.",

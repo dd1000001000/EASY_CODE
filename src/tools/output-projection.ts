@@ -22,6 +22,8 @@ function previousCommand(messages: readonly ChatMessage[], id: string): Record<s
       !["run_command", "start_command", "poll_command", "cancel_command"].includes(message.name ?? "")
     )
       continue;
+    // A fresh command id never appears earlier; skip parsing every unrelated result.
+    if (!message.content.includes(id)) continue;
     try {
       const value = JSON.parse(message.content);
       if (record(value?.data) && value.data.commandId === id) return value.data;
@@ -100,8 +102,9 @@ export function projectToolResult(
       ? data.stdout.text
       : out.text;
   const stderrText = terminalSummary ? "" : firstTerminal ? data.stderr.text : err.text;
-  const stdoutLimit = Math.min(stdoutText.length, stderrText.length === 0 ? maximum : Math.floor(maximum / 2));
-  const stderrLimit = maximum - stdoutLimit;
+  // Split the budget evenly only when both streams need more than half; unused room goes to the other stream.
+  const stderrLimit = Math.min(stderrText.length, Math.max(Math.floor(maximum / 2), maximum - stdoutText.length));
+  const stdoutLimit = maximum - stderrLimit;
   const digest = (stream: Record<string, unknown>, text: string, limit: number) => ({
     text: excerpt(text, limit),
     totalBytes: stream.totalBytes,
@@ -145,6 +148,7 @@ export function projectToolResult(
           }
         : {}),
       workspaceDelta: data.workspaceDelta,
+      ...(Array.isArray(data.notices) && data.notices.length ? { notices: data.notices } : {}),
       // Keep infrastructure failure classification; never reinterpret it as a test failure.
       failure: data.failure,
       sandboxFailure: data.sandboxFailure,

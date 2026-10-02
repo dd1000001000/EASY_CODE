@@ -72,10 +72,11 @@ export class NativeSandboxBackend implements CommandExecutionBackend {
 
   resolveCommand(
     input: import("../command/types.js").RunCommandInput,
-    context: import("../core/types.js").ToolContext,
+    _context: import("../core/types.js").ToolContext,
   ) {
-    void context;
-    return new CommandResolver(this.workspace).resolve(input, { networkEnabled: true });
+    return new CommandResolver(this.workspace, {
+      environmentPassthrough: this.limits.commandEnvironmentPassthrough,
+    }).resolve(input, { networkEnabled: true });
   }
 
   createNetworkGate(options: CommandNetworkGateOptions) {

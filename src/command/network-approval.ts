@@ -1,11 +1,7 @@
 import type { ApprovalRequest, CommandExecutionMode, ToolContext } from "../core/types.js";
 
 /** One policy shared by command Runtime, file-download tool and approval UI. */
-export function autoApproveNetwork(
-  mode: CommandExecutionMode | undefined,
-  effect: NonNullable<ApprovalRequest["network"]>["effect"],
-): boolean {
-  void effect;
+export function autoApproveNetwork(mode: CommandExecutionMode | undefined): boolean {
   return mode === "unrestricted";
 }
 
@@ -13,7 +9,7 @@ export async function requestNetworkApproval(context: ToolContext, request: Appr
   if (!request.network || context.signal?.aborted) return false;
   if (context.commandExecutionMode === "unrestricted" && !(context.isUnrestrictedHostAccessActive?.() ?? true))
     return false;
-  if (autoApproveNetwork(context.commandExecutionMode, request.network.effect)) return true;
+  if (autoApproveNetwork(context.commandExecutionMode)) return true;
   // Even with prompts disabled, the app can consume a previously granted prefix.
   return context.requestApproval({
     ...request,

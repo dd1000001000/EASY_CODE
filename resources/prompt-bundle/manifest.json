@@ -431,8 +431,8 @@
       "bytes": 1054
     },
     "tools/run_command.json": {
-      "sha256": "sha256:8f4e229ab8ad18f497898d047b40bb567fe5221e1732e283427ca30b6ff1db28",
-      "bytes": 4027
+      "sha256": "sha256:8e05828fd994413b2aae777e062b0a51b9c4515f073f82645aee26b82dbc0fe7",
+      "bytes": 3739
     },
     "tools/save_local_mcp_server.json": {
       "sha256": "sha256:0f59ffc1a3c956a79d10ab679565969b0243b588fd6b3fb1bc8c36b44b203666",
@@ -467,8 +467,8 @@
       "bytes": 2423
     },
     "tools/start_command.json": {
-      "sha256": "sha256:3968adb2672f3c2690b08ff2acf51f1e4ddcabf3b97043c3efb841f28483c246",
-      "bytes": 3297
+      "sha256": "sha256:ed7eb678eebf9caa683fcae736215c130edd65c12056a6f47445d64e567ab931",
+      "bytes": 2897
     },
     "tools/stop_subagent.json": {
       "sha256": "sha256:7cc55c438caa64c1b3b1f3838e76ecbc4a5074cb0cb590f1162d7e0032d2c2de",
@@ -630,7 +630,7 @@
     "run_command": {
       "path": "tools/run_command.json",
       "contractVersion": "1.1.0",
-      "contentHash": "sha256:8f4e229ab8ad18f497898d047b40bb567fe5221e1732e283427ca30b6ff1db28"
+      "contentHash": "sha256:8e05828fd994413b2aae777e062b0a51b9c4515f073f82645aee26b82dbc0fe7"
     },
     "save_local_mcp_server": {
       "path": "tools/save_local_mcp_server.json",
@@ -675,7 +675,7 @@
     "start_command": {
       "path": "tools/start_command.json",
       "contractVersion": "1.2.0",
-      "contentHash": "sha256:3968adb2672f3c2690b08ff2acf51f1e4ddcabf3b97043c3efb841f28483c246"
+      "contentHash": "sha256:ed7eb678eebf9caa683fcae736215c130edd65c12056a6f47445d64e567ab931"
     },
     "stop_subagent": {
       "path": "tools/stop_subagent.json",
@@ -703,5 +703,5 @@
       "contentHash": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049"
     }
   },
-  "bundleHash": "sha256:57284c4168ce828d0a967f07f4967d7ae8a87338ea4134641ff9e8644342ee78"
+  "bundleHash": "sha256:56cbd6ffaa60695a9dcd8b7d6e048581a530cf89555b18a1cb74f237e129ff46"
 }

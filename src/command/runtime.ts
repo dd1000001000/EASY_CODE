@@ -36,7 +36,12 @@ import {
   type CommandTimeoutBudget,
 } from "./timeout.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
-import { assertExecutionCapabilities, SandboxCapabilityError } from "../sandbox/capabilities.js";
+import {
+  assertExecutionCapabilities,
+  SandboxCapabilityError,
+  type ExecutionCapabilities,
+  type ExecutionCapability,
+} from "../sandbox/capabilities.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 import { windowsCreateProcessFailureCode } from "../sandbox/native-command-error.js";
 import {
@@ -78,6 +83,8 @@ interface BackgroundCommandJob {
   readonly completion: Promise<RunCommandOutput>;
   readonly snapshot: () => RunningCommandOutput;
   readonly startedAt: number;
+  /** When the process reached a terminal state; retention is measured from here. */
+  finishedAt?: number;
   final?: RunCommandOutput;
   failure?: Error;
   /** Set only after the owning agent receives a terminal status/cancel result. */
@@ -310,7 +317,9 @@ export class CommandRuntime {
       options.boundaryStatePath,
       this.limits.sandboxBoundaryIncidentLimit,
     );
-    this.resolver = new CommandResolver(workspace);
+    this.resolver = new CommandResolver(workspace, {
+      environmentPassthrough: this.limits.commandEnvironmentPassthrough,
+    });
     this.policy = policy;
     this.executionBackend = executionBackend ?? new NativeSandboxBackend(workspace, { limits: this.limits });
   }
@@ -379,13 +388,17 @@ export class CommandRuntime {
       .then(
         (output) => {
           const job = this.backgroundJobs.get(output.commandId);
-          if (job) job.final = output;
+          if (job) {
+            job.final = output;
+            job.finishedAt ??= Date.now();
+          }
           settleInitial(output);
         },
         (error: unknown) => {
           for (const job of this.backgroundJobs.values()) {
             if (job.completion !== completion) continue;
             job.failure = error instanceof Error ? error : new Error(String(error));
+            job.finishedAt ??= Date.now();
             break;
           }
           failInitial(error);
@@ -689,6 +702,7 @@ export class CommandRuntime {
           : {}),
         ...(failure ? { failure } : {}),
         ...(sandboxBoundary ? { sandboxBoundary } : {}),
+        ...(resolved.notices?.length ? { notices: resolved.notices } : {}),
         executed: this.executionSummary(resolved),
       };
 
@@ -904,7 +918,7 @@ export class CommandRuntime {
     const { target } = targetFlow;
     const { containerExecution, executionBackend, hostAccess, networkEnabled, resolved } = target;
     const networkOperation = inspectNetworkOperation(resolved);
-    const classified = this.policy.classify(input, resolved, "code", networkEnabled);
+    const classified = this.policy.classify(input, resolved);
     const scope = containerExecution ? "container" : hostAccess ? "host" : "workspace";
     const commandNetwork = hostAccess || (Boolean(networkOperation) && networkEnabled);
     // PATH and executable bytes belong to the offline worker, not controller.
@@ -1023,17 +1037,11 @@ export class CommandRuntime {
         execution: "not_started",
       });
     }
-    const capabilities = target.executionBackend.describe().capabilities;
-    const required =
-      input.requiredCapabilities ??
-      (capabilities && this.limits.sandboxVerificationRequiresLoopback && ["test", "verify"].includes(input.intent)
-        ? ["loopback_tcp" as const]
-        : []);
     if (!target.hostAccess && !containerExecution && this.limits.sandboxAllowHostEscalation) {
+      const capabilities = target.executionBackend.describe().capabilities;
+      const required = this.requiredCapabilities(input, capabilities);
       try {
-        if (capabilities?.features.process_tree === "blocked")
-          throw new SandboxCapabilityError(["process_tree"], capabilities);
-        assertExecutionCapabilities(capabilities, required);
+        this.assertCapabilities(capabilities, required);
       } catch (error) {
         if (!(error instanceof SandboxCapabilityError)) throw error;
         // No target or worker exists yet. Propose the broader scope BEFORE
@@ -1217,14 +1225,9 @@ export class CommandRuntime {
     // always go through a new approved invocation; never replay here.
     if (!hostAccess) {
       const report = executionBackend.describe(sandboxRequest).capabilities;
-      const required =
-        input.requiredCapabilities ??
-        (report && this.limits.sandboxVerificationRequiresLoopback && ["test", "verify"].includes(input.intent)
-          ? ["loopback_tcp" as const]
-          : []);
+      const required = this.requiredCapabilities(input, report);
       try {
-        if (report?.features.process_tree === "blocked") throw new SandboxCapabilityError(["process_tree"], report);
-        assertExecutionCapabilities(report, required);
+        this.assertCapabilities(report, required);
       } catch (error) {
         this.options.recordLifecycle?.(context, commandId, "command.capability_rejected", {
           required,
@@ -1268,7 +1271,24 @@ export class CommandRuntime {
         ? this.resolver.resolveContainer(input)
         : await this.resolver.resolve(input, resolverOptions);
     if (this.policy.approvalFingerprint(fresh, policyDecision) !== approval.fingerprint) {
-      throw new Error("Command material changed while awaiting approval; request again");
+      approval.networkApprovalController.abort();
+      const output = this.denied(
+        commandId,
+        startedAt,
+        resolved,
+        {
+          ...policyDecision,
+          effect: "deny",
+          reason: "The executable or its project files changed while approval was pending; the command did not start",
+          matchedRule: "approval.material_changed",
+          recommendation: "Submit the command again so approval covers the current files.",
+        },
+        context,
+        executionBackend,
+        "approval",
+      );
+      output.failure!.retryable = true;
+      return { kind: "return", value: output };
     }
     const networkGateOptions = {
       signal: approval.networkSignal,
@@ -1305,6 +1325,25 @@ export class CommandRuntime {
         networkGate,
       },
     };
+  }
+
+  /** Compatibility requirements for this invocation; test/verify default to loopback IPC. */
+  private requiredCapabilities(
+    input: RunCommandInput,
+    report: ExecutionCapabilities | undefined,
+  ): readonly ExecutionCapability[] {
+    if (input.requiredCapabilities) return input.requiredCapabilities;
+    return report && this.limits.sandboxVerificationRequiresLoopback && ["test", "verify"].includes(input.intent)
+      ? ["loopback_tcp"]
+      : [];
+  }
+
+  private assertCapabilities(
+    report: ExecutionCapabilities | undefined,
+    required: readonly ExecutionCapability[],
+  ): void {
+    if (report?.features.process_tree === "blocked") throw new SandboxCapabilityError(["process_tree"], report);
+    assertExecutionCapabilities(report, required);
   }
 
   private ownerFor(context: CommandRuntimeOwner): BackgroundCommandOwner {
@@ -1372,14 +1411,14 @@ export class CommandRuntime {
   private pruneBackgroundJobs(): void {
     const cutoff = Date.now() - COMPLETED_JOB_RETENTION_MS;
     for (const [commandId, job] of this.backgroundJobs) {
-      if (job.terminalObserved && (job.final || job.failure) && job.startedAt < cutoff) {
+      if (job.terminalObserved && (job.final || job.failure) && (job.finishedAt ?? job.startedAt) < cutoff) {
         this.backgroundJobs.delete(commandId);
       }
     }
     if (this.backgroundJobs.size <= MAX_RETAINED_JOBS) return;
     const completed = [...this.backgroundJobs.entries()]
       .filter(([, job]) => job.terminalObserved && Boolean(job.final || job.failure))
-      .sort((left, right) => left[1].startedAt - right[1].startedAt);
+      .sort((left, right) => (left[1].finishedAt ?? left[1].startedAt) - (right[1].finishedAt ?? right[1].startedAt));
     for (const [commandId] of completed) {
       if (this.backgroundJobs.size <= MAX_RETAINED_JOBS) break;
       this.backgroundJobs.delete(commandId);

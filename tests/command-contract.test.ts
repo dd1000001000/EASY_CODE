@@ -182,19 +182,19 @@ describe("run_command model contract", () => {
         timeout: {
           requestedMs: number;
           effectiveMs: number;
-          configuredLimitMs: number;
+          defaultMs: number;
           capabilityLimitMs: number;
         };
       };
       assert.deepEqual(output.timeout, {
         requestedMs: 30 * 60_000,
-        effectiveMs: 120_000,
-        configuredLimitMs: 2 * 60_000,
+        effectiveMs: 900_000,
+        defaultMs: 2 * 60_000,
         capabilityLimitMs: 900_000,
       });
       assert.match(result.summary, /requested=1800000ms/u);
-      assert.match(result.summary, /effective=120000ms/u);
-      assert.match(result.summary, /configured limit=120000ms/u);
+      assert.match(result.summary, /effective=900000ms/u);
+      assert.match(result.summary, /default=120000ms/u);
       assert.match(result.summary, /capability limit=900000ms/u);
     });
   });

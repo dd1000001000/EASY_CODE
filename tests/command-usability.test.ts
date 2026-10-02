@@ -132,10 +132,7 @@ describe("command usability and boundaries", () => {
         intent: "run",
       });
       assert.equal(resolved.executablePath, await realpath(process.execPath));
-      assert.equal(
-        new CommandPolicy().classify({ program: "node", intent: "inspect" }, resolved, "plan").effect,
-        "ask",
-      );
+      assert.equal(new CommandPolicy().classify({ program: "node", intent: "inspect" }, resolved).effect, "ask");
       await assert.rejects(() => resolveLocalCommandPath("\\\\server\\share\\node.exe", root), /Network/u);
     }));
 
@@ -149,14 +146,14 @@ describe("command usability and boundaries", () => {
       });
       assert.equal(command.cwdAbsolute, root);
       assert.deepEqual(command.args, ["--no-pager", "diff"]);
-      assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" }, command, "code").effect, "ask");
+      assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" }, command).effect, "ask");
       for (const args of [
         ["diff", "-p"],
         ["log", "-p", "-1"],
         ["show", "-p", "HEAD"],
       ]) {
         assert.equal(
-          new CommandPolicy().classify({ program: "git", intent: "inspect" }, { ...command, args }, "plan").effect,
+          new CommandPolicy().classify({ program: "git", intent: "inspect" }, { ...command, args }).effect,
           "ask",
         );
       }
@@ -167,7 +164,7 @@ describe("command usability and boundaries", () => {
         ["show", "--textconv"],
       ]) {
         assert.equal(
-          new CommandPolicy().classify({ program: "git", intent: "inspect" }, { ...command, args }, "code").effect,
+          new CommandPolicy().classify({ program: "git", intent: "inspect" }, { ...command, args }).effect,
           "ask",
         );
       }
@@ -180,11 +177,8 @@ describe("command usability and boundaries", () => {
         ["reset", "--hard"],
       ]) {
         assert.equal(
-          new CommandPolicy().classify(
-            { program: "git", intent: "run" },
-            { ...command, trustedExecutable: true, args },
-            "code",
-          ).effect,
+          new CommandPolicy().classify({ program: "git", intent: "run" }, { ...command, trustedExecutable: true, args })
+            .effect,
           "ask",
         );
       }
@@ -213,11 +207,11 @@ describe("command usability and boundaries", () => {
       ["unknown-admin-tool", [], "workspace"],
     ] as const) {
       const command = { ...base, executablePath: `/usr/bin/${program}`, args: [...args] };
-      const decision = policy.classify({ program, intent: "run" }, command, "code");
+      const decision = policy.classify({ program, intent: "run" }, command);
       assert.equal(decision.risk, risk, program + args.join(" "));
       assert.equal(decision.effect, "ask");
-      assert.equal(autoApproveLocal("auto_approve", decision.risk), false);
-      assert.equal(policy.classify({ program, intent: "inspect" }, command, "plan").effect, "ask");
+      assert.equal(autoApproveLocal("auto_approve"), false);
+      assert.equal(policy.classify({ program, intent: "inspect" }, command).effect, "ask");
     }
   });
 

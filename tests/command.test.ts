@@ -329,8 +329,8 @@ describe("command runtime", () => {
       const policy = new CommandPolicy();
       const first = await resolver.resolve(explicitShellInput("echo first"));
       const second = await resolver.resolve(explicitShellInput("echo second"));
-      const firstDecision = policy.classify(explicitShellInput("echo first"), first, "code");
-      const secondDecision = policy.classify(explicitShellInput("echo second"), second, "code");
+      const firstDecision = policy.classify(explicitShellInput("echo first"), first);
+      const secondDecision = policy.classify(explicitShellInput("echo second"), second);
 
       assert.notEqual(
         policy.approvalFingerprint(first, firstDecision),
@@ -935,7 +935,7 @@ describe("command runtime", () => {
       const resolver = new CommandResolver(manager);
       const input = { program: "npm", args: ["run", "test"], intent: "test" as const };
       const resolved = await resolver.resolve(input);
-      const decision = new CommandPolicy().classify(input, resolved, "code");
+      const decision = new CommandPolicy().classify(input, resolved);
       assert.equal(decision.capability, "workspace_exec");
       assert.equal(decision.effect, "ask");
     });

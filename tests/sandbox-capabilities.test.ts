@@ -75,16 +75,11 @@ describe("unified sandbox compatibility", () => {
     assert.throws(() => assertExecutionCapabilities(unknown, ["process_tree"]), /Target was not started/);
     assert.doesNotThrow(() => assertExecutionCapabilities(report, ["temporary_files", "child_processes"]));
   });
-  it("does not inject Python hooks and strictly validates optional capability names", async () => {
+  it("does not inject Python hooks or accept capability requirements from the model", async () => {
     const source = await readFile(path.join(process.cwd(), "src/sandbox/native-backend.ts"), "utf8");
     assert.doesNotMatch(source, /sitecustomize|windowsPythonIpc|targetEnvironment\.PYTHONPATH/);
-    assert.deepEqual(
-      runCommandInputSchema.parse({ program: "node", intent: "test", requiredCapabilities: [] }).requiredCapabilities,
-      [],
-    );
-    assert.throws(() =>
-      runCommandInputSchema.parse({ program: "node", intent: "test", requiredCapabilities: ["full_network"] }),
-    );
+    assert.throws(() => runCommandInputSchema.parse({ program: "node", intent: "test", requiredCapabilities: [] }));
+    assert.throws(() => startCommandInputSchema.parse({ program: "node", intent: "test", requiredCapabilities: [] }));
     assert.equal(startCommandInputSchema.parse({ program: "node", intent: "run" }).backgroundKind, "job");
     assert.equal(
       startCommandInputSchema.parse({ program: "node", intent: "run", backgroundKind: "service" }).backgroundKind,

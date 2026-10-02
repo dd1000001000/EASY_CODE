@@ -350,9 +350,7 @@ export class CommandProcessRun {
           : targetExitCode !== undefined ||
               (!prepared.controlPipe && !prepared.metadata.enforced && typeof result.exitCode === "number")
             ? "exited"
-            : provenNotStarted
-              ? "not_started"
-              : "unknown",
+            : "unknown",
       cleanup: cleanupError
         ? "failed"
         : !prepared.metadata.enforced && !prepared.controlPipe
@@ -458,6 +456,7 @@ export class CommandProcessRun {
       policyDecision,
       sandbox: prepared.metadata,
       timeout,
+      ...(resolved.notices?.length ? { notices: resolved.notices } : {}),
       executed: this.host.executionSummary(resolved),
     };
   }
@@ -559,6 +558,9 @@ export class CommandProcessRun {
         this.protocolError = error instanceof Error ? error.message : String(error);
         this.requestTermination();
       }
+    } else if (context.signal?.aborted) {
+      // An abort during launch preparation fired before the listener existed.
+      onAbort();
     }
 
     try {
@@ -663,7 +665,7 @@ export function classifyCommandFailure(
           kind: "runtime",
           code: "command_output_limit",
           message:
-            "Command exceeded the 32 MiB bridge output limit. Execution is incomplete; narrow output before a new call. No automatic replay.",
+            "Command exceeded the sandbox bridge output limit. Execution is incomplete; narrow output before a new call. No automatic replay.",
           processStarted: true,
           retryable: false,
         }

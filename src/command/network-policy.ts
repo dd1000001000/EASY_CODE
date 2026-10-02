@@ -37,6 +37,8 @@ export function inspectNetworkOperation(command: ResolvedCommand): NetworkOperat
     args = args.slice(2);
   }
   if (!clients.has(name)) return undefined;
+  // A project-installed binary needs no download; any connection it makes still goes through the network gate.
+  if (name === "npx" && command.localPackageBinary === true) return undefined;
   const nonConfigArgs = args.filter((a) => a !== "-q");
   if (nonConfigArgs.length === 1 && ["--version", "--help", "-h"].includes(nonConfigArgs[0]!)) return undefined;
   const op = (effect: NetworkEffect): NetworkOperation => ({

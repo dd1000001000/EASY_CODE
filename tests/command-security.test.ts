@@ -166,7 +166,7 @@ describe("command security floor", () => {
         command,
         context: { ...context(root), mode: "plan" as const },
         commandPreview: "node",
-        policyDecision: new CommandPolicy().classify({ program: "node", intent: "inspect" }, command, "plan"),
+        policyDecision: new CommandPolicy().classify({ program: "node", intent: "inspect" }, command),
       };
       const plan = backend.describe(request);
       const codeRequest = { ...request, context: { ...request.context, mode: "code" as const } };
@@ -223,18 +223,16 @@ describe("command security floor", () => {
       environmentKeys: [],
     };
     const policy = new CommandPolicy();
-    assert.equal(policy.classify({ program: "git", intent: "inspect" }, base, "plan").effect, "ask");
+    assert.equal(policy.classify({ program: "git", intent: "inspect" }, base).effect, "ask");
     assert.equal(
       policy.classify(
         { program: "git", intent: "inspect" },
         { ...base, executableInsideWorkspace: false, args: ["branch", "-D", "topic"] },
-        "plan",
       ).effect,
       "ask",
     );
     assert.equal(
-      policy.classify({ program: "git", intent: "inspect" }, { ...base, executableInsideWorkspace: false }, "plan")
-        .effect,
+      policy.classify({ program: "git", intent: "inspect" }, { ...base, executableInsideWorkspace: false }).effect,
       "ask",
     );
   });
@@ -255,13 +253,13 @@ describe("command security floor", () => {
     // Debian and Ubuntu resolve /bin/sh to dash.
     for (const executablePath of ["/usr/bin/dash", "/bin/bash", "cmd.exe", "pwsh.exe"]) {
       assert.equal(
-        policy.classify({ program: "sh", intent: "run" }, shell(executablePath), "code").capability,
+        policy.classify({ program: "sh", intent: "run" }, shell(executablePath)).capability,
         "shell_exec",
         executablePath,
       );
     }
     assert.equal(
-      policy.classify({ program: "sh", intent: "run" }, shell("/usr/bin/python3"), "code").capability,
+      policy.classify({ program: "sh", intent: "run" }, shell("/usr/bin/python3")).capability,
       "workspace_exec",
     );
   });

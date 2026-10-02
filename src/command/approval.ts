@@ -71,7 +71,7 @@ export function canGrantCommandPrefix(prefix: string): boolean {
   if (!prefix.startsWith(NETWORK_PREFIX)) return reusableExecutableGrant(prefix);
   try {
     normalizeCommandApprovalPrefix(prefix);
-    return prefix.startsWith(NETWORK_PREFIX) || reusableExecutableGrant(prefix);
+    return true;
   } catch {
     return false;
   }

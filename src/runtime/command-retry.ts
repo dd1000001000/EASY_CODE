@@ -11,13 +11,7 @@ export class CommandRetryTracker {
     if (tool === "poll_command") return this.handles.get(input?.commandId);
     if (!["run_command", "start_command"].includes(tool)) return undefined;
     return sha256(
-      JSON.stringify([
-        input?.program,
-        input?.args ?? [],
-        input?.cwd ?? ".",
-        input?.executionScope ?? "workspace",
-        input?.env ?? {},
-      ]),
+      JSON.stringify([input?.program, input?.args ?? [], input?.cwd ?? ".", input?.executionScope ?? "workspace"]),
     );
   }
   before(tool: string, input: unknown): ToolExecutionResult | undefined {

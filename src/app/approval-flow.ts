@@ -53,10 +53,7 @@ export class ApprovalFlow {
     if (request.signal?.aborted) return false;
     const threadId = this.ctx.state.threadId;
     const mode = this.ctx.commandExecutionMode ?? (this.ctx.assumeYes ? "auto_approve" : "manual");
-    if (
-      request.requiredReviewer !== "user" &&
-      (request.network ? autoApproveNetwork(mode, request.network.effect) : autoApproveLocal(mode, request.risk))
-    ) {
+    if (request.requiredReviewer !== "user" && (request.network ? autoApproveNetwork(mode) : autoApproveLocal(mode))) {
       request.observeDecision?.("allow_once");
       return true;
     }

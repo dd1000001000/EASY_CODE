@@ -75,8 +75,20 @@ async function isExecutable(filename: string): Promise<boolean> {
   }
 }
 
+const NPM_IGNORE_SCRIPTS_NOTICE =
+  "npm ran with --ignore-scripts: dependency install scripts (native builds, postinstall) were skipped. " +
+  "If a dependency needs them, run `npm rebuild <package>` as a separate command.";
+
+export interface CommandResolverOptions {
+  /** User-configured environment variable names forwarded to every command. */
+  readonly environmentPassthrough?: readonly string[];
+}
+
 export class CommandResolver {
-  constructor(private readonly workspace: WorkspaceManager) {}
+  constructor(
+    private readonly workspace: WorkspaceManager,
+    private readonly options: CommandResolverOptions = {},
+  ) {}
 
   /** Resolve filesystem/PATH in Docker at dispatch, never on the controller.
    * A worker may create /tmp scripts or install an executable which does not
@@ -105,7 +117,11 @@ export class CommandResolver {
   ): Promise<ResolvedCommand> {
     // Structural validation applies even to explicitly authorized host execution.
     this.validateRequest(input);
-    const environment = buildCommandEnvironment();
+    const environment = buildCommandEnvironment(process.env, {
+      host: options.unrestrictedHostAccess === true,
+      passthrough: this.options.environmentPassthrough,
+    });
+    const notices: string[] = [];
     let cwdAbsolute = await this.resolveCwd(input.cwd, options.unrestrictedHostAccess);
     const executablePath = await this.resolveExecutable(
       options.unrestrictedHostAccess && /[\\/]/u.test(input.program)
@@ -143,18 +159,18 @@ export class CommandResolver {
     let approvalMaterialHash: string | undefined;
     if (this.basename(executablePath) === "npm" && !options.unrestrictedCommands) {
       const install = analyzeNpmInstall(args);
-      if (install.isInstall && install.valid && !options.unrestrictedCommands) {
+      if (install.isInstall && install.valid) {
         args =
           options.networkEnabled && !(input.args ?? []).includes("--offline")
             ? install.normalizedArgs.filter((a) => a !== "--offline")
             : install.normalizedArgs;
       }
-      if (
-        options.networkEnabled &&
-        !options.unrestrictedCommands &&
-        ["install", "i", "add", "ci"].includes(args[0] ?? "")
-      ) {
-        args = [...args, "--ignore-scripts", "--no-audit", "--no-fund"];
+      if (options.networkEnabled && ["install", "i", "add", "ci"].includes(args[0] ?? "")) {
+        const added = ["--ignore-scripts", "--no-audit", "--no-fund"].filter((flag) => !args.includes(flag));
+        args = [...args, ...added];
+      }
+      if (args.includes("--ignore-scripts") && !(input.args ?? []).includes("--ignore-scripts")) {
+        notices.push(NPM_IGNORE_SCRIPTS_NOTICE);
       }
       this.hardenNpmEnvironment(environment);
       approvalMaterialHash = await this.inspectNpmProject(
@@ -171,6 +187,8 @@ export class CommandResolver {
     const executableHash = sha256(await readFile(executablePath));
     approvalMaterialHash = sha256(JSON.stringify([approvalMaterialHash ?? null, executableHash]));
     const launch = await this.windowsScriptLaunch(executablePath);
+    const localPackageBinary =
+      this.basename(executablePath) === "npx" && (await this.npxTargetIsLocal(args, cwdAbsolute, environment));
     return {
       program: input.program,
       executablePath,
@@ -184,7 +202,48 @@ export class CommandResolver {
       environmentKeys: Object.keys(environment).sort((left, right) => left.localeCompare(right)),
       ...(launch ? { launch } : {}),
       ...(approvalMaterialHash ? { approvalMaterialHash } : {}),
+      ...(localPackageBinary ? { localPackageBinary } : {}),
+      ...(notices.length ? { notices } : {}),
     };
+  }
+
+  /** `npx <bin>` for an unversioned, unscoped name already installed in the project runs without a download. */
+  private async npxTargetIsLocal(
+    args: readonly string[],
+    cwd: string,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<boolean> {
+    const target = args[0];
+    if (!target || target.startsWith("-") || target.includes("@") || /[\\/]/u.test(target)) return false;
+    try {
+      return (await this.findPackageBinary(target, cwd, executableExtensions(target, environment))) !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Nearest node_modules/.bin entry from cwd up to its project root. */
+  private async findPackageBinary(
+    requested: string,
+    cwd: string,
+    extensions: readonly string[],
+  ): Promise<string | undefined> {
+    const workspaceRoot = this.workspace.rootForPath(cwd);
+    let directory = cwd;
+    while (true) {
+      for (const extension of extensions) {
+        const candidate = path.join(directory, "node_modules", ".bin", `${requested}${extension}`);
+        if (await isExecutable(candidate)) {
+          const canonical = path.normalize(await realpath(candidate));
+          this.workspace.pathGuard.assertInside(canonical);
+          return canonical;
+        }
+      }
+      if (directory === workspaceRoot) return undefined;
+      const parent = path.dirname(directory);
+      if (parent === directory || !isInsideWorkspace(this.workspace, parent)) return undefined;
+      directory = parent;
+    }
   }
 
   basename(executablePath: string): string {
@@ -341,29 +400,16 @@ export class CommandResolver {
     // Full-access commands may intentionally use a host cwd; in that case the
     // controlled PATH remains available but project boundary checks do not
     // accidentally turn valid host execution into a resolution failure.
-    let workspaceRoot: string | undefined;
+    let insideProject = false;
     try {
-      workspaceRoot = this.workspace.rootForPath(cwd);
+      this.workspace.rootForPath(cwd);
+      insideProject = true;
     } catch (error) {
       if (!unrestrictedHostAccess) throw error;
     }
-    if (workspaceRoot) {
-      let directory = cwd;
-      while (true) {
-        for (const extension of extensions) {
-          const candidate = path.join(directory, "node_modules", ".bin", `${requested}${extension}`);
-          if (await isExecutable(candidate)) {
-            const canonical = path.normalize(await realpath(candidate));
-            this.workspace.pathGuard.assertInside(canonical);
-            return canonical;
-          }
-        }
-        if (directory === workspaceRoot) break;
-        const parent = path.dirname(directory);
-        if (parent === directory) break;
-        if (!isInsideWorkspace(this.workspace, parent)) break;
-        directory = parent;
-      }
+    if (insideProject) {
+      const local = await this.findPackageBinary(requested, cwd, extensions);
+      if (local) return local;
     }
 
     const pathValue = getEnvironmentValue(environment, "PATH") ?? "";
