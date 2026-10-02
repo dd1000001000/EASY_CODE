@@ -1,13 +1,15 @@
 import { structuredPatch } from "diff";
 import type { FileChangeRecord, FileDiffPresentation } from "../core/types.js";
+import {
+  MAX_TURN_DIFF_LINES,
+  MAX_TURN_FILE_DIFF_LINES as MAX_FILE_DIFF_LINES,
+  type TurnDiffStore,
+} from "../threads/turn-diff-store.js";
 import type { TurnChangedFile, TurnDiffHunk, TurnFileDiff, TurnLineCounts } from "../ui/contracts.js";
 
 /** Larger edits get no line counts; diffing them would delay the end of the request. */
 const MAX_DIFF_CHARS = 2_000_000;
 const MAX_EDIT_LENGTH = 20_000;
-/** Diff lines kept for one file, and for all files of one request, in the saved summary. */
-const MAX_FILE_DIFF_LINES = 400;
-const MAX_TURN_DIFF_LINES = 3_000;
 /** Longer lines (minified code, data) are cut; the counts are unaffected. */
 const MAX_DIFF_LINE_CHARS = 400;
 
@@ -130,15 +132,19 @@ function deletesFile(change: Readonly<FileChangeRecord>): boolean {
  * when the request's first change created it, deleted when its last change
  * removed it. A file both created and removed within the request is left out,
  * as are hidden-folder and temporary files and any whose path no longer
- * resolves inside the workspace. Line counts
- * and diffs come from the file tools' text; a file a command also changed has
- * neither, since its text was not seen.
+ * resolves inside the workspace. Line counts and diffs come from the file
+ * tools' text; a file a command also changed has neither, since its text was
+ * not seen. The diffs are saved apart from the summary (TurnDiffStore).
  */
+export interface TurnChangedFileWithDiff extends TurnChangedFile {
+  readonly diff?: TurnFileDiff;
+}
+
 export function turnChangedFiles(
   changes: readonly Readonly<FileChangeRecord>[],
   resolve: (relative: string) => string,
   text?: TurnFileText,
-): TurnChangedFile[] {
+): TurnChangedFileWithDiff[] {
   const first = new Map<string, Readonly<FileChangeRecord>>();
   const last = new Map<string, Readonly<FileChangeRecord>>();
   const byCommand = new Set<string>();
@@ -149,7 +155,7 @@ export function turnChangedFiles(
     last.set(change.path, change);
     if (change.source === "command") byCommand.add(change.path);
   }
-  const files: TurnChangedFile[] = [];
+  const files: TurnChangedFileWithDiff[] = [];
   let budget = MAX_TURN_DIFF_LINES;
   for (const [path, change] of last) {
     const created = createsFile(first.get(path)!);
@@ -177,4 +183,24 @@ export function turnChangedFiles(
     });
   }
   return files;
+}
+
+/**
+ * Save the request's diffs for the page to load when a file is opened, and
+ * return the files as the summary records them: counts, and whether a diff
+ * was saved. A failed save keeps the files listed without diffs.
+ */
+export function saveTurnDiffs(
+  files: readonly TurnChangedFileWithDiff[],
+  store: Pick<TurnDiffStore, "write">,
+  threadId: string,
+  turnId: string,
+): TurnChangedFile[] {
+  const diffs = new Map(files.flatMap((file) => (file.diff ? [[file.path, file.diff] as const] : [])));
+  try {
+    store.write(threadId, turnId, diffs);
+  } catch {
+    diffs.clear();
+  }
+  return files.map(({ diff: _diff, ...file }) => (diffs.has(file.path) ? { ...file, hasDiff: true } : file));
 }

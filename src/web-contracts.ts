@@ -78,15 +78,21 @@ export interface WebTurnChangedFile {
   path: string;
   change: FileChangeKind;
   lines?: TurnLineCounts;
-  /** The request's net change of the file, secrets redacted line by line. */
-  diff?: TurnFileDiff;
+  /** The request's net change of the file can be loaded from /api/turn-diff. */
+  hasDiff?: boolean;
 }
 /** A finished request: shown under its answer, and announced to a user who switched away. */
 export interface WebTurnSummary {
+  threadId?: string;
+  turnId?: string;
   durationMs: number;
   inputTokens?: number;
   outputTokens?: number;
   changedFiles: readonly WebTurnChangedFile[];
+}
+/** GET /api/turn-diff: one file's saved diff, secrets redacted line by line; null when none was saved. */
+export interface WebTurnDiffResponse {
+  diff: TurnFileDiff | null;
 }
 export type WebPatch =
   | { kind: "entry.append"; entry: WebEntry }

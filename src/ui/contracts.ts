@@ -85,7 +85,7 @@ export interface TurnDiffHunk {
 
 export interface TurnFileDiff {
   readonly hunks: readonly TurnDiffHunk[];
-  /** Lines were left out to keep the summary small; the counts still cover the whole change. */
+  /** Lines were left out to keep the saved diff bounded; the counts still cover the whole change. */
   readonly truncated: boolean;
 }
 
@@ -96,12 +96,15 @@ export interface TurnChangedFile {
   readonly change: FileChangeKind;
   /** Known when the file was changed through the file tools only. */
   readonly lines?: TurnLineCounts;
-  /** The request's net change of the file, when its lines are known. */
-  readonly diff?: TurnFileDiff;
+  /** The request's net change of the file was saved and can be opened (see TurnDiffStore). */
+  readonly hasDiff?: boolean;
 }
 
 /** What one completed request cost and changed, shown after it. */
 export interface TurnSummary {
+  /** The request, for reading its saved diffs. */
+  readonly threadId?: string;
+  readonly turnId?: string;
   readonly durationMs: number;
   /** Provider-reported tokens across every model request of the turn; absent when none were reported. */
   readonly inputTokens?: number;

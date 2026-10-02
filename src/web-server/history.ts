@@ -6,7 +6,6 @@ import { safeToolDisplayDetails } from "../runtime/tool-display-details.js";
 import { compactionLabel, compactionNoticeKind, type CompactionProgress } from "../ui/compaction.js";
 import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
 import type { FileChangeKind } from "../ui/contracts.js";
-import { parseTurnDiff, safeDiff } from "./turn-diff.js";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -45,7 +44,7 @@ const MAX_SUMMARY_FILES = 200;
 const FILE_CHANGES: ReadonlySet<FileChangeKind> = new Set(["created", "modified", "deleted"]);
 
 /** A recorded turn summary, or undefined when the payload is not one. */
-function turnSummary(payload: unknown): WebTurnSummary | undefined {
+function turnSummary(payload: unknown, threadId: string, turnId: string): WebTurnSummary | undefined {
   const value = object(payload);
   if (typeof value?.durationMs !== "number" || !Array.isArray(value.changedFiles)) return undefined;
   const count = (field: unknown) => (typeof field === "number" && Number.isFinite(field) ? field : undefined);
@@ -55,7 +54,6 @@ function turnSummary(payload: unknown): WebTurnSummary | undefined {
     const file = object(item);
     if (typeof file?.path !== "string" || !FILE_CHANGES.has(file.change as FileChangeKind)) return [];
     const lines = object(file.lines);
-    const diff = parseTurnDiff(file.diff);
     const added = count(lines?.added);
     const removed = count(lines?.removed);
     return [
@@ -63,11 +61,13 @@ function turnSummary(payload: unknown): WebTurnSummary | undefined {
         path: safe(file.path),
         change: file.change as FileChangeKind,
         ...(added !== undefined && removed !== undefined ? { lines: { added, removed } } : {}),
-        ...(diff ? { diff: safeDiff(diff, safe) } : {}),
+        ...(file.hasDiff === true ? { hasDiff: true } : {}),
       },
     ];
   });
   return {
+    threadId,
+    turnId,
     durationMs: Math.max(0, value.durationMs),
     ...(inputTokens === undefined ? {} : { inputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
@@ -88,7 +88,7 @@ export function projectWebHistory(events: readonly EventRecord[], language: Lang
   for (const event of events) {
     if (!event.turnId) continue;
     if (event.type === "turn.summary") {
-      const summary = turnSummary(event.payload);
+      const summary = turnSummary(event.payload, event.threadId, event.turnId);
       if (summary) turnSummaries.set(event.turnId, summary);
     }
     const timestamp = Date.parse(event.timestamp) || 0;

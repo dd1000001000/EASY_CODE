@@ -21,7 +21,10 @@ import { ThreadStore, type ThreadSummary } from "../threads/thread-store.js";
 import { deleteThreadTree } from "../threads/delete-thread.js";
 import { pickLocalFolder } from "./folder-picker.js";
 import { executeLanguageCommand, readLanguage, type Language } from "../i18n/language.js";
-import type { WebPatch } from "../web-contracts.js";
+import type { WebPatch, WebTurnDiffResponse } from "../web-contracts.js";
+import { TurnDiffStore } from "../threads/turn-diff-store.js";
+import { sanitizeTerminalText } from "../ui/render/layout.js";
+import { safeDiff } from "./turn-diff.js";
 import type { ProjectWorkspace } from "../projects/types.js";
 import type { ThreadResourceAttachment } from "../resources/index.js";
 
@@ -151,6 +154,7 @@ export class EasyCodeWebServer {
   private readonly projectStorage: EasyCodeStorage;
   private broadcastLanguageValue: Language = "en_us";
   private broadcastStatusValue?: string;
+  private readonly turnDiffs: TurnDiffStore;
   private readonly dataDir: string;
   // api() tries GET reads, then raw-body uploads, then JSON POST routes. The JSON body is read
   // (and validated) before an unknown POST route is rejected.
@@ -159,6 +163,7 @@ export class EasyCodeWebServer {
     ["/api/history", (request, response) => this.apiHistory(request, response)],
     ["/api/commands", (_request, response) => this.apiCommands(response)],
     ["/api/mentions", (request, response) => this.apiMentions(request, response)],
+    ["/api/turn-diff", (request, response) => this.apiTurnDiff(request, response)],
     ["/api/events", (request, response) => this.apiEvents(request, response)],
   ]);
   private readonly uploadRoutes = new Map<
@@ -222,6 +227,7 @@ export class EasyCodeWebServer {
     this.staticRoot = assetsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../web");
     this.dataDir = dataDir;
     this.projectStorage = createStorage(this.dataDir);
+    this.turnDiffs = new TurnDiffStore(this.dataDir);
     this.broadcastLanguageValue = readLanguage(this.projectStorage);
     this.port.setLanguage(this.broadcastLanguageValue);
     this.projects = new ProjectIndex(this.projectStorage);
@@ -698,6 +704,22 @@ export class EasyCodeWebServer {
       throw new Error("Invalid history cursor.");
     const page = host.port.historyPage({ before, after, around });
     json(response, 200, { threadId: host.app.sessionInfo().threadId, epoch, ...page });
+  }
+
+  /** One file's saved diff from a finished request of an open conversation, redacted line by line. */
+  private apiTurnDiff(request: IncomingMessage, response: ServerResponse): void {
+    const params = new URL(request.url ?? "/api/turn-diff", this.origin).searchParams;
+    const host = this.hostFor(params.get("threadId"));
+    const turnId = params.get("turnId");
+    const filePath = params.get("path");
+    if (!turnId || !filePath || filePath.length > 4096) throw new Error("Choose a file of a finished request.");
+    const diff = this.turnDiffs.read(host.app.sessionInfo().threadId, turnId, filePath);
+    const result: WebTurnDiffResponse = {
+      diff: diff
+        ? safeDiff(diff, (line) => redactSensitiveInformation(sanitizeTerminalText(line, { allowSgr: false })))
+        : null,
+    };
+    json(response, 200, result);
   }
 
   /** Slash commands the Web composer offers. */

@@ -35,7 +35,6 @@ import { canGrantCommandPrefix, formatCommandApprovalPrefix } from "../command/a
 import type { Language } from "../i18n/language.js";
 import { translate } from "../i18n/catalog.js";
 import { toolRunContinuesAcross, turnContinuesAcross } from "../web-tool-run.js";
-import { safeDiff } from "./turn-diff.js";
 import type {
   WebChange,
   WebDecision,
@@ -576,6 +575,7 @@ export class WebInteraction implements AppInteractionPort {
   }
   turnCompleted(summary: Readonly<TurnSummary>): void {
     const web: WebTurnSummary = {
+      ...(summary.threadId && summary.turnId ? { threadId: summary.threadId, turnId: summary.turnId } : {}),
       durationMs: summary.durationMs,
       ...(summary.inputTokens === undefined ? {} : { inputTokens: summary.inputTokens }),
       ...(summary.outputTokens === undefined ? {} : { outputTokens: summary.outputTokens }),
@@ -583,7 +583,7 @@ export class WebInteraction implements AppInteractionPort {
         path: this.safe(file.path),
         change: file.change,
         ...(file.lines ? { lines: { added: file.lines.added, removed: file.lines.removed } } : {}),
-        ...(file.diff ? { diff: safeDiff(file.diff, (line) => this.safe(line)) } : {}),
+        ...(file.hasDiff ? { hasDiff: true } : {}),
       })),
     };
     // The entry that closed the turn carries the summary, as history replay does.

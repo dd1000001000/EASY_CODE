@@ -613,6 +613,14 @@
   border-top: 1px solid var(--ec-border-subtle);
   background: var(--ec-surface-subtle);
 }
+.file-diff-status {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--ec-border-subtle);
+  background: var(--ec-surface-subtle);
+  color: var(--ec-text-muted);
+  font-size: 12px;
+}
 .file-diff-scroll {
   max-height: 420px;
   overflow: auto;

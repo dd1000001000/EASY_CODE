@@ -9,8 +9,9 @@ import {
   DocumentAdd,
   DocumentDelete,
 } from "@element-plus/icons-vue";
-import type { WebTurnChangedFile } from "../../web-contracts.js";
-import type { FileChangeKind } from "../../ui/contracts.js";
+import type { WebTurnChangedFile, WebTurnDiffResponse } from "../../web-contracts.js";
+import type { FileChangeKind, TurnFileDiff } from "../../ui/contracts.js";
+import { request } from "../api.js";
 import type { MessageKey } from "../../i18n/catalog.js";
 import { t } from "../i18n.js";
 import FileDiffView from "./FileDiffView.vue";
@@ -24,17 +25,56 @@ const KIND_LABEL: Readonly<Record<FileChangeKind, MessageKey>> = {
 };
 const KIND_ICON = { created: DocumentAdd, modified: Document, deleted: DocumentDelete } as const;
 
-const props = defineProps<{ files: readonly WebTurnChangedFile[] }>();
+const props = defineProps<{
+  files: readonly WebTurnChangedFile[];
+  /** The request, for loading a file's saved diff when it is opened. */
+  threadId?: string;
+  turnId?: string;
+}>();
 const expanded = ref(false);
 const copiedPath = ref<string>();
 /** Files whose diff is open. */
 const openFiles = ref<Set<string>>(new Set());
+type DiffState = { status: "loading" } | { status: "ready"; diff: TurnFileDiff } | { status: "unavailable" };
+/** Diffs are loaded when a file is first opened, then kept while the answer is on screen. */
+const diffs = ref<Record<string, DiffState>>({});
+
+function canOpen(file: WebTurnChangedFile): boolean {
+  return file.hasDiff === true && Boolean(props.threadId && props.turnId);
+}
+
+async function loadDiff(path: string): Promise<void> {
+  diffs.value = { ...diffs.value, [path]: { status: "loading" } };
+  let state: DiffState = { status: "unavailable" };
+  try {
+    const query = new URLSearchParams({ threadId: props.threadId ?? "", turnId: props.turnId ?? "", path });
+    const { diff } = await request<WebTurnDiffResponse>(`/api/turn-diff?${query}`);
+    if (diff) state = { status: "ready", diff };
+  } catch {
+    // Shown as unavailable; closing and opening the file asks again.
+  }
+  diffs.value = { ...diffs.value, [path]: state };
+}
 
 function toggleFile(path: string): void {
   const next = new Set(openFiles.value);
-  if (next.has(path)) next.delete(path);
-  else next.add(path);
+  if (next.has(path)) {
+    next.delete(path);
+    if (diffs.value[path]?.status === "unavailable") {
+      const rest = { ...diffs.value };
+      delete rest[path];
+      diffs.value = rest;
+    }
+  } else {
+    next.add(path);
+    if (!diffs.value[path]) void loadDiff(path);
+  }
   openFiles.value = next;
+}
+
+function diffOf(path: string): TurnFileDiff | undefined {
+  const state = diffs.value[path];
+  return state?.status === "ready" ? state.diff : undefined;
 }
 
 const shown = computed(() => (expanded.value ? props.files : props.files.slice(0, VISIBLE_FILES)));
@@ -93,12 +133,15 @@ async function copyPath(path: string): Promise<void> {
             type="button"
             class="turn-change"
             :class="[`turn-change--${file.change}`, { 'is-open': openFiles.has(file.path) }]"
-            :title="file.diff ? `${file.path}\n${t('ui.showChanges')}` : `${file.path}\n${t('ui.noDiffAvailable')}`"
-            :aria-expanded="file.diff ? openFiles.has(file.path) : undefined"
-            :disabled="!file.diff"
+            :title="canOpen(file) ? `${file.path}\n${t('ui.showChanges')}` : `${file.path}\n${t('ui.noDiffAvailable')}`"
+            :aria-expanded="canOpen(file) ? openFiles.has(file.path) : undefined"
+            :disabled="!canOpen(file)"
             @click="toggleFile(file.path)"
           >
-            <ArrowRight v-if="file.diff" class="turn-change-chevron" /><span v-else class="turn-change-chevron"></span>
+            <ArrowRight v-if="canOpen(file)" class="turn-change-chevron" /><span
+              v-else
+              class="turn-change-chevron"
+            ></span>
             <component :is="KIND_ICON[file.change]" class="turn-change-icon" />
             <span class="turn-change-path"
               ><span class="turn-change-name">{{ split(file.path).name }}</span
@@ -120,7 +163,12 @@ async function copyPath(path: string): Promise<void> {
             <CopyDocument />
           </button>
         </div>
-        <FileDiffView v-if="file.diff && openFiles.has(file.path)" :path="file.path" :diff="file.diff" />
+        <template v-if="canOpen(file) && openFiles.has(file.path)">
+          <FileDiffView v-if="diffOf(file.path)" :path="file.path" :diff="diffOf(file.path)!" />
+          <p v-else class="file-diff-status" role="status">
+            {{ diffs[file.path]?.status === "loading" ? t("ui.diffLoading") : t("ui.diffUnavailable") }}
+          </p>
+        </template>
       </li>
     </ul>
     <button

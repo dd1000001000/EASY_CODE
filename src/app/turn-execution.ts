@@ -30,7 +30,8 @@ import { createId } from "../utils/ids.js";
 import { WorkspaceManager } from "../workspace/manager.js";
 import { ModelSelection } from "./model-selection.js";
 import { SubagentHost } from "./subagent-host.js";
-import { turnChangedFiles, turnFileText } from "./turn-changes.js";
+import { saveTurnDiffs, turnChangedFiles, turnFileText } from "./turn-changes.js";
+import { TurnDiffStore } from "../threads/turn-diff-store.js";
 import { renderPromptBundleText, stripPasteFailureMarkers } from "./text.js";
 import type { ActiveTurnSteering, ExecutePromptOptions } from "./types.js";
 
@@ -521,6 +522,8 @@ export class AppTurnExecution {
         this.ctx.terminal.write(`\n${result.text.trim()}\n\n`);
       }
       const summary = this.turnSummary(
+        result.threadId,
+        result.turnId,
         timing ? timing.completedAt - timing.startedAt : Date.now() - runStartedAt,
         usageBefore,
         changesBefore,
@@ -567,7 +570,7 @@ export class AppTurnExecution {
             path: file.path,
             change: file.change,
             ...(file.lines ? { lines: file.lines } : {}),
-            ...(file.diff ? { diff: file.diff } : {}),
+            ...(file.hasDiff ? { hasDiff: true } : {}),
           })),
         },
       });
@@ -576,20 +579,33 @@ export class AppTurnExecution {
     }
   }
 
-  /** Duration, tokens and files of the turn that just finished, from counters taken before it ran. */
+  /**
+   * Duration, tokens and files of the turn that just finished, from counters
+   * taken before it ran. The file diffs are saved for the page to load on
+   * demand; the summary only notes which files have one.
+   */
   private turnSummary(
+    threadId: string,
+    turnId: string,
     durationMs: number,
     usageBefore: ReturnType<AppTurnExecution["usageTotals"]>,
     changesBefore: number,
   ): TurnSummary {
     const usageAfter = this.usageTotals();
     const reported = usageAfter.reported > usageBefore.reported;
-    const changedFiles = turnChangedFiles(
-      this.ctx.workspace.getChangeSet().slice(changesBefore),
-      (relative) => this.ctx.workspace.pathGuard.resolveLexical(relative),
-      turnFileText(this.ctx.workspace),
+    const changedFiles = saveTurnDiffs(
+      turnChangedFiles(
+        this.ctx.workspace.getChangeSet().slice(changesBefore),
+        (relative) => this.ctx.workspace.pathGuard.resolveLexical(relative),
+        turnFileText(this.ctx.workspace),
+      ),
+      new TurnDiffStore(this.ctx.config.dataDir),
+      threadId,
+      turnId,
     );
     return {
+      threadId,
+      turnId,
       durationMs: Math.max(0, durationMs),
       ...(reported
         ? {

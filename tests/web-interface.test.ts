@@ -114,25 +114,13 @@ describe("Web conversation projection", () => {
               path: "src/app.ts",
               change: "created",
               lines: { added: 12, removed: 0 },
-              diff: {
-                truncated: true,
-                hunks: [
-                  {
-                    oldStart: 0,
-                    newStart: 1,
-                    lines: [
-                      "+token=ghp_1234567890123456789012345",
-                      "+const token = 'token=ghp_1234567890123456789012345';",
-                    ],
-                  },
-                ],
-              },
+              hasDiff: true,
             },
             {
               path: "old\u001B[2J.ts",
               change: "deleted",
               lines: { added: "many", removed: 3 },
-              diff: { truncated: false, hunks: [{ oldStart: 1, newStart: 0, lines: ["not a diff line"] }] },
+              hasDiff: "yes",
             },
             { path: "unknown.ts", change: "renamed" },
             { nonsense: true },
@@ -142,27 +130,15 @@ describe("Web conversation projection", () => {
       },
     ]);
     assert.deepEqual(entries.at(-1)?.turnSummary, {
+      // The page loads each file's diff from this request on demand.
+      threadId: "thread_test",
+      turnId,
       durationMs: 8_000,
       inputTokens: 1_200,
       outputTokens: 80,
       changedFiles: [
-        {
-          path: "src/app.ts",
-          change: "created",
-          lines: { added: 12, removed: 0 },
-          // Diff lines reach the page with secrets redacted.
-          diff: {
-            truncated: true,
-            hunks: [
-              {
-                oldStart: 0,
-                newStart: 1,
-                lines: ["+token=[REDACTED TOKEN]", "+const token = '[REDACTED TOKEN]';"],
-              },
-            ],
-          },
-        },
-        // A malformed diff is dropped, the file kept.
+        { path: "src/app.ts", change: "created", lines: { added: 12, removed: 0 }, hasDiff: true },
+        // Malformed counts and diff flags are dropped, the file kept.
         { path: "old.ts", change: "deleted" },
       ],
     });
@@ -257,35 +233,24 @@ describe("Web interaction host", () => {
       if (change.patch?.kind === "turn.completed") patches.push(change.patch.summary);
     });
     host.turnCompleted({
+      threadId: "thread_test",
+      turnId: "turn_test",
       durationMs: 45_000,
       inputTokens: 900,
       outputTokens: 120,
       changedFiles: [
-        {
-          path: "src/app.ts",
-          absolutePath: path.resolve("src/app.ts"),
-          change: "modified",
-          diff: {
-            truncated: false,
-            hunks: [{ oldStart: 3, newStart: 3, lines: ["+const token = 'token=ghp_1234567890123456789012345';"] }],
-          },
-        },
+        { path: "src/app.ts", absolutePath: path.resolve("src/app.ts"), change: "modified", hasDiff: true },
         { path: "bad\u001B[2Jname.ts", absolutePath: path.resolve("bad.ts"), change: "deleted" },
       ],
     });
     const summary = {
+      threadId: "thread_test",
+      turnId: "turn_test",
       durationMs: 45_000,
       inputTokens: 900,
       outputTokens: 120,
       changedFiles: [
-        {
-          path: "src/app.ts",
-          change: "modified",
-          diff: {
-            truncated: false,
-            hunks: [{ oldStart: 3, newStart: 3, lines: ["+const token = '[REDACTED TOKEN]';"] }],
-          },
-        },
+        { path: "src/app.ts", change: "modified", hasDiff: true },
         { path: "badname.ts", change: "deleted" },
       ],
     };

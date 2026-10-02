@@ -74,7 +74,12 @@ function itemKey(item: ConversationDisplayItem): string {
         <CompactionStatus v-if="item.kind === 'entry' && item.entry.compaction" :progress="item.entry.compaction" />
       </template>
       <TranscriptEntry v-if="turn.finalAnswer" :entry="turn.finalAnswer" />
-      <TurnChanges v-if="summary?.changedFiles.length" :files="summary.changedFiles" />
+      <TurnChanges
+        v-if="summary?.changedFiles.length"
+        :files="summary.changedFiles"
+        :thread-id="summary.threadId"
+        :turn-id="summary.turnId"
+      />
       <div v-if="tokens" class="turn-summary">{{ tokens }}</div>
     </template>
   </section>

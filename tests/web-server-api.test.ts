@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { EasyCodeApp } from "../src/app.js";
+import { TurnDiffStore } from "../src/threads/turn-diff-store.js";
 import { WebInteraction } from "../src/web-server/interaction.js";
 import { EasyCodeWebServer } from "../src/web-server/server.js";
 import { describe, it } from "./harness.js";
@@ -20,7 +21,9 @@ async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void
 }
 
 /** A hosted conversation with just what opening the page and its event stream use. */
-async function serve(run: (origin: string, host: WebInteraction, service: EasyCodeWebServer) => Promise<void>) {
+async function serve(
+  run: (origin: string, host: WebInteraction, service: EasyCodeWebServer, dataDir: string) => Promise<void>,
+) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-web-events-"));
   await writeFile(path.join(directory, "index.html"), "<!doctype html><title>test</title>");
   const host = new WebInteraction();
@@ -35,7 +38,7 @@ async function serve(run: (origin: string, host: WebInteraction, service: EasyCo
   } as unknown as EasyCodeApp;
   const service = new EasyCodeWebServer(app, host, directory, directory);
   try {
-    await run(await service.start(false), host, service);
+    await run(await service.start(false), host, service, directory);
   } finally {
     await service.stop().catch(() => undefined);
     host.close();
@@ -111,5 +114,42 @@ describe("Web event stream", () => {
       // Idle was already announced when the conversation opened; busy and idle again are the two changes.
       assert.equal(page.events.filter((name) => name === "status").length, 2);
       page.close();
+    }));
+});
+
+describe("Web turn diffs", () => {
+  it("serves one file's saved diff of an open conversation with secrets redacted", async () =>
+    serve(async (origin, _host, service, dataDir) => {
+      new TurnDiffStore(dataDir).write(
+        "thread_test",
+        "turn_1",
+        new Map([
+          [
+            "src/app.ts",
+            {
+              truncated: false,
+              hunks: [{ oldStart: 1, newStart: 1, lines: ["+const token = 'token=ghp_1234567890123456789012345';"] }],
+            },
+          ],
+        ]),
+      );
+      const cookie = `easy_code_web=${(service as unknown as { cookie: string }).cookie}`;
+      const get = (query: Record<string, string>) =>
+        fetch(`${origin}/api/turn-diff?${new URLSearchParams(query)}`, { headers: { Cookie: cookie } });
+
+      const found = await get({ threadId: "thread_test", turnId: "turn_1", path: "src/app.ts" });
+      assert.equal(found.status, 200);
+      assert.deepEqual(await found.json(), {
+        diff: {
+          truncated: false,
+          hunks: [{ oldStart: 1, newStart: 1, lines: ["+const token = '[REDACTED TOKEN]';"] }],
+        },
+      });
+      const missing = await get({ threadId: "thread_test", turnId: "turn_1", path: "src/other.ts" });
+      assert.deepEqual(await missing.json(), { diff: null });
+      // Only conversations open in this page, and only valid request ids.
+      assert.notEqual((await get({ threadId: "thread_other", turnId: "turn_1", path: "src/app.ts" })).status, 200);
+      assert.notEqual((await get({ threadId: "thread_test", turnId: "../x", path: "src/app.ts" })).status, 200);
+      assert.equal((await fetch(`${origin}/api/turn-diff?threadId=thread_test&turnId=turn_1&path=a`)).status, 401);
     }));
 });

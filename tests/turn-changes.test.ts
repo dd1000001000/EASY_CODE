@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 
-import { TurnFileText, turnChangedFiles, turnFileText } from "../src/app/turn-changes.js";
+import { TurnFileText, saveTurnDiffs, turnChangedFiles, turnFileText } from "../src/app/turn-changes.js";
 import type { FileChangeRecord } from "../src/core/types.js";
 import { describe, it } from "./harness.js";
 
@@ -25,6 +25,9 @@ function change(
     ...extra,
   };
 }
+
+const many = (count: number, prefix: string) =>
+  Array.from({ length: count }, (_, index) => `${prefix}${index}`).join("\n") + "\n";
 
 describe("files changed by one request", () => {
   it("classifies each file once as added, modified or deleted", () => {
@@ -113,21 +116,33 @@ describe("files changed by one request", () => {
     assert.equal(text.change("src/app.ts"), undefined);
   });
 
-  it("keeps diffs within the per-file and per-request line budgets", () => {
+  it("cuts one file's diff at the per-file limit and long lines at their own", () => {
     const text = new TurnFileText();
-    const many = (count: number, prefix: string) =>
-      Array.from({ length: count }, (_, index) => `${prefix}${index}`).join("\n") + "\n";
-    text.record({ type: "file_diff", path: "big.ts", before: "", after: many(500, "line ") });
+    text.record({ type: "file_diff", path: "big.ts", before: "", after: many(2_500, "line ") });
     text.record({ type: "file_diff", path: "long.ts", before: "", after: `${"x".repeat(1_000)}\n` });
     const files = turnChangedFiles([change("big.ts", "create"), change("long.ts", "create")], resolve, text);
     const [big, long] = files;
-    // The counts cover the whole file; the saved diff stops at 400 lines.
-    assert.deepEqual(big?.lines, { added: 500, removed: 0 });
+    // The counts cover the whole file; the saved diff stops at 2000 lines.
+    assert.deepEqual(big?.lines, { added: 2_500, removed: 0 });
     assert.equal(big?.diff?.truncated, true);
-    assert.equal(big?.diff?.hunks.flatMap((hunk) => hunk.lines).length, 400);
+    assert.equal(big?.diff?.hunks.flatMap((hunk) => hunk.lines).length, 2_000);
     const [line] = long?.diff?.hunks[0]?.lines ?? [];
     assert.equal(line?.length, 401);
     assert.ok(line?.startsWith("+x") && line.endsWith("…"));
+  });
+
+  it("keeps a diff for every file of a request that changes many files", () => {
+    const text = new TurnFileText();
+    const changes = Array.from({ length: 30 }, (_, index) => {
+      text.record({ type: "file_diff", path: `src/file-${index}.ts`, before: "", after: many(300, "line ") });
+      return change(`src/file-${index}.ts`, "create");
+    });
+    const files = turnChangedFiles(changes, resolve, text);
+    assert.equal(files.length, 30);
+    for (const file of files) {
+      assert.equal(file.diff?.truncated, false, file.path);
+      assert.equal(file.diff?.hunks.flatMap((hunk) => hunk.lines).length, 300, file.path);
+    }
   });
 
   it("gives line counts only to files no command changed, one collector per workspace", () => {
@@ -153,6 +168,49 @@ describe("files changed by one request", () => {
         ["src/app.ts", { added: 1, removed: 0 }],
         ["build.ts", undefined],
         ["notes.md", undefined],
+      ],
+    );
+  });
+
+  it("saves the diffs apart and keeps only a flag on the summary's files", () => {
+    const text = new TurnFileText();
+    text.record({ type: "file_diff", path: "src/app.ts", before: "a\n", after: "a\nb\n" });
+    const files = turnChangedFiles(
+      [change("src/app.ts", "update", { beforeHash: "a" }), change("dist/out.js", "generated")],
+      resolve,
+      text,
+    );
+    const saved: Array<[string, string, string[]]> = [];
+    const summary = saveTurnDiffs(
+      files,
+      { write: (threadId, turnId, diffs) => void saved.push([threadId, turnId, [...diffs.keys()]]) },
+      "thread_a",
+      "turn_1",
+    );
+    assert.deepEqual(saved, [["thread_a", "turn_1", ["src/app.ts"]]]);
+    assert.deepEqual(
+      summary.map((file) => [file.path, file.hasDiff, "diff" in file]),
+      [
+        ["src/app.ts", true, false],
+        ["dist/out.js", undefined, false],
+      ],
+    );
+    // Without a saved diff the files stay listed with their counts.
+    const unsaved = saveTurnDiffs(
+      files,
+      {
+        write: () => {
+          throw new Error("disk full");
+        },
+      },
+      "thread_a",
+      "turn_1",
+    );
+    assert.deepEqual(
+      unsaved.map((file) => [file.path, file.hasDiff, file.lines]),
+      [
+        ["src/app.ts", undefined, { added: 1, removed: 0 }],
+        ["dist/out.js", undefined, undefined],
       ],
     );
   });
