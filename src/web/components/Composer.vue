@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { ElButton, ElCard, ElImage, ElInput, ElScrollbar, ElTooltip } from "element-plus";
-import { CaretBottom, Close, Document, Loading, Plus, Top, VideoPause } from "@element-plus/icons-vue";
+import { CaretBottom, Close, Document, Folder, Loading, Plus, Top, VideoPause } from "@element-plus/icons-vue";
 import { discardImage, discardResource, uploadImage, uploadResource, type UploadedResource } from "../api.js";
 import {
   composeMessage,
@@ -18,6 +18,8 @@ import type { WebCommandEntry } from "../../web-command-catalog.js";
 import { useOutsideDismiss } from "../use-outside-dismiss.js";
 import { t } from "../i18n.js";
 import DecisionDialog from "./DecisionDialog.vue";
+import { useComposerMentions } from "../use-composer-mentions.js";
+import { useComposerHistory } from "../use-composer-history.js";
 
 interface DraftImage {
   id: string;
@@ -45,6 +47,8 @@ const props = defineProps<{
   settingsDisabled: boolean;
   decision: WebDecision | null;
   commands: readonly WebCommandEntry[];
+  /** Messages already sent in this conversation, oldest first, for ↑/↓. */
+  sentMessages: readonly string[];
 }>();
 const emit = defineEmits<{
   send: [text: string, imageIds: string[], resourceIds: string[]];
@@ -72,6 +76,23 @@ const sending = ref(false);
 const composing = ref(false);
 let lastCompositionEndAt = -Infinity;
 const fileInput = ref<HTMLInputElement>();
+const input = ref<InstanceType<typeof ElInput>>();
+const textarea = (): HTMLTextAreaElement | undefined => input.value?.textarea;
+const mentions = useComposerMentions({
+  threadId: () => props.threadId,
+  draft,
+  caret: () => textarea()?.selectionStart ?? draft.value.length,
+  setDraft(text, caret) {
+    draft.value = text;
+    void nextTick(() => {
+      const element = textarea();
+      element?.focus();
+      element?.setSelectionRange(caret, caret);
+      mentions.update();
+    });
+  },
+});
+const history = useComposerHistory(() => props.sentMessages, draft);
 const commandSuggestionsRoot = ref<{ $el: HTMLElement }>();
 const dismissedCommandDraft = ref<string>();
 const hasContent = computed(() =>
@@ -114,11 +135,13 @@ watch(
       unboundPastedTexts = [];
     }
     sending.value = false;
+    history.reset();
   },
   { immediate: true },
 );
 watch(draft, (value) => {
   dismissedCommandDraft.value = undefined;
+  mentions.update();
   if (props.threadId) localStorage.setItem(`easy-code-draft:${props.threadId}`, value);
   else unboundDraft = value;
 });
@@ -278,6 +301,7 @@ function sent(threadId?: string): void {
     resources.value = [];
     pastedTexts.value = [];
     sending.value = false;
+    history.reset();
   }
 }
 function failed(): void {
@@ -289,10 +313,31 @@ function keydown(event: Event | KeyboardEvent): void {
     if (event.key === "Enter") event.preventDefault();
     return;
   }
+  if (composing.value || event.isComposing) return;
+  if (mentions.keydown(event)) return;
+  if (historyKey(event)) {
+    event.preventDefault();
+    return;
+  }
   const action = composerEnterAction(event, composing.value, performance.now() - lastCompositionEndAt < 80);
   if (action === "none" || action === "newline") return;
   event.preventDefault();
   if (action === "send") send();
+}
+/** ↑ on the first line and ↓ on the last line move through sent messages; Escape leaves them. */
+function historyKey(event: KeyboardEvent): boolean {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  const element = textarea();
+  const caret = element?.selectionStart ?? 0;
+  const collapsed = !element || element.selectionStart === element.selectionEnd;
+  if (event.key === "Escape") return history.exit();
+  if (event.key === "ArrowUp" && collapsed && !draft.value.slice(0, caret).includes("\n")) {
+    // A draft being written is not replaced by ↑; only an empty one or one already recalled.
+    if (draft.value.trim() && history.position.value === undefined) return false;
+    return history.older();
+  }
+  if (event.key === "ArrowDown" && collapsed && !draft.value.slice(caret).includes("\n")) return history.newer();
+  return false;
 }
 function compositionStart(): void {
   composing.value = true;
@@ -333,6 +378,31 @@ defineExpose({ sent, failed });
             <ElButton v-for="command in commandMatches" :key="command.name" text @click="openCommand(command.name)"
               ><strong>/{{ command.name }}</strong
               ><span>{{ t(`command.${command.name}` as import("../../i18n/catalog.js").MessageKey) }}</span></ElButton
+            >
+          </div>
+        </ElScrollbar>
+      </ElCard>
+      <ElCard
+        v-if="mentions.suggestions.value.length"
+        class="composer-command-panel composer-mention-panel"
+        shadow="always"
+        :aria-label="t('ui.matchingFiles')"
+      >
+        <ElScrollbar max-height="min(40vh, 300px)">
+          <div class="composer-command-list" role="listbox">
+            <ElButton
+              v-for="(suggestion, position) in mentions.suggestions.value"
+              :key="suggestion.label"
+              text
+              role="option"
+              :aria-selected="position === mentions.active.value"
+              :class="{ 'is-active': position === mentions.active.value }"
+              @mousedown.prevent
+              @click="mentions.accept(position)"
+              ><component
+                :is="suggestion.label.endsWith('/') ? Folder : Document"
+                class="composer-mention-icon"
+              /><span>{{ suggestion.label }}</span></ElButton
             >
           </div>
         </ElScrollbar>
@@ -394,13 +464,41 @@ defineExpose({ sent, failed });
           </TransitionGroup>
         </div>
       </Transition>
+      <div v-if="mentions.references.value.length" class="composer-mentions" :aria-label="t('ui.referencedFiles')">
+        <span
+          v-for="reference in mentions.references.value"
+          :key="reference.path"
+          class="composer-mention-chip"
+          :title="reference.path"
+        >
+          <Folder v-if="reference.directory" class="composer-mention-icon" /><Document
+            v-else
+            class="composer-mention-icon"
+          /><span class="composer-mention-path">{{ reference.path }}</span
+          ><button
+            type="button"
+            class="composer-mention-remove"
+            :aria-label="t('ui.removeReference', { path: reference.path })"
+            :disabled="compacting || sending"
+            @click="mentions.remove(reference)"
+          >
+            <Close />
+          </button>
+        </span>
+      </div>
+      <span v-if="history.label.value" class="composer-history-label">{{
+        t("ui.historyPosition", { position: history.label.value })
+      }}</span>
       <div
         @paste.capture="paste"
         @keydown="keydown"
+        @keyup="mentions.update()"
+        @click="mentions.update()"
         @compositionstart="compositionStart"
         @compositionend="compositionEnd"
       >
         <ElInput
+          ref="input"
           :readonly="compacting"
           :aria-disabled="compacting || undefined"
           v-model="draft"

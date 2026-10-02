@@ -1,0 +1,118 @@
+/*
+ * Design tokens. Every colour in the page comes from here; the dark theme
+ * only redefines the values. Element Plus follows through its own variables
+ * (its dark set is enabled by the same `html.dark` class).
+ */
+:root {
+  color-scheme: light;
+  --ec-surface: #fff;
+  --ec-surface-subtle: #f5f7fb;
+  --ec-surface-muted: #f1f4fa;
+  --ec-fill-strong: #9eacc3;
+  --ec-border-subtle: #eef1f6;
+  --ec-border: #dce4f0;
+  --ec-border-strong: #cfd9ea;
+
+  --ec-text-strong: #14233b;
+  --ec-text: #263247;
+  --ec-text-secondary: #34425b;
+  --ec-text-tertiary: #52637d;
+  --ec-text-muted: #64748b;
+  --ec-text-subtle: #75839a;
+  --ec-text-faint: #8492a7;
+  --ec-text-disabled: #9ca8b9;
+  --ec-on-accent: #fff;
+
+  --ec-accent: #3469d2;
+  --ec-accent-strong: #2455b2;
+  --ec-accent-ink: #243d72;
+  --ec-accent-light: #6e90d0;
+  --ec-accent-soft: #e6edfc;
+  --ec-accent-surface: #eef3fc;
+  --ec-accent-border: #bfd2f5;
+  --ec-accent-border-soft: #d7e4ff;
+  --ec-accent-glow: #4f7cdf1a;
+
+  --ec-danger: #bd4049;
+  --ec-danger-strong: #a9323d;
+  --ec-danger-soft: #f9e9ea;
+  --ec-danger-border: #f1d2d5;
+  --ec-success: #37b47b;
+  --ec-success-text: #24825c;
+  --ec-warning: #e5a43b;
+  --ec-warning-text: #a57226;
+
+  --ec-shadow: #24344e26;
+  --ec-shadow-soft: #12223d0b;
+
+  --el-border-radius-base: 8px;
+}
+
+/* Element Plus derives hover and disabled shades from these at build time, so they are set here too. */
+:root {
+  --el-color-primary: var(--ec-accent);
+  --el-color-primary-light-3: #7196e0;
+  --el-color-primary-light-5: #9ab4e9;
+  --el-color-primary-light-7: #c2d2f2;
+  --el-color-primary-light-8: #d6e1f6;
+  --el-color-primary-light-9: #ebf0fb;
+  --el-color-primary-dark-2: #2a54a8;
+}
+html.dark {
+  --el-color-primary: var(--ec-accent);
+  --el-color-primary-light-3: #466bb2;
+  --el-color-primary-light-5: #39548a;
+  --el-color-primary-light-7: #2b3d62;
+  --el-color-primary-light-8: #24324d;
+  --el-color-primary-light-9: #1d2639;
+  --el-color-primary-dark-2: #7ca4f2;
+  --el-bg-color: var(--ec-surface);
+  --el-bg-color-overlay: var(--ec-surface);
+  --el-border-color: var(--ec-border);
+  --el-border-color-light: var(--ec-border-subtle);
+  --el-text-color-primary: var(--ec-text);
+  --el-text-color-regular: var(--ec-text-secondary);
+}
+
+html.dark {
+  color-scheme: dark;
+  --ec-surface: #161b25;
+  --ec-surface-subtle: #10141c;
+  --ec-surface-muted: #1b2130;
+  --ec-fill-strong: #4a566b;
+  --ec-border-subtle: #212937;
+  --ec-border: #2a3344;
+  --ec-border-strong: #37425a;
+
+  --ec-text-strong: #eef2f8;
+  --ec-text: #dbe2ec;
+  --ec-text-secondary: #c4ccd9;
+  --ec-text-tertiary: #a8b3c4;
+  --ec-text-muted: #95a1b3;
+  --ec-text-subtle: #8591a4;
+  --ec-text-faint: #758195;
+  --ec-text-disabled: #5d687b;
+  --ec-on-accent: #fff;
+
+  --ec-accent: #5b8def;
+  --ec-accent-strong: #86abf6;
+  --ec-accent-ink: #cddcfb;
+  --ec-accent-light: #7f9fdc;
+  --ec-accent-soft: #1f2d4b;
+  --ec-accent-surface: #182238;
+  --ec-accent-border: #34497a;
+  --ec-accent-border-soft: #2b3c62;
+  --ec-accent-glow: #5b8def33;
+
+  --ec-danger: #e0666e;
+  --ec-danger-strong: #c9444d;
+  --ec-danger-soft: #3a1f25;
+  --ec-danger-border: #5a2d34;
+  --ec-success: #3fbf85;
+  --ec-success-text: #62d29e;
+  --ec-warning: #e8ac4a;
+  --ec-warning-text: #e2b366;
+
+  --ec-shadow: #00000066;
+  --ec-shadow-soft: #00000033;
+}

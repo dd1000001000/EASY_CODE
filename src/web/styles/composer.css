@@ -1,0 +1,639 @@
+.image-tag {
+  border-radius: 7px;
+  background: var(--ec-accent-surface);
+  color: var(--ec-accent);
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.image-tag button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  margin-left: 3px;
+}
+.composer-wrap {
+  position: relative;
+  z-index: 3;
+  padding: 13px 25px 7px;
+  background: linear-gradient(transparent, var(--ec-surface) 15%);
+}
+.composer {
+  position: relative;
+  max-width: 930px;
+  margin: auto;
+  border: 1px solid var(--ec-border-strong);
+  border-radius: 16px;
+  box-shadow: 0 6px 24px var(--ec-shadow-soft);
+  background: var(--ec-surface);
+  padding: 13px;
+}
+.composer:focus-within {
+  border-color: var(--ec-accent);
+  box-shadow: 0 0 0 3px var(--ec-accent-glow);
+}
+.composer .el-textarea__inner {
+  box-shadow: none;
+  padding: 2px 0;
+  color: var(--ec-text);
+  font-size: 13px;
+  line-height: 1.55;
+  resize: none;
+}
+.composer .el-textarea__inner:focus {
+  box-shadow: none;
+}
+.composer-bottom,
+.composer-actions,
+.composer-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+}
+.composer-tools {
+  font-size: 11px;
+  color: var(--ec-text-disabled);
+}
+.composer-actions {
+  justify-content: flex-end;
+}
+.composer-actions .el-button + .el-button {
+  margin-left: 0;
+}
+.composer-decision-panel.el-card {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 9px);
+  width: min(420px, 100%);
+  z-index: 20;
+  border-radius: 14px;
+  border-color: var(--ec-border);
+  box-shadow: 0 16px 46px var(--ec-shadow);
+}
+.composer-decision-panel--left.el-card {
+  right: auto;
+  left: 0;
+}
+.composer-decision-panel--orchestration.el-card {
+  right: auto;
+  left: min(180px, 20vw);
+}
+.composer-decision-panel--mode.el-card {
+  right: auto;
+  left: min(300px, 30vw);
+}
+.composer-decision-panel .el-card__header {
+  padding: 10px 13px;
+}
+.composer-decision-panel .el-card__body {
+  padding: 7px;
+}
+.decision-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ec-text-secondary);
+  font-size: 12px;
+}
+.decision-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.decision-header .el-button {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+.decision-content {
+  padding: 2px 4px 4px;
+}
+.decision-description {
+  background: var(--ec-surface-subtle);
+  padding: 9px;
+  border-radius: 8px;
+  max-height: 180px;
+  overflow: auto;
+  margin: 2px 0 9px;
+}
+.decision-options {
+  display: grid;
+  gap: 2px;
+}
+.decision-options .el-button {
+  width: 100%;
+  height: auto;
+  min-height: 37px;
+  margin: 0;
+  padding: 8px 9px;
+  white-space: normal;
+  justify-content: flex-start;
+  text-align: left;
+}
+.decision-options .el-button > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+.decision-option-copy {
+  min-width: 0;
+}
+.decision-options strong,
+.decision-options small {
+  display: block;
+}
+.decision-options small {
+  margin-top: 3px;
+  color: var(--ec-text-faint);
+  font-weight: 400;
+}
+.decision-options .is-selected {
+  background: var(--ec-accent-surface);
+  color: var(--ec-accent-strong);
+}
+.decision-selected-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--ec-accent);
+}
+.decision-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.decision-actions .el-button + .el-button {
+  margin-left: 0;
+}
+.composer-command-panel.el-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 9px);
+  z-index: 19;
+  border-radius: 14px;
+  border-color: var(--ec-border);
+  box-shadow: 0 16px 46px var(--ec-shadow);
+}
+.composer-command-panel .el-card__body {
+  padding: 6px;
+}
+.composer-command-list {
+  display: grid;
+  gap: 2px;
+}
+.composer-command-list .el-button {
+  justify-content: flex-start;
+  width: 100%;
+  margin: 0;
+  padding: 8px 12px;
+  height: auto;
+  min-height: 40px;
+  text-align: left;
+  color: var(--ec-text-secondary);
+}
+.composer-command-list .el-button > span {
+  display: grid;
+  grid-template-columns: minmax(105px, 25%) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.composer-command-list .el-button strong {
+  font-size: 13px;
+}
+.composer-command-list .el-button span span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ec-text-subtle);
+  font-size: 12px;
+  font-weight: 400;
+}
+.composer-command-list .el-button:hover {
+  background: var(--ec-accent-surface);
+  color: var(--ec-accent-strong);
+}
+.web-command-panel.el-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 9px);
+  z-index: 21;
+  border-radius: 14px;
+  border-color: var(--ec-border);
+  box-shadow: 0 16px 46px var(--ec-shadow);
+}
+.web-command-panel .el-card__body {
+  padding: 10px 13px;
+}
+.web-command-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 9px;
+  border-bottom: 1px solid var(--ec-border);
+}
+.web-command-heading > div {
+  display: grid;
+  gap: 3px;
+}
+.web-command-heading strong {
+  font-size: 13px;
+  color: var(--ec-text-secondary);
+}
+.web-command-heading small,
+.web-command-note {
+  font-size: 12px;
+  color: var(--ec-text-subtle);
+}
+.web-command-content {
+  padding: 12px 3px 3px;
+}
+.web-command-choice-grid,
+.web-command-actions,
+.web-command-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.web-command-choice-grid .el-button + .el-button,
+.web-command-actions .el-button + .el-button {
+  margin-left: 0;
+}
+.web-command-choice-list {
+  display: grid;
+  gap: 4px;
+}
+.web-command-choice-list .el-button {
+  justify-content: flex-start;
+  height: auto;
+  margin: 0;
+  padding: 9px;
+  text-align: left;
+}
+.web-command-choice-list .el-button > span,
+.web-command-choice-list .el-button > span > span {
+  display: grid;
+  gap: 2px;
+}
+.web-command-choice-list small {
+  font-weight: 400;
+  color: var(--ec-text-subtle);
+}
+.web-command-help-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ec-border-subtle);
+  color: var(--ec-text-tertiary);
+  font-size: 12px;
+}
+.web-command-section-title {
+  display: block;
+  margin: 8px 0;
+  color: var(--ec-text-tertiary);
+  font-size: 12px;
+}
+.web-command-records {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.web-command-record {
+  padding: 10px;
+  border: 1px solid var(--ec-border);
+  border-radius: 9px;
+  color: var(--ec-text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.web-command-record-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.web-command-record p {
+  margin: 7px 0;
+  white-space: pre-wrap;
+}
+.web-command-record small {
+  color: var(--ec-text-faint);
+}
+.web-command-record .el-button {
+  margin-left: 0;
+}
+.web-command-record > .el-button {
+  margin-top: 8px;
+}
+.web-command-nested {
+  margin-top: 10px;
+}
+.web-command-nested > strong {
+  font-size: 12px;
+  color: var(--ec-text-tertiary);
+}
+.web-command-nested pre,
+.web-command-text {
+  margin: 5px 0;
+  padding: 9px;
+  border-radius: 8px;
+  background: var(--ec-surface-subtle);
+  color: var(--ec-text-tertiary);
+  font:
+    12px/1.5 "Cascadia Code",
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .composer-wrap {
+    padding: 8px;
+  }
+}
+.composer-attachment-tray {
+  display: grid;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+  opacity: 1;
+  transition:
+    grid-template-rows 0.2s cubic-bezier(0.2, 0.75, 0.25, 1),
+    opacity 0.14s ease;
+}
+.composer-attachment-tray-enter-from,
+.composer-attachment-tray-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+.composer-attachment-tray-enter-active,
+.composer-attachment-tray-leave-active {
+  will-change: grid-template-rows, opacity;
+}
+.composer-attachments {
+  display: flex;
+  min-height: 0;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 1px 0 12px;
+  overflow: hidden;
+}
+.composer-attachment-enter-active,
+.composer-attachment-leave-active {
+  transition:
+    opacity 0.16s ease,
+    transform 0.2s cubic-bezier(0.2, 0.75, 0.25, 1);
+  will-change: transform, opacity;
+}
+.composer-attachment-enter-from,
+.composer-attachment-leave-to {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+}
+.composer-attachment-move {
+  transition: transform 0.2s cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+.composer-image-card,
+.composer-text-card {
+  position: relative;
+  border: 1px solid var(--ec-border);
+  border-radius: 10px;
+  background: var(--ec-surface-subtle);
+  overflow: hidden;
+}
+.composer-image-card {
+  width: 148px;
+  height: 112px;
+  flex: none;
+}
+.composer-image-card .el-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.composer-image-card .el-image__inner {
+  padding: 5px;
+}
+.attachment-remove.el-button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  background: var(--ec-surface);
+  color: var(--ec-text-tertiary);
+  border-color: var(--ec-border);
+  box-shadow: 0 1px 5px var(--ec-shadow);
+}
+.composer-text-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: min(100%, 300px);
+  height: 112px;
+  padding: 12px 32px 10px 11px;
+  color: var(--ec-text-muted);
+  font-size: 11px;
+}
+.composer-text-card--uploading {
+  background: var(--ec-accent-surface);
+  border-color: var(--ec-border-strong);
+  color: var(--ec-text-subtle);
+}
+.composer-text-card > div {
+  min-width: 0;
+}
+.composer-text-card strong {
+  display: block;
+  color: var(--ec-text-tertiary);
+  margin-bottom: 6px;
+}
+.composer-text-card span {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.composer-text-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--ec-accent-light);
+}
+.composer-upload-spinner {
+  animation: spin 0.9s linear infinite;
+}
+.composer-setting.el-button {
+  margin: 0;
+  padding: 5px 6px;
+  height: 29px;
+  color: var(--ec-text-muted);
+  font-size: 11px;
+}
+.composer-setting.el-button > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.composer-setting-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-setting svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+.composer-model.el-button {
+  max-width: min(42vw, 330px);
+}
+.composer-approval.el-button {
+  max-width: 160px;
+}
+.composer-orchestration.el-button {
+  max-width: 130px;
+}
+.composer-mode.el-button {
+  max-width: 75px;
+}
+.composer-submit.el-button {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  margin: 0;
+}
+.composer--unbound .composer-tools > .el-button:disabled,
+.composer--unbound .composer-setting.el-button:disabled {
+  opacity: 1;
+}
+@media (max-width: 700px) {
+  .composer-model.el-button {
+    max-width: 38vw;
+  }
+  .composer-decision-panel--orchestration.el-card,
+  .composer-decision-panel--mode.el-card {
+    left: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-attachment-tray,
+  .composer-attachment-enter-active,
+  .composer-attachment-leave-active,
+  .composer-attachment-move {
+    transition: none !important;
+  }
+  .composer-upload-spinner {
+    animation: none !important;
+  }
+}
+.composer--compacting .el-textarea__inner {
+  background: transparent;
+  cursor: default;
+  box-shadow: none !important;
+}
+.composer--compacting .el-textarea__inner::placeholder {
+  color: var(--ec-text-disabled);
+}
+.composer--compacting:focus-within {
+  border-color: var(--ec-border-strong);
+}
+.composer-bottom {
+  flex-wrap: wrap;
+}
+.composer-tools {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.composer-command-list .el-button.is-active {
+  background: var(--ec-accent-surface);
+  color: var(--ec-accent-strong);
+}
+.composer-mention-panel .composer-command-list .el-button > span {
+  display: flex;
+  gap: 8px;
+}
+.composer-mention-panel .composer-command-list .el-button span span {
+  color: inherit;
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+}
+.composer-mention-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--ec-accent-light);
+}
+.composer-mentions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 2px 8px;
+}
+.composer-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border: 1px solid var(--ec-accent-border);
+  border-radius: 8px;
+  background: var(--ec-accent-surface);
+  color: var(--ec-accent-ink);
+}
+.composer-mention-path {
+  min-width: 0;
+  overflow: hidden;
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-mention-remove {
+  display: inline-flex;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 3px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ec-text-subtle);
+}
+.composer-mention-remove:hover:not(:disabled) {
+  background: var(--ec-accent-soft);
+  color: var(--ec-accent-strong);
+}
+.composer-history-label {
+  position: absolute;
+  top: -11px;
+  right: 18px;
+  padding: 1px 9px;
+  border: 1px solid var(--ec-accent-border);
+  border-radius: 999px;
+  background: var(--ec-surface);
+  color: var(--ec-accent-strong);
+  font-size: 11px;
+}

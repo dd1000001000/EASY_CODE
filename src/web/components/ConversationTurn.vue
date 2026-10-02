@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { ConversationDisplayItem, ConversationTurnDisplay } from "../display-content.js";
-import { t } from "../i18n.js";
+import { formatTokenCount } from "../../cli/token-count.js";
+import { formatDuration } from "../../ui/duration.js";
+import { language, t } from "../i18n.js";
 import TranscriptEntry from "./TranscriptEntry.vue";
 import ToolGroup from "./ToolGroup.vue";
 import CompactionStatus from "./CompactionStatus.vue";
+import TurnChanges from "./TurnChanges.vue";
 
 const props = defineProps<{ turn: ConversationTurnDisplay }>();
 const process = ref<HTMLDetailsElement>();
@@ -14,26 +17,16 @@ const compactions = computed(() =>
 const processItems = computed(() =>
   props.turn.processItems.filter((item) => item.kind !== "entry" || !item.entry.compaction),
 );
+const summary = computed(() => (props.turn.status === "completed" ? props.turn.summary : undefined));
+const tokens = computed(() =>
+  summary.value?.inputTokens !== undefined && summary.value.outputTokens !== undefined
+    ? `↑ ${formatTokenCount(summary.value.inputTokens)} ↓ ${formatTokenCount(summary.value.outputTokens)} tokens`
+    : undefined,
+);
 
-function duration(milliseconds: number): string {
-  let seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const days = Math.floor(seconds / 86_400);
-  seconds %= 86_400;
-  const hours = Math.floor(seconds / 3_600);
-  seconds %= 3_600;
-  const minutes = Math.floor(seconds / 60);
-  seconds %= 60;
-  return [
-    days ? `${days}${t("ui.durationDay")}` : "",
-    hours ? `${hours}${t("ui.durationHour")}` : "",
-    minutes ? `${minutes}${t("ui.durationMinute")}` : "",
-    `${seconds}${t("ui.durationSecond")}`,
-  ]
-    .filter(Boolean)
-    .join("");
-}
 function elapsed(): string {
-  return duration(Math.max(0, (props.turn.completedAt ?? props.turn.startedAt) - props.turn.startedAt));
+  const turn = props.turn;
+  return formatDuration((turn.completedAt ?? turn.startedAt) - turn.startedAt, language.value);
 }
 function closeNestedDetails(root: HTMLDetailsElement): void {
   for (const detail of root.querySelectorAll<HTMLDetailsElement>("details[open]")) detail.open = false;
@@ -81,6 +74,8 @@ function itemKey(item: ConversationDisplayItem): string {
         <CompactionStatus v-if="item.kind === 'entry' && item.entry.compaction" :progress="item.entry.compaction" />
       </template>
       <TranscriptEntry v-if="turn.finalAnswer" :entry="turn.finalAnswer" />
+      <TurnChanges v-if="summary?.changedFiles.length" :files="summary.changedFiles" />
+      <div v-if="tokens" class="turn-summary">{{ tokens }}</div>
     </template>
   </section>
 </template>

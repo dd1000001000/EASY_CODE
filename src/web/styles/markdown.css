@@ -1,0 +1,119 @@
+.markdown-message {
+  white-space: normal;
+}
+.markdown-message > :first-child {
+  margin-top: 0;
+}
+.markdown-message > :last-child {
+  margin-bottom: 0;
+}
+.markdown-message p,
+.markdown-message ul,
+.markdown-message ol,
+.markdown-message blockquote {
+  margin: 0 0 10px;
+}
+.markdown-message ul,
+.markdown-message ol {
+  padding-left: 22px;
+}
+.markdown-message li + li {
+  margin-top: 3px;
+}
+.markdown-message a {
+  color: var(--ec-accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-message h1,
+.markdown-message h2,
+.markdown-message h3 {
+  line-height: 1.35;
+  margin: 17px 0 8px;
+}
+.markdown-message h1 {
+  font-size: 20px;
+}
+.markdown-message h2 {
+  font-size: 17px;
+}
+.markdown-message h3 {
+  font-size: 15px;
+}
+.markdown-message blockquote {
+  border-left: 3px solid var(--ec-border-strong);
+  padding-left: 12px;
+  color: var(--ec-text-muted);
+}
+.markdown-message :not(pre) > code {
+  background: var(--ec-surface-muted);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font:
+    12px/1.5 Consolas,
+    monospace;
+}
+.markdown-message table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+.markdown-message th,
+.markdown-message td {
+  border: 1px solid var(--ec-border);
+  padding: 5px 9px;
+  text-align: left;
+}
+.markdown-code-block {
+  border: 1px solid var(--ec-border);
+  border-radius: 9px;
+  overflow: hidden;
+  margin: 10px 0;
+  background: var(--ec-surface-subtle);
+}
+.markdown-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 11px;
+  border-bottom: 1px solid var(--ec-border);
+  color: var(--ec-text-muted);
+  font:
+    11px/1.4 "Segoe UI",
+    Arial,
+    sans-serif;
+}
+.markdown-code-header button {
+  border: 0;
+  background: transparent;
+  color: var(--ec-accent);
+  padding: 3px 5px;
+}
+.markdown-code-block pre {
+  margin: 0;
+  overflow-x: auto;
+}
+.markdown-code-block pre code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+  padding: 11px 13px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+/* Shiki writes both GitHub themes as CSS variables; the page's theme picks one. */
+.markdown-code-block .shiki {
+  color: var(--shiki-light, #24292e);
+}
+.markdown-code-block .shiki span {
+  color: var(--shiki-light);
+}
+html.dark .markdown-code-block .shiki {
+  color: var(--shiki-dark, #e1e4e8);
+}
+html.dark .markdown-code-block .shiki span {
+  color: var(--shiki-dark);
+}

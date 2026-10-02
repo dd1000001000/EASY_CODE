@@ -35,7 +35,7 @@ const label = computed(() => compactionLabel(props.progress, language.value === 
 <style scoped>
 .compaction-status {
   margin: 20px 0 24px;
-  color: #66758d;
+  color: var(--ec-text-muted);
   font-size: 13px;
   line-height: 1.7;
   font-variant-numeric: tabular-nums;
@@ -46,6 +46,6 @@ const label = computed(() => compactionLabel(props.progress, language.value === 
 }
 .compaction-status .compaction-reason {
   margin-top: 6px;
-  color: #8a7890;
+  color: var(--ec-text-subtle);
 }
 </style>

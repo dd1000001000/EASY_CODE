@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { WebEntry } from "../../web-contracts.js";
 import MarkdownMessage from "./MarkdownMessage.vue";
+import ToolStatus from "./ToolStatus.vue";
+import { toolTarget } from "../display-content.js";
 import { t } from "../i18n.js";
 defineProps<{ entry: WebEntry }>();
 function preview(text: string): string {
@@ -32,8 +34,10 @@ function characterCount(text: string): number {
     </details>
     <details v-else-if="entry.kind === 'tool'" class="disclosure tool-disclosure">
       <summary>
-        <span class="disclosure-label">{{ t("ui.tool") }} · {{ characterCount(entry.text) }} {{ t("ui.chars") }}</span
-        ><span class="disclosure-preview">{{ preview(entry.text) }}</span>
+        <ToolStatus :status="entry.toolStatus" /><span class="disclosure-label">{{
+          entry.toolName || t("ui.tool")
+        }}</span
+        ><span class="disclosure-preview">{{ toolTarget(entry) }}</span>
       </summary>
       <div class="entry-text disclosure-body">{{ entry.text }}</div>
       <dl v-if="entry.toolDetails?.length" class="tool-detail-list">

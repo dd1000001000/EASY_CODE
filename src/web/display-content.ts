@@ -1,4 +1,4 @@
-import type { WebEntry, WebEntryKind } from "../web-contracts.js";
+import type { WebEntry, WebEntryKind, WebTurnSummary } from "../web-contracts.js";
 import type { ProjectItem, ThreadItem } from "./api.js";
 
 const conversationKinds = new Set<WebEntryKind>(["user", "assistant", "thinking", "tool", "plan"]);
@@ -28,6 +28,8 @@ export interface ConversationTurnDisplay {
   finalAnswer?: WebEntry;
   startedAt: number;
   completedAt?: number;
+  /** Tokens and changed files of a finished turn, when the Runtime reported them. */
+  summary?: WebTurnSummary;
 }
 
 export interface ViewportRange {
@@ -117,6 +119,7 @@ export function groupConversationTurns(entries: readonly WebEntry[]): Conversati
       );
     const terminal = turnEntries.find((entry) => entry.turnCompletedAt !== undefined);
     const completedAt = terminal?.turnCompletedAt;
+    const summary = terminal?.turnSummary ?? turnEntries.find((entry) => entry.turnSummary)?.turnSummary;
     const processEntries = turnEntries.filter((entry) => entry !== request && entry !== finalAnswer);
     return {
       id,
@@ -131,8 +134,15 @@ export function groupConversationTurns(entries: readonly WebEntry[]): Conversati
         turnEntries[0]?.timestamp ??
         0,
       ...(completedAt !== undefined ? { completedAt } : {}),
+      ...(summary ? { summary } : {}),
     };
   });
+}
+
+/** What a tool call acted on (a file, a command, a task), for its one-line row. */
+export function toolTarget(entry: WebEntry): string {
+  const detail = entry.toolDetails?.find((item) => item.value.trim());
+  return detail ? detail.value.replace(/\s+/gu, " ").trim() : "";
 }
 
 export function displayProject(

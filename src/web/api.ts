@@ -61,6 +61,11 @@ export async function fetchHistoryPage(
   return request<FetchedHistoryPage>(`/api/history?${query.toString()}`);
 }
 
+/** Workspace files for `@` references; empty while the conversation is still listing them. */
+export async function fetchMentionPaths(threadId: string): Promise<string[]> {
+  return (await request<{ paths: string[] }>(`/api/mentions?${new URLSearchParams({ threadId }).toString()}`)).paths;
+}
+
 export async function request<T>(route: string, data?: unknown): Promise<T> {
   const response = await fetch(route, {
     method: data === undefined ? "GET" : "POST",
