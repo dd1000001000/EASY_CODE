@@ -52,6 +52,11 @@ interface HostedThread {
 }
 /** Enough for large repositories while keeping the response small. */
 const MAX_MENTION_PATHS = 20_000;
+/**
+ * Events a page has not read yet stay in memory. A page that falls this far
+ * behind is disconnected; EventSource reconnects and starts from a snapshot.
+ */
+const MAX_UNSENT_EVENT_BYTES = 16 * 1024 * 1024;
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -61,6 +66,12 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 };
+
+function sendEvent(stream: ServerResponse, event: string): void {
+  if (stream.destroyed) return;
+  if (stream.writableLength > MAX_UNSENT_EVENT_BYTES) stream.destroy();
+  else stream.write(event);
+}
 
 function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -139,6 +150,7 @@ export class EasyCodeWebServer {
   private readonly projects: ProjectIndex;
   private readonly projectStorage: EasyCodeStorage;
   private broadcastLanguageValue: Language = "en_us";
+  private broadcastStatusValue?: string;
   private readonly dataDir: string;
   // api() tries GET reads, then raw-body uploads, then JSON POST routes. The JSON body is read
   // (and validated) before an unknown POST route is rejected.
@@ -293,7 +305,10 @@ export class EasyCodeWebServer {
 
   private broadcastStatus(): void {
     const data = JSON.stringify({ runningThreadIds: this.busyThreadIds() });
-    for (const stream of this.streams) if (!stream.destroyed) stream.write(`event: status\ndata: ${data}\n\n`);
+    // Sent after every patch; only a change is news, and new pages get it in their snapshot.
+    if (data === this.broadcastStatusValue) return;
+    this.broadcastStatusValue = data;
+    for (const stream of this.streams) sendEvent(stream, `event: status\ndata: ${data}\n\n`);
   }
 
   private broadcastLanguage(): void {
@@ -303,7 +318,7 @@ export class EasyCodeWebServer {
     this.port.setLanguage(language);
     for (const host of this.hosts.values()) host.port.setLanguage(language);
     const data = JSON.stringify({ language });
-    for (const stream of this.streams) if (!stream.destroyed) stream.write(`event: language\ndata: ${data}\n\n`);
+    for (const stream of this.streams) sendEvent(stream, `event: language\ndata: ${data}\n\n`);
   }
 
   private attachHost(app: EasyCodeApp, port: WebInteraction): HostedThread {
@@ -321,7 +336,7 @@ export class EasyCodeWebServer {
           ? { kind: "entries.reset", entries: port.historyPage().entries, history: port.historyState() }
           : change.patch;
       const data = JSON.stringify({ threadId, sequence: change.sequence, patch });
-      for (const stream of this.streams) if (!stream.destroyed) stream.write(`event: patch\ndata: ${data}\n\n`);
+      for (const stream of this.streams) sendEvent(stream, `event: patch\ndata: ${data}\n\n`);
       this.broadcastStatus();
     });
     this.hosts.set(threadId, host);
@@ -712,7 +727,7 @@ export class EasyCodeWebServer {
     response.write(`event: snapshot\ndata: ${JSON.stringify(this.snapshot())}\n\n`);
     const heartbeat = setInterval(() => {
       this.broadcastLanguage();
-      if (!response.destroyed) response.write(": heartbeat\n\n");
+      sendEvent(response, ": heartbeat\n\n");
     }, 25_000);
     request.once("close", () => {
       clearInterval(heartbeat);

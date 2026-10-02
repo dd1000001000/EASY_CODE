@@ -122,6 +122,13 @@ export function useConversation(transcript: Ref<HTMLElement | undefined>, hooks:
         ...view.value,
         entries: view.value.entries.map((entry) => (entry.id === patch.entry.id ? patch.entry : entry)),
       };
+    else if (patch.kind === "entry.delta")
+      view.value = {
+        ...view.value,
+        entries: view.value.entries.map((entry) =>
+          entry.id === patch.id ? { ...entry, text: entry.text + patch.text } : entry,
+        ),
+      };
     else if (patch.kind === "entries.reset") {
       view.value = { ...view.value, entries: patch.entries };
       if (patch.history) history.value = patch.history;

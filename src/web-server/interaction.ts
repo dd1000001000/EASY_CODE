@@ -51,6 +51,11 @@ import type {
 import type { ThreadResourceAttachment } from "../resources/types.js";
 
 export const WEB_HISTORY_PAGE_SIZE = 80;
+/**
+ * Streamed text is sent at most this often. Sending every token re-sent the
+ * whole entry and re-redacted it, which grows with the square of its length.
+ */
+const STREAM_FLUSH_MS = 50;
 function userMarker(entry: WebEntry): WebHistoryMarker {
   return {
     id: entry.id,
@@ -98,6 +103,9 @@ export class WebInteraction implements AppInteractionPort {
   private currentTurnStartedAt?: number;
   private externalOperation?: AbortController;
   private language: Language = "en_us";
+  /** Unredacted text of the answer and thinking being streamed, redacted whole when flushed. */
+  private readonly streamText = new Map<string, string>();
+  private streamTimer?: ReturnType<typeof setTimeout>;
 
   setLanguage(language: Language): void {
     this.language = language;
@@ -164,6 +172,7 @@ export class WebInteraction implements AppInteractionPort {
     return () => this.listeners.delete(listener);
   }
   loadHistory(entries: readonly WebEntry[]): void {
+    this.discardStreams();
     this.compaction = [...entries].reverse().find((entry) => entry.compaction)?.compaction ?? null;
     this.entries = entries.map((entry) => ({ ...entry }));
     this.pendingToolEntries = [];
@@ -314,6 +323,8 @@ export class WebInteraction implements AppInteractionPort {
     toolStatus?: WebEntry["toolStatus"],
     compaction?: CompactionProgress,
   ): string {
+    // Text streamed so far comes before the new entry.
+    this.flushStream();
     const id = randomUUID();
     const entry: WebEntry = {
       id,
@@ -346,6 +357,46 @@ export class WebInteraction implements AppInteractionPort {
     if (!entry) return;
     entry.text = this.safe(text);
     this.emit({ kind: "entry.replace", entry });
+  }
+  /** Add streamed text to an entry; the page receives it with the next flush. */
+  private stream(id: string, text: string): void {
+    const entry = this.entryById.get(id);
+    if (!entry) return;
+    this.streamText.set(id, (this.streamText.get(id) ?? entry.text) + text);
+    if (!this.streamTimer && !this.closed) {
+      this.streamTimer = setTimeout(() => this.flushStream(), STREAM_FLUSH_MS);
+      this.streamTimer.unref?.();
+    }
+  }
+  /**
+   * Redact the streamed text whole, so a secret split across tokens is still
+   * caught, and send only what was added. If redaction changed text already
+   * sent, the entry is replaced instead.
+   */
+  private flushStream(): void {
+    if (this.streamTimer) clearTimeout(this.streamTimer);
+    this.streamTimer = undefined;
+    for (const [id, raw] of this.streamText) {
+      const entry = this.entryById.get(id);
+      if (!entry) continue;
+      const text = this.safe(raw);
+      if (text === entry.text) continue;
+      const sent = entry.text;
+      entry.text = text;
+      if (text.startsWith(sent)) this.emit({ kind: "entry.delta", id, text: text.slice(sent.length) });
+      else this.emit({ kind: "entry.replace", entry });
+    }
+  }
+  /** Send what is pending and stop tracking the current streams. */
+  private endStreams(): void {
+    this.flushStream();
+    this.streamText.clear();
+  }
+  /** Drop pending streamed text of entries that were removed. */
+  private discardStreams(): void {
+    if (this.streamTimer) clearTimeout(this.streamTimer);
+    this.streamTimer = undefined;
+    this.streamText.clear();
   }
   private setAnswerState(id: string | undefined, state: WebEntry["answerState"]): void {
     if (!id) return;
@@ -454,6 +505,7 @@ export class WebInteraction implements AppInteractionPort {
   }
   modelStream(event: Readonly<ProviderStreamEvent>): void {
     if (event.kind === "started") {
+      this.endStreams();
       this.downgradeProvisionalAnswer();
       this.currentStreamId = event.streamId;
       this.currentAnswerId = undefined;
@@ -466,22 +518,21 @@ export class WebInteraction implements AppInteractionPort {
       this.setAnswerState(this.currentAnswerId, event.phase === "final_answer" ? "finalizing" : "streaming");
     } else if (event.kind === "reasoning_delta") {
       if (!this.currentReasoningId) this.currentReasoningId = this.append("thinking", "");
-      const entry = this.entryById.get(this.currentReasoningId);
-      this.replace(this.currentReasoningId, (entry?.text ?? "") + event.text);
+      this.stream(this.currentReasoningId, event.text);
     } else if (event.kind === "text_delta") {
       if (!this.currentAnswerId) this.currentAnswerId = this.append("assistant", "");
       this.setAnswerState(
         this.currentAnswerId,
         this.currentStreamPhase === "final_answer" ? "finalizing" : "streaming",
       );
-      const entry = this.entryById.get(this.currentAnswerId);
-      this.replace(this.currentAnswerId, (entry?.text ?? "") + event.text);
+      this.stream(this.currentAnswerId, event.text);
     } else if (event.kind === "tool_call_delta") {
       if (this.currentStreamPhase === "final_answer") {
         this.downgradeProvisionalAnswer();
         this.currentStreamPhase = undefined;
       }
     } else if (event.kind === "interrupted") {
+      this.endStreams();
       this.downgradeProvisionalAnswer();
       this.currentAnswerId = undefined;
       this.currentReasoningId = undefined;
@@ -490,6 +541,7 @@ export class WebInteraction implements AppInteractionPort {
   }
   addReasoning(text: string): number {
     const id = ++this.reasoningNumber;
+    this.endStreams();
     if (this.currentReasoningId) this.replace(this.currentReasoningId, text);
     else this.append("thinking", text);
     this.currentReasoningId = undefined;
@@ -545,6 +597,7 @@ export class WebInteraction implements AppInteractionPort {
 
   finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean {
     const completedAt = timing?.completedAt ?? Date.now();
+    this.endStreams();
     const answerId = this.currentAnswerId ?? this.append("assistant", text);
     const answer = this.entryById.get(answerId);
     if (answer) {
@@ -773,6 +826,7 @@ export class WebInteraction implements AppInteractionPort {
     this.pendingToolEntries = [];
   }
   clearCurrentRequest(): void {
+    this.endStreams();
     this.downgradeProvisionalAnswer();
     if (
       this.currentTurnId &&
@@ -800,6 +854,7 @@ export class WebInteraction implements AppInteractionPort {
     return seal();
   }
   resetForNewThread(session: Readonly<UISessionInfo>): void {
+    this.discardStreams();
     this.entries = [];
     this.tasks = null;
     this.subagentsView = [];
@@ -820,6 +875,7 @@ export class WebInteraction implements AppInteractionPort {
     this.emit();
   }
   clearHostedSession(): void {
+    this.discardStreams();
     this.entries = [];
     this.tasks = null;
     this.subagentsView = [];
@@ -842,6 +898,7 @@ export class WebInteraction implements AppInteractionPort {
     this.emit();
   }
   clearScreen(): void {
+    this.discardStreams();
     this.entries = [];
     this.entryById.clear();
     this.userMarkers = [];
@@ -860,6 +917,7 @@ export class WebInteraction implements AppInteractionPort {
   }
   close(): void {
     this.closed = true;
+    this.discardStreams();
     this.externalOperation?.abort();
     this.cancelPendingDecisions();
     this.listeners.clear();

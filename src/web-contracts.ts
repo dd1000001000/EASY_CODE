@@ -91,6 +91,8 @@ export interface WebTurnSummary {
 export type WebPatch =
   | { kind: "entry.append"; entry: WebEntry }
   | { kind: "entry.replace"; entry: WebEntry }
+  /** Text streamed onto the end of an entry since its last patch. */
+  | { kind: "entry.delta"; id: string; text: string }
   | { kind: "entries.reset"; entries: readonly WebEntry[]; history?: WebHistoryState }
   | { kind: "thread.title"; threadId: string; title: string }
   | { kind: "turn.completed"; summary: WebTurnSummary }
