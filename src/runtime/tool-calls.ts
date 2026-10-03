@@ -168,6 +168,7 @@ export class ToolCalls {
         {
           environmentFault: updates.environmentFault,
           proposePlanBatched: ctx.proposePlanBatched,
+          askUserBatched: ctx.askUserBatched,
           submitTaskResultBatched: ctx.submitTaskResultBatched,
         },
         call,
@@ -244,8 +245,11 @@ export class ToolCalls {
       }
       this.ctx.dependencies.onStatus?.(`Tool: ${displayName}`);
       const toolContext = this.buildToolContext(ctx, call, displayName);
+      // A user message sent meanwhile ends the wait: poll_command returns early, ask_user closes its question.
       const waitAttempt =
-        tool.name === "poll_command" ? this.ctx.dependencies.steeringNotifier?.openAttempt() : undefined;
+        tool.name === "poll_command" || tool.name === "ask_user"
+          ? this.ctx.dependencies.steeringNotifier?.openAttempt()
+          : undefined;
       let result: ToolExecutionResult;
       try {
         result =
@@ -314,6 +318,9 @@ export class ToolCalls {
       isUnrestrictedHostAccessActive: options.isUnrestrictedHostAccessActive,
       unrestrictedHostAccessEpoch: options.unrestrictedHostAccessEpoch,
       requestApproval: this.ctx.dependencies.requestApproval,
+      ...(agentIdentity.role === "main_agent" && this.ctx.dependencies.askUser
+        ? { askUser: this.ctx.dependencies.askUser }
+        : {}),
       signal: options.signal,
       reportProgress: (update: { message?: string; progress?: number; total?: number }) => {
         const detail = update.message?.replace(/[\u0000-\u001F\u007F]/gu, " ").slice(0, 240);
@@ -701,6 +708,9 @@ export class ToolCalls {
       state.planReview = planReviewUpdate;
       updates.proposedPlan = planReviewUpdate.proposal;
       state.updatedAt = new Date().toISOString();
+    }
+    if (toolName === "ask_user" && result.unansweredQuestions) {
+      updates.unansweredQuestions = result.unansweredQuestions;
     }
     if (result.ok && result.imageAttachments?.length) {
       stepImageAttachments.push(...result.imageAttachments);

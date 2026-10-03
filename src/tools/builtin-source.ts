@@ -14,6 +14,7 @@ import {
   wrapAgentToolsWithWorkspaceMutationLock,
 } from "../subagents/workspace-mutation-lock.js";
 import type { ToolSource } from "./catalog.js";
+import { AskUserTool } from "./ask-user.js";
 import { bindBuiltinToolMetadata } from "./capabilities.js";
 import { RecallContextTool, SearchContextTool } from "./context-read.js";
 import { CreateFileTool } from "./create-file.js";
@@ -76,6 +77,8 @@ export interface BuiltinToolSourceOptions {
   readonly threadResourceStore?: ThreadResourceStore;
   readonly threadDocumentService?: ThreadDocumentService;
   readonly includePublicWebTools?: boolean;
+  /** Offer ask_user: only an interactive main-agent session can answer it. */
+  readonly userQuestions?: boolean;
 }
 
 /** Trusted in-process tools exposed through the same source contract as future adapters. */
@@ -146,6 +149,7 @@ export class BuiltinToolSource implements ToolSource {
         : []),
       ...(this.options.subagentControl ? createSubagentTools(this.options.subagentControl, this.options.limits) : []),
       new ProposePlanTool(),
+      ...(this.options.userQuestions ? [new AskUserTool(this.options.limits)] : []),
       new RecallContextTool(this.options.limits),
       new SearchContextTool(),
       new ReadMemoryTool(workspace, memorySession),
@@ -184,6 +188,7 @@ export class BuiltinToolSource implements ToolSource {
 // One policy for main/child catalogs. Trial-local memory, task orchestration
 // and parent/child messages remain available; cross-trial services do not.
 export const BENCHMARK_DISABLED_TOOLS: ReadonlySet<string> = new Set([
+  "ask_user",
   "find_file_editors",
   "send_thread_message",
   "name_thread",

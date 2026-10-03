@@ -1,0 +1,20 @@
+{
+  "id": "ask_user",
+  "contractVersion": "1.0.0",
+  "description": "Ask the user one or more multiple-choice questions and wait for the answer, then continue the request with it. Use it when the request can reasonably mean different things and a wrong guess would waste work. The user can pick an option or type their own answer; never add an \"Other\" option yourself. Call it by itself. If the user does not answer in time or skips, the request ends and the user replies in their next message. If the user sends a message instead of answering, read that message and continue from it.",
+  "propertyDescriptions": {
+    "questions": "The questions to ask together, the most important first.",
+    "questions[].header": "A very short label for the question, such as \"Storage\" or \"Scope\".",
+    "questions[].question": "The complete question, ending with a question mark. Write it in the user's language.",
+    "questions[].multi_select": "true when the user may choose several options; false when exactly one fits.",
+    "questions[].options": "The distinct choices. Put the recommended one first and add \" (Recommended)\" to its label.",
+    "questions[].options[].label": "A concise choice of one to five words.",
+    "questions[].options[].description": "What choosing this means or its trade-off; an empty string when the label says enough."
+  },
+  "guidance": [
+    "Use ask_user only when you are genuinely unsure what the user wants and the answer changes what you will do. Do not ask about facts you can find in the repository, configuration or earlier conversation.",
+    "Do not use ask_user to ask permission to run commands or change files (approvals handle that), or to confirm that you may start.",
+    "Ask related questions together in one ask_user call, by itself, rather than one at a time. In Plan mode, ask before submitting propose_plan when a key decision is open.",
+    "When ask_user ends the request unanswered, do not guess the answer; the user's next message replies to the question."
+  ]
+}

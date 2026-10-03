@@ -180,6 +180,15 @@ Or restart with `easy-code --resume <thread-id>`. If another process owns the ta
 
 `/clear` clears terminal display, not history. `/new` creates another conversation rather than resuming the original one. Stopping does not automatically roll back completed file changes.
 
+### When the agent asks you a question
+
+If a request could reasonably mean different things and a wrong guess would waste work, the main agent can pause and ask with the `ask_user` tool instead of guessing. Each call asks 1–3 questions with 2–4 options each; every question also takes your own answer. Some questions allow several options.
+
+- **Web:** a question card opens above the input. Pick options or type in the answer box, then submit. With several questions, the tabs at the top switch between them. Clicking outside the card does not close it.
+- **CLI:** the options come first and the last row is your own answer: move onto it with ↑/↓ and type. Enter chooses an option or sends what you typed; when several options are allowed, Space ticks them and Enter confirms. ←/→ switches questions. Esc clears what you typed, and otherwise skips, as does Ctrl+C.
+
+If nobody answers within 15 minutes, or you skip, the request ends and its last message repeats the questions; your next message is the answer. If you send a message while a question is open (Web), the question closes and the agent reads your message instead. Stopping the request also closes the question. Only the main agent asks: child agents cannot, and neither can single-shot `run`, piped input or benchmarks. A question waits behind any approval that is already open. The question and option counts and the waiting time are set by `ask_user_*` in `[limits]` (see the [configuration reference](./config.example.toml)).
+
 ### See what a request changed
 
 When a request finishes, a summary shows its duration, provider-reported tokens and the files it changed. Each file is listed once as created, modified or deleted, with the net lines added and removed since the request began.

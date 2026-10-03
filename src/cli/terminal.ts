@@ -36,7 +36,11 @@ import type {
   PlanReviewDecision,
   PlanReviewInputOptions,
   TimedChoiceOptions,
+  UserQuestionPrompt,
+  UserQuestionReply,
 } from "../ui/interaction-port.js";
+import { normalizeUserAnswers } from "../core/user-questions.js";
+import { formatRemaining, questionTitle } from "../ui/user-questions.js";
 import { AdjustmentRegistry, renderAdjustmentBody } from "./adjustment.js";
 import { selectApproval } from "./approval-selector.js";
 import { renderFileDiff } from "./file-diff.js";
@@ -621,6 +625,74 @@ export class Terminal implements AppInteractionPort {
     }
   }
 
+  /**
+   * Line-mode questions: each one is printed with numbered options; the reply is
+   * option numbers or the user's own words. An empty reply or Ctrl+C skips.
+   */
+  async askUser(prompt: Readonly<UserQuestionPrompt>): Promise<UserQuestionReply> {
+    const { questions, signal } = prompt;
+    if (this.closed || signal.aborted || !this.isInteractive()) return undefined;
+    if (this.rl || this.promptActive || this.guardedInputActive) return undefined;
+    const answers: { selected: string[]; custom: string | null }[] = [];
+    for (const [index, question] of questions.entries()) {
+      const other = question.options.length + 1;
+      const remaining = translate(this.language, "ui.askExpiresIn", {
+        time: formatRemaining(prompt.expiresAt - Date.now()),
+      });
+      this.write(
+        `\n${chalk.cyan.bold(questionTitle(this.language, questions, index))}  ${chalk.gray(remaining)}\n` +
+          `${this.safeInline(question.question, 400)}\n` +
+          (question.multiSelect ? chalk.gray(`${translate(this.language, "ui.askChooseAny")}\n`) : "") +
+          question.options
+            .map(
+              (option, number) =>
+                `  ${number + 1}. ${this.safeInline(option.label, 120)}` +
+                (option.description ? chalk.gray(` — ${this.safeInline(option.description, 240)}`) : ""),
+            )
+            .join("\n") +
+          `\n  ${other}. ${translate(this.language, "ui.askOther")}\n`,
+      );
+      const linePrompt = translate(this.language, question.multiSelect ? "ui.askLinePromptMulti" : "ui.askLinePrompt");
+      for (;;) {
+        const reply = await this.multilineTextQuestion(linePrompt, undefined, signal);
+        if (signal.aborted) return undefined;
+        const text = reply?.text.trim() ?? "";
+        if (!text) {
+          this.info(translate(this.language, "ui.askSkipped"));
+          return "skipped";
+        }
+        const numbers = /^\d+(?:\s*[,，、\s]\s*\d+)*$/u.test(text) ? text.split(/\D+/u).map(Number) : undefined;
+        if (!numbers) {
+          answers.push({ selected: [], custom: text });
+          break;
+        }
+        const valid =
+          numbers.every((number) => number >= 1 && number <= other) && new Set(numbers).size === numbers.length;
+        if (!valid || (!question.multiSelect && numbers.length !== 1)) {
+          this.warning(linePrompt);
+          continue;
+        }
+        let custom: string | null = null;
+        if (numbers.includes(other)) {
+          const own = await this.multilineTextQuestion(
+            `${translate(this.language, "ui.askOtherPrompt")} > `,
+            undefined,
+            signal,
+          );
+          if (signal.aborted) return undefined;
+          custom = own?.text.trim() || null;
+          if (!custom) continue;
+        }
+        answers.push({
+          selected: numbers.filter((number) => number !== other).map((number) => question.options[number - 1]!.label),
+          custom,
+        });
+        break;
+      }
+    }
+    return normalizeUserAnswers(questions, answers);
+  }
+
   async reviewPlan(options: Readonly<PlanReviewInputOptions> = {}): Promise<PlanReviewDecision> {
     if (!this.isInteractive()) return { action: "defer" };
     const plan = options.plan ?? this.lastPlan;
@@ -842,6 +914,8 @@ export class Terminal implements AppInteractionPort {
   private async multilineTextQuestion(
     prompt: string,
     captureText?: PlanReviewInputOptions["captureText"],
+    /** Withdraws the question without closing the terminal. */
+    signal?: AbortSignal,
   ): Promise<Pick<PromptSubmission, "text" | "pasteErrors"> | null> {
     if (this.closed) return null;
     if (this.rl || this.promptActive || this.guardedInputActive) {
@@ -858,6 +932,9 @@ export class Terminal implements AppInteractionPort {
     this.promptActive = true;
     const promptController = new AbortController();
     this.activePromptController = promptController;
+    const onWithdraw = (): void => promptController.abort();
+    signal?.addEventListener("abort", onWithdraw, { once: true });
+    if (signal?.aborted) promptController.abort();
     try {
       const result = await readPrompt({
         input: this.input,
@@ -872,11 +949,12 @@ export class Terminal implements AppInteractionPort {
         onSessionReady: (session) => this.trackPromptSession(session),
       });
       if (result === null) {
-        this.closed = true;
+        if (!signal?.aborted) this.closed = true;
         return null;
       }
       return { text: result.text, pasteErrors: result.pasteErrors };
     } finally {
+      signal?.removeEventListener("abort", onWithdraw);
       this.activePromptSession = undefined;
       if (this.activePromptController === promptController) this.activePromptController = undefined;
       this.promptActive = false;

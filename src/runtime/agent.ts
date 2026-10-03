@@ -892,6 +892,7 @@ export class AgentRuntime {
     projectionHistory: ChatMessage[],
   ): Promise<StepOutcome> {
     const proposePlanBatched = calls.length > 1 && calls.some((call) => call.function.name === "propose_plan");
+    const askUserBatched = calls.length > 1 && calls.some((call) => call.function.name === "ask_user");
     const submitTaskResultBatched =
       calls.length > 1 && calls.some((call) => call.function.name === "submit_task_result");
     const stepImageAttachments: ImageAttachment[] = [];
@@ -900,6 +901,7 @@ export class AgentRuntime {
       environmentFault: this.dependencies.getEnvironmentFault?.(),
       finishRejectedReason: undefined,
       proposedPlan: undefined,
+      unansweredQuestions: undefined,
       requiredProtocolExhaustion: undefined,
       steeringAppliedBetweenTools: false,
       submittedTaskReport: undefined,
@@ -911,6 +913,7 @@ export class AgentRuntime {
         ordinaryToolDefinitions,
         projectionHistory,
         proposePlanBatched,
+        askUserBatched,
         step,
         stepImageAttachments,
         submitTaskResultBatched,

@@ -169,6 +169,74 @@
 .decision-actions .el-button + .el-button {
   margin-left: 0;
 }
+.question-panel.el-card {
+  width: min(520px, 100%);
+}
+.question-header {
+  min-width: 0;
+}
+.question-countdown {
+  flex: none;
+  color: var(--ec-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.question-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 8px;
+}
+.question-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--ec-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ec-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.question-step.is-current {
+  border-color: var(--ec-accent);
+  color: var(--ec-accent-strong);
+}
+.question-step.is-answered:not(.is-current) {
+  background: var(--ec-surface-subtle);
+}
+.question-step-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--ec-accent);
+}
+.question-text {
+  margin: 2px 4px 6px;
+  font-weight: 600;
+}
+.question-note {
+  margin: -2px 4px 6px;
+  color: var(--ec-text-faint);
+  font-size: 12px;
+}
+.question-other {
+  margin-top: 6px;
+}
+/* The dialog sits inside the composer; give its own answer box a visible field again. */
+.composer .question-other .el-textarea__inner {
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--ec-surface-subtle);
+  box-shadow: 0 0 0 1px var(--ec-border) inset;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.composer .question-other .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--ec-accent) inset;
+}
 .composer-command-panel.el-card {
   position: absolute;
   left: 0;

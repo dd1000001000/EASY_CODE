@@ -105,6 +105,32 @@ export function toolDisplayDetails(
   }
 
   if (toolName === "name_thread") return detail("Thread title", string(input?.title));
+  if (toolName === "ask_user") {
+    const data = record(result.data);
+    const answers = data?.status === "answered" && Array.isArray(data.answers) ? data.answers : [];
+    const closed =
+      data?.status === "unanswered"
+        ? data.reason === "timeout"
+          ? "Not answered (timed out)"
+          : "Not answered (skipped)"
+        : data?.status === "superseded"
+          ? "Answered with a message"
+          : undefined;
+    const questions = Array.isArray(input?.questions) ? input.questions : [];
+    return questions.flatMap((item, index) => {
+      const question = record(item);
+      const answer = record(answers[index]);
+      const chosen = [
+        ...(Array.isArray(answer?.selected) ? answer.selected.filter((label) => typeof label === "string") : []),
+        ...(string(answer?.custom) ? [string(answer?.custom)!] : []),
+      ].join(", ");
+      const asked = string(question?.question);
+      return detail(
+        string(question?.header) ?? `Question ${index + 1}`,
+        asked ? `${asked} → ${chosen || closed || "No answer"}` : undefined,
+      );
+    });
+  }
   if (toolName === "find_file_editors") return detail("File", string(input?.path));
   if (toolName === "send_thread_message")
     return [...detail("To Thread", string(input?.targetThreadId)), ...detail("Message", string(input?.message))];

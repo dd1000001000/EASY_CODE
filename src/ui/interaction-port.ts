@@ -7,6 +7,8 @@ import type {
   ProviderName,
   ProviderStreamEvent,
   ThinkingEffort,
+  UserQuestion,
+  UserQuestionAnswer,
 } from "../core/types.js";
 import type { SlashArgumentSource } from "../cli/slash-suggestions.js";
 import type { Language } from "../i18n/language.js";
@@ -39,6 +41,20 @@ export interface PlanReviewInputOptions {
   readonly plan?: Readonly<PlanProposal>;
   readonly idleTimeoutMs?: number;
 }
+
+/**
+ * One ask_user call on screen. `signal` withdraws it: the time ran out, the
+ * user sent a message instead, or the request ended.
+ */
+export interface UserQuestionPrompt {
+  readonly questions: readonly UserQuestion[];
+  /** When the question closes by itself (epoch milliseconds), for a countdown. */
+  readonly expiresAt: number;
+  readonly signal: AbortSignal;
+}
+
+/** The answers; "skipped"; or undefined when `signal` withdrew the question. */
+export type UserQuestionReply = readonly UserQuestionAnswer[] | "skipped" | undefined;
 
 export interface InteractionChoice {
   readonly id: string;
@@ -150,6 +166,8 @@ export interface AgentPresentationPort {
 /** Explicit decisions remain owned by the current interactive host. */
 export interface AgentDecisionPort {
   approve(request: ApprovalRequest): Promise<ApprovalDecision>;
+  /** Show the model's questions and wait for the user's answers. */
+  askUser(prompt: Readonly<UserQuestionPrompt>): Promise<UserQuestionReply>;
   selectChoice(
     title: string,
     choices: readonly InteractionChoice[],

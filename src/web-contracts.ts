@@ -1,4 +1,4 @@
-import type { ImageAttachment, PlanProposal, ToolDisplayDetail } from "./core/types.js";
+import type { ImageAttachment, PlanProposal, ToolDisplayDetail, UserQuestion } from "./core/types.js";
 import type {
   FileChangeKind,
   ToolDiffRef,
@@ -58,12 +58,16 @@ export interface WebHistoryPage {
 }
 export interface WebDecision {
   id: string;
-  kind: "approval" | "choice" | "secret" | "plan";
+  kind: "approval" | "choice" | "secret" | "plan" | "question";
   title: string;
   description?: string;
   choices?: readonly InteractionChoice[];
   initialId?: string;
   plan?: PlanProposal;
+  /** ask_user: answered with `answer:<JSON answers>` or `skip`. */
+  questions?: readonly UserQuestion[];
+  /** ask_user: when the question closes by itself (epoch milliseconds). */
+  expiresAt?: number;
 }
 export interface WebView {
   compaction?: CompactionProgress | null;

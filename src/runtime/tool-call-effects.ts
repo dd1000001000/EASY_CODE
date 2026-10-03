@@ -43,7 +43,12 @@ export interface ToolEffects {
 
 /** Reject a call without executing it when the environment, batching rules or tool exposure forbid it. */
 export function gateToolCall(
-  gate: { environmentFault: string | undefined; proposePlanBatched: boolean; submitTaskResultBatched: boolean },
+  gate: {
+    environmentFault: string | undefined;
+    proposePlanBatched: boolean;
+    askUserBatched: boolean;
+    submitTaskResultBatched: boolean;
+  },
   call: FunctionToolCall,
   tool: AgentTool | undefined,
 ): ToolInvocationOutcome | undefined {
@@ -64,6 +69,13 @@ export function gateToolCall(
       ok: false,
       summary: "propose_plan must be the only tool call in a model response.",
       error: "propose_plan_must_be_exclusive",
+    });
+  }
+  if (gate.askUserBatched) {
+    return gated({
+      ok: false,
+      summary: "ask_user must be the only tool call in a model response.",
+      error: "ask_user_must_be_exclusive",
     });
   }
   if (gate.submitTaskResultBatched) {

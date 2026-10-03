@@ -25,7 +25,10 @@ import type {
   ProviderStreamEvent,
   SessionState,
   TurnSteeringBatch,
+  UserQuestion,
+  UserQuestionOutcome,
 } from "../core/types.js";
+import { normalizeUserAnswers } from "../core/user-questions.js";
 import { ImageStore } from "../images/index.js";
 import { MemoryManager, projectMemoryIdFromRoot } from "../memory/memory-manager.js";
 import { ThreadTitleStore } from "../threads/thread-title.js";
@@ -236,6 +239,9 @@ export class RuntimeAssembly {
       requestApproval: async (request) => {
         return this.ctx.requestToolApproval(request);
       },
+      ...(this.ctx.terminal.isInteractive()
+        ? { askUser: (questions: readonly UserQuestion[], options) => this.askUser(questions, options) }
+        : {}),
       runReviewSession: async (input) => this.runReviewSession(input, provider, budget),
       onModelUsage: async (record) => {
         this.ctx.threadStore.appendEvent(this.ctx.state.threadId, {
@@ -404,6 +410,43 @@ export class RuntimeAssembly {
   }
 
   /** Keep what one file-tool call changed for the transcript; without it the call just has no diff to open. */
+  /**
+   * One ask_user call: wait behind any open approval, then show the questions
+   * until they are answered, skipped, withdrawn by a new message, or out of time.
+   */
+  private askUser(
+    questions: readonly UserQuestion[],
+    options: { readonly signal?: AbortSignal; readonly supersede?: AbortSignal },
+  ): Promise<UserQuestionOutcome> {
+    const threadId = this.ctx.state.threadId;
+    return this.ctx.approvalQueue.run(async (): Promise<UserQuestionOutcome> => {
+      if (options.signal?.aborted || threadId !== this.ctx.state.threadId) return { status: "cancelled" };
+      if (options.supersede?.aborted) return { status: "superseded" };
+      // The time counts from when the question is on screen, not while it waited in the queue.
+      const timeoutMs = this.ctx.config.limits.askUserTimeoutMs;
+      const timeout = new AbortController();
+      const timer = setTimeout(() => timeout.abort(), timeoutMs);
+      const closers = [timeout.signal, options.signal, options.supersede].filter((item): item is AbortSignal =>
+        Boolean(item),
+      );
+      try {
+        const reply = await this.ctx.terminal.askUser({
+          questions,
+          expiresAt: Date.now() + timeoutMs,
+          signal: AbortSignal.any(closers),
+        });
+        if (options.signal?.aborted || threadId !== this.ctx.state.threadId) return { status: "cancelled" };
+        const answers = reply && reply !== "skipped" ? normalizeUserAnswers(questions, reply) : undefined;
+        if (answers) return { status: "answered", answers };
+        if (options.supersede?.aborted) return { status: "superseded" };
+        // Skipping, running out of time, and a host that cannot show the question all leave it unanswered.
+        return { status: "unanswered", reason: timeout.signal.aborted ? "timeout" : "skipped" };
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+  }
+
   private saveToolDiff(
     threadId: string,
     call: { readonly turnId: string; readonly callId: string },

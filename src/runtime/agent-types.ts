@@ -173,6 +173,8 @@ export interface AgentRuntimeDependencies {
   }) => Promise<void>;
   deliveryChallengeAlreadyUsed?: (threadId: string) => boolean;
   requestApproval: ApprovalHandler;
+  /** Interactive main-agent hosts answer ask_user; subagents never receive it. */
+  askUser?: import("../core/types.js").UserQuestionHandler;
   /** Optional conversation metadata service; never controls task execution. */
   threadTitle?: {
     isUnclaimed(threadId: string): boolean;
@@ -353,6 +355,7 @@ export interface ToolCallsContext extends StepLoop {
   readonly ordinaryToolDefinitions: ToolDefinition[];
   readonly projectionHistory: ChatMessage[];
   readonly proposePlanBatched: boolean;
+  readonly askUserBatched: boolean;
   readonly step: number;
   readonly stepImageAttachments: ImageAttachment[];
   readonly submitTaskResultBatched: boolean;
@@ -364,6 +367,8 @@ export interface ToolCallsState {
   environmentFault: string | undefined;
   finishRejectedReason: string | undefined;
   proposedPlan: PlanProposal | undefined;
+  /** ask_user closed without an answer: the request ends waiting for the user. */
+  unansweredQuestions: ToolExecutionResult["unansweredQuestions"];
   requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
   steeringAppliedBetweenTools: boolean;
   submittedTaskReport: SubagentTaskReport | undefined;

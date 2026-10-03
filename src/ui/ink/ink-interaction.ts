@@ -55,8 +55,12 @@ import type {
   RequestInputOptions,
   ThinkingEffortSelectorChoice,
   TimedChoiceOptions,
+  UserQuestionPrompt,
+  UserQuestionReply,
   UserSubmission,
 } from "../interaction-port.js";
+import { draftsToAnswers } from "../user-questions.js";
+import { translate } from "../../i18n/catalog.js";
 import { applyEvent, createUIState } from "../store.js";
 import type { ComposerDraft } from "./composer.js";
 import { EditorHistory } from "./composer-editor.js";
@@ -69,7 +73,7 @@ import { LONG_TURN_NOTIFY_MS, formatDuration } from "../duration.js";
 import { SESSION_HEADER_ID_PREFIX, thinkingToggleHint, transcriptDocument } from "./entry-text.js";
 import { ThinkingViewer } from "./thinking-viewer.js";
 import { createVsCodeMenuBridge, type VsCodeMenuBridge } from "../../cli/vscode-menu-bridge.js";
-import { InkStore, type MenuModal } from "./ink-store.js";
+import { InkStore, type MenuModal, type QuestionModalResult } from "./ink-store.js";
 
 const CLEAR_DISPLAY = "\u001B[3J\u001B[2J\u001B[H";
 const RESET_TERMINAL = "\u001Bc";
@@ -149,6 +153,7 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   private lastPlan: Readonly<PlanProposal> | undefined;
   private fatalFailure = false;
   private turnSummarySequence = 0;
+  private questionDialogs = 0;
   /** Bell and desktop notification when the user may be in another window. */
   private readonly notifier: AttentionNotifier;
 
@@ -735,6 +740,34 @@ export class InkInteraction implements AppInteractionPort, InkActions {
     } catch {
       return "reject";
     }
+  }
+
+  async askUser(prompt: Readonly<UserQuestionPrompt>): Promise<UserQuestionReply> {
+    if (!this.app) return this.legacy.askUser(prompt);
+    const { questions, signal } = prompt;
+    if (this.closed || signal.aborted || questions.length === 0) return undefined;
+    this.notifyAttention(
+      this.language === "zh_cn"
+        ? `需要你回答：${questions[0]!.question}`
+        : `A question needs your answer: ${questions[0]!.question}`,
+    );
+    this.questionDialogs += 1;
+    const result = await this.enqueueModal<QuestionModalResult>(
+      (resolve) => ({
+        kind: "question",
+        id: `question-${this.questionDialogs}`,
+        questions,
+        expiresAt: prompt.expiresAt,
+        resolve,
+      }),
+      signal,
+    );
+    if (signal.aborted) return undefined;
+    if (!result || result.action === "skip") {
+      this.info(translate(this.language, "ui.askSkipped"));
+      return "skipped";
+    }
+    return draftsToAnswers(questions, result.drafts);
   }
 
   async selectChoice(

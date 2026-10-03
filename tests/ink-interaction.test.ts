@@ -3,7 +3,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 
-import type { ApprovalRequest, ImageAttachment } from "../src/core/types.js";
+import type { ApprovalRequest, ImageAttachment, UserQuestion } from "../src/core/types.js";
 import type { UISessionInfo } from "../src/ui/contracts.js";
 import { InkInteraction } from "../src/ui/ink/ink-interaction.js";
 import { stripAnsi } from "../src/ui/render/layout.js";
@@ -502,6 +502,72 @@ describe("Ink interaction", () => {
       await wait(100);
       aborted.abort();
       assert.equal(await cancelled, "reject");
+      assert.equal(ink.store.getSnapshot().modal, null);
+    });
+  });
+
+  it("answers ask_user questions from the keyboard, with the user's own text", async () => {
+    await withInk(async ({ ink, type, text }) => {
+      const questions: UserQuestion[] = [
+        {
+          header: "Storage",
+          question: "Which storage?",
+          multiSelect: false,
+          options: [
+            { label: "SQLite", description: null },
+            { label: "PostgreSQL", description: null },
+          ],
+        },
+        {
+          header: "Targets",
+          question: "Which platforms?",
+          multiSelect: true,
+          options: [
+            { label: "Windows", description: null },
+            { label: "Linux", description: null },
+          ],
+        },
+      ];
+      const controller = new AbortController();
+      const prompt = { questions, expiresAt: Date.now() + 600_000, signal: controller.signal };
+      const answered = ink.askUser(prompt);
+      await wait(250);
+      assert.match(text(), /Question 1\/2 · Storage/u);
+      await type("\u001B[B");
+      await type("\r");
+      await wait(200);
+      assert.match(text(), /Which platforms\?/u);
+      await type(" ");
+      // Windows, Linux, then the answer field: move onto it and type; j, k and spaces are text there.
+      await type("\u001B[B");
+      await type("\u001B[B");
+      await type("Free jk BSD");
+      await type("\u007F");
+      await type("D!");
+      assert.match(text(), /\[x\] Other: Free jk BSD!█/u);
+      await type("\r");
+      assert.deepEqual(await answered, [
+        { selected: ["PostgreSQL"], custom: null },
+        { selected: ["Windows"], custom: "Free jk BSD!" },
+      ]);
+
+      // A single choice answered in the user's own words.
+      const typed = ink.askUser({ ...prompt, questions: [questions[0]!] });
+      await wait(250);
+      await type("\u001B[A");
+      await type("Redis");
+      await type("\r");
+      assert.deepEqual(await typed, [{ selected: [], custom: "Redis" }]);
+
+      const skipped = ink.askUser(prompt);
+      await wait(250);
+      await type("\u0003");
+      assert.equal(await skipped, "skipped");
+
+      const withdrawn = ink.askUser(prompt);
+      await wait(100);
+      controller.abort();
+      assert.equal(await withdrawn, undefined);
       assert.equal(ink.store.getSnapshot().modal, null);
     });
   });

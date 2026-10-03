@@ -4,7 +4,8 @@ import type { Language } from "../../i18n/language.js";
 import type { UIEvent, UIState } from "../contracts.js";
 import type { CurrentRequestOptions, UserSubmission } from "../interaction-port.js";
 import { applyEvent, createUIState } from "../store.js";
-import type { ApprovalRequest } from "../../core/types.js";
+import type { ApprovalRequest, UserQuestion } from "../../core/types.js";
+import type { QuestionDraft } from "../user-questions.js";
 
 /** An idle `readPrompt` waiting for the user's next message. */
 export interface PromptRequest {
@@ -50,7 +51,21 @@ export interface TextModal {
   readonly resolve: (value: string | undefined) => void;
 }
 
-export type InkModal = MenuModal | SecretModal | TextModal;
+/** How the question dialog closed: every question answered, or skipped. */
+export type QuestionModalResult =
+  { readonly action: "submit"; readonly drafts: readonly QuestionDraft[] } | { readonly action: "skip" };
+
+/** ask_user: one page per question; its last row takes the user's own answer as typed. */
+export interface QuestionModal {
+  readonly kind: "question";
+  readonly id: string;
+  readonly questions: readonly UserQuestion[];
+  /** When the question closes by itself (epoch milliseconds). */
+  readonly expiresAt: number;
+  readonly resolve: (result: QuestionModalResult | undefined) => void;
+}
+
+export type InkModal = MenuModal | SecretModal | TextModal | QuestionModal;
 
 export interface InkSnapshot {
   readonly ui: UIState;

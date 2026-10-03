@@ -9,6 +9,7 @@ EASY CODE is a local AI coding assistant for the terminal and browser. Give it a
 ## What you can do
 
 - **Work in CLI or Web:** saved conversations, image attachments, live progress and adjustments while a task runs. After each request you see which files changed and how many lines were added and removed; in Web, open a file to see its diff.
+- **Get asked instead of guessed:** when a request is ambiguous, the agent can pause and ask a few multiple-choice questions; pick an option or type your own answer. If nobody answers within 15 minutes (configurable) or you skip, the request ends and your next message answers it.
 - **Read documents and the Web on demand:** Web attachments and supported workspace documents use the same local conversion path to become private, read-only conversation resources; the agent can also search public pages and save selected pages for bounded reading.
 - **Organize real projects:** attach one or several local folders to a project and keep separate conversations for different tasks.
 - **Choose your models:** bundled provider entries for Qwen, DeepSeek, Kimi, GLM and GLM Coding Plan; configurable models, endpoints and capabilities.

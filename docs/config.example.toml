@@ -182,6 +182,14 @@ context_compaction_min_saved_tokens = 8192
 context_compaction_min_savings_ratio = 0.1
 context_summary_max_chars = 64000
 context_semantic_field_max_chars = 4000
+# ask_user: questions per call and choices per question. The user can always
+# type their own answer as well. A shown question that stays unanswered (or is
+# skipped) for ask_user_timeout_ms ends the request.
+ask_user_min_questions = 1
+ask_user_max_questions = 3
+ask_user_min_options = 2
+ask_user_max_options = 4
+ask_user_timeout_ms = 900000
 
 # Local output reservation selected by thinking effort. No output-token ceiling
 # is sent to the provider. Values include reasoning, answer and tool arguments.

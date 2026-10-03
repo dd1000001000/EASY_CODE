@@ -18,6 +18,7 @@ export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
 export type BuiltinToolName =
   | "select_mode"
   | "propose_plan"
+  | "ask_user"
   | "read_file"
   | "read_document"
   | "search_files"
@@ -361,6 +362,11 @@ export interface ToolExecutionResult {
   subagentMessageId?: string;
   /** Structured Plan-mode proposal. Runtime assigns its durable identity and review revision. */
   planProposal?: PlanDraft;
+  /** ask_user closed without an answer; Runtime ends the request waiting for the user. */
+  unansweredQuestions?: {
+    readonly reason: "timeout" | "skipped";
+    readonly questions: readonly UserQuestion[];
+  };
   /**
    * Local image references that Runtime promotes into a synthetic multimodal user
    * message after all matching textual tool results have been appended.
@@ -503,6 +509,41 @@ export type ApprovalDecision = "allow_once" | "allow_prefix" | "reject";
 /** Runtime boundary: the application resolves any interactive choice to allow/deny. */
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<boolean>;
 
+export interface UserQuestionOption {
+  readonly label: string;
+  readonly description: string | null;
+}
+
+/** One ask_user question; the user may also answer in their own words. */
+export interface UserQuestion {
+  readonly header: string;
+  readonly question: string;
+  readonly multiSelect: boolean;
+  readonly options: readonly UserQuestionOption[];
+}
+
+/** The chosen option labels and/or the user's own text for one question. */
+export interface UserQuestionAnswer {
+  readonly selected: readonly string[];
+  readonly custom: string | null;
+}
+
+/**
+ * How the host closed one ask_user call. `unanswered` ends the request;
+ * `superseded` means the user sent a message instead; `cancelled` means the
+ * request itself ended.
+ */
+export type UserQuestionOutcome =
+  | { readonly status: "answered"; readonly answers: readonly UserQuestionAnswer[] }
+  | { readonly status: "unanswered"; readonly reason: "timeout" | "skipped" }
+  | { readonly status: "superseded" }
+  | { readonly status: "cancelled" };
+
+export type UserQuestionHandler = (
+  questions: readonly UserQuestion[],
+  options: { readonly signal?: AbortSignal; readonly supersede?: AbortSignal },
+) => Promise<UserQuestionOutcome>;
+
 export interface ToolContext {
   /** Actual prior mutations only; distinguishes original tests from added tests. */
   validationPriorChanges?: readonly FileChangeRecord[];
@@ -531,6 +572,8 @@ export interface ToolContext {
   /** Monotonic process epoch; host read-before-write grants never cross activations. */
   unrestrictedHostAccessEpoch?: () => number;
   requestApproval: ApprovalHandler;
+  /** Interactive main-agent hosts only; ask_user is not offered without it. */
+  askUser?: UserQuestionHandler;
   signal?: AbortSignal;
   /** Best-effort progress from a long-running external tool. */
   reportProgress?: (update: { message?: string; progress?: number; total?: number }) => void;

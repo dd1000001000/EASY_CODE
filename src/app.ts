@@ -143,6 +143,8 @@ export class EasyCodeApp {
   private closed = false;
   private closeAsyncWork?: Promise<void>;
   private dirty = false;
+  /** Set by `run`: a one-shot prompt has no one to answer ask_user. */
+  private oneShot = false;
   private commandExecutionMode: CommandExecutionMode;
   private hostAccessEpoch = 0;
   private approvalQueue = new ApprovalQueue();
@@ -748,6 +750,8 @@ export class EasyCodeApp {
     return this.shellCommands.runInteractive();
   }
   async runOnce(prompt: string): Promise<AgentRunResult> {
+    // Nobody is there to answer a question in a one-shot run, so ask_user is not offered.
+    this.oneShot = true;
     return this.turnExecution.runOnce(prompt);
   }
   async submitUserMessage(
@@ -1062,6 +1066,7 @@ export class EasyCodeApp {
           threadResourceStore: this.threadResourceStore,
           threadDocumentService: this.threadDocumentService,
           includePublicWebTools: this.trustedOuterSandbox !== "harbor",
+          userQuestions: !this.trustedOuterSandbox && !this.oneShot && this.terminal.isInteractive(),
           ...(this.trustedOuterSandbox
             ? {}
             : {

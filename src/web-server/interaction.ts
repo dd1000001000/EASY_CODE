@@ -33,8 +33,11 @@ import type {
   RequestInputOptions,
   ThinkingEffortSelectorChoice,
   TimedChoiceOptions,
+  UserQuestionPrompt,
+  UserQuestionReply,
   UserSubmission,
 } from "../ui/interaction-port.js";
+import { normalizeUserAnswers } from "../core/user-questions.js";
 import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { renderContextUsage } from "../ui/render/context-usage.js";
@@ -231,7 +234,9 @@ export class WebInteraction implements AppInteractionPort {
     const pending = this.decisions[index];
     if (!pending) return false;
     if (pending.signal?.aborted && value !== undefined) return false;
-    if (
+    if (pending.request.kind === "question") {
+      if (value !== undefined && value !== "skip" && !questionAnswers(pending.request, value)) return false;
+    } else if (
       value !== undefined &&
       pending.request.kind !== "secret" &&
       !(pending.request.kind === "plan" && value.startsWith("adjust:")) &&
@@ -714,6 +719,18 @@ export class WebInteraction implements AppInteractionPort {
     );
     return value === "allow_once" || value === "allow_prefix" ? value : "reject";
   }
+  async askUser(prompt: Readonly<UserQuestionPrompt>): Promise<UserQuestionReply> {
+    const request: WebDecision = {
+      id: randomUUID(),
+      kind: "question",
+      title: prompt.questions[0]?.question ?? "",
+      questions: prompt.questions,
+      expiresAt: prompt.expiresAt,
+    };
+    const value = await this.awaitDecision(request, prompt.signal);
+    if (value === undefined) return undefined;
+    return value === "skip" ? "skipped" : questionAnswers(request, value);
+  }
   selectChoice(
     title: string,
     choices: readonly InteractionChoice[],
@@ -950,5 +967,15 @@ export class WebInteraction implements AppInteractionPort {
     this.externalOperation?.abort();
     this.cancelPendingDecisions();
     this.listeners.clear();
+  }
+}
+
+/** The answers in an `answer:<JSON>` reply, when they fit the questions that were shown. */
+function questionAnswers(request: Readonly<WebDecision>, value: string) {
+  if (!request.questions || !value.startsWith("answer:")) return undefined;
+  try {
+    return normalizeUserAnswers(request.questions, JSON.parse(value.slice("answer:".length)));
+  } catch {
+    return undefined;
   }
 }

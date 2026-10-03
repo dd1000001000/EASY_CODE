@@ -31,6 +31,7 @@ interface BuiltinPolicy {
 const BUILTIN_POLICIES = {
   select_mode: { effects: [], modes: ["auto"], roles: MAIN, controlPlane: true },
   propose_plan: { effects: [], modes: ["plan"], roles: MAIN, controlPlane: true },
+  ask_user: { effects: [], modes: ALL_MODES, roles: MAIN, controlPlane: true },
   read_file: { effects: ["workspace_read"], modes: ALL_MODES, roles: BOTH, idempotent: true, resultClass: "file_read" },
   read_document: {
     effects: ["workspace_read"],

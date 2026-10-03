@@ -37,6 +37,7 @@ import {
   renderCompletionCorrection,
 } from "./completion-gate.js";
 import { ToolProtocolExhausted } from "./tool-recovery.js";
+import type { UserQuestion } from "../core/types.js";
 
 /** Live state and callbacks supplied by AgentRuntime. */
 export interface TurnCompletionContext {
@@ -90,6 +91,7 @@ export class TurnCompletion {
       submittedTaskReport,
       turnId,
       turnImages,
+      unansweredQuestions,
     } = ctx;
     let { steeringAppliedBetweenTools } = updates;
     try {
@@ -202,6 +204,22 @@ export class TurnCompletion {
             submittedTaskReport,
           ),
         };
+      }
+
+      if (unansweredQuestions) {
+        // A message that arrived as the question closed answers it; otherwise wait for the next request.
+        if (await this.ctx.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) {
+          return { kind: "continue" };
+        }
+        const text = renderRuntimePrompt("runtime/question-unanswered.md", {
+          reason:
+            unansweredQuestions.reason === "timeout"
+              ? "The question was not answered in time, so this request ended."
+              : "The question was skipped, so this request ended.",
+          questions: formatUnansweredQuestions(unansweredQuestions.questions),
+        });
+        this.ctx.dependencies.onText?.(text);
+        return { kind: "return", value: this.finish(state, turnId, text, "needs_input", step, memoryContext) };
       }
 
       if (proposedPlan) {
@@ -522,14 +540,14 @@ export class TurnCompletion {
     if (
       memoryContext.mutations.length > 0 &&
       this.ctx.dependencies.commitMemoryMutations &&
-      (reason === "success" || reason === "planned")
+      (reason === "success" || reason === "planned" || reason === "needs_input")
     ) {
       try {
         const committed = await this.ctx.dependencies.commitMemoryMutations({
           workspaceRoot: state.workspaceRoot,
           threadId: state.threadId,
           turnId,
-          outcome: reason,
+          outcome: reason === "planned" ? "planned" : "success",
           mutations: memoryContext.mutations,
         });
         await this.ctx.dependencies
@@ -564,7 +582,8 @@ export class TurnCompletion {
         })
         .catch(() => undefined);
     }
-    if (reason === "success" || reason === "planned") await this.ctx.closeContextPhase(state, turnId, "turn");
+    if (reason === "success" || reason === "planned" || reason === "needs_input")
+      await this.ctx.closeContextPhase(state, turnId, "turn");
     if (this.ctx.dependencies.checkpointContext) {
       try {
         await this.ctx.dependencies.checkpointContext(state);
@@ -575,4 +594,18 @@ export class TurnCompletion {
     }
     return result;
   }
+}
+
+/** The unanswered questions as a numbered list, each with its options. */
+function formatUnansweredQuestions(questions: readonly UserQuestion[]): string {
+  return questions
+    .map((question, index) =>
+      [
+        `${index + 1}. ${question.question}${question.multiSelect ? " (choose any)" : ""}`,
+        ...question.options.map(
+          (option) => `   - ${option.label}${option.description ? ` — ${option.description}` : ""}`,
+        ),
+      ].join("\n"),
+    )
+    .join("\n");
 }

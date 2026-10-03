@@ -18,6 +18,7 @@ import type { WebCommandEntry } from "../../web-command-catalog.js";
 import { useOutsideDismiss } from "../use-outside-dismiss.js";
 import { t } from "../i18n.js";
 import DecisionDialog from "./DecisionDialog.vue";
+import QuestionDialog from "./QuestionDialog.vue";
 import { useComposerMentions } from "../use-composer-mentions.js";
 import { useComposerHistory } from "../use-composer-history.js";
 
@@ -102,6 +103,8 @@ const showStopButton = computed(
   () => props.compacting || composerPrimaryAction(props.busy, hasContent.value) === "stop",
 );
 const previewUrls = computed(() => images.value.map((image) => image.previewUrl));
+// An open question still takes a message: sending one closes the question and the agent reads it instead.
+const decisionBlocksSending = computed(() => Boolean(props.decision) && props.decision?.kind !== "question");
 const commandMatches = computed(() =>
   props.threadId && !props.busy && !props.decision && draft.value !== dismissedCommandDraft.value
     ? props.commands.filter((command) => matchingSlashCommands(draft.value, [command.name]).length > 0)
@@ -268,7 +271,14 @@ function removeText(id: string): void {
   else unboundPastedTexts = pastedTexts.value;
 }
 function send(): void {
-  if (props.compacting || !props.threadId || props.decision || sending.value || uploading.value || !hasContent.value)
+  if (
+    props.compacting ||
+    !props.threadId ||
+    decisionBlocksSending.value ||
+    sending.value ||
+    uploading.value ||
+    !hasContent.value
+  )
     return;
   const text = composeMessage(draft.value, pastedTexts.value);
   if (text.length > MAX_MESSAGE_CHARACTERS) {
@@ -361,8 +371,13 @@ defineExpose({ sent, failed });
   <div class="composer-wrap">
     <div class="composer" :class="{ 'composer--unbound': !threadId, 'composer--compacting': compacting }">
       <slot name="command-panel" />
+      <QuestionDialog
+        v-if="decision?.kind === 'question' && !compacting"
+        :decision="decision"
+        @submit="(id, value) => emit('submitDecision', id, value)"
+      />
       <DecisionDialog
-        v-if="decision && !compacting"
+        v-else-if="decision && !compacting"
         :decision="decision"
         @submit="(id, value) => emit('submitDecision', id, value)"
       />
@@ -566,7 +581,9 @@ defineExpose({ sent, failed });
               circle
               :icon="showStopButton ? VideoPause : Top"
               :aria-label="showStopButton ? t('ui.stopTask') : busy ? t('ui.sendAdjustment') : t('ui.sendMessage')"
-              :disabled="!threadId || (!showStopButton && (!!decision || sending || uploading || !hasContent))"
+              :disabled="
+                !threadId || (!showStopButton && (decisionBlocksSending || sending || uploading || !hasContent))
+              "
               @click="showStopButton ? emit('stop') : send()"
             />
           </ElTooltip>

@@ -8,6 +8,7 @@ import { autoRouteToolDefinitions } from "../src/runtime/auto-router.js";
 import type { MemoryManager } from "../src/memory/memory-manager.js";
 import type { SubagentControl } from "../src/subagents/types.js";
 import {
+  AskUserTool,
   CancelCommandTool,
   CreateFileTool,
   DeleteFileTool,
@@ -97,6 +98,7 @@ function actualDefinitions() {
     new ManageTasksTool().definition,
     new NameThreadTool(new ThreadTitleStore({} as EasyCodeStorage)).definition,
     new ProposePlanTool().definition,
+    new AskUserTool().definition,
     new ReadFileTool(workspace).definition,
     new ReadDocumentTool(workspace, new ThreadDocumentService(new DocumentConverter(process.cwd()), resourceStore))
       .definition,
@@ -133,6 +135,7 @@ describe("Prompt Bundle tool metadata", () => {
     const definitions = actualDefinitions();
     const names = definitions.map((definition) => definition.function.name).sort();
     assert.deepEqual(names, [
+      "ask_user",
       "cancel_command",
       "create_file",
       "create_skill",

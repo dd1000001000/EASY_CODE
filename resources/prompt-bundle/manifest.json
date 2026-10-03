@@ -254,6 +254,10 @@
       "sha256": "sha256:15ece9b48a41e4a5a433e1c026c6030f808ce0a1c6104a702dc9a6ec7d3d8227",
       "bytes": 134
     },
+    "runtime/question-unanswered.md": {
+      "sha256": "sha256:81fb52500dc9495d5a835434d1fc85e683254249d307f5d180d39cc7c1495ce7",
+      "bytes": 87
+    },
     "runtime/read-image-follow-up.md": {
       "sha256": "sha256:00e41138d1184544ad7a7eaf42d1675035744a2c3a0e926ff634ac155f964e65",
       "bytes": 165
@@ -321,6 +325,10 @@
     "system/security.md": {
       "sha256": "sha256:5388c9cadf4d63ab7ac2ed939e26ee6470a047d7abaf88559ea351a7077f4a4e",
       "bytes": 1282
+    },
+    "tools/ask_user.json": {
+      "sha256": "sha256:377bef9983a0e003e284446017c02565f44231dda66cffd2d2321152b745725d",
+      "bytes": 2024
     },
     "tools/cancel_command.json": {
       "sha256": "sha256:a3a64f0897baeaa00ebaed2ed83e3e31aadc7558309c66de17f4acfe9d79d863",
@@ -492,6 +500,11 @@
     }
   },
   "tools": {
+    "ask_user": {
+      "path": "tools/ask_user.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:377bef9983a0e003e284446017c02565f44231dda66cffd2d2321152b745725d"
+    },
     "cancel_command": {
       "path": "tools/cancel_command.json",
       "contractVersion": "1.0.0",
@@ -703,5 +716,5 @@
       "contentHash": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049"
     }
   },
-  "bundleHash": "sha256:56cbd6ffaa60695a9dcd8b7d6e048581a530cf89555b18a1cb74f237e129ff46"
+  "bundleHash": "sha256:65b522bc0cd5db676e13f0ae651f1f44ea1043c46aba1b8fdbd57f58f7589a85"
 }

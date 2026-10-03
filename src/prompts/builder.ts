@@ -45,6 +45,7 @@ export interface BuildSystemPromptOptions {
 const TOOL_RULE_ORDER: readonly ToolName[] = [
   "select_mode",
   "propose_plan",
+  "ask_user",
   "read_file",
   "read_document",
   "search_files",

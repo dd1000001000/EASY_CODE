@@ -185,6 +185,13 @@ export const runtimeLimitsSchema = z
     contextToolReserveRatio: z.number().min(0).max(0.2),
     contextSafetyReserveTokens: integer(128, 131072),
     contextSafetyReserveRatio: z.number().min(0.01).max(0.2),
+    // ask_user: questions per call, choices per question (the free-text answer is extra),
+    // and how long a shown question waits before the request ends unanswered.
+    askUserMinQuestions: integer(1, 10),
+    askUserMaxQuestions: integer(1, 10),
+    askUserMinOptions: integer(2, 10),
+    askUserMaxOptions: integer(2, 10),
+    askUserTimeoutMs: integer(60000, 86400000),
   })
   .strict()
   .superRefine((value, context) => {
@@ -254,6 +261,14 @@ export const runtimeLimitsSchema = z
       });
     if (value.defaultReadLines > value.maxReadLines)
       context.addIssue({ code: "custom", path: ["defaultReadLines"], message: "must not exceed maxReadLines" });
+    if (value.askUserMinQuestions > value.askUserMaxQuestions)
+      context.addIssue({
+        code: "custom",
+        path: ["askUserMinQuestions"],
+        message: "must not exceed askUserMaxQuestions",
+      });
+    if (value.askUserMinOptions > value.askUserMaxOptions)
+      context.addIssue({ code: "custom", path: ["askUserMinOptions"], message: "must not exceed askUserMaxOptions" });
   });
 export type RuntimeLimits = z.infer<typeof runtimeLimitsSchema>;
 export const DEFAULT_RUNTIME_LIMITS: Readonly<RuntimeLimits> = Object.freeze(runtimeLimitsSchema.parse(defaults));

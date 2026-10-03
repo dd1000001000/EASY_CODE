@@ -31,7 +31,15 @@ import { entryDisplay } from "./entry-text.js";
 import { AnswerBlock } from "./markdown-view.js";
 import type { InkActions } from "./ink-actions.js";
 import type { InkSnapshot } from "./ink-store.js";
-import { MenuModalView, SECRET_MODAL_ROWS, SecretModalView, TextModalView, renderMenuModal } from "./modal.js";
+import {
+  MenuModalView,
+  QuestionModalView,
+  SECRET_MODAL_ROWS,
+  SecretModalView,
+  TextModalView,
+  questionModalHeight,
+  renderMenuModal,
+} from "./modal.js";
 
 const TICK_MS = 160;
 const MIN_COLUMNS = 12;
@@ -175,6 +183,8 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
   let reserved: number;
   if (modal?.kind === "menu") {
     reserved = lineCount(renderMenuModal(modal, modal.initialIndex, ui, modalView));
+  } else if (modal?.kind === "question") {
+    reserved = questionModalHeight(modal, ui, modalView);
   } else if (modal?.kind === "secret") {
     reserved = SECRET_MODAL_ROWS;
   } else if (modal?.kind === "text") {
@@ -233,6 +243,9 @@ function InkApp({ actions }: { readonly actions: InkActions }): ReactElement {
           ) : null}
           {modal?.kind === "menu" ? (
             <MenuModalView modal={modal} ui={ui} view={modalView} width={width} color={color} />
+          ) : null}
+          {modal?.kind === "question" ? (
+            <QuestionModalView key={modal.id} modal={modal} ui={ui} view={modalView} width={width} color={color} />
           ) : null}
           {modal?.kind === "secret" ? (
             <SecretModalView modal={modal} ui={ui} view={view} width={width} color={color} />

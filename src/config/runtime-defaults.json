@@ -140,5 +140,10 @@
   "contextToolReserveTokens": 65536,
   "contextToolReserveRatio": 0.1,
   "contextSafetyReserveTokens": 512,
-  "contextSafetyReserveRatio": 0.05
+  "contextSafetyReserveRatio": 0.05,
+  "askUserMinQuestions": 1,
+  "askUserMaxQuestions": 3,
+  "askUserMinOptions": 2,
+  "askUserMaxOptions": 4,
+  "askUserTimeoutMs": 900000
 }
