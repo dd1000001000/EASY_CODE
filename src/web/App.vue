@@ -116,9 +116,11 @@ const activeProject = computed(() =>
 const headerTitle = computed(() => displayTitle(activeThread.value, activeProject.value, threads.value));
 const headerHint = computed(() =>
   activeProject.value
-    ? activeProject.value.ready === false
-      ? t("ui.attachFolderHint")
-      : t("ui.emptyProjectHint")
+    ? activeProject.value.primaryUnavailable
+      ? t("ui.primaryFolderUnavailable")
+      : activeProject.value.ready === false
+        ? t("ui.attachFolderHint")
+        : t("ui.emptyProjectHint")
     : t("ui.emptyNoProjectHint"),
 );
 const liveAgentCount = computed(
@@ -324,9 +326,16 @@ async function switchThread(action: "new" | "resume", threadId?: string, project
     if (action === "resume" && threadId === previousThreadId && activeThread.value === threadId) pickEmptyThreadTitle();
   } catch (reason) {
     reportError(errorMessage(reason));
+    // A folder may have gone missing since the sidebar was loaded.
+    void conversation.refresh();
   } finally {
     switching.value = false;
   }
+}
+/** Folders can go missing or come back outside EASY CODE, so read them fresh before editing. */
+async function editProject(project: ProjectItem): Promise<void> {
+  await conversation.refresh();
+  editingProject.value = projects.value.find((item) => item.id === project.id) ?? project;
 }
 function toggleProject(id: string): void {
   selectedProjectId.value = id;
@@ -482,7 +491,7 @@ async function decidePlan(action: "approve" | "reject" | "adjust"): Promise<void
       @add-project="addProject"
       @toggle-project="toggleProject"
       @new-thread="switchThread('new', undefined, $event)"
-      @edit-project="editingProject = $event"
+      @edit-project="editProject"
       @delete-project="deleteProject"
       @resume-thread="switchThread('resume', $event)"
       @rename-thread="renameThread"

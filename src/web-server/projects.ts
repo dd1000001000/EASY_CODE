@@ -2,17 +2,24 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ProjectFolder, ProjectRecord, ProjectWorkspace } from "../projects/types.js";
 import { projectPrimaryFolder, projectWorkspace } from "../projects/types.js";
+import { checkProjectFolders } from "../projects/availability.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import type { ThreadSummary } from "../threads/thread-store.js";
 import { ThreadTitleStore } from "../threads/thread-title.js";
-import { WorkspacePathGuard } from "../workspace/path-guard.js";
+import { WorkspacePathGuard, type WorkspaceRootProblem } from "../workspace/path-guard.js";
 
+export interface ProjectFolderItem extends ProjectFolder {
+  /** Set while an active folder cannot be found; it is left out of the workspace until it is back. */
+  unavailable?: WorkspaceRootProblem;
+}
 export interface ProjectItem {
   id: string;
   name: string;
   workspaceRevision: number;
   primaryFolderId?: string;
-  folders: ProjectFolder[];
+  folders: ProjectFolderItem[];
+  /** The primary folder cannot be found, so the project cannot be used. */
+  primaryUnavailable: boolean;
   ready: boolean;
   /** Primary folder path for compact labels and deletion confirmations. */
   root: string;
@@ -154,7 +161,21 @@ export class ProjectIndex {
 
   private item(record: ProjectRecord): ProjectItem {
     const primary = projectPrimaryFolder(record);
-    return { ...record, folders: [...record.folders], ready: Boolean(primary), root: primary?.path ?? "" };
+    const problems = new Map(
+      checkProjectFolders(record.folders).unavailable.map((folder) => [folder.id, folder.problem] as const),
+    );
+    const folders = record.folders.map((item) => {
+      const problem = problems.get(item.id);
+      return problem ? { ...item, unavailable: problem } : { ...item };
+    });
+    const primaryUnavailable = Boolean(primary && problems.has(primary.id));
+    return {
+      ...record,
+      folders,
+      primaryUnavailable,
+      ready: Boolean(primary) && !primaryUnavailable,
+      root: primary?.path ?? "",
+    };
   }
 
   list(threads: readonly ThreadSummary[] = []): { projects: ProjectItem[]; threads: SidebarThread[] } {
@@ -263,7 +284,8 @@ export class ProjectIndex {
     if (!target) throw new Error("Project folder not found.");
     const revision = project.workspaceRevision + 1;
     const now = new Date().toISOString();
-    const nextPrimary = project.folders.find((item) => item.active && item.id !== folderId)?.id;
+    const remaining = project.folders.filter((item) => item.active && item.id !== folderId);
+    const nextPrimary = (remaining.find((item) => !item.unavailable) ?? remaining[0])?.id;
     this.storage.db.transaction(() => {
       this.storage.db
         .prepare<[number, string, string]>(
@@ -285,8 +307,9 @@ export class ProjectIndex {
 
   setPrimaryFolder(projectId: string, folderId: string): void {
     const project = this.get(projectId);
-    if (!project.folders.some((item) => item.id === folderId && item.active))
-      throw new Error("Project folder not found.");
+    const target = project.folders.find((item) => item.id === folderId && item.active);
+    if (!target) throw new Error("Project folder not found.");
+    if (target.unavailable) throw new Error("A folder that cannot be found cannot be the primary folder.");
     if (project.primaryFolderId === folderId) return;
     const revision = project.workspaceRevision + 1;
     this.storage.db
@@ -362,8 +385,10 @@ export class ProjectIndex {
       primaryFolderId = desired.find((item) => pathKey(item.path) === primaryPath)?.folder.id;
       if (!primaryFolderId) throw new Error("Primary project folder not found.");
     } else {
-      primaryFolderId = desired[0]?.folder.id;
+      primaryFolderId = (desired.find((item) => !activeById.get(item.folder.id)?.unavailable) ?? desired[0])?.folder.id;
     }
+    if (primaryFolderId && activeById.get(primaryFolderId)?.unavailable)
+      throw new Error("A folder that cannot be found cannot be the primary folder.");
 
     const active = project.folders.filter((item) => item.active);
     const workspaceChanged =

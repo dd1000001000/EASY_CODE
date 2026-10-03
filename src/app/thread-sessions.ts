@@ -6,6 +6,13 @@ import { translate } from "../i18n/catalog.js";
 import { readLanguage } from "../i18n/language.js";
 import { assertDataDirectoryOutsideWorkspace } from "../images/index.js";
 import { effectiveContextWindow, resolveCatalogModel } from "../models/catalog.js";
+import {
+  checkProjectFolders,
+  folderProblemText,
+  primaryFolderUnavailableError,
+  unavailablePrimaryFolder,
+  type UnavailableProjectFolder,
+} from "../projects/availability.js";
 import type { ProjectWorkspace } from "../projects/types.js";
 import { activePromptBundleBinding } from "../prompt-bundle/index.js";
 import { workspaceIdFromRoot, type EasyCodeStorage } from "../storage/database.js";
@@ -58,9 +65,13 @@ export interface AppThreadSessionsContext {
   readonly trustedOuterSandbox: "harbor" | undefined;
   readonly contextManager: ContextManager;
   readonly infoCommands: InfoCommands;
+  readonly hasRunningCommands: () => boolean;
 }
 
 export class AppThreadSessions {
+  /** Folders already reported as not found, so each change is reported once. */
+  private readonly reportedUnavailable = new Set<string>();
+
   constructor(private readonly ctx: AppThreadSessionsContext) {}
 
   syncWorkspaceState(): void {
@@ -115,10 +126,79 @@ export class AppThreadSessions {
     };
   }
 
-  private async replaceProjectWorkspace(descriptor: ProjectWorkspace): Promise<void> {
+  /**
+   * Before a request, match the workspace to the project folders that can be
+   * found now: a folder that went missing is left out, one that is back is
+   * used again. The primary folder must be found. While commands or child
+   * agents from earlier requests still run, the workspace stays as it is.
+   */
+  async refreshFolderAvailability(): Promise<void> {
+    const membership = this.currentProjectWorkspace();
+    if (!membership) return;
+    const { unavailable } = checkProjectFolders(membership.folders);
+    const primary = unavailable.find((folder) => folder.id === membership.primaryFolderId);
+    if (primary) throw primaryFolderUnavailableError(readLanguage(this.ctx.storage), primary, this.folderFix());
+    const current = new Set(this.ctx.workspace.unavailableFolders.map((folder) => folder.id));
+    const changed = unavailable.length !== current.size || unavailable.some((folder) => !current.has(folder.id));
+    if (changed && !this.earlierWorkRunning())
+      await this.replaceProjectWorkspace(membership, { announceHeader: false, startingTurn: true });
+    this.reportFolderAvailability(unavailable);
+  }
+
+  /** Report the folders the workspace was opened without. */
+  announceFolderAvailability(): void {
+    this.reportFolderAvailability(this.ctx.workspace.unavailableFolders);
+  }
+
+  /** Report each folder that is newly not found, and each one the workspace uses again. */
+  private reportFolderAvailability(notFound: readonly UnavailableProjectFolder[]): void {
+    const language = readLanguage(this.ctx.storage);
+    const leftOut = new Set(this.ctx.workspace.unavailableFolders.map((folder) => folder.id));
+    for (const folder of notFound) {
+      if (this.reportedUnavailable.has(folder.id)) continue;
+      this.reportedUnavailable.add(folder.id);
+      this.ctx.terminal.warning(
+        translate(language, leftOut.has(folder.id) ? "cli.folderUnavailable" : "cli.folderUnavailableBusy", {
+          key: folder.key,
+          path: folder.path,
+          reason: folderProblemText(language, folder.problem),
+        }),
+      );
+    }
+    for (const id of this.reportedUnavailable) {
+      // Still missing, or found again but not in use until running work finishes.
+      if (leftOut.has(id) || notFound.some((folder) => folder.id === id)) continue;
+      this.reportedUnavailable.delete(id);
+      const folder = this.ctx.workspace.folders.find((item) => item.id === id);
+      if (folder)
+        this.ctx.terminal.info(translate(language, "cli.folderAvailableAgain", { key: folder.key, path: folder.path }));
+    }
+  }
+
+  /** Work from earlier requests that still uses the current workspace. */
+  private earlierWorkRunning(): boolean {
+    const threadId = this.ctx.state.threadId;
+    return (
+      this.ctx.hasRunningCommands() ||
+      this.ctx.subagentCoordinator.hasUnfinished(threadId) ||
+      this.ctx.subagentCoordinator.hasOutstanding(threadId) ||
+      Boolean(this.ctx.pendingPlan())
+    );
+  }
+
+  /** Where the user can choose another primary folder. */
+  private folderFix(): "web" | "cli" {
+    return this.ctx.terminal.surface === "web" ? "web" : "cli";
+  }
+
+  /** `startingTurn`: called by a turn that has claimed the Thread but not yet run anything. */
+  private async replaceProjectWorkspace(
+    descriptor: ProjectWorkspace,
+    { announceHeader = true, startingTurn = false } = {},
+  ): Promise<void> {
     this.ctx.assertNoRunningCommands("change project folders");
     this.ctx.subagentHost.assertNoRunningSubagents("change project folders");
-    if (this.ctx.activeTurnController)
+    if (this.ctx.activeTurnController && !startingTurn)
       throw new Error("Wait for the current request to finish before changing project folders.");
     if (this.ctx.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
     for (const catalog of this.ctx.mainToolCatalogs.values()) await catalog.close();
@@ -148,7 +228,7 @@ export class AppThreadSessions {
     });
     this.ctx.dirty = true;
     this.save();
-    this.syncTerminalView(true);
+    this.syncTerminalView(announceHeader);
   }
 
   async updateWorkspaceCommand(rawArgs: string): Promise<void> {
@@ -193,7 +273,18 @@ export class AppThreadSessions {
     } else {
       throw new Error("Usage: /workspace list|refresh|add <path>|remove <folder-id>|primary <folder-id>");
     }
-    await this.replaceProjectWorkspace(projects.workspace(projectId));
+    const next = projects.workspace(projectId);
+    const missingPrimary = unavailablePrimaryFolder(next);
+    if (missingPrimary) {
+      // Saved; the conversation keeps its folders until a primary folder that can be found is chosen.
+      this.ctx.terminal.success("Project folders updated.");
+      this.ctx.terminal.warning(
+        primaryFolderUnavailableError(readLanguage(this.ctx.storage), missingPrimary, "cli").message,
+      );
+      return;
+    }
+    await this.replaceProjectWorkspace(next);
+    this.reportFolderAvailability(this.ctx.workspace.unavailableFolders);
     this.ctx.terminal.success("Project folders updated.");
   }
 
@@ -312,7 +403,7 @@ export class AppThreadSessions {
       nextWorkspace = await WorkspaceManager.create(currentProject ?? recovered.workspaceRoot);
       recovered.projectId = nextWorkspace.projectId ?? recovered.projectId;
       recovered.workspaceRevision = nextWorkspace.revision;
-      recovered.workspaceFolders = nextWorkspace.folders.map((folder, index) => ({
+      recovered.workspaceFolders = nextWorkspace.memberFolders.map((folder, index) => ({
         id: folder.id ?? `folder_${index + 1}`,
         key: folder.key,
         path: folder.path,
@@ -452,6 +543,8 @@ export class AppThreadSessions {
   }
 
   announceResumeRecovery(): void {
+    // Every place that opens a conversation reports this, so it also reports missing folders.
+    this.announceFolderAvailability();
     const recovery = this.ctx.pendingResumeRecovery;
     if (!recovery) return;
     this.ctx.pendingResumeRecovery = undefined;

@@ -16,6 +16,8 @@ import { createStorage } from "./storage/database.js";
 import { ThreadStore } from "./threads/thread-store.js";
 import { ProjectIndex } from "./web-server/projects.js";
 import type { ProjectWorkspace } from "./projects/types.js";
+import { assertPrimaryFolderAvailable } from "./projects/availability.js";
+import { readLanguage } from "./i18n/language.js";
 import { registerConfigCommands } from "./config/config-command.js";
 import { registerSandboxCommands } from "./sandbox/cli.js";
 import { registerSweBenchCommands } from "./benchmarks/swebench.js";
@@ -148,6 +150,8 @@ async function withApp(
           .find((item) => item.threadId === options.resume);
         if (!thread) throw new Error(`Thread not found: ${options.resume}`);
         projectWorkspace = projects.workspace(thread.workspaceId);
+        // /workspace cannot run before the conversation opens, so point to the Web project editor.
+        assertPrimaryFolderAvailable(projectWorkspace, readLanguage(storage), "web");
       } else {
         projectWorkspace = projects.workspace(projects.add(config.workspaceRoot).id);
       }

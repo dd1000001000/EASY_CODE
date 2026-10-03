@@ -445,6 +445,7 @@ export class SubagentHost {
         const base = await buildSystemPrompt({
           config: childConfig,
           workspaceFolders: childWorkspace.folders,
+          unavailableWorkspaceFolders: childWorkspace.unavailableFolders,
           skillStore: SkillStore.forProject(
             childWorkspace.root,
             this.ctx.config.dataDir,

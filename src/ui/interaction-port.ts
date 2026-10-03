@@ -197,6 +197,8 @@ export interface AgentDecisionPort {
 
 /** The existing CLI session lifecycle, kept separate from the Agent's decisions. */
 export interface SessionInteractionPort {
+  /** Set by the Web host, whose users change project folders in its project editor; unset in the CLI. */
+  readonly surface?: "web";
   setLanguage?(language: Language): void;
   configureStreaming(limits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number }): void;
   setContextTokensProvider(provider: (() => number) | undefined): void;

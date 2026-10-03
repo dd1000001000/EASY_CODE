@@ -21,6 +21,8 @@ export interface BuildSystemPromptOptions {
   mode: AgentMode;
   workspaceSummary?: string;
   workspaceFolders?: readonly { key: string; path: string }[];
+  /** Project folders that cannot be found now; the model is told they exist but cannot be used. */
+  unavailableWorkspaceFolders?: readonly { key: string; path: string }[];
   memories?: string | readonly string[] | readonly LongTermMemory[];
   /** Runtime-owned deterministic resume state; never supplied by the model. */
   workingCheckpoint?: string;
@@ -167,6 +169,17 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions): Prom
         "Never use `..` to cross roots. Prefer one folder-key cwd per command; if one command genuinely must reference " +
         "multiple attached roots, it may use only the exact attached absolute paths listed below.\n" +
         untrustedBlock(catalog, "PROJECT_FOLDERS", entries),
+    );
+  }
+  if (options.unavailableWorkspaceFolders?.length) {
+    const entries = options.unavailableWorkspaceFolders.map((folder) => `${folder.key}: ${folder.path}`).join("\n");
+    sections.push(
+      "UNAVAILABLE PROJECT FOLDERS: These folders belong to this project but cannot be found right now " +
+        "(deleted, renamed, or on a disconnected drive). Their files cannot be read, changed, searched or used as a " +
+        "command cwd until the folder is back, and paths that start with their key are refused. Earlier messages may " +
+        "mention their files. Do not recreate these folders or move their work into another folder; if the task " +
+        "needs them, tell the user.\n" +
+        untrustedBlock(catalog, "UNAVAILABLE_PROJECT_FOLDERS", entries),
     );
   }
   const skillListing = await (options.skillStore ?? new SkillStore(workspaceRoot)).list();

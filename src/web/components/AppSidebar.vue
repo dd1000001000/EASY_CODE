@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ElButton, ElInput } from "element-plus";
-import { Delete, Edit, Fold, Folder, FolderOpened, Loading, Plus, Search } from "@element-plus/icons-vue";
+import {
+  Delete,
+  Edit,
+  Fold,
+  Folder,
+  FolderOpened,
+  Loading,
+  Plus,
+  Search,
+  WarningFilled,
+} from "@element-plus/icons-vue";
 import type { ProjectItem, ThreadItem } from "../api.js";
 import { t } from "../i18n.js";
 
@@ -120,7 +130,9 @@ defineExpose({
                 <ElButton
                   class="project-toggle"
                   text
-                  :title="project.name"
+                  :title="
+                    project.primaryUnavailable ? `${project.name} — ${t('ui.primaryFolderUnavailable')}` : project.name
+                  "
                   :aria-expanded="projectOpen(project.id)"
                   @click="emit('toggleProject', project.id)"
                 >
@@ -128,7 +140,11 @@ defineExpose({
                     v-else
                     class="project-folder"
                   /><span class="project-name">{{ project.name }}</span
-                  ><Loading
+                  ><WarningFilled
+                    v-if="project.primaryUnavailable"
+                    class="project-unavailable"
+                    :aria-label="t('ui.primaryFolderUnavailable')"
+                  /><Loading
                     v-if="projectRunning(project.id)"
                     class="project-loading"
                     :aria-label="t('ui.projectActive')"
@@ -138,7 +154,13 @@ defineExpose({
                   class="project-action project-action--add"
                   text
                   :icon="Plus"
-                  :title="project.ready === false ? t('ui.attachFolderFirst') : t('ui.newConversation')"
+                  :title="
+                    project.primaryUnavailable
+                      ? t('ui.primaryFolderUnavailable')
+                      : project.ready === false
+                        ? t('ui.attachFolderFirst')
+                        : t('ui.newConversation')
+                  "
                   :aria-label="t('ui.newConversation')"
                   :disabled="switching || project.ready === false"
                   @click="emit('newThread', project.id)"

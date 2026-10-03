@@ -362,7 +362,7 @@ export class EasyCodeApp {
         }
         state.projectId = workspace.projectId ?? state.projectId;
         state.workspaceRevision = workspace.revision;
-        state.workspaceFolders = workspace.folders.map((folder, index) => ({
+        state.workspaceFolders = workspace.memberFolders.map((folder, index) => ({
           id: folder.id ?? `folder_${index + 1}`,
           key: folder.key,
           path: folder.path,
@@ -429,7 +429,7 @@ export class EasyCodeApp {
           workspaceRoot: workspace.root,
           projectId: workspace.projectId,
           workspaceRevision: workspace.revision,
-          workspaceFolders: workspace.folders.map((folder, index) => ({
+          workspaceFolders: workspace.memberFolders.map((folder, index) => ({
             id: folder.id ?? `folder_${index + 1}`,
             key: folder.key,
             path: folder.path,
@@ -1723,6 +1723,7 @@ export class EasyCodeApp {
       get infoCommands() {
         return host.infoCommands;
       },
+      hasRunningCommands: () => host.hasRunningCommands(),
     };
   }
 
@@ -1734,6 +1735,7 @@ export class EasyCodeApp {
     const host = this;
     return {
       executePromptOwned: (...args) => host.executePromptOwned(...args),
+      refreshFolderAvailability: () => host.threadSessions.refreshFolderAvailability(),
       activeContextCharLimit: (...args) => host.activeContextCharLimit(...args),
       get activeTurnController() {
         return host.activeTurnController;

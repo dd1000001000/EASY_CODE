@@ -1,5 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { FileChangeRecord, FileVersion } from "../core/types.js";
+import {
+  checkProjectFolders,
+  PrimaryFolderUnavailableError,
+  type UnavailableProjectFolder,
+} from "../projects/availability.js";
 import type { ProjectWorkspace } from "../projects/types.js";
 import {
   captureGitCommandBaseline,
@@ -76,7 +81,12 @@ export class WorkspaceManager {
   readonly pathGuard: WorkspaceBoundary;
   readonly projectId?: string;
   readonly revision: number;
+  /** The folders that can be used now. */
   readonly folders: readonly { id?: string; key: string; path: string }[];
+  /** Project folders that cannot be found now; they are left out of `folders` until they are back. */
+  readonly unavailableFolders: readonly UnavailableProjectFolder[];
+  /** Every project folder in order, usable or not: the membership a Thread records. */
+  readonly memberFolders: readonly { id?: string; key: string; path: string }[];
   private readonly options: WorkspaceManagerOptions;
   private readonly rootGuards: readonly { key: string; guard: WorkspacePathGuard }[];
   private readonly readVersions = new Map<string, FileVersion>();
@@ -90,12 +100,21 @@ export class WorkspaceManager {
       this.pathGuard = guard;
       this.rootGuards = [{ key: "workspace", guard }];
       this.folders = [{ key: "workspace", path: guard.root }];
+      this.unavailableFolders = [];
+      this.memberFolders = this.folders;
       this.revision = 1;
     } else {
       const active = workspace.folders.filter((folder) => folder.active);
       const primary = active.find((folder) => folder.id === workspace.primaryFolderId);
       if (!primary) throw new Error("The project's primary workspace folder is unavailable");
-      const guards = active.map((folder) => ({
+      const { available, unavailable } = checkProjectFolders(active);
+      const unavailablePrimary = unavailable.find((folder) => folder.id === primary.id);
+      if (unavailablePrimary)
+        throw new PrimaryFolderUnavailableError(
+          unavailablePrimary,
+          `The project's primary folder cannot be found: ${unavailablePrimary.path}`,
+        );
+      const guards = available.map((folder) => ({
         key: folder.key,
         guard: new WorkspacePathGuard(folder.path),
         id: folder.id,
@@ -103,9 +122,15 @@ export class WorkspaceManager {
       this.pathGuard = new MultiRootPathGuard(
         guards.map((item) => ({ key: item.key, path: item.guard.root })),
         primary.key,
+        unavailable.map((folder) => folder.key),
       );
       this.rootGuards = guards.map(({ key, guard }) => ({ key, guard }));
       this.folders = guards.map(({ id, key, guard }) => ({ id, key, path: guard.root }));
+      this.unavailableFolders = unavailable;
+      const usable = new Map(this.folders.map((folder) => [folder.id, folder]));
+      this.memberFolders = active.map(
+        (folder) => usable.get(folder.id) ?? { id: folder.id, key: folder.key, path: folder.path },
+      );
       this.projectId = workspace.projectId;
       this.revision = workspace.revision;
     }
@@ -198,6 +223,14 @@ export class WorkspaceManager {
 
     const knownChanges = new Set<string>();
     for (const change of changes) {
+      // Keep the history of a folder that cannot be found as it was; it applies again once the folder is back.
+      if (this.inUnavailableFolder(change.path)) {
+        const key = fileChangeIdentity(change);
+        if (knownChanges.has(key)) continue;
+        knownChanges.add(key);
+        this.changes.push({ ...change });
+        continue;
+      }
       try {
         const relative = this.pathGuard.normalizeRelative(change.path);
         const restored = { ...change, path: relative };
@@ -216,6 +249,12 @@ export class WorkspaceManager {
       restoredChanges: this.changes.length,
       discardedChanges: Math.max(0, changes.length - this.changes.length),
     };
+  }
+
+  private inUnavailableFolder(logicalPath: string): boolean {
+    if (!this.unavailableFolders.length) return false;
+    const first = logicalPath.split(/[\\/]+/u).find((segment) => segment && segment !== ".");
+    return this.unavailableFolders.some((folder) => folder.key === first);
   }
 
   invalidateReadVersion(filename: string): void {

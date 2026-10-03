@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElButton, ElDialog, ElInput } from "element-plus";
 import { Close, Folder, Plus } from "@element-plus/icons-vue";
-import { request, type ProjectItem } from "../api.js";
+import { request, type ProjectFolderItem, type ProjectItem } from "../api.js";
 import { errorMessage } from "../errors.js";
 import { t } from "../i18n.js";
 
@@ -11,6 +11,8 @@ interface EditorFolder {
   folderId?: string;
   key: string;
   path: string;
+  /** Why an attached folder cannot be found now. */
+  unavailable?: ProjectFolderItem["unavailable"];
 }
 interface EditorDraft {
   name: string;
@@ -34,6 +36,16 @@ const emit = defineEmits<{
 const open = ref(false);
 const draft = ref<EditorDraft | null>(null);
 const busy = ref(false);
+const PROBLEM_KEYS = {
+  missing: "ui.folderMissing",
+  not_directory: "ui.folderNotDirectory",
+  link: "ui.folderLink",
+  inaccessible: "ui.folderInaccessible",
+} as const;
+/** A folder that cannot be found cannot be the primary one, so saving waits for another choice. */
+const primaryUnavailable = computed(() =>
+  Boolean(draft.value?.folders.find((folder) => folder.clientId === draft.value?.primaryClientId)?.unavailable),
+);
 
 watch(
   () => props.project,
@@ -42,7 +54,13 @@ watch(
     if (!project) return;
     const folders = (project.folders ?? [])
       .filter((item) => item.active)
-      .map((item) => ({ clientId: item.id, folderId: item.id, key: item.key, path: item.path }));
+      .map((item) => ({
+        clientId: item.id,
+        folderId: item.id,
+        key: item.key,
+        path: item.path,
+        ...(item.unavailable ? { unavailable: item.unavailable } : {}),
+      }));
     draft.value = {
       name: project.name,
       folders,
@@ -53,6 +71,9 @@ watch(
   { immediate: true },
 );
 
+function folderTitle(folder: EditorFolder): string {
+  return folder.unavailable ? `${folder.path} — ${t(PROBLEM_KEYS[folder.unavailable])}` : folder.path;
+}
 function folderName(folder: EditorFolder): string {
   const value = folder.path.replace(/[\\/]+$/gu, "");
   return value.split(/[\\/]/gu).pop() || folder.key;
@@ -86,15 +107,17 @@ function removeFolder(clientId: string): void {
   const editor = draft.value;
   if (!editor) return;
   editor.folders = editor.folders.filter((folder) => folder.clientId !== clientId);
-  if (editor.primaryClientId === clientId) editor.primaryClientId = editor.folders[0]?.clientId;
+  if (editor.primaryClientId === clientId)
+    editor.primaryClientId = (editor.folders.find((folder) => !folder.unavailable) ?? editor.folders[0])?.clientId;
 }
 function setPrimary(clientId: string): void {
-  if (draft.value?.folders.some((folder) => folder.clientId === clientId)) draft.value.primaryClientId = clientId;
+  if (draft.value?.folders.some((folder) => folder.clientId === clientId && !folder.unavailable))
+    draft.value.primaryClientId = clientId;
 }
 async function save(): Promise<void> {
   const editor = draft.value;
   const project = props.project;
-  if (!editor || !project || busy.value || !editor.name.trim()) return;
+  if (!editor || !project || busy.value || !editor.name.trim() || primaryUnavailable.value) return;
   const primary = editor.folders.find((folder) => folder.clientId === editor.primaryClientId);
   busy.value = true;
   try {
@@ -140,16 +163,24 @@ async function save(): Promise<void> {
             v-for="folder in draft.folders"
             :key="folder.clientId"
             class="project-editor-folder"
-            :title="folder.path"
+            :class="{ 'is-unavailable': folder.unavailable }"
+            :title="folderTitle(folder)"
           >
             <Folder class="project-editor-folder-icon" />
             <span class="project-editor-folder-name">{{ folderName(folder) }}</span>
+            <span v-if="folder.unavailable" class="project-editor-unavailable">{{ t("ui.folderUnavailable") }}</span>
             <span v-if="folder.clientId === draft.primaryClientId" class="project-editor-primary">{{
               t("ui.primaryFolder")
             }}</span>
-            <ElButton v-else class="project-editor-make-primary" text @click="setPrimary(folder.clientId)">{{
-              t("ui.makePrimary")
-            }}</ElButton>
+            <ElButton
+              v-else
+              class="project-editor-make-primary"
+              text
+              :disabled="Boolean(folder.unavailable)"
+              :title="folder.unavailable ? t('ui.cannotBePrimary') : undefined"
+              @click="setPrimary(folder.clientId)"
+              >{{ t("ui.makePrimary") }}</ElButton
+            >
             <ElButton
               class="project-editor-remove-folder"
               text
@@ -163,6 +194,7 @@ async function save(): Promise<void> {
             t("ui.addFolder")
           }}</ElButton>
         </div>
+        <p v-if="primaryUnavailable" class="project-editor-warning">{{ t("ui.primaryFolderUnavailable") }}</p>
       </section>
     </div>
     <template #footer>
@@ -178,9 +210,13 @@ async function save(): Promise<void> {
         >
         <span class="project-editor-footer-spacer"></span>
         <ElButton :disabled="busy" @click="open = false">{{ t("ui.cancel") }}</ElButton>
-        <ElButton type="primary" :loading="busy" :disabled="!draft?.name.trim() || running" @click="save">{{
-          t("ui.save")
-        }}</ElButton>
+        <ElButton
+          type="primary"
+          :loading="busy"
+          :disabled="!draft?.name.trim() || running || primaryUnavailable"
+          @click="save"
+          >{{ t("ui.save") }}</ElButton
+        >
       </div>
     </template>
   </ElDialog>

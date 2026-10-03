@@ -16,6 +16,7 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { projectWebHistory } from "./history.js";
 import { WebInteraction } from "./interaction.js";
 import { ProjectIndex } from "./projects.js";
+import { assertPrimaryFolderAvailable } from "../projects/availability.js";
 import { createStorage, type EasyCodeStorage } from "../storage/database.js";
 import { ThreadStore, type ThreadSummary } from "../threads/thread-store.js";
 import { deleteThreadTree } from "../threads/delete-thread.js";
@@ -495,6 +496,7 @@ export class EasyCodeWebServer {
       const nextPort = new WebInteraction();
       let next: EasyCodeApp;
       const projectWorkspace = this.projects.workspace(projectId);
+      assertPrimaryFolderAvailable(projectWorkspace, readLanguage(this.projectStorage));
       const root = projectWorkspace.folders.find((folder) => folder.id === projectWorkspace.primaryFolderId)!.path;
       try {
         next = await this.createApp(root, threadId, nextPort, projectWorkspace);

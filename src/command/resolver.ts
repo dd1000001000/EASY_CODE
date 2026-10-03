@@ -301,6 +301,11 @@ export class CommandResolver {
         // inside one root without allowing `..` to cross into another root.
         let base = this.workspace.root;
         let inner = requested;
+        const first = requested.split(/[\\/]+/u).find((segment) => segment && segment !== ".");
+        if (this.workspace.unavailableFolders.some((folder) => folder.key === first))
+          throw new Error(
+            `Project folder ${first} cannot be found right now; it cannot be used as cwd until it is back`,
+          );
         if (this.workspace.folders.length > 1) {
           const segments = requested.split(/[\\/]+/u);
           const selected = this.workspace.folders.find((folder) => folder.key === segments[0]);

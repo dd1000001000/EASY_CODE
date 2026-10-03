@@ -28,6 +28,14 @@ const en_us = {
   "ui.projectFolderAdded": "Folder added to project",
   "ui.projectFolderRemoved": "Folder removed from project",
   "ui.primaryFolderChanged": "Primary folder changed",
+  "ui.folderUnavailable": "Not found",
+  "ui.folderMissing": "missing or renamed",
+  "ui.folderNotDirectory": "no longer a folder",
+  "ui.folderLink": "now a link or junction",
+  "ui.folderInaccessible": "cannot be accessed",
+  "ui.primaryFolderUnavailable":
+    "The primary folder cannot be found. Edit the project to choose another primary folder.",
+  "ui.cannotBePrimary": "A folder that cannot be found cannot be the primary folder",
   "ui.expandSidebar": "Expand sidebar",
   "ui.collapseSidebar": "Collapse sidebar",
   "ui.projectActive": "Project is active",
@@ -304,6 +312,16 @@ const en_us = {
   "cli.childrenPaused": "Some child agents are paused until an approval mode that permits orchestration is selected.",
   "cli.previousTurnInterrupted":
     "The previous task was interrupted. Completed work was preserved; send a continuation request to resume.",
+  "cli.folderUnavailable":
+    "Project folder {key} ({path}) cannot be found: {reason}. It is left out of the workspace until it is back.",
+  "cli.folderUnavailableBusy":
+    "Project folder {key} ({path}) cannot be found: {reason}. It will be left out of the workspace once the running commands and child agents finish.",
+  "cli.folderAvailableAgain": "Project folder {key} ({path}) is back in the workspace.",
+  "cli.primaryFolderUnavailable":
+    "The primary folder {key} ({path}) of this project cannot be found: {reason}. The project cannot be used until the folder is back or another primary folder is set.",
+  "cli.primaryFolderFixWeb": "Choose another primary folder in the Web project editor.",
+  "cli.primaryFolderFixCli":
+    'Choose another primary folder with /workspace primary <folder-id>, adding one first with /workspace add "<path>" if needed.',
   "cli.planExecuting": "Executing the approved plan.",
   "cli.planApprovedCode": "Plan approved; mode is Code.",
   "cli.planRejected": "Plan rejected.",
@@ -396,6 +414,13 @@ const zh_cn: Record<keyof typeof en_us, string> = {
   "ui.projectFolderAdded": "文件夹已添加到项目",
   "ui.projectFolderRemoved": "文件夹已从项目移除",
   "ui.primaryFolderChanged": "主文件夹已更改",
+  "ui.folderUnavailable": "找不到",
+  "ui.folderMissing": "不存在或已改名",
+  "ui.folderNotDirectory": "已不是文件夹",
+  "ui.folderLink": "变成了链接或目录联接",
+  "ui.folderInaccessible": "无法访问",
+  "ui.primaryFolderUnavailable": "找不到主文件夹。请编辑项目，换一个主文件夹。",
+  "ui.cannotBePrimary": "找不到的文件夹不能设为主文件夹",
   "ui.expandSidebar": "展开侧边栏",
   "ui.collapseSidebar": "折叠侧边栏",
   "ui.projectActive": "项目正在运行",
@@ -669,6 +694,15 @@ const zh_cn: Record<keyof typeof en_us, string> = {
   "cli.createdThread": "已创建新对话。",
   "cli.childrenPaused": "部分子智能体已暂停；请选择允许编排的批准模式后再继续。",
   "cli.previousTurnInterrupted": "上一次任务被中断；已完成的工作已保留，可以发送继续请求恢复执行。",
+  "cli.folderUnavailable": "找不到项目文件夹 {key}（{path}）：{reason}。在它恢复之前，不会提供给模型。",
+  "cli.folderUnavailableBusy":
+    "找不到项目文件夹 {key}（{path}）：{reason}。等正在运行的命令和子 Agent 结束后，就不再提供给模型。",
+  "cli.folderAvailableAgain": "项目文件夹 {key}（{path}）已恢复，重新提供给模型。",
+  "cli.primaryFolderUnavailable":
+    "找不到这个项目的主文件夹 {key}（{path}）：{reason}。在它恢复或换一个主文件夹之前，这个项目无法使用。",
+  "cli.primaryFolderFixWeb": "请在网页的项目编辑里换一个主文件夹。",
+  "cli.primaryFolderFixCli":
+    '请用 /workspace primary <文件夹 ID> 换一个主文件夹；需要的话先用 /workspace add "<路径>" 添加。',
   "cli.planExecuting": "正在执行已批准的计划。",
   "cli.planApprovedCode": "计划已批准，模式已切换为代码。",
   "cli.planRejected": "计划已拒绝。",

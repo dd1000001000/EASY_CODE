@@ -23,12 +23,16 @@ export interface ProjectFolderItem {
   addedRevision: number;
   removedRevision?: number;
   sortOrder: number;
+  /** Why an active folder cannot be found now; it is left out of the workspace until it is back. */
+  unavailable?: "missing" | "not_directory" | "link" | "inaccessible";
 }
 export interface ProjectItem {
   id: string;
   root: string;
   name: string;
   ready?: boolean;
+  /** The primary folder cannot be found, so the project cannot be used. */
+  primaryUnavailable?: boolean;
   workspaceRevision?: number;
   primaryFolderId?: string;
   folders?: ProjectFolderItem[];

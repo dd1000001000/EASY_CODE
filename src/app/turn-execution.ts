@@ -38,6 +38,11 @@ import type { ActiveTurnSteering, ExecutePromptOptions } from "./types.js";
 /** Live state and callbacks supplied by EasyCodeApp. */
 export interface AppTurnExecutionContext {
   readonly executePromptOwned: AppTurnExecution["executePromptOwned"];
+  /**
+   * At the start of a turn that has already claimed the Thread, match the workspace to the
+   * project folders that can be found now; throws when the primary folder cannot be found.
+   */
+  readonly refreshFolderAvailability: () => Promise<void>;
   readonly activeContextCharLimit: () => number;
   activeTurnController: AbortController | undefined;
   activeTurnSteering: ActiveTurnSteering | undefined;
@@ -378,6 +383,8 @@ export class AppTurnExecution {
     const controller = new AbortController();
     this.ctx.activeTurnController = controller;
     try {
+      // Claim the turn first, so a second request cannot start while folders are checked.
+      await this.ctx.refreshFolderAvailability();
       return await this.ctx.executePromptOwned(userInput, images, presentReasoning, runtimeOptions, controller);
     } finally {
       if (this.ctx.activeTurnController === controller) this.ctx.activeTurnController = undefined;

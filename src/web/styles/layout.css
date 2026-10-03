@@ -302,6 +302,12 @@
 .project-loading {
   margin-left: auto;
 }
+.project-unavailable {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--ec-warning);
+}
 .project-toggle.el-button > span,
 .thread-row.el-button > span {
   display: flex;

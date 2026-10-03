@@ -78,13 +78,20 @@ describe("host-neutral request entry", () => {
       finish = resolve;
     });
     let signal: AbortSignal | undefined;
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
     internal.executePromptOwned = async (...args: unknown[]) => {
       signal = (args[4] as AbortController).signal;
+      started();
       return pending;
     };
     const first = app.submitUserMessage("Inspect the repository");
-    assert.equal(signal?.aborted, false);
+    // The turn is claimed at once, before its project folders are checked.
     await assert.rejects(app.submitUserMessage("A second turn"), /already running/u);
+    await running;
+    assert.equal(signal?.aborted, false);
     assert.equal(app.cancelActiveRequest(), true);
     assert.equal(signal?.aborted, true);
     assert.equal(app.cancelActiveRequest(), false);

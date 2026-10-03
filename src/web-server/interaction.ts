@@ -86,6 +86,7 @@ interface PendingDecision {
 
 /** Browser presentation only. Runtime decisions still pass through the existing app boundary. */
 export class WebInteraction implements AppInteractionPort {
+  readonly surface = "web";
   constructor(private readonly decisionTimeoutMs = DECISION_TIMEOUT_MS) {}
   private entries: WebEntry[] = [];
   private readonly entryById = new Map<string, WebEntry>();

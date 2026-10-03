@@ -117,6 +117,17 @@ The agent distinguishes roots through namespaced paths such as `api/...` and `we
 
 Conversations can run in parallel but still share project folders. Coordinated writes do not create an independent checkout for each conversation. Avoid assigning concurrent edits to the same files.
 
+#### When a folder cannot be found
+
+Before each request, EASY CODE checks that every project folder still exists. A folder that was deleted, renamed or is on a disconnected drive stays in the project but is marked as not found:
+
+- It is left out of the workspace: the model cannot read, change, search or run commands in it, and the command sandbox no longer grants it. The model is told only that the folder cannot be found right now.
+- You see one warning when it goes missing and one notice when it is back. Once it is back, it is used again automatically.
+- Web shows it as **Not found** in the project editor. To drop it for good, remove it there, or with `/workspace remove`.
+- If commands or child agents from an earlier request are still running, the workspace stays as it is until they finish.
+
+Without its primary folder a project cannot be used. Requests are refused, and Web marks the project in the sidebar. Restore the folder, or choose another primary folder: in Web, in the project editor; in the CLI, with `/workspace primary <folder-id>` (add one first with `/workspace add` if needed). A folder that cannot be found cannot be made primary.
+
 ### 3.3 Naming and deletion
 
 - A user or the main agent can set a conversation's title once. Repeated renaming is not supported in the current version.

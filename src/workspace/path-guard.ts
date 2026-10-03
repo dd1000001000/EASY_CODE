@@ -41,6 +41,61 @@ function isInsideOrEqual(parent: string, candidate: string): boolean {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
+/** Why a folder cannot be used as a workspace root right now. */
+export type WorkspaceRootProblem = "missing" | "not_directory" | "link" | "inaccessible";
+
+export class WorkspaceRootUnavailableError extends Error {
+  constructor(
+    readonly root: string,
+    readonly problem: WorkspaceRootProblem,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WorkspaceRootUnavailableError";
+  }
+}
+
+/** The real path of a usable workspace root; throws WorkspaceRootUnavailableError otherwise. */
+function canonicalWorkspaceRoot(absolute: string): string {
+  try {
+    let ancestor = path.parse(absolute).root;
+    for (const segment of absolute.slice(ancestor.length).split(path.sep).filter(Boolean)) {
+      ancestor = path.join(ancestor, segment);
+      if (lstatSync(ancestor).isSymbolicLink())
+        throw new WorkspaceRootUnavailableError(
+          absolute,
+          "link",
+          "Workspace roots must not traverse symbolic links or junctions",
+        );
+    }
+    const info = realpathSync.native(absolute);
+    if (!statSync(info).isDirectory())
+      throw new WorkspaceRootUnavailableError(absolute, "not_directory", "Workspace root must be a directory");
+    return path.normalize(info);
+  } catch (error) {
+    if (error instanceof WorkspaceRootUnavailableError) throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    const missing = code === "ENOENT" || code === "ENOTDIR";
+    throw new WorkspaceRootUnavailableError(
+      absolute,
+      missing ? "missing" : "inaccessible",
+      missing
+        ? `Workspace root does not exist: ${absolute}`
+        : `Workspace root cannot be accessed: ${absolute} (${code ?? (error instanceof Error ? error.message : String(error))})`,
+    );
+  }
+}
+
+/** Why `root` cannot be a workspace root now, or undefined when it can. */
+export function workspaceRootProblem(root: string): WorkspaceRootProblem | undefined {
+  try {
+    canonicalWorkspaceRoot(path.resolve(root));
+    return undefined;
+  } catch (error) {
+    return error instanceof WorkspaceRootUnavailableError ? error.problem : "inaccessible";
+  }
+}
+
 /**
  * Central path boundary for every workspace operation.
  *
@@ -62,20 +117,9 @@ export class WorkspacePathGuard {
       throw new Error("A valid workspace root is required");
     }
 
-    const absolute = path.resolve(workspaceRoot);
     if (/^(?:\\\\|\/\/)/u.test(workspaceRoot))
       throw new Error("Network/device workspace roots are not supported by offline tools");
-    let ancestor = path.parse(absolute).root;
-    for (const segment of absolute.slice(ancestor.length).split(path.sep).filter(Boolean)) {
-      ancestor = path.join(ancestor, segment);
-      if (lstatSync(ancestor).isSymbolicLink())
-        throw new Error("Workspace roots must not traverse symbolic links or junctions");
-    }
-    const info = realpathSync.native(absolute);
-    if (!statSync(info).isDirectory()) {
-      throw new Error("Workspace root must be a directory");
-    }
-    this.root = path.normalize(info);
+    this.root = canonicalWorkspaceRoot(path.resolve(workspaceRoot));
     const home = path.dirname(getEasyCodeHome());
     this.protect(path.join(home, ".easy-code-uninstall.lock"));
     this.protect(path.join(home, ".easy-code-uninstall-state.json"));
@@ -268,8 +312,10 @@ export class MultiRootPathGuard implements WorkspaceBoundary {
   readonly roots: readonly NamedWorkspaceRoot[];
   private readonly guards: ReadonlyMap<string, WorkspacePathGuard>;
   private readonly primaryKey: string;
+  private readonly unavailableKeys: ReadonlySet<string>;
 
-  constructor(roots: readonly NamedWorkspaceRoot[], primaryKey: string) {
+  /** `unavailableKeys` name project folders that cannot be found now; paths into them are refused. */
+  constructor(roots: readonly NamedWorkspaceRoot[], primaryKey: string, unavailableKeys: readonly string[] = []) {
     if (!roots.length) throw new Error("At least one workspace folder is required");
     const entries = roots.map((entry) => {
       if (!/^[a-z0-9](?:[a-z0-9-]{0,62})$/u.test(entry.key))
@@ -281,6 +327,7 @@ export class MultiRootPathGuard implements WorkspaceBoundary {
     const primary = entries.find(([key]) => key === primaryKey);
     if (!primary) throw new Error("The primary workspace folder is missing");
     this.primaryKey = primaryKey;
+    this.unavailableKeys = new Set(unavailableKeys);
     this.guards = new Map(entries);
     this.roots = entries.map(([key, guard]) => ({ key, path: guard.root }));
     this.root = primary[1].root;
@@ -301,6 +348,10 @@ export class MultiRootPathGuard implements WorkspaceBoundary {
       throw new Error("Path must be a non-empty workspace-relative string");
     if (path.isAbsolute(input) || looksLikeAbsoluteOnAnotherPlatform(input))
       throw new Error("Absolute paths are not allowed; use a workspace-relative path");
+    const first = input.split(/[\\/]+/u).find((segment) => segment && segment !== ".");
+    // Without this, a path into a folder that cannot be found would fall back to the primary folder.
+    if (first && this.unavailableKeys.has(first))
+      throw new Error(`Project folder ${first} cannot be found right now; its files are unavailable until it is back`);
     if (this.guards.size === 1) {
       const [key, guard] = [...this.guards][0]!;
       const segments = input.split(/[\\/]+/u).filter((segment) => segment && segment !== ".");

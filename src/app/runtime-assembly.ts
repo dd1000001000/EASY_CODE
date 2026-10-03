@@ -164,6 +164,7 @@ export class RuntimeAssembly {
         buildSystemPrompt({
           config: effectiveConfig,
           workspaceFolders: this.ctx.workspace.folders,
+          unavailableWorkspaceFolders: this.ctx.workspace.unavailableFolders,
           skillStore: SkillStore.forProject(
             this.ctx.workspace.root,
             this.ctx.config.dataDir,
