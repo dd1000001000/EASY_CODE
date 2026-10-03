@@ -1,10 +1,17 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import type { WebEntry } from "../../web-contracts.js";
 import MarkdownMessage from "./MarkdownMessage.vue";
+import ToolFileDiff from "./ToolFileDiff.vue";
 import ToolStatus from "./ToolStatus.vue";
 import { toolTarget } from "../display-content.js";
 import { t } from "../i18n.js";
 defineProps<{ entry: WebEntry }>();
+/** A tool's file change loads when its row is first opened. */
+const toolOpen = ref(false);
+function onToolToggle(event: Event): void {
+  if (event.target instanceof HTMLDetailsElement) toolOpen.value = event.target.open;
+}
 function preview(text: string): string {
   return text.replace(/\s+/gu, " ").trim().slice(0, 120) || t("ui.receiving");
 }
@@ -32,7 +39,7 @@ function characterCount(text: string): number {
       </summary>
       <div class="entry-text disclosure-body">{{ entry.text }}</div>
     </details>
-    <details v-else-if="entry.kind === 'tool'" class="disclosure tool-disclosure">
+    <details v-else-if="entry.kind === 'tool'" class="disclosure tool-disclosure" @toggle="onToolToggle">
       <summary>
         <ToolStatus :status="entry.toolStatus" /><span class="disclosure-label">{{
           entry.toolName || t("ui.tool")
@@ -46,6 +53,7 @@ function characterCount(text: string): number {
           <dd>{{ detail.value }}</dd>
         </div>
       </dl>
+      <ToolFileDiff v-if="toolOpen && entry.toolDiff" :diff-ref="entry.toolDiff" :path="toolTarget(entry)" />
     </details>
     <details v-else-if="entry.kind === 'plan'" class="disclosure plan-disclosure" open>
       <summary>{{ t("ui.proposedPlan") }}</summary>

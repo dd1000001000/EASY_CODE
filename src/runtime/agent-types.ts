@@ -186,6 +186,8 @@ export interface AgentRuntimeDependencies {
     result: ToolExecutionResult,
     displayName?: string,
     details?: readonly import("../core/types.js").ToolDisplayDetail[],
+    /** The journaled call, so presentation saved for it can be found from the transcript. */
+    call?: { readonly turnId: string; readonly callId: string },
   ) => Promise<void>;
   /** Roll back a prepared child lifecycle when its authoritative event cannot commit. */
   onSubagentLifecycleRollback?: (update: SubagentLifecycleUpdate) => void;
@@ -261,6 +263,7 @@ export interface AgentUserInput {
 export interface AgentRunOptions {
   orchestrationEnabled?: boolean;
   isOrchestrationEnabled?: () => boolean;
+  /** The model's token window, resolved by the host; omit to measure context in characters. */
   maxContextTokens?: number;
   /** Optional per-actor model-request ceiling. Interactive hosts leave this unset. */
   maxModelRequests?: number;

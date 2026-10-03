@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { ElButton, ElOption, ElSelect } from "element-plus";
 import { Monitor, Moon, Sunny } from "@element-plus/icons-vue";
 import type { UISessionInfo } from "../../ui/contracts.js";
 import { language, t } from "../i18n.js";
 import { contextUsage, environmentLabel, modeLabel } from "../session-labels.js";
 import { nextTheme, themePreference } from "../theme.js";
+import { useOutsideDismiss } from "../use-outside-dismiss.js";
+import ContextUsagePanel from "./ContextUsagePanel.vue";
 
 const props = defineProps<{
   title: string;
@@ -18,6 +20,9 @@ const props = defineProps<{
 const emit = defineEmits<{ changeLanguage: [value: string] }>();
 
 const context = computed(() => contextUsage(props.session));
+const contextOpen = ref(false);
+const contextRoot = ref<HTMLElement | null>(null);
+useOutsideDismiss(contextRoot, () => (contextOpen.value = false));
 const themeLabel = computed(() =>
   themePreference.value === "dark"
     ? t("ui.themeDark")
@@ -39,15 +44,25 @@ const themeIcon = computed(() =>
         <span class="meta-chip">{{ environmentLabel(session) }}</span>
         <span v-if="taskCount" class="meta-chip">{{ t("ui.tasks") }} · {{ taskCount }}</span>
         <span v-if="agentCount" class="meta-chip meta-chip--accent">{{ t("ui.agents") }} · {{ agentCount }}</span>
-        <span v-if="context" class="meta-chip meta-context" :title="t('ui.contextUsage')">
-          <span>{{ t("ui.context") }} {{ context.label }}</span>
-          <span v-if="context.ratio !== undefined" class="meta-context-bar" aria-hidden="true">
-            <span
-              :class="{ 'is-high': context.ratio > 0.8 }"
-              :style="{ width: `${Math.max(4, Math.round(context.ratio * 100))}%` }"
-            ></span>
-          </span>
-        </span>
+        <div v-if="context" ref="contextRoot" class="meta-context-anchor" @keydown.esc="contextOpen = false">
+          <component
+            :is="session.contextUsage ? 'button' : 'span'"
+            class="meta-chip meta-context"
+            :type="session.contextUsage ? 'button' : undefined"
+            :title="session.contextUsage ? t('ui.contextDetails') : t('ui.contextUsage')"
+            :aria-expanded="session.contextUsage ? contextOpen : undefined"
+            @click="contextOpen = !!session.contextUsage && !contextOpen"
+          >
+            <span>{{ t("ui.context") }} {{ context.label }}</span>
+            <span v-if="context.ratio !== undefined" class="meta-context-bar" aria-hidden="true">
+              <span
+                :class="{ 'is-high': context.ratio > 0.8 }"
+                :style="{ width: `${Math.max(4, Math.round(context.ratio * 100))}%` }"
+              ></span>
+            </span>
+          </component>
+          <ContextUsagePanel v-if="contextOpen && session.contextUsage" :report="session.contextUsage" />
+        </div>
       </div>
       <p v-else>{{ hint }}</p>
     </div>

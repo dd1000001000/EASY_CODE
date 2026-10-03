@@ -4,6 +4,7 @@ import type { SlashArgument } from "../cli/slash-suggestions.js";
 import { printBanner } from "../cli/terminal.js";
 import { formatTokenCount } from "../cli/token-count.js";
 import { ContextManager } from "../context/manager.js";
+import { contextUsageReport } from "../context/usage.js";
 import type {
   AgentMode,
   AgentRunResult,
@@ -21,13 +22,13 @@ import { MCP_SERVER_ACTION_IDS } from "../mcp/menu.js";
 import { PROVIDER_CATALOG, providerLabel, requireCatalogModel } from "../models/catalog.js";
 import { thinkingEffortIsApplied } from "../models/thinking.js";
 import { type ThreadResourceAttachment } from "../resources/index.js";
-import { type ProviderContextSnapshot } from "../runtime/agent.js";
 import { runSandboxStartupGuide, type SandboxStartupService } from "../sandbox/startup.js";
 import { type EasyCodeStorage } from "../storage/database.js";
 import { SubagentCoordinator } from "../subagents/coordinator.js";
 import { ThreadStore, type ThreadSummary } from "../threads/thread-store.js";
 import type { UISessionInfo } from "../ui/contracts.js";
 import type { AppInteractionPort, PlanReviewDecision, UserSubmission } from "../ui/interaction-port.js";
+import { renderContextUsage } from "../ui/render/context-usage.js";
 import { InfoCommands } from "./info-commands.js";
 import { ModelSelection } from "./model-selection.js";
 import { SubagentHost } from "./subagent-host.js";
@@ -57,7 +58,6 @@ export interface AppShellCommandsContext {
   hostAccessEpoch: number;
   readonly imageStore: ImageStore;
   readonly infoCommands: InfoCommands;
-  readonly lastProviderContext: ProviderContextSnapshot | undefined;
   readonly modelSelection: ModelSelection;
   readonly newThread: () => Promise<void>;
   pendingImages: ImageAttachment[];
@@ -356,24 +356,19 @@ export class AppShellCommands {
       case "permissions":
         this.ctx.infoCommands.updatePermissions(command.args);
         return false;
-      case "context":
-        this.ctx.terminal.write(
-          `${json({
-            configuredWindowTokens: this.ctx.config.limits.maxContextTokens,
-            effectiveTokenBudget: this.ctx.contextManager.tokenCapacity ?? null,
-            thresholds: {
-              reference: this.ctx.config.limits.contextReferenceTriggerRatio,
-              summary: this.ctx.config.limits.contextCompactionTriggerRatio,
-              force: this.ctx.config.limits.contextForceRatio,
-              target: this.ctx.config.limits.contextCompactionTargetRatio,
-            },
-            ...this.ctx.contextManager.inspect(this.ctx.state, this.ctx.activeContextCharLimit()),
-            lastProviderRequest:
-              this.ctx.lastProviderContext?.threadId === this.ctx.state.threadId ? this.ctx.lastProviderContext : null,
-            note: "Durable history remains complete locally. projectedActiveChars and lastProviderRequest reflect the lightweight provider projection; null means this process has not sent a request for the current Thread yet.",
-          })}\n`,
-        );
+      case "context": {
+        if (command.args.length) throw new Error("Usage: /context");
+        // Session sync resolves the window for the current model first.
+        this.ctx.syncTerminalView();
+        const report = contextUsageReport(this.ctx.contextManager, this.ctx.state);
+        if (!report) throw new Error("The context window is not known yet.");
+        if (this.ctx.terminal.contextUsage) this.ctx.terminal.contextUsage(report);
+        else
+          this.ctx.terminal.write(
+            `${renderContextUsage(report, { language: readLanguage(this.ctx.storage), color: false, columns: 80 })}\n`,
+          );
         return false;
+      }
       case "usage": {
         if (command.args.length) throw new Error("Usage: /usage");
         this.ctx.terminal.write(

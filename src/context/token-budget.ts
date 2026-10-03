@@ -53,38 +53,39 @@ const messageEstimates = new WeakMap<
   { content: string | null; reasoning: string; calls: string; vision: number; role: string; tokens: number }
 >();
 
+/** One message's share of `requestTokens`. */
+export function messageTokens(message: ChatMessage): number {
+  const content = message.content ?? "";
+  const reasoning = message.role === "assistant" ? (message.reasoning_content ?? "") : "";
+  const calls = message.role === "assistant" ? JSON.stringify(message.tool_calls ?? []) : "";
+  const vision =
+    message.role === "user"
+      ? (message.images ?? []).reduce(
+          (total, image) => total + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
+          0,
+        )
+      : 0;
+  const saved = messageEstimates.get(message);
+  if (
+    saved &&
+    saved.content === content &&
+    saved.reasoning === reasoning &&
+    saved.calls === calls &&
+    saved.vision === vision &&
+    saved.role === message.role
+  )
+    return saved.tokens;
+  const tokens =
+    12 +
+    estimatedTokens(content) +
+    (message.role === "assistant" ? estimatedTokens(reasoning) + estimatedTokens(calls) : 0) +
+    vision;
+  messageEstimates.set(message, { content, reasoning, calls, vision, role: message.role, tokens });
+  return tokens;
+}
+
 export function requestTokens(messages: readonly ChatMessage[], tools: readonly ToolDefinition[] = []): number {
-  return (
-    messages.reduce((sum, message) => {
-      const content = message.content ?? "";
-      const reasoning = message.role === "assistant" ? (message.reasoning_content ?? "") : "";
-      const calls = message.role === "assistant" ? JSON.stringify(message.tool_calls ?? []) : "";
-      const vision =
-        message.role === "user"
-          ? (message.images ?? []).reduce(
-              (total, image) => total + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
-              0,
-            )
-          : 0;
-      const saved = messageEstimates.get(message);
-      if (
-        saved &&
-        saved.content === content &&
-        saved.reasoning === reasoning &&
-        saved.calls === calls &&
-        saved.vision === vision &&
-        saved.role === message.role
-      )
-        return sum + saved.tokens;
-      const tokens =
-        12 +
-        estimatedTokens(content) +
-        (message.role === "assistant" ? estimatedTokens(reasoning) + estimatedTokens(calls) : 0) +
-        vision;
-      messageEstimates.set(message, { content, reasoning, calls, vision, role: message.role, tokens });
-      return sum + tokens;
-    }, 0) + estimatedTokens(JSON.stringify(tools))
-  );
+  return messages.reduce((sum, message) => sum + messageTokens(message), 0) + estimatedTokens(JSON.stringify(tools));
 }
 
 export function budgetedRequest(

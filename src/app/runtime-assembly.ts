@@ -19,6 +19,7 @@ import type {
   ApprovalRequest,
   CommandExecutionMode,
   EasyCodeConfig,
+  FileDiffPresentation,
   ImageAttachment,
   ModelProvider,
   ProviderStreamEvent,
@@ -32,7 +33,7 @@ import { modelSupportsVision, USER_MODEL_REGISTRY_PATH } from "../models/catalog
 import { buildSystemPrompt } from "../prompts/builder.js";
 import { createProvider } from "../providers/factory.js";
 import { TokenCalibration } from "../context/token-calibration.js";
-import { AgentRuntime, type AgentRuntimeDependencies, type ProviderContextSnapshot } from "../runtime/agent.js";
+import { AgentRuntime, type AgentRuntimeDependencies } from "../runtime/agent.js";
 import { LocalLayaClient } from "../local-decision/client.js";
 import { appendLocalDecisionFallbackTrace, appendLocalDecisionTrace } from "../local-decision/trace.js";
 import { TurnSteeringAttemptNotifier } from "../runtime/turn-steering-notifier.js";
@@ -44,13 +45,15 @@ import { WorkspaceMutationLock } from "../subagents/workspace-mutation-lock.js";
 import { type ToolCatalogSnapshot } from "../tools/catalog.js";
 import type { ToolExecutionAuthorizationRequest } from "../tools/execution-gateway.js";
 import { ThreadStore } from "../threads/thread-store.js";
+import { ToolDiffStore } from "../threads/turn-diff-store.js";
+import type { ToolDiffRef } from "../ui/contracts.js";
 import { taskGraphView } from "../tasks/task-graph.js";
 import { WorkspaceManager } from "../workspace/manager.js";
 import { json } from "./text.js";
 import { InfoCommands } from "./info-commands.js";
 import { SubagentHost } from "./subagent-host.js";
 import { runtimeContextDependencies } from "./runtime-context.js";
-import { turnFileText } from "./turn-changes.js";
+import { toolCallDiff, turnFileText } from "./turn-changes.js";
 
 /** What RuntimeAssembly needs from its host; live values are forwarded through getters. */
 export interface RuntimeAssemblyContext {
@@ -68,7 +71,6 @@ export interface RuntimeAssemblyContext {
   readonly hasRunningCommands: () => boolean;
   readonly imageStore: ImageStore;
   readonly infoCommands: InfoCommands;
-  lastProviderContext: ProviderContextSnapshot | undefined;
   localLayaClient: LocalLayaClient | undefined;
   readonly mainToolCatalogSnapshot: () => Promise<Readonly<ToolCatalogSnapshot>>;
   readonly mcpConnections: McpConnections | undefined;
@@ -248,10 +250,7 @@ export class RuntimeAssembly {
         this.ctx.syncTerminalView();
       },
       onProviderContext: (snapshot) => {
-        if (snapshot.threadId === this.ctx.state.threadId) {
-          this.ctx.lastProviderContext = snapshot;
-          this.ctx.syncTerminalView();
-        }
+        if (snapshot.threadId === this.ctx.state.threadId) this.ctx.syncTerminalView();
       },
       ...this.presentationCallbacks(presentReasoning),
       ...(visionCapable
@@ -349,7 +348,7 @@ export class RuntimeAssembly {
 
   /** Present a finished tool call and apply its child-agent effects before saving. */
   private async onToolCompleted(
-    ...[state, toolName, result, displayName, details]: Parameters<
+    ...[state, toolName, result, displayName, details, call]: Parameters<
       NonNullable<AgentRuntimeDependencies["onToolCompleted"]>
     >
   ): Promise<void> {
@@ -395,11 +394,28 @@ export class RuntimeAssembly {
     }
     if (result.ok && result.presentation?.type === "file_diff") {
       turnFileText(this.ctx.workspace).record(result.presentation);
+      const saved = call ? this.saveToolDiff(state.threadId, call, result.presentation) : undefined;
       try {
-        this.ctx.terminal.fileDiff(result.presentation);
+        this.ctx.terminal.fileDiff(result.presentation, saved);
       } catch {
         this.ctx.terminal.info("The file was updated successfully, but the diff preview could not be rendered.");
       }
+    }
+  }
+
+  /** Keep what one file-tool call changed for the transcript; without it the call just has no diff to open. */
+  private saveToolDiff(
+    threadId: string,
+    call: { readonly turnId: string; readonly callId: string },
+    presentation: Readonly<FileDiffPresentation>,
+  ): ToolDiffRef | undefined {
+    try {
+      const diff = toolCallDiff(presentation);
+      if (!diff) return undefined;
+      new ToolDiffStore(this.ctx.config.dataDir).write(threadId, call.turnId, call.callId, diff);
+      return { threadId, turnId: call.turnId, callId: call.callId };
+    } catch {
+      return undefined;
     }
   }
 

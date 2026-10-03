@@ -16,6 +16,7 @@ import {
 } from "../context/memory-controller.js";
 import { foldMemoryGate } from "../context/pressure-recovery.js";
 import { reconciliationPending } from "../context/reconciliation.js";
+import { measureContextUsage } from "../context/usage.js";
 import {
   type AgentRunResult,
   type AgentTool,
@@ -39,6 +40,7 @@ import {
   progressScopeKey,
   progressWeakHintKind,
   renderStepMemory,
+  stepMemoryEntries,
   threadTitleUnclaimed,
 } from "./agent-support.js";
 import type {
@@ -191,6 +193,22 @@ export class StepRequests {
         tokenCapacityEnabled: options.maxContextTokens !== undefined,
       },
     });
+    if (loop.agentIdentity.role === "main_agent" && this.ctx.dependencies.contextManager.tokenCapacity) {
+      this.ctx.dependencies.contextManager.recordUsage(
+        state.threadId,
+        measureContextUsage({
+          messages: request.messages,
+          tools: enabledTools.map((tool) => ({
+            definition: tool.definition,
+            mcp: tool.metadata?.identity.sourceId === "mcp",
+          })),
+          runtimeContext: draft.stepRuntimeContext,
+          runtimeMemory: draft.selectedForStep?.memories.length
+            ? JSON.stringify(stepMemoryEntries(draft.selectedForStep))
+            : "",
+        }),
+      );
+    }
     this.ctx.observeProviderContext({
       state,
       turnId,

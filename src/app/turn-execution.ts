@@ -16,7 +16,7 @@ import {
   validateImageAttachmentCollection,
   type ClipboardImageReader,
 } from "../images/index.js";
-import { validateProviderImageAttachments } from "../models/catalog.js";
+import { effectiveContextWindow, validateProviderImageAttachments } from "../models/catalog.js";
 import { formatPlanProposal } from "../plans/plan.js";
 import { ThreadResourceStore, type ThreadResourceAttachment } from "../resources/index.js";
 import { AgentRuntime } from "../runtime/agent.js";
@@ -493,7 +493,7 @@ export class AppTurnExecution {
           orchestrationEnabled: this.ctx.orchestrationEnabled(),
           isOrchestrationEnabled: () => this.ctx.orchestrationEnabled(),
           maxContextChars: this.ctx.activeContextCharLimit(),
-          maxContextTokens: this.ctx.config.limits.maxContextTokens || undefined,
+          maxContextTokens: effectiveContextWindow(this.ctx.state.provider, this.ctx.state.model),
           maxOutputChars: this.ctx.config.limits.maxOutputChars,
           commandTimeoutMs: this.ctx.config.limits.commandTimeoutMs,
           approvalPolicy: this.ctx.config.approvalPolicy,

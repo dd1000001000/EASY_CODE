@@ -21,8 +21,8 @@ import { ThreadStore, type ThreadSummary } from "../threads/thread-store.js";
 import { deleteThreadTree } from "../threads/delete-thread.js";
 import { pickLocalFolder } from "./folder-picker.js";
 import { executeLanguageCommand, readLanguage, type Language } from "../i18n/language.js";
-import type { WebPatch, WebTurnDiffResponse } from "../web-contracts.js";
-import { TurnDiffStore } from "../threads/turn-diff-store.js";
+import type { WebPatch, WebToolDiffResponse, WebTurnDiffResponse } from "../web-contracts.js";
+import { ToolDiffStore, TurnDiffStore } from "../threads/turn-diff-store.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 import { safeDiff } from "./turn-diff.js";
 import type { ProjectWorkspace } from "../projects/types.js";
@@ -155,6 +155,7 @@ export class EasyCodeWebServer {
   private broadcastLanguageValue: Language = "en_us";
   private broadcastStatusValue?: string;
   private readonly turnDiffs: TurnDiffStore;
+  private readonly toolDiffs: ToolDiffStore;
   private readonly dataDir: string;
   // api() tries GET reads, then raw-body uploads, then JSON POST routes. The JSON body is read
   // (and validated) before an unknown POST route is rejected.
@@ -164,6 +165,7 @@ export class EasyCodeWebServer {
     ["/api/commands", (_request, response) => this.apiCommands(response)],
     ["/api/mentions", (request, response) => this.apiMentions(request, response)],
     ["/api/turn-diff", (request, response) => this.apiTurnDiff(request, response)],
+    ["/api/tool-diff", (request, response) => this.apiToolDiff(request, response)],
     ["/api/events", (request, response) => this.apiEvents(request, response)],
   ]);
   private readonly uploadRoutes = new Map<
@@ -228,6 +230,7 @@ export class EasyCodeWebServer {
     this.dataDir = dataDir;
     this.projectStorage = createStorage(this.dataDir);
     this.turnDiffs = new TurnDiffStore(this.dataDir);
+    this.toolDiffs = new ToolDiffStore(this.dataDir);
     this.broadcastLanguageValue = readLanguage(this.projectStorage);
     this.port.setLanguage(this.broadcastLanguageValue);
     this.projects = new ProjectIndex(this.projectStorage);
@@ -347,7 +350,11 @@ export class EasyCodeWebServer {
     });
     this.hosts.set(threadId, host);
     app.startHostedSession();
-    port.loadHistory(projectWebHistory(app.threadEvents(), this.broadcastLanguageValue));
+    port.loadHistory(
+      projectWebHistory(app.threadEvents(), this.broadcastLanguageValue, (ref) =>
+        this.toolDiffs.has(ref.threadId, ref.turnId, ref.callId),
+      ),
+    );
     return host;
   }
 
@@ -715,6 +722,22 @@ export class EasyCodeWebServer {
     if (!turnId || !filePath || filePath.length > 4096) throw new Error("Choose a file of a finished request.");
     const diff = this.turnDiffs.read(host.app.sessionInfo().threadId, turnId, filePath);
     const result: WebTurnDiffResponse = {
+      diff: diff
+        ? safeDiff(diff, (line) => redactSensitiveInformation(sanitizeTerminalText(line, { allowSgr: false })))
+        : null,
+    };
+    json(response, 200, result);
+  }
+
+  /** What one file-tool call of an open conversation changed, redacted line by line. */
+  private apiToolDiff(request: IncomingMessage, response: ServerResponse): void {
+    const params = new URL(request.url ?? "/api/tool-diff", this.origin).searchParams;
+    const host = this.hostFor(params.get("threadId"));
+    const turnId = params.get("turnId");
+    const callId = params.get("callId");
+    if (!turnId || !callId) throw new Error("Choose a file change of this conversation.");
+    const diff = this.toolDiffs.read(host.app.sessionInfo().threadId, turnId, callId);
+    const result: WebToolDiffResponse = {
       diff: diff
         ? safeDiff(diff, (line) => redactSensitiveInformation(sanitizeTerminalText(line, { allowSgr: false })))
         : null,

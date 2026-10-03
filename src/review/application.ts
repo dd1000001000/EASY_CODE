@@ -15,6 +15,7 @@ import { CommandRuntime } from "../command/runtime.js";
 import { NativeSandboxBackend } from "../sandbox/native-backend.js";
 import { BenchmarkContainerBackend } from "../sandbox/benchmark-backend.js";
 import { BuiltinToolSource } from "../tools/builtin-source.js";
+import { effectiveContextWindow } from "../models/catalog.js";
 import { ToolCatalog } from "../tools/catalog.js";
 import { activePromptBundleBinding } from "../prompt-bundle/index.js";
 import { recallThreadContext } from "../context/recall.js";
@@ -456,7 +457,8 @@ async function investigate(run: ReviewerRun): Promise<void> {
       participant: reviewParticipant(run, tools, reviewerToolContext(run), runtime),
       provider: deps.provider,
       budget: deps.budget,
-      limits: { ...deps.limits, maxContextTokens: run.input.maxContextTokens ?? deps.limits.maxContextTokens },
+      limits: deps.limits,
+      ...(run.input.maxContextTokens === undefined ? {} : { contextWindow: run.input.maxContextTokens }),
       get: run.get,
       emit,
       signal: run.input.signal,
@@ -625,7 +627,11 @@ function reviewParticipant(
         memories,
         evidence,
         limits: deps.limits,
-        tokenBudget: optionalMemoryTokenBudget(deps.limits.maxContextChars, deps.limits.maxContextTokens, deps.limits),
+        tokenBudget: optionalMemoryTokenBudget(
+          deps.limits.maxContextChars,
+          effectiveContextWindow(deps.provider.name, deps.provider.model),
+          deps.limits,
+        ),
       });
       return JSON.stringify({
         memories: selected.memories.map((memory) => ({

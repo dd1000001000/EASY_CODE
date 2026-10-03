@@ -5,7 +5,7 @@ import type { WebEntry, WebEntryKind, WebTurnSummary } from "../web-contracts.js
 import { safeToolDisplayDetails } from "../runtime/tool-display-details.js";
 import { compactionLabel, compactionNoticeKind, type CompactionProgress } from "../ui/compaction.js";
 import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
-import type { FileChangeKind } from "../ui/contracts.js";
+import type { FileChangeKind, ToolDiffRef } from "../ui/contracts.js";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -76,7 +76,12 @@ function turnSummary(payload: unknown, threadId: string, turnId: string): WebTur
 }
 
 /** Project only user-facing conversation facts; never expose raw Journal payloads or credentials. */
-export function projectWebHistory(events: readonly EventRecord[], language: Language = DEFAULT_LANGUAGE): WebEntry[] {
+export function projectWebHistory(
+  events: readonly EventRecord[],
+  language: Language = DEFAULT_LANGUAGE,
+  /** Whether a file-tool call's diff was saved, so its entry can open it. */
+  hasToolDiff: (ref: ToolDiffRef) => boolean = () => false,
+): WebEntry[] {
   const chinese = language === "zh_cn";
   const entries: WebEntry[] = [];
   const pendingToolCalls = new Map<string, WebEntry>();
@@ -218,14 +223,18 @@ export function projectWebHistory(events: readonly EventRecord[], language: Lang
       }
       if (callId) peerCalls.delete(callId);
       const pending = callId ? pendingToolCalls.get(callId) : undefined;
+      const diff =
+        completed && callId && event.turnId ? { threadId: event.threadId, turnId: event.turnId, callId } : undefined;
+      const toolDiff = diff && hasToolDiff(diff) ? diff : undefined;
       if (pending) {
         pending.text = safe(text);
         pending.toolName = safe(name);
         pending.toolStatus = completed ? "completed" : "failed";
         pending.toolDetails = toolDetails(payload?.toolDetails);
+        if (toolDiff) pending.toolDiff = toolDiff;
         pendingToolCalls.delete(callId!);
       } else {
-        append(
+        const entry = append(
           event,
           "tool",
           text,
@@ -235,6 +244,7 @@ export function projectWebHistory(events: readonly EventRecord[], language: Lang
           name,
           completed ? "completed" : "failed",
         );
+        if (entry && toolDiff) entry.toolDiff = toolDiff;
       }
     }
   }

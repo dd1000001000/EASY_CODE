@@ -62,30 +62,41 @@ export class TurnFileText {
   change(path: string): TurnFileChange | undefined {
     const key = normalizePath(path);
     const text = this.files.get(key);
-    if (!text || text.before.length + text.after.length > MAX_DIFF_CHARS) return undefined;
-    let patch: ReturnType<typeof structuredPatch> | undefined;
-    try {
-      patch = structuredPatch(key, key, text.before, text.after, "", "", {
-        context: 3,
-        maxEditLength: MAX_EDIT_LENGTH,
-      }) as ReturnType<typeof structuredPatch> | undefined;
-    } catch {
-      return undefined;
-    }
-    if (!patch) return undefined;
-    let added = 0;
-    let removed = 0;
-    const hunks = patch.hunks.map((hunk) => {
-      // "\ No newline at end of file" markers are not lines of the file.
-      const lines = hunk.lines.filter((line) => !line.startsWith("\\"));
-      for (const line of lines) {
-        if (line.startsWith("+")) added += 1;
-        else if (line.startsWith("-")) removed += 1;
-      }
-      return { oldStart: hunk.oldStart, newStart: hunk.newStart, lines };
-    });
-    return { lines: { added, removed }, hunks };
+    return text ? textChange(key, text.before, text.after) : undefined;
   }
+}
+
+/** The change from one text to another, or undefined when they are too large to diff quickly. */
+function textChange(path: string, before: string, after: string): TurnFileChange | undefined {
+  if (before.length + after.length > MAX_DIFF_CHARS) return undefined;
+  let patch: ReturnType<typeof structuredPatch> | undefined;
+  try {
+    patch = structuredPatch(path, path, before, after, "", "", {
+      context: 3,
+      maxEditLength: MAX_EDIT_LENGTH,
+    }) as ReturnType<typeof structuredPatch> | undefined;
+  } catch {
+    return undefined;
+  }
+  if (!patch) return undefined;
+  let added = 0;
+  let removed = 0;
+  const hunks = patch.hunks.map((hunk) => {
+    // "\ No newline at end of file" markers are not lines of the file.
+    const lines = hunk.lines.filter((line) => !line.startsWith("\\"));
+    for (const line of lines) {
+      if (line.startsWith("+")) added += 1;
+      else if (line.startsWith("-")) removed += 1;
+    }
+    return { oldStart: hunk.oldStart, newStart: hunk.newStart, lines };
+  });
+  return { lines: { added, removed }, hunks };
+}
+
+/** What one file-tool call changed, cut at the per-file limit like the request's summary. */
+export function toolCallDiff(presentation: Readonly<FileDiffPresentation>): TurnFileDiff | undefined {
+  const change = textChange(normalizePath(presentation.path), presentation.before, presentation.after);
+  return change?.hunks.length ? trimDiff(change.hunks, MAX_FILE_DIFF_LINES).diff : undefined;
 }
 
 const fileTexts = new WeakMap<object, TurnFileText>();

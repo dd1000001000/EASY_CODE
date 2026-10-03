@@ -13,7 +13,14 @@ import type {
 import type { TaskGraphView } from "../tasks/task-graph.js";
 import type { SubagentView } from "../subagents/types.js";
 import { subagentDisplayLabel } from "../subagents/display-name.js";
-import type { TurnSummary, UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
+import type {
+  ContextUsageReport,
+  ToolDiffRef,
+  TurnSummary,
+  UIActivityKind,
+  UIReviewPhase,
+  UISessionInfo,
+} from "../ui/contracts.js";
 import type {
   AppInteractionPort,
   CompletedTurnTiming,
@@ -30,6 +37,7 @@ import type {
 } from "../ui/interaction-port.js";
 import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { renderContextUsage } from "../ui/render/context-usage.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 import { canGrantCommandPrefix, formatCommandApprovalPrefix } from "../command/approval.js";
 import type { Language } from "../i18n/language.js";
@@ -85,6 +93,8 @@ export class WebInteraction implements AppInteractionPort {
   private subagentsView: readonly SubagentView[] = [];
   private activities = new Map<string, { id: string; text: string; kind?: UIActivityKind }>();
   private pendingToolEntries: string[] = [];
+  /** The tool entry completed last, which a file diff that follows belongs to. */
+  private completedToolEntry: string | undefined;
   private review: WebView["review"] = null;
   private decisions: PendingDecision[] = [];
   private listeners = new Set<(change: WebChange) => void>();
@@ -175,6 +185,7 @@ export class WebInteraction implements AppInteractionPort {
     this.compaction = [...entries].reverse().find((entry) => entry.compaction)?.compaction ?? null;
     this.entries = entries.map((entry) => ({ ...entry }));
     this.pendingToolEntries = [];
+    this.completedToolEntry = undefined;
     for (let index = this.entries.length - 1; index >= 0; index -= 1) {
       const entry = this.entries[index]!;
       if (entry.kind === "info" || entry.kind === "success" || entry.kind === "warning" || entry.kind === "error")
@@ -459,7 +470,7 @@ export class WebInteraction implements AppInteractionPort {
     const pendingId = this.pendingToolEntries.shift();
     const pending = pendingId ? this.entryById.get(pendingId) : undefined;
     if (!pending) {
-      this.append("tool", text, undefined, details, toolName, ok ? "completed" : "failed");
+      this.completedToolEntry = this.append("tool", text, undefined, details, toolName, ok ? "completed" : "failed");
       return;
     }
     pending.text = this.safe(text);
@@ -468,13 +479,23 @@ export class WebInteraction implements AppInteractionPort {
     pending.toolDetails = details?.length
       ? details.map((item) => ({ label: this.safe(item.label), value: this.safe(item.value) }))
       : undefined;
+    this.completedToolEntry = pending.id;
     this.emit({ kind: "entry.replace", entry: pending });
   }
   threadTitleChanged(title: string): void {
     if (this.session) this.emit({ kind: "thread.title", threadId: this.session.threadId, title: this.safe(title) });
   }
-  fileDiff(_presentation: FileDiffPresentation): void {
-    // Tool summaries remain visible; source before/after previews are not sent to the Web transcript.
+  /**
+   * The call that just completed gets a reference to its saved diff; the page
+   * loads the diff only when the call is opened, so file text never rides on
+   * the event stream or the transcript snapshot.
+   */
+  fileDiff(_presentation: FileDiffPresentation, saved?: ToolDiffRef): void {
+    const entry = saved && this.completedToolEntry ? this.entryById.get(this.completedToolEntry) : undefined;
+    this.completedToolEntry = undefined;
+    if (!saved || !entry || entry.kind !== "tool" || saved.threadId !== this.session?.threadId) return;
+    entry.toolDiff = { threadId: saved.threadId, turnId: saved.turnId, callId: saved.callId };
+    this.emit({ kind: "entry.replace", entry });
   }
   taskGraph(graph: Readonly<TaskGraphView>): void {
     this.tasks = graph.status === "completed" ? null : { ...graph };
@@ -572,6 +593,10 @@ export class WebInteraction implements AppInteractionPort {
       entry.peerThreadId = senderThreadId;
       this.emit({ kind: "entry.replace", entry });
     }
+  }
+  /** Typed `/context`; the context chip in the top bar opens the same view as a panel. */
+  contextUsage(report: Readonly<ContextUsageReport>): void {
+    this.append("info", renderContextUsage(report, { language: this.language, color: false, columns: 60 }));
   }
   turnCompleted(summary: Readonly<TurnSummary>): void {
     const web: WebTurnSummary = {
@@ -824,6 +849,7 @@ export class WebInteraction implements AppInteractionPort {
       this.emit({ kind: "entry.replace", entry });
     }
     this.pendingToolEntries = [];
+    this.completedToolEntry = undefined;
   }
   clearCurrentRequest(): void {
     this.endStreams();
@@ -861,6 +887,7 @@ export class WebInteraction implements AppInteractionPort {
     this.activities.clear();
     this.review = null;
     this.pendingToolEntries = [];
+    this.completedToolEntry = undefined;
     this.currentAnswerId = undefined;
     this.currentReasoningId = undefined;
     this.currentStreamId = undefined;
@@ -882,6 +909,7 @@ export class WebInteraction implements AppInteractionPort {
     this.activities.clear();
     this.review = null;
     this.pendingToolEntries = [];
+    this.completedToolEntry = undefined;
     this.currentAnswerId = undefined;
     this.currentReasoningId = undefined;
     this.currentStreamId = undefined;
@@ -903,6 +931,7 @@ export class WebInteraction implements AppInteractionPort {
     this.entryById.clear();
     this.userMarkers = [];
     this.pendingToolEntries = [];
+    this.completedToolEntry = undefined;
     this.currentAnswerId = undefined;
     this.currentReasoningId = undefined;
     this.currentStreamId = undefined;

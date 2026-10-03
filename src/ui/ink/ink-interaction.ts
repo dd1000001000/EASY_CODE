@@ -9,6 +9,7 @@ import type { ReasoningBlock } from "../../cli/reasoning.js";
 import { classifyStatus } from "../../cli/terminal-status.js";
 import { renderSubagents } from "../../cli/subagents.js";
 import { renderTaskGraph } from "../../cli/task-graph.js";
+import { renderContextUsage } from "../render/context-usage.js";
 import { formatToolTranscript, toolTarget } from "../../cli/transcript-format.js";
 import {
   formatCommandApprovalPrefix,
@@ -34,6 +35,7 @@ import type { SubagentView } from "../../subagents/types.js";
 import type { TaskGraphView } from "../../tasks/task-graph.js";
 import { compactionActivityLabel, compactionLabel, compactionRunning, type CompactionProgress } from "../compaction.js";
 import type {
+  ContextUsageReport,
   TurnSummary,
   UIActivityKind,
   UIProgressItem,
@@ -878,6 +880,13 @@ export class InkInteraction implements AppInteractionPort, InkActions {
   // ------------------------------------------------------------- InkActions
 
   /** A request finished: print its one-line summary, and notify when it ran long. */
+  contextUsage(report: Readonly<ContextUsageReport>): void {
+    if (!this.app) return this.legacy.contextUsage(report);
+    this.write(
+      `${renderContextUsage(report, { language: this.language, color: this.colorEnabled(), columns: this.output.columns || 80 })}\n`,
+    );
+  }
+
   turnCompleted(summary: Readonly<TurnSummary>): void {
     if (!this.app) return this.legacy.turnCompleted(summary);
     this.turnSummarySequence += 1;

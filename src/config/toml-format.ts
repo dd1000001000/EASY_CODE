@@ -57,12 +57,13 @@ function limitsLayer(value: unknown, defaults: Readonly<RuntimeLimits>): Unknown
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error("limits must be a TOML table");
   const byExternalName = new Map(Object.keys(defaults).map((key) => [snakeCase(key), key]));
-  // Previously configured follow-up counts must not block startup or revive the retired cap.
-  const retired = "max_subagent_follow_ups";
-  assertOnlyKeys(value, new Set([...byExternalName.keys(), retired]), "limits");
+  // Retired settings must not block startup or come back: follow-up counts, and the
+  // global context window (each model's `context_window` in models.toml decides it).
+  const retired = new Set(["max_subagent_follow_ups", "max_context_tokens"]);
+  assertOnlyKeys(value, new Set([...byExternalName.keys(), ...retired]), "limits");
   const result: UnknownRecord = {};
   for (const [externalName, raw] of Object.entries(value)) {
-    if (externalName === retired) continue;
+    if (retired.has(externalName)) continue;
     const internalName = byExternalName.get(externalName)!;
     const expected = defaults[internalName as keyof RuntimeLimits];
     if (isRecord(expected)) {

@@ -267,7 +267,7 @@ Current default request deadlines:
 
 All cloud model roles use the same timing policy, although streaming availability still depends on model capability and the particular request. Retryable API failures default to at most 5 retries; model-content errors default to 2 correction attempts. Cancellation, non-retryable errors and command failure are not the same retry category. The local Laya service has separate startup and inference deadlines, described below.
 
-Use `/usage` for provider-reported usage and `/context` for local capacity estimates. They measure different things. Auxiliary approvals, review, compaction and background memory consolidation can also consume tokens.
+Use `/usage` for provider-reported usage and `/context` for local capacity estimates. They measure different things. Auxiliary approvals, review, compaction and background memory consolidation can also consume tokens. `/context` draws the context window as one bar split into messages, system prompt, built-in and MCP tools, Skills, project instructions, memory and workspace/task state, followed by the space reserved for responses and the free space; in Web, click the context chip in the top bar for the same view. Messages are counted as they stand; the other parts come from the latest request, so they appear after the conversation's first request in this process. The window is each model's `context_window` in `~/.easy_code/models.toml` (1M when a model names none); edit it there and restart.
 
 ### 6.1 Experimental local decision model
 

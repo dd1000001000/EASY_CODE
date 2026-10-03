@@ -4,7 +4,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { EasyCodeApp } from "../src/app.js";
-import type { ApprovalRequest, EventRecord } from "../src/core/types.js";
+import { RuntimeAssembly } from "../src/app/runtime-assembly.js";
+import type { ApprovalRequest, EventRecord, SessionState } from "../src/core/types.js";
+import type { AgentRuntimeDependencies } from "../src/runtime/agent-types.js";
+import { ToolDiffStore } from "../src/threads/turn-diff-store.js";
 import { projectWebHistory } from "../src/web-server/history.js";
 import { WEB_HISTORY_PAGE_SIZE, WebInteraction } from "../src/web-server/interaction.js";
 import { EasyCodeWebServer } from "../src/web-server/server.js";
@@ -169,6 +172,114 @@ describe("Web conversation projection", () => {
     assert.equal(entries[0]?.toolName, "mcp__server__search");
     assert.equal(entries[0]?.toolStatus, "completed");
     assert.ok(!JSON.stringify(entries).includes("secret response"));
+  });
+});
+
+describe("file changes of tool calls", () => {
+  it("lets a reopened conversation open each file-tool call whose diff was saved", () => {
+    const inTurn = (record: EventRecord): EventRecord => ({ ...record, turnId: "turn_1" });
+    const asked: string[] = [];
+    const entries = projectWebHistory(
+      [
+        inTurn(event(1, "tool.call", { id: "call_edit", function: { name: "update_file" } })),
+        inTurn(event(2, "tool.result", { callId: "call_edit", tool: "update_file" })),
+        inTurn(event(3, "tool.call", { id: "call_old", function: { name: "update_file" } })),
+        inTurn(event(4, "tool.result", { callId: "call_old", tool: "update_file" })),
+        inTurn({ ...event(5, "tool.result", { callId: "call_failed", tool: "create_file" }), phase: "failed" }),
+        inTurn(event(6, "tool.result", { callId: "call_alone", tool: "create_file" })),
+      ].map((record) => (record.type === "tool.result" && !record.phase ? { ...record, phase: "completed" } : record)),
+      "en_us",
+      (ref) => {
+        asked.push(ref.callId);
+        return ref.callId !== "call_old";
+      },
+    );
+    assert.deepEqual(
+      entries.map((entry) => entry.toolDiff?.callId),
+      ["call_edit", undefined, undefined, "call_alone"],
+    );
+    assert.deepEqual(entries[0]?.toolDiff, { threadId: "thread_test", turnId: "turn_1", callId: "call_edit" });
+    // Failed calls changed nothing, so their diffs are never looked up.
+    assert.deepEqual(asked, ["call_edit", "call_old", "call_alone"]);
+  });
+
+  it("saves what a file-tool call changed under its call and hands the reference to the page", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-tool-diff-"));
+    try {
+      const shown: unknown[] = [];
+      const assembly = new RuntimeAssembly({
+        config: { dataDir },
+        workspace: {},
+        terminal: {
+          toolCompleted: () => undefined,
+          fileDiff: (_presentation: unknown, saved: unknown) => shown.push(saved),
+        },
+        syncWorkspaceState: () => undefined,
+        save: () => undefined,
+      } as unknown as ConstructorParameters<typeof RuntimeAssembly>[0]);
+      const complete = (
+        assembly as unknown as {
+          onToolCompleted(...args: Parameters<NonNullable<AgentRuntimeDependencies["onToolCompleted"]>>): Promise<void>;
+        }
+      ).onToolCompleted.bind(assembly);
+      const state = { threadId: "thread_test" } as SessionState;
+      const edit = (before: string, after: string) => ({
+        ok: true,
+        summary: "Updated",
+        presentation: { type: "file_diff", path: "src/app.ts", before, after } as const,
+      });
+      await complete(state, "update_file", edit("a\n", "b\n"), undefined, [], { turnId: "turn_1", callId: "call_1" });
+      // Nothing changed, so there is nothing to open.
+      await complete(state, "update_file", edit("a\n", "a\n"), undefined, [], { turnId: "turn_1", callId: "call_2" });
+      assert.deepEqual(shown, [{ threadId: "thread_test", turnId: "turn_1", callId: "call_1" }, undefined]);
+      assert.deepEqual(new ToolDiffStore(dataDir).read("thread_test", "turn_1", "call_1")?.hunks[0]?.lines, [
+        "-a",
+        "+b",
+      ]);
+      assert.equal(new ToolDiffStore(dataDir).has("thread_test", "turn_1", "call_2"), false);
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("marks the call that just completed with its saved diff and never sends file text", () => {
+    const host = new WebInteraction();
+    const sent: string[] = [];
+    host.subscribe((change) => sent.push(JSON.stringify(change.patch ?? null)));
+    host.setSessionInfo({
+      threadId: "thread_test",
+      workspaceRoot: "/workspace",
+      mode: "code",
+      provider: "glm",
+      model: "glm-test",
+      thinkingEffort: "none",
+    });
+    const presentation = {
+      type: "file_diff",
+      path: "src/app.ts",
+      before: "old body",
+      after: "PRIVATE_FILE_TEXT",
+    } as const;
+    const saved = { threadId: "thread_test", turnId: "turn_1", callId: "call_1" };
+    const edit = () =>
+      host.toolCompleted("update_file", true, "Updated", undefined, [{ label: "File", value: "src/app.ts" }]);
+    const last = () => host.snapshot().view.entries.at(-1);
+
+    edit();
+    host.fileDiff(presentation, saved);
+    assert.deepEqual(last()?.toolDiff, saved);
+    // A diff that was not saved, or belongs to another conversation, opens nothing.
+    edit();
+    host.fileDiff(presentation);
+    assert.equal(last()?.toolDiff, undefined);
+    edit();
+    host.fileDiff(presentation, { ...saved, threadId: "thread_other" });
+    assert.equal(last()?.toolDiff, undefined);
+    // Each completed call takes one diff; a later one does not overwrite it.
+    host.fileDiff(presentation, { ...saved, callId: "call_late" });
+    assert.equal(last()?.toolDiff, undefined);
+    assert.ok(!sent.some((patch) => patch.includes("PRIVATE_FILE_TEXT")));
+    host.close();
   });
 });
 

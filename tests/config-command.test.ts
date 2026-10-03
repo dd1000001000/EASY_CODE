@@ -90,6 +90,8 @@ describe("config commands", () => {
     void legacySteps;
     void legacyMaxModelRequests;
     assert.deepEqual(JSON.parse(JSON.stringify(parsed.limits)), activeLimits);
+    // Each model's `context_window` decides its window; there is no global one.
+    assert.doesNotMatch(command.output.value, /max_context_tokens/u);
     assert.doesNotMatch(command.output.value, /max_model_requests|limits\.steps/u);
     assert.equal(parsed.orchestrationEnabled, false);
     assert.doesNotMatch(command.output.value, /apiKey|api_key/u);

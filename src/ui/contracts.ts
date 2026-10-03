@@ -33,6 +33,28 @@ export interface UISessionInfo {
   readonly contextTokens?: number;
   /** Model context limit when it is known. */
   readonly contextLimitTokens?: number;
+  /** How the context window is used; absent when context is measured in characters. */
+  readonly contextUsage?: ContextUsageReport;
+}
+
+/** A part of a model request, by what its tokens carry. */
+export type ContextUsageCategory =
+  "messages" | "systemPrompt" | "instructions" | "skills" | "memory" | "runtimeContext" | "systemTools" | "mcpTools";
+
+/** Estimated tokens of each part of one request. */
+export type ContextUsageCounts = Readonly<Record<ContextUsageCategory, number>>;
+
+/** How the conversation uses the model's context window. */
+export interface ContextUsageReport {
+  readonly windowTokens: number;
+  /** Messages are counted as they stand; the other parts as the latest request sent them. */
+  readonly categories: ContextUsageCounts;
+  /** Kept free for the response, tool results and estimation error. */
+  readonly reservedTokens: number;
+  /** Request size at which older history is compacted. */
+  readonly compactionTokens: number;
+  /** False until a request of this conversation is measured; until then only its messages are counted. */
+  readonly measured: boolean;
 }
 
 export interface UIHeaderState {
@@ -87,6 +109,13 @@ export interface TurnFileDiff {
   readonly hunks: readonly TurnDiffHunk[];
   /** Lines were left out to keep the saved diff bounded; the counts still cover the whole change. */
   readonly truncated: boolean;
+}
+
+/** Where one file-tool call's diff is saved; the Web transcript loads it when the call is opened. */
+export interface ToolDiffRef {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly callId: string;
 }
 
 export interface TurnChangedFile {

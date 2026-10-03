@@ -567,12 +567,13 @@ describe("/model", () => {
       assert.doesNotMatch(fixture.output(), /"steps":/u);
       assert.match(fixture.output(), /"modelRequestLimit": null/u);
       assert.match(fixture.output(), /"contextCharLimit": 250000/u);
-      assert.match(fixture.output(), /"configuredBudgetChars": 250000/u);
-      assert.match(fixture.output(), /"budgetChars": 250000/u);
-      assert.match(fixture.output(), /"durableHistoryChars": \d+/u);
-      assert.match(fixture.output(), /"durableActiveChars": \d+/u);
-      assert.match(fixture.output(), /"projectedActiveChars": \d+/u);
-      assert.match(fixture.output(), /"lastProviderRequest": null/u);
+      // /context shows the model's own window, split by use, before any request is measured.
+      assert.match(fixture.output(), /Context window {2}\d+(?:\.\d)?k? \/ 1m \(\d+%\)/u);
+      assert.match(fixture.output(), /■ Messages +\d/u);
+      assert.match(fixture.output(), /▒ Reserved for responses +\d/u);
+      assert.match(fixture.output(), /□ Free space +\d/u);
+      assert.match(fixture.output(), /The system prompt and tools are counted after the next request\./u);
+      assert.doesNotMatch(fixture.output(), /"lastProviderRequest"/u);
     } finally {
       fixture.close();
     }

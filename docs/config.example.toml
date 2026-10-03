@@ -25,10 +25,8 @@ coordination_messages_per_boundary = 4
 coordination_retention_days = 30
 max_context_chars = 250000
 max_active_context_chars = 250000
-# Default 1M model window. Known catalog windows cap this value conservatively.
-# 0 selects the character-capacity fallback; character limits do not cap reads in Token mode.
-# Percentages use input capacity AFTER output/tool/safety reserves, not the raw window.
-max_context_tokens = 1000000
+# The token window is each model's `context_window` in ~/.easy_code/models.toml
+# (1M when a model names none); character limits do not cap reads against it.
 # Captured raw tool evidence and model-facing results are separate budgets.
 max_output_chars = 256000
 max_tool_result_chars = 64000

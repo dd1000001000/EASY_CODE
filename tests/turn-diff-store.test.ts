@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { TurnDiffStore } from "../src/threads/turn-diff-store.js";
+import { ToolDiffStore, TurnDiffStore } from "../src/threads/turn-diff-store.js";
 import type { TurnFileDiff } from "../src/ui/contracts.js";
 import { describe, it } from "./harness.js";
 
@@ -36,6 +36,26 @@ describe("turn diff store", () => {
       store.write("thread_a", "turn_1", new Map([["src/app.ts", DIFF]]));
       store.write("thread_a", "turn_1", new Map());
       assert.equal(existsSync(path.join(dataDir, "threads", "thread_a", "turn-diffs", "turn_1.json")), false);
+    }));
+
+  it("keeps one file per tool call, whatever characters the provider put in its id", () =>
+    withStore((_store, dataDir) => {
+      const calls = new ToolDiffStore(dataDir);
+      const odd = "call/../../etc:passwd\u0000漢字";
+      calls.write("thread_a", "turn_1", odd, DIFF);
+      calls.write("thread_a", "turn_1", "call_2", { truncated: true, hunks: [] });
+      assert.equal(calls.has("thread_a", "turn_1", odd), true);
+      assert.deepEqual(calls.read("thread_a", "turn_1", odd), DIFF);
+      assert.deepEqual(calls.read("thread_a", "turn_1", "call_2"), { truncated: true, hunks: [] });
+      assert.equal(calls.has("thread_a", "turn_2", odd), false);
+      assert.equal(calls.read("thread_a", "turn_1", "call_3"), undefined);
+      // Every file stays inside the thread's own tool-diffs folder.
+      const folder = path.join(dataDir, "threads", "thread_a", "tool-diffs", "turn_1");
+      assert.equal(readdirSync(folder).length, 2);
+      assert.throws(() => calls.write("..", "turn_1", "call", DIFF), /thread id/u);
+      assert.throws(() => calls.read("thread_a", "../turn", "call"), /turn id/u);
+      assert.throws(() => calls.read("thread_a", "turn_1", ""), /tool call id/u);
+      assert.equal(calls.has("thread_a", "turn_1", ""), false);
     }));
 
   it("refuses ids that could leave the thread directory and ignores malformed files", () =>

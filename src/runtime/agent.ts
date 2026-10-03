@@ -28,7 +28,7 @@ import {
 import { validateImageAttachmentCollection } from "../images/image-store.js";
 import { nextThreadImageNumber } from "../images/labels.js";
 import type { LocalDecisionResult, LocalDecisionTask } from "../local-decision/client.js";
-import { effectiveContextWindow, validateProviderImageAttachments } from "../models/catalog.js";
+import { validateProviderImageAttachments } from "../models/catalog.js";
 import { clonePlanReviewState } from "../plans/plan.js";
 import { foldProgressHint } from "../progress/guard.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
@@ -414,7 +414,7 @@ export class AgentRuntime {
     this.requestLimit = configuredRequestLimit(options);
     this.modelRequestsUsed = 0;
     this.dependencies.contextManager.configureTokenBudget(
-      effectiveContextWindow(state.provider, state.model, options.maxContextTokens),
+      options.maxContextTokens,
       this.dependencies.limits,
       state.thinkingEffort,
     );

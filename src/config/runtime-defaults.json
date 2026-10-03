@@ -21,7 +21,6 @@
   "approvalOutputTokens": 1024,
   "maxContextChars": 250000,
   "maxActiveContextChars": 250000,
-  "maxContextTokens": 1000000,
   "maxOutputChars": 256000,
   "maxToolResultChars": 64000,
   "threadResourceMaxBytes": 52428800,

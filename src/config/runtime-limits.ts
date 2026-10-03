@@ -26,7 +26,6 @@ export const runtimeLimitsSchema = z
       .strict(),
     maxContextChars: integer(4096, 2000000),
     maxActiveContextChars: integer(4096, 2000000),
-    maxContextTokens: z.union([z.literal(0), integer(4096, 2000000)]),
     maxOutputChars: integer(1024, 1000000),
     maxToolResultChars: integer(1024, 1000000),
     threadResourceMaxBytes: integer(1024 * 1024, 1024 * 1024 * 1024),
@@ -255,13 +254,6 @@ export const runtimeLimitsSchema = z
       });
     if (value.defaultReadLines > value.maxReadLines)
       context.addIssue({ code: "custom", path: ["defaultReadLines"], message: "must not exceed maxReadLines" });
-    if (value.maxContextTokens && value.contextSafetyReserveTokens >= value.maxContextTokens / 2) {
-      context.addIssue({
-        code: "custom",
-        path: ["contextSafetyReserveTokens"],
-        message: "must leave room for model input and output",
-      });
-    }
   });
 export type RuntimeLimits = z.infer<typeof runtimeLimitsSchema>;
 export const DEFAULT_RUNTIME_LIMITS: Readonly<RuntimeLimits> = Object.freeze(runtimeLimitsSchema.parse(defaults));

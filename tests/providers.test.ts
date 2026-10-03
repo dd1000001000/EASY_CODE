@@ -104,7 +104,6 @@ timeout_ms = 41000
           EASY_CODE_LIMITS_JSON: JSON.stringify({
             steps: { none: 24 },
             maxContextChars: 430000,
-            maxContextTokens: 64000,
             maxManagedWorktrees: 23,
           }),
           EASY_CODE_SUBAGENT_ISOLATION: "worktree",
@@ -122,7 +121,6 @@ timeout_ms = 41000
       });
 
       assert.equal(config.provider, "qwen");
-      assert.equal(config.limits.maxContextTokens, 64000);
       assert.equal(config.mode, "code");
       assert.equal(config.thinkingEffort, "high");
       assert.equal(config.limits.steps.none, 24);

@@ -133,7 +133,7 @@ const COMMANDS: Readonly<Record<SlashCommandName, CommandSpec>> = {
       ["revoke", { en_us: "Revoke a saved prefix by index", zh_cn: "按序号撤销已保存的前缀" }, "incomplete"],
     ]),
   },
-  context: { description: { en_us: "Show context budget", zh_cn: "查看上下文预算" } },
+  context: { description: { en_us: "Show context window usage", zh_cn: "查看上下文窗口用量" } },
   compact: { description: { en_us: "Deeply compact the conversation", zh_cn: "深度压缩当前会话上下文" } },
   usage: { description: { en_us: "Show provider-reported token usage", zh_cn: "查看模型报告的 Token 用量" } },
   memory: {

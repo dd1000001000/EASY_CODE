@@ -1,10 +1,11 @@
 import { CommandRuntime } from "../command/runtime.js";
 import { ContextManager } from "../context/manager.js";
+import { contextTokensInUse, contextUsageReport } from "../context/usage.js";
 import type { CommandExecutionMode, EasyCodeConfig, PlanProposal, SessionState } from "../core/types.js";
 import { translate } from "../i18n/catalog.js";
 import { readLanguage } from "../i18n/language.js";
 import { assertDataDirectoryOutsideWorkspace } from "../images/index.js";
-import { resolveCatalogModel } from "../models/catalog.js";
+import { effectiveContextWindow, resolveCatalogModel } from "../models/catalog.js";
 import type { ProjectWorkspace } from "../projects/types.js";
 import { activePromptBundleBinding } from "../prompt-bundle/index.js";
 import { workspaceIdFromRoot, type EasyCodeStorage } from "../storage/database.js";
@@ -465,6 +466,13 @@ export class AppThreadSessions {
   }
 
   terminalSessionInfo(): UISessionInfo {
+    // Follow model and conversation switches before the next request does.
+    this.ctx.contextManager.configureTokenBudget(
+      effectiveContextWindow(this.ctx.state.provider, this.ctx.state.model),
+      this.ctx.config.limits,
+      this.ctx.state.thinkingEffort,
+    );
+    const usage = contextUsageReport(this.ctx.contextManager, this.ctx.state);
     return {
       orchestrationEnabled: this.ctx.orchestrationEnabled(),
       agentConcurrencyLimit: this.ctx.config.limits.maxConcurrentSubagents[this.ctx.state.thinkingEffort],
@@ -484,7 +492,8 @@ export class AppThreadSessions {
         : this.ctx.commandExecutionMode === "unrestricted"
           ? "host"
           : "container",
-      contextTokens: this.ctx.contextManager.estimateShortTermTokens(this.ctx.state),
+      contextTokens: contextTokensInUse(this.ctx.contextManager, this.ctx.state),
+      ...(usage ? { contextLimitTokens: usage.windowTokens, contextUsage: usage } : {}),
     };
   }
 

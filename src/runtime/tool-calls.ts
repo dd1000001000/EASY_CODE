@@ -708,7 +708,10 @@ export class ToolCalls {
     if (toolName === "write_memory" && result.ok && result.memoryMutation) {
       memoryContext.mutations.push(result.memoryMutation);
     }
-    await this.ctx.dependencies.onToolCompleted?.(state, call.function.name, result, displayName, displayDetails);
+    await this.ctx.dependencies.onToolCompleted?.(state, call.function.name, result, displayName, displayDetails, {
+      turnId,
+      callId: call.id,
+    });
   }
 
   private async withToolExecutionActivity<T>(toolName: string, request: () => Promise<T>): Promise<T> {

@@ -172,7 +172,7 @@ EASY CODE 指令
   /skills                    查看全局和项目级技能
   /mcp [server-id action]    管理 MCP 服务器
   /permissions               查看权限与沙箱状态
-  /context                   查看上下文预算
+  /context                   查看上下文窗口用量
   /usage                     查看模型报告的 Token 用量
   /memory short [limit]      查看近期对话预览（默认 8 条，最多 500 条）
   /memory long [global|project] [id]
@@ -221,7 +221,7 @@ EASY CODE commands
   /mcp <server-id> <action>  Run an available MCP server action
   /permissions               Show command permissions and sandbox status
   /permissions revoke <index> Revoke a saved command/network prefix for this Thread
-  /context                   Show context budget
+  /context                   Show context window usage
   /usage                     Show cumulative provider-reported Token usage
   /memory short [limit]      Show recent short-term memory previews (default 8, max 500)
   /memory long [global|project] [id]  Show scoped long-term memory

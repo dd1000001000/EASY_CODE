@@ -13,7 +13,14 @@ import type { Language } from "../i18n/language.js";
 import type { VisionSupport } from "../models/catalog.js";
 import type { SubagentView } from "../subagents/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
-import type { TurnSummary, UIActivityKind, UIReviewPhase, UISessionInfo } from "./contracts.js";
+import type {
+  ContextUsageReport,
+  ToolDiffRef,
+  TurnSummary,
+  UIActivityKind,
+  UIReviewPhase,
+  UISessionInfo,
+} from "./contracts.js";
 
 export type { TurnChangedFile, TurnSummary } from "./contracts.js";
 
@@ -106,7 +113,8 @@ export interface AgentPresentationPort {
     details?: readonly import("../core/types.js").ToolDisplayDetail[],
   ): void;
   threadTitleChanged?(title: string): void;
-  fileDiff(presentation: FileDiffPresentation): void;
+  /** A file tool changed a file; `saved` names the diff kept for the call that just completed. */
+  fileDiff(presentation: FileDiffPresentation, saved?: ToolDiffRef): void;
   taskGraph(graph: Readonly<TaskGraphView>): void;
   showTaskGraphSnapshot(graph: Readonly<TaskGraphView>): void;
   clearTaskGraph(): void;
@@ -130,6 +138,8 @@ export interface AgentPresentationPort {
   finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean;
   /** A request finished: its duration, token use and changed files. */
   turnCompleted?(summary: Readonly<TurnSummary>): void;
+  /** Show how the context window is used, for `/context`. */
+  contextUsage?(report: Readonly<ContextUsageReport>): void;
   startActivity(text: string, kind?: UIActivityKind, toolName?: string): string | undefined;
   stopActivity(activityId?: string): void;
   startReview(): string;

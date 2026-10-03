@@ -267,6 +267,17 @@ export function appendSteeringLedgerEntry(state: SessionState, sourceMessageInde
 }
 
 /** The step's RUNTIME_CONTEXT_DATA message for a memory selection; empty while reconciliation is pending. */
+/** The selected memories as the Runtime context message carries them. */
+export function stepMemoryEntries(selected: ReturnType<typeof selectMemoryContext>) {
+  return selected.memories.map((memory) => ({
+    id: memory.id,
+    scope: memory.scope,
+    category: memory.category,
+    content: memory.content,
+    status: memory.status,
+  }));
+}
+
 export function renderStepMemory(draft: StepRequestDraft, selected: ReturnType<typeof selectMemoryContext>): string {
   const { layeredContext: context, loop, optionalAllowance, runtimeNextActions } = draft;
   const { memoryContext, state } = loop;
@@ -276,13 +287,7 @@ export function renderStepMemory(draft: StepRequestDraft, selected: ReturnType<t
         JSON.stringify({
           workspaceSummary: draft.workspaceSummary,
           workingCheckpoint: renderPinnedCurrentState(state, memoryContext.approvedPlanReview, true),
-          memories: selected.memories.map((memory) => ({
-            id: memory.id,
-            scope: memory.scope,
-            category: memory.category,
-            content: memory.content,
-            status: memory.status,
-          })),
+          memories: stepMemoryEntries(selected),
           retrievedThreadEvidence: context.evidence
             ? renderRetrievedContext(selected.evidence)
             : optionalAllowance > 0

@@ -1,6 +1,7 @@
 import type { ImageAttachment, PlanProposal, ToolDisplayDetail } from "./core/types.js";
 import type {
   FileChangeKind,
+  ToolDiffRef,
   TurnFileDiff,
   TurnLineCounts,
   UISessionInfo,
@@ -35,6 +36,8 @@ export interface WebEntry {
   images?: readonly Pick<ImageAttachment, "id" | "label" | "mediaType">[];
   resources?: readonly Pick<ThreadResourceAttachment, "id" | "filename" | "kind" | "mediaType" | "uri">[];
   toolDetails?: readonly ToolDisplayDetail[];
+  /** A file-tool call whose change can be loaded from /api/tool-diff when the call is opened. */
+  toolDiff?: ToolDiffRef;
   /** On the entry that ends a finished turn: its duration, tokens and changed files. */
   turnSummary?: WebTurnSummary;
   timestamp: number;
@@ -94,6 +97,8 @@ export interface WebTurnSummary {
 export interface WebTurnDiffResponse {
   diff: TurnFileDiff | null;
 }
+/** GET /api/tool-diff: what one file-tool call changed, redacted the same way; null when none was saved. */
+export type WebToolDiffResponse = WebTurnDiffResponse;
 export type WebPatch =
   | { kind: "entry.append"; entry: WebEntry }
   | { kind: "entry.replace"; entry: WebEntry }

@@ -373,6 +373,44 @@
   border-top: 1px solid var(--ec-border-subtle);
   color: var(--ec-text-subtle);
 }
+.tool-group-list.has-open-diff {
+  max-height: none;
+}
+.tool-diff-toggle {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--ec-border);
+  border-radius: 999px;
+  background: var(--ec-surface);
+  color: var(--ec-text-subtle);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tool-diff-toggle:hover,
+.tool-diff-toggle[aria-expanded="true"] {
+  border-color: var(--ec-accent-border);
+  color: var(--ec-accent-strong);
+}
+.tool-diff-toggle:focus-visible {
+  outline: 2px solid var(--ec-accent);
+  outline-offset: 1px;
+}
+.tool-group-entry > .file-diff,
+.tool-group-entry > .file-diff-status {
+  margin: 0 0 6px;
+  border: 1px solid var(--ec-border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.tool-disclosure > .file-diff,
+.tool-disclosure > .file-diff-status {
+  margin-top: 8px;
+  border: 1px solid var(--ec-border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
 .tool-group-name {
   flex: none;
   max-width: 34%;

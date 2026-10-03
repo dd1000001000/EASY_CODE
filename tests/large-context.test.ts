@@ -7,7 +7,7 @@ import { describe, it } from "./harness.js";
 import { defaultRuntimeLimits, runtimeLimitsSchema } from "../src/config/runtime-limits.js";
 import { ContextManager, contextPressureLevel } from "../src/context/manager.js";
 import { tokenBudget, requestTokens } from "../src/context/token-budget.js";
-import { effectiveContextWindow } from "../src/models/catalog.js";
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, effectiveContextWindow } from "../src/models/catalog.js";
 import { createSemanticSummarySchema } from "../src/context/semantic-compaction.js";
 import { createSpawnSubagentInputSchema } from "../src/tools/subagent-tools.js";
 import { createSubmitTaskResultInputSchema } from "../src/tools/submit-task-result.js";
@@ -49,17 +49,16 @@ const state = (): SessionState => ({
 describe("configurable 1M context", () => {
   it("uses a 1M window, separate reservations, and exact configured pressure boundaries", () => {
     const limits = defaultRuntimeLimits();
-    assert.equal(limits.maxContextTokens, 1_000_000);
-    assert.deepEqual(tokenBudget(limits.maxContextTokens, limits), {
+    assert.deepEqual(tokenBudget(1_000_000, limits), {
       window: 1_000_000,
       outputReserve: 32768,
       toolReserve: 65536,
       safetyReserve: 50000,
       inputCapacity: 851696,
     });
-    assert.equal(tokenBudget(limits.maxContextTokens, limits, "low").outputReserve, 32768);
-    assert.equal(tokenBudget(limits.maxContextTokens, limits, "medium").outputReserve, 65536);
-    assert.equal(tokenBudget(limits.maxContextTokens, limits, "high").outputReserve, 131072);
+    assert.equal(tokenBudget(1_000_000, limits, "low").outputReserve, 32768);
+    assert.equal(tokenBudget(1_000_000, limits, "medium").outputReserve, 65536);
+    assert.equal(tokenBudget(1_000_000, limits, "high").outputReserve, 131072);
     for (const [value, expected] of [
       [0.79999, "normal"],
       [0.8, "suggest"],
@@ -71,8 +70,9 @@ describe("configurable 1M context", () => {
     ] as const)
       assert.equal(contextPressureLevel(value, limits), expected);
     assert.equal(contextPressureLevel(0.7, { ...limits, contextReferenceTriggerRatio: 0.7 }), "suggest");
-    assert.equal(effectiveContextWindow("glm", "glm-5.3-flash", 2_000_000), 1_000_000);
-    assert.equal(effectiveContextWindow("glm", "glm-5.3-flash", 500_000), 500_000);
+    // The window is the model's own `context_window`; a model naming none gets the default.
+    assert.equal(effectiveContextWindow("glm", "glm-5.3-flash"), 1_000_000);
+    assert.equal(effectiveContextWindow("glm", "unknown-model"), DEFAULT_CONTEXT_WINDOW_TOKENS);
     assert.equal(runtimeLimitsSchema.safeParse({ ...limits, contextForceRatio: 0.85 }).success, false);
     assert.equal(runtimeLimitsSchema.safeParse({ ...limits, evidenceRecallMaxChars: 1000 }).success, false);
     assert.equal(runtimeLimitsSchema.safeParse({ ...limits, artifactChunkOverlapChars: 2000 }).success, false);

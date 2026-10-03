@@ -426,10 +426,12 @@ export function resolveCatalogModel(provider: ProviderName, value: string): Mode
       entry.label.toLowerCase() === normalized,
   );
 }
-export function effectiveContextWindow(provider: ProviderName, model: string, configured?: number): number | undefined {
-  if (!configured) return undefined;
-  const documented = resolveCatalogModel(provider, model)?.contextWindowTokens;
-  return documented ? Math.min(configured, documented) : configured;
+/** Window assumed for a model whose registry entry names none. */
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000;
+
+/** The token window of a model: its `context_window` in models.toml. */
+export function effectiveContextWindow(provider: ProviderName, model: string): number {
+  return resolveCatalogModel(provider, model)?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
 }
 export function requireCatalogModel(provider: ProviderName, value: string): ModelCatalogEntry {
   const model = resolveCatalogModel(provider, value);

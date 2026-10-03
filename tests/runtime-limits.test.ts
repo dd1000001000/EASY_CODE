@@ -86,7 +86,7 @@ describe("central runtime limits", () => {
     assert.equal(example.limits?.memoryConsolidationMatchLimit, 6);
     assert.equal("maxSubagentFollowUps" in defaultRuntimeLimits(), false);
     const retired = normalizeCurrentTomlConfig(
-      { limits: { max_subagent_follow_ups: 1 } },
+      { limits: { max_subagent_follow_ups: 1, max_context_tokens: 1_000_000 } },
       PROVIDER_CATALOG.map(({ provider }) => provider),
       defaultRuntimeLimits(),
     );

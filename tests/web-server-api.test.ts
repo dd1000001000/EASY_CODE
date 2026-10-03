@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { EasyCodeApp } from "../src/app.js";
-import { TurnDiffStore } from "../src/threads/turn-diff-store.js";
+import { ToolDiffStore, TurnDiffStore } from "../src/threads/turn-diff-store.js";
 import { WebInteraction } from "../src/web-server/interaction.js";
 import { EasyCodeWebServer } from "../src/web-server/server.js";
 import { describe, it } from "./harness.js";
@@ -151,5 +151,34 @@ describe("Web turn diffs", () => {
       assert.notEqual((await get({ threadId: "thread_other", turnId: "turn_1", path: "src/app.ts" })).status, 200);
       assert.notEqual((await get({ threadId: "thread_test", turnId: "../x", path: "src/app.ts" })).status, 200);
       assert.equal((await fetch(`${origin}/api/turn-diff?threadId=thread_test&turnId=turn_1&path=a`)).status, 401);
+    }));
+
+  it("serves what one file-tool call changed, redacted, for an open conversation", async () =>
+    serve(async (origin, _host, service, dataDir) => {
+      new ToolDiffStore(dataDir).write("thread_test", "turn_1", "call/1", {
+        truncated: false,
+        hunks: [{ oldStart: 1, newStart: 1, lines: ["-a", "+const token = 'token=ghp_1234567890123456789012345';"] }],
+      });
+      const cookie = `easy_code_web=${(service as unknown as { cookie: string }).cookie}`;
+      const get = (query: Record<string, string>) =>
+        fetch(`${origin}/api/tool-diff?${new URLSearchParams(query)}`, { headers: { Cookie: cookie } });
+
+      const found = await get({ threadId: "thread_test", turnId: "turn_1", callId: "call/1" });
+      assert.equal(found.status, 200);
+      assert.deepEqual(await found.json(), {
+        diff: {
+          truncated: false,
+          hunks: [{ oldStart: 1, newStart: 1, lines: ["-a", "+const token = '[REDACTED TOKEN]';"] }],
+        },
+      });
+      assert.deepEqual(await (await get({ threadId: "thread_test", turnId: "turn_1", callId: "call_2" })).json(), {
+        diff: null,
+      });
+      assert.notEqual((await get({ threadId: "thread_other", turnId: "turn_1", callId: "call/1" })).status, 200);
+      assert.notEqual((await get({ threadId: "thread_test", turnId: "turn_1", callId: "" })).status, 200);
+      assert.equal(
+        (await fetch(`${origin}/api/tool-diff?threadId=thread_test&turnId=turn_1&callId=call_1`)).status,
+        401,
+      );
     }));
 });

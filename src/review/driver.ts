@@ -47,6 +47,8 @@ export interface ReviewDriverInput {
   provider: ModelProvider;
   budget: TaskBudget;
   limits: Readonly<RuntimeLimits>;
+  /** The main agent's token window; the reviewer model's own window when it has none. */
+  contextWindow?: number;
   get(): ReviewSession;
   emit(event: ReviewEvent): Promise<void>;
   signal?: AbortSignal;
@@ -79,7 +81,7 @@ export function createReviewDriver(input: ReviewDriverInput): { investigate(): P
   const p = input.participant;
   const manager = new ContextManager();
   manager.configureTokenBudget(
-    effectiveContextWindow(input.provider.name, input.provider.model, input.limits.maxContextTokens),
+    input.contextWindow ?? effectiveContextWindow(input.provider.name, input.provider.model),
     input.limits,
     p.state.thinkingEffort,
   );

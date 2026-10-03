@@ -11,8 +11,9 @@ import { projectModelInputMessages } from "./micro-compaction.js";
 import { runtimeContinuityMessage } from "./runtime-state.js";
 import { reconciliationPending } from "./reconciliation.js";
 import { pressureProjectedMessages } from "./pressure-projection.js";
-import { requestTokens, tokenBudget, type TokenBudget } from "./token-budget.js";
+import { messageTokens, requestTokens, tokenBudget, type TokenBudget } from "./token-budget.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
+import type { ContextUsageCounts } from "../ui/contracts.js";
 
 /**
  * Maximum projected recent conversation considered for a provider request.
@@ -304,6 +305,7 @@ function contextSystemBudget(input: ContextBuildInput): ContextSystemBudget {
 export class ContextManager {
   private limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS;
   private capacity: TokenBudget | undefined;
+  private usage: { readonly threadId: string; readonly counts: ContextUsageCounts } | undefined;
   estimateRequestTokens = requestTokens;
   configureTokenBudget(
     window: number | undefined,
@@ -315,6 +317,17 @@ export class ContextManager {
   }
   get tokenCapacity(): TokenBudget | undefined {
     return this.capacity;
+  }
+  /** Keep how the latest main-agent request of a thread used the window. */
+  recordUsage(threadId: string, counts: ContextUsageCounts): void {
+    this.usage = { threadId, counts };
+  }
+  measuredUsage(threadId: string): ContextUsageCounts | undefined {
+    return this.usage?.threadId === threadId ? this.usage.counts : undefined;
+  }
+  /** Tokens of the conversation messages the next request sends, with the estimate that enforces the window. */
+  conversationTokens(state: Readonly<SessionState>): number {
+    return shortTermMessages(state).reduce((sum, message) => sum + messageTokens(message), 0);
   }
   get runtimeLimits(): Readonly<RuntimeLimits> {
     return this.limits;

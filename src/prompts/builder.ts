@@ -151,7 +151,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions): Prom
     formatToolRules(catalog, options.availableTools),
     promptText(catalog, COMMAND_MODE_RESOURCE[options.commandExecutionMode ?? "manual"]),
   ];
+  // Sections that are not Runtime policy, by index, for context usage reports.
+  const parts = new Map<number, SystemPromptPart>();
   if (instructions.length) {
+    parts.set(sections.length, "instructions");
     sections.push(formatInstructions(catalog, instructions));
   }
   if (options.workspaceFolders && options.workspaceFolders.length > 1) {
@@ -171,6 +174,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions): Prom
     ...skillListing.global.map((skill) => `global/${skill.name} (${skill.directory}): ${skill.description}`),
   ];
   if (skillLines.length) {
+    parts.set(sections.length, "skills");
     sections.push(
       renderPrompt(catalog, "runtime/skill-catalog.md", {
         entries: untrustedBlock(catalog, "SKILL_CATALOG", bounded(catalog, skillLines.join("\n"), 8_000)),
@@ -194,6 +198,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions): Prom
   }
   const memories = normalizeMemories(options.memories);
   if (memories) {
+    parts.set(sections.length, "memory");
     sections.push(untrustedBlock(catalog, "RETRIEVED_MEMORY", bounded(catalog, memories, 16_000)));
   }
   const workingCheckpoint = options.workingCheckpoint?.trim();
@@ -221,7 +226,44 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions): Prom
   if (workingCheckpoint) {
     sections.push(untrustedBlock(catalog, "WORKING_CHECKPOINT", boundedHeadTail(catalog, workingCheckpoint, 18_000)));
   }
-  return sections.join("\n\n");
+  const prompt = sections.join("\n\n");
+  rememberSections(
+    prompt,
+    sections.map((text, index) => ({ part: parts.get(index) ?? "policy", text })),
+  );
+  return prompt;
+}
+
+/** What a part of the system prompt carries: Runtime policy, EASYCODE.md guidance, the Skill catalog or memory. */
+export type SystemPromptPart = "policy" | "instructions" | "skills" | "memory";
+
+export interface SystemPromptSection {
+  readonly part: SystemPromptPart;
+  readonly text: string;
+}
+
+const MAX_REMEMBERED_PROMPTS = 8;
+/** Sections of recently built prompts, so usage reports can split a prompt without parsing its text. */
+const rememberedSections = new Map<string, readonly SystemPromptSection[]>();
+
+function rememberSections(prompt: string, sections: readonly SystemPromptSection[]): void {
+  rememberedSections.delete(prompt);
+  rememberedSections.set(prompt, sections);
+  if (rememberedSections.size > MAX_REMEMBERED_PROMPTS)
+    rememberedSections.delete(rememberedSections.keys().next().value!);
+}
+
+/**
+ * The sections of a recently built prompt that `systemText` starts with, and
+ * the text appended after it, or undefined when no such prompt is known.
+ */
+export function systemPromptSections(
+  systemText: string,
+): { readonly sections: readonly SystemPromptSection[]; readonly rest: string } | undefined {
+  for (const [prompt, sections] of [...rememberedSections].reverse()) {
+    if (systemText.startsWith(prompt)) return { sections, rest: systemText.slice(prompt.length) };
+  }
+  return undefined;
 }
 
 function formatModeRules(catalog: PromptBundleCatalog, mode: AgentMode, availableTools?: readonly ToolName[]): string {

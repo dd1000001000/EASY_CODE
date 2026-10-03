@@ -31,6 +31,7 @@ import { readLastModel } from "./config/last-model.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
 import { ContextArtifactIndex } from "./context/artifact-index.js";
 import { ContextManager } from "./context/manager.js";
+import { contextTokensInUse } from "./context/usage.js";
 import { WorkspaceToolObserver } from "./coordination/observer.js";
 import type {
   AgentRunResult,
@@ -74,7 +75,7 @@ import {
   ThreadResourceStore,
   type ThreadResourceAttachment,
 } from "./resources/index.js";
-import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
+import { AgentRuntime } from "./runtime/agent.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
 import { NativeSandboxBackend } from "./sandbox/native-backend.js";
 import { NativeSandboxStartupService } from "./sandbox/native-startup.js";
@@ -145,7 +146,6 @@ export class EasyCodeApp {
   private commandExecutionMode: CommandExecutionMode;
   private hostAccessEpoch = 0;
   private approvalQueue = new ApprovalQueue();
-  private lastProviderContext: ProviderContextSnapshot | undefined;
   private memoryMaintenanceTimer?: NodeJS.Timeout;
   private memoryMaintenanceController?: AbortController;
   private memoryMaintenanceWork?: Promise<void>;
@@ -182,7 +182,7 @@ export class EasyCodeApp {
     this.workspace = workspace;
     this.terminal.configureStreaming(config.limits);
     this.state = state;
-    this.terminal.setContextTokensProvider(() => this.contextManager.estimateShortTermTokens(this.state));
+    this.terminal.setContextTokensProvider(() => contextTokensInUse(this.contextManager, this.state));
     this.threadLease = threadLease;
     this.commandExecutionMode =
       trustedOuterSandbox === "harbor" ? "unrestricted" : assumeYes ? "auto_approve" : "manual";
@@ -239,7 +239,7 @@ export class EasyCodeApp {
     this.threadDocumentService = new ThreadDocumentService(this.documentConverter, this.threadResourceStore);
     this.pendingResumeRecovery = resumeRecovery;
     this.contextManager.configureTokenBudget(
-      effectiveContextWindow(this.state.provider, this.state.model, config.limits.maxContextTokens),
+      effectiveContextWindow(this.state.provider, this.state.model),
       config.limits,
       this.state.thinkingEffort,
     );
@@ -1562,12 +1562,6 @@ export class EasyCodeApp {
       get infoCommands() {
         return app.infoCommands;
       },
-      get lastProviderContext() {
-        return app.lastProviderContext;
-      },
-      set lastProviderContext(value) {
-        app.lastProviderContext = value;
-      },
       get localLayaClient() {
         return app.localLayaClient;
       },
@@ -1904,9 +1898,6 @@ export class EasyCodeApp {
       },
       get infoCommands() {
         return host.infoCommands;
-      },
-      get lastProviderContext() {
-        return host.lastProviderContext;
       },
       get modelSelection() {
         return host.modelSelection;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 
-import { TurnFileText, saveTurnDiffs, turnChangedFiles, turnFileText } from "../src/app/turn-changes.js";
+import { TurnFileText, saveTurnDiffs, toolCallDiff, turnChangedFiles, turnFileText } from "../src/app/turn-changes.js";
 import type { FileChangeRecord } from "../src/core/types.js";
 import { describe, it } from "./harness.js";
 
@@ -143,6 +143,19 @@ describe("files changed by one request", () => {
       assert.equal(file.diff?.truncated, false, file.path);
       assert.equal(file.diff?.hunks.flatMap((hunk) => hunk.lines).length, 300, file.path);
     }
+  });
+
+  it("diffs one file-tool call on its own, cut at the per-file limit", () => {
+    const call = (before: string, after: string, operation?: "create" | "update" | "delete") =>
+      toolCallDiff({ type: "file_diff", path: "src\\app.ts", before, after, ...(operation ? { operation } : {}) });
+    assert.deepEqual(call("a\nb\n", "a\nB\n")?.hunks, [{ oldStart: 1, newStart: 1, lines: [" a", "-b", "+B"] }]);
+    assert.deepEqual(call("", "one\n", "create")?.hunks[0]?.lines, ["+one"]);
+    assert.deepEqual(call("gone\n", "", "delete")?.hunks[0]?.lines, ["-gone"]);
+    // Nothing changed: no diff to open.
+    assert.equal(call("same\n", "same\n"), undefined);
+    const big = call("", many(2_500, "line "), "create");
+    assert.equal(big?.truncated, true);
+    assert.equal(big?.hunks.flatMap((hunk) => hunk.lines).length, 2_000);
   });
 
   it("gives line counts only to files no command changed, one collector per workspace", () => {

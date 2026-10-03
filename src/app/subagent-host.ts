@@ -42,6 +42,7 @@ import { subagentDisplayLabel } from "../subagents/display-name.js";
 import { SubagentMessageMailbox } from "../subagents/messages.js";
 import { WorkspaceMutationLock } from "../subagents/workspace-mutation-lock.js";
 import { BuiltinToolSource } from "../tools/builtin-source.js";
+import { effectiveContextWindow } from "../models/catalog.js";
 import { ToolCatalog } from "../tools/catalog.js";
 import type { ToolExecutionAuthorizationRequest } from "../tools/execution-gateway.js";
 import { ThreadStore, type ThreadLease } from "../threads/thread-store.js";
@@ -170,7 +171,7 @@ export class SubagentHost {
               maxModelRequests: this.ctx.maxModelRequests,
               maxContextChars: this.ctx.config.limits.maxContextChars,
               maxOutputChars: this.ctx.config.limits.maxOutputChars,
-              maxContextTokens: this.ctx.config.limits.maxContextTokens || undefined,
+              maxContextTokens: effectiveContextWindow(childState.provider, childState.model),
               commandTimeoutMs: this.ctx.config.limits.commandTimeoutMs,
               approvalPolicy: this.ctx.config.approvalPolicy,
               commandExecutionMode: this.ctx.commandExecutionMode,

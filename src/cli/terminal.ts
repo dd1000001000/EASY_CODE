@@ -25,8 +25,9 @@ import {
   compactionRunning,
   type CompactionProgress,
 } from "../ui/compaction.js";
-import type { TurnSummary, UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
+import type { ContextUsageReport, TurnSummary, UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
 import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
+import { renderContextUsage } from "../ui/render/context-usage.js";
 import { renderTurnSummary } from "../ui/render/turn-summary.js";
 import type {
   AppInteractionPort,
@@ -309,6 +310,11 @@ export class Terminal implements AppInteractionPort {
       ),
     );
     this.write(`${body}\n\n`);
+  }
+
+  contextUsage(report: Readonly<ContextUsageReport>): void {
+    const columns = Number((this.output as NodeJS.WriteStream).columns) || 120;
+    this.write(`${renderContextUsage(report, { language: this.language, color: this.colorEnabled(), columns })}\n`);
   }
 
   /** The summary after each request; line mode has no hyperlinks. */
