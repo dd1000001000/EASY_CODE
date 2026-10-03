@@ -302,11 +302,31 @@
 .project-loading {
   margin-left: auto;
 }
-.project-unavailable {
-  width: 13px;
-  height: 13px;
+/* A request that finished, or a problem, in a conversation not opened since. */
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
   flex: none;
-  color: var(--ec-warning);
+  border-radius: 50%;
+  background: var(--ec-accent);
+}
+.status-alert {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--ec-danger);
+}
+.status-alert svg {
+  width: 100%;
+  height: 100%;
+}
+.project-status {
+  margin-left: auto;
+}
+.thread-status.status-dot {
+  margin: 0 3px;
 }
 .project-toggle.el-button > span,
 .thread-row.el-button > span {

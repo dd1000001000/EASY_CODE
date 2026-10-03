@@ -137,7 +137,10 @@ export class AppThreadSessions {
     if (!membership) return;
     const { unavailable } = checkProjectFolders(membership.folders);
     const primary = unavailable.find((folder) => folder.id === membership.primaryFolderId);
-    if (primary) throw primaryFolderUnavailableError(readLanguage(this.ctx.storage), primary, this.folderFix());
+    if (primary) {
+      this.ctx.terminal.projectFoldersChanged?.();
+      throw primaryFolderUnavailableError(readLanguage(this.ctx.storage), primary, this.folderFix());
+    }
     const current = new Set(this.ctx.workspace.unavailableFolders.map((folder) => folder.id));
     const changed = unavailable.length !== current.size || unavailable.some((folder) => !current.has(folder.id));
     if (changed && !this.earlierWorkRunning())
@@ -153,10 +156,12 @@ export class AppThreadSessions {
   /** Report each folder that is newly not found, and each one the workspace uses again. */
   private reportFolderAvailability(notFound: readonly UnavailableProjectFolder[]): void {
     const language = readLanguage(this.ctx.storage);
+    let changed = false;
     const leftOut = new Set(this.ctx.workspace.unavailableFolders.map((folder) => folder.id));
     for (const folder of notFound) {
       if (this.reportedUnavailable.has(folder.id)) continue;
       this.reportedUnavailable.add(folder.id);
+      changed = true;
       this.ctx.terminal.warning(
         translate(language, leftOut.has(folder.id) ? "cli.folderUnavailable" : "cli.folderUnavailableBusy", {
           key: folder.key,
@@ -169,10 +174,12 @@ export class AppThreadSessions {
       // Still missing, or found again but not in use until running work finishes.
       if (leftOut.has(id) || notFound.some((folder) => folder.id === id)) continue;
       this.reportedUnavailable.delete(id);
+      changed = true;
       const folder = this.ctx.workspace.folders.find((item) => item.id === id);
       if (folder)
         this.ctx.terminal.info(translate(language, "cli.folderAvailableAgain", { key: folder.key, path: folder.path }));
     }
+    if (changed) this.ctx.terminal.projectFoldersChanged?.();
   }
 
   /** Work from earlier requests that still uses the current workspace. */

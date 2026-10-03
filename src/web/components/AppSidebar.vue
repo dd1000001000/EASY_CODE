@@ -1,19 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ElButton, ElInput } from "element-plus";
-import {
-  Delete,
-  Edit,
-  Fold,
-  Folder,
-  FolderOpened,
-  Loading,
-  Plus,
-  Search,
-  WarningFilled,
-} from "@element-plus/icons-vue";
-import type { ProjectItem, ThreadItem } from "../api.js";
+import { Delete, Edit, Fold, Folder, FolderOpened, Loading, Plus, Search } from "@element-plus/icons-vue";
+import type { ProjectItem, ThreadAttention, ThreadItem } from "../api.js";
 import { t } from "../i18n.js";
+import StatusAlert from "./StatusAlert.vue";
 
 const props = defineProps<{
   collapsed: boolean;
@@ -22,6 +13,8 @@ const props = defineProps<{
   activeProjectId?: string;
   activeThreadId?: string;
   runningThreadIds: ReadonlySet<string>;
+  /** How the last request ended in conversations that have not been opened since. */
+  threadAttention: Readonly<Record<string, ThreadAttention>>;
   expandedProjects: ReadonlySet<string>;
   switching: boolean;
   connected: boolean;
@@ -51,6 +44,39 @@ function projectThreads(id: string): ThreadItem[] {
 function projectRunning(id: string): boolean {
   return sortedThreads.value.some((thread) => thread.workspaceId === id && props.runningThreadIds.has(thread.threadId));
 }
+/** Running, a problem (a folder that cannot be found, or a request that ended badly), or a finished request. */
+interface RowStatus {
+  readonly kind: "running" | "problem" | "finished";
+  readonly label: string;
+}
+function threadStatus(thread: ThreadItem): RowStatus | undefined {
+  if (props.runningThreadIds.has(thread.threadId)) return { kind: "running", label: t("ui.projectActive") };
+  const attention = props.threadAttention[thread.threadId];
+  if (attention === "failed") return { kind: "problem", label: t("ui.threadFailed") };
+  if (attention === "finished") return { kind: "finished", label: t("ui.threadFinished") };
+  return undefined;
+}
+const projectStatuses = computed(() => {
+  const statuses = new Map<string, RowStatus>();
+  for (const project of props.projects) {
+    const threads = sortedThreads.value.filter((thread) => thread.workspaceId === project.id);
+    const attention = threads.map((thread) => props.threadAttention[thread.threadId]);
+    const problems: string[] = [];
+    if (project.primaryUnavailable) problems.push(t("ui.primaryFolderUnavailable"));
+    const missing = (project.folders ?? []).filter(
+      (folder) => folder.active && folder.unavailable && folder.id !== project.primaryFolderId,
+    );
+    if (missing.length)
+      problems.push(t("ui.foldersUnavailable", { folders: missing.map((folder) => folder.key).join(", ") }));
+    if (attention.includes("failed")) problems.push(t("ui.projectRequestFailed"));
+    if (threads.some((thread) => props.runningThreadIds.has(thread.threadId)))
+      statuses.set(project.id, { kind: "running", label: t("ui.projectActive") });
+    else if (problems.length) statuses.set(project.id, { kind: "problem", label: problems.join("\n") });
+    else if (attention.includes("finished"))
+      statuses.set(project.id, { kind: "finished", label: t("ui.projectRequestFinished") });
+  }
+  return statuses;
+});
 /** While searching, every project with a matching conversation (or name) opens. */
 function projectVisible(project: ProjectItem): boolean {
   return (
@@ -130,9 +156,7 @@ defineExpose({
                 <ElButton
                   class="project-toggle"
                   text
-                  :title="
-                    project.primaryUnavailable ? `${project.name} — ${t('ui.primaryFolderUnavailable')}` : project.name
-                  "
+                  :title="project.name"
                   :aria-expanded="projectOpen(project.id)"
                   @click="emit('toggleProject', project.id)"
                 >
@@ -140,15 +164,21 @@ defineExpose({
                     v-else
                     class="project-folder"
                   /><span class="project-name">{{ project.name }}</span
-                  ><WarningFilled
-                    v-if="project.primaryUnavailable"
-                    class="project-unavailable"
-                    :aria-label="t('ui.primaryFolderUnavailable')"
-                  /><Loading
-                    v-if="projectRunning(project.id)"
+                  ><Loading
+                    v-if="projectStatuses.get(project.id)?.kind === 'running'"
                     class="project-loading"
                     :aria-label="t('ui.projectActive')"
-                  />
+                  /><StatusAlert
+                    v-else-if="projectStatuses.get(project.id)?.kind === 'problem'"
+                    class="project-status"
+                    :label="projectStatuses.get(project.id)!.label"
+                  /><span
+                    v-else-if="projectStatuses.get(project.id)?.kind === 'finished'"
+                    class="status-dot project-status"
+                    role="img"
+                    :title="projectStatuses.get(project.id)!.label"
+                    :aria-label="projectStatuses.get(project.id)!.label"
+                  ></span>
                 </ElButton>
                 <ElButton
                   class="project-action project-action--add"
@@ -198,11 +228,18 @@ defineExpose({
                     :title="thread.threadId"
                     @click="emit('resumeThread', thread.threadId)"
                   >
-                    <Loading v-if="runningThreadIds.has(thread.threadId)" class="thread-loading" /><span
-                      v-else
-                      class="thread-icon"
-                      >◌</span
-                    ><span>{{ thread.title }}</span>
+                    <Loading v-if="threadStatus(thread)?.kind === 'running'" class="thread-loading" /><StatusAlert
+                      v-else-if="threadStatus(thread)?.kind === 'problem'"
+                      class="thread-status"
+                      :label="threadStatus(thread)!.label"
+                    /><span
+                      v-else-if="threadStatus(thread)?.kind === 'finished'"
+                      class="status-dot thread-status"
+                      role="img"
+                      :title="threadStatus(thread)!.label"
+                      :aria-label="threadStatus(thread)!.label"
+                    ></span
+                    ><span v-else class="thread-icon">◌</span><span>{{ thread.title }}</span>
                   </ElButton>
                   <ElButton
                     v-if="thread.canRename"

@@ -260,6 +260,8 @@ describe("project folder availability", () => {
       transcript += chunk;
     });
     const terminal = new InteractiveOutputTerminal(new PassThrough(), output);
+    let folderNotices = 0;
+    Object.assign(terminal, { projectFoldersChanged: () => (folderNotices += 1) });
     let app: EasyCodeApp | undefined;
     try {
       app = await EasyCodeApp.create({
@@ -293,6 +295,7 @@ describe("project folder availability", () => {
       await internal.threadSessions.refreshFolderAvailability();
       assert.equal(internal.workspace, leftOut);
       assert.equal(transcript.match(/cannot be found: missing/gu)?.length, 1);
+      assert.equal(folderNotices, 1);
 
       renameSync(`${api}-moved`, api);
       await internal.threadSessions.refreshFolderAvailability();
@@ -301,12 +304,14 @@ describe("project folder availability", () => {
         ["web", "api"],
       );
       assert.match(transcript, /Project folder api .* is back in the workspace/u);
+      assert.equal(folderNotices, 2);
 
       renameSync(web, `${web}-moved`);
       await assert.rejects(
         internal.threadSessions.refreshFolderAvailability(),
         /primary folder web .* cannot be found[\s\S]*\/workspace primary/u,
       );
+      assert.equal(folderNotices, 3);
       renameSync(`${web}-moved`, web);
     } finally {
       app?.close();

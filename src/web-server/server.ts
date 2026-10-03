@@ -7,7 +7,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import type { EasyCodeApp } from "../app.js";
-import type { ImageAttachment } from "../core/types.js";
+import type { AgentRunResult, ImageAttachment } from "../core/types.js";
 import { MAX_IMAGE_BYTES, validateImageAttachmentCollection } from "../images/image-store.js";
 import { assertDataDirectoryOutsideWorkspace } from "../images/path-policy.js";
 import { parseSlashCommand, SLASH_COMMAND_NAMES } from "../cli/slash-command.js";
@@ -49,11 +49,17 @@ class MissingThreadError extends Error {}
 interface HostedThread {
   app: EasyCodeApp;
   port: WebInteraction;
-  running?: Promise<void>;
+  running?: Promise<unknown>;
   staged: Map<string, ImageAttachment>;
   stagedResources: Map<string, ThreadResourceAttachment>;
   unsubscribe: () => void;
 }
+/**
+ * A request that ended while its conversation was not on screen: finished, or
+ * ended with an error or without completing. Cleared when the conversation is opened.
+ */
+type ThreadAttention = "finished" | "failed";
+const PROBLEM_REASONS = new Set<AgentRunResult["reason"]>(["failed", "blocked", "limit_reached"]);
 /** Enough for large repositories while keeping the response small. */
 const MAX_MENTION_PATHS = 20_000;
 /**
@@ -70,6 +76,12 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 };
+
+/** A request that returned without completing its work. */
+function isProblemResult(result: unknown): boolean {
+  if (!result || typeof result !== "object" || !("reason" in result)) return false;
+  return PROBLEM_REASONS.has((result as Pick<AgentRunResult, "reason">).reason);
+}
 
 function sendEvent(stream: ServerResponse, event: string): void {
   if (stream.destroyed) return;
@@ -155,6 +167,7 @@ export class EasyCodeWebServer {
   private readonly projectStorage: EasyCodeStorage;
   private broadcastLanguageValue: Language = "en_us";
   private broadcastStatusValue?: string;
+  private readonly attention = new Map<string, ThreadAttention>();
   private readonly turnDiffs: TurnDiffStore;
   private readonly toolDiffs: ToolDiffStore;
   private readonly dataDir: string;
@@ -314,11 +327,21 @@ export class EasyCodeWebServer {
   }
 
   private broadcastStatus(): void {
-    const data = JSON.stringify({ runningThreadIds: this.busyThreadIds() });
+    const data = JSON.stringify({ runningThreadIds: this.busyThreadIds(), attention: this.attentionState() });
     // Sent after every patch; only a change is news, and new pages get it in their snapshot.
     if (data === this.broadcastStatusValue) return;
     this.broadcastStatusValue = data;
     for (const stream of this.streams) sendEvent(stream, `event: status\ndata: ${data}\n\n`);
+  }
+
+  private attentionState(): Record<string, ThreadAttention> {
+    return Object.fromEntries(this.attention);
+  }
+
+  /** Folder availability changed somewhere; every page gets the project list again. */
+  private broadcastProjects(): void {
+    const data = JSON.stringify({ projects: this.projects.list().projects });
+    for (const stream of this.streams) sendEvent(stream, `event: projects\ndata: ${data}\n\n`);
   }
 
   private broadcastLanguage(): void {
@@ -340,7 +363,8 @@ export class EasyCodeWebServer {
       stagedResources: new Map(),
       unsubscribe: () => undefined,
     };
-    host.unsubscribe = port.subscribe((change) => {
+    const stopFolderNotices = port.onProjectFoldersChanged(() => this.broadcastProjects());
+    const stopPatches = port.subscribe((change) => {
       const patch: WebPatch | undefined =
         change.patch?.kind === "entries.reset"
           ? { kind: "entries.reset", entries: port.historyPage().entries, history: port.historyState() }
@@ -349,6 +373,10 @@ export class EasyCodeWebServer {
       for (const stream of this.streams) sendEvent(stream, `event: patch\ndata: ${data}\n\n`);
       this.broadcastStatus();
     });
+    host.unsubscribe = () => {
+      stopPatches();
+      stopFolderNotices();
+    };
     this.hosts.set(threadId, host);
     app.startHostedSession();
     port.loadHistory(
@@ -460,17 +488,26 @@ export class EasyCodeWebServer {
       history: this.port.historyState(page),
       plan: this.app?.pendingPlan() ?? null,
       runningThreadIds: this.busyThreadIds(),
+      attention: this.attentionState(),
       ...this.projects.list(this.allThreads()),
     };
   }
 
-  private run(host: HostedThread, action: () => Promise<void>): void {
+  /** `request`: the work answers the user, so its end is marked for a conversation that is not on screen. */
+  private run(host: HostedThread, action: () => Promise<unknown>, { request = false } = {}): void {
     if (host.running) throw new Error("Another operation is still running in this conversation.");
+    const threadId = host.app.sessionInfo().threadId;
+    if (request) this.attention.delete(threadId);
     const work = Promise.resolve().then(action);
     host.running = work;
     this.broadcastStatus();
+    let failed = false;
     void work
+      .then((result) => {
+        failed = isProblemResult(result);
+      })
       .catch((error) => {
+        failed = true;
         // A request may fail before the app reaches its own presentation cleanup.
         // Close any pending Web turn so its duration and disclosure do not remain live forever.
         host.port.clearCurrentRequest();
@@ -478,6 +515,9 @@ export class EasyCodeWebServer {
       })
       .finally(() => {
         if (host.running === work) host.running = undefined;
+        // A page showing this conversation saw it end.
+        if (request && !(this.app === host.app && this.streams.size > 0))
+          this.attention.set(threadId, failed ? "failed" : "finished");
         this.broadcastStatus();
       });
   }
@@ -491,12 +531,18 @@ export class EasyCodeWebServer {
       if (existing) {
         this.app = existing.app;
         this.port = existing.port;
+        this.seen(threadId);
         return;
       }
       const nextPort = new WebInteraction();
       let next: EasyCodeApp;
       const projectWorkspace = this.projects.workspace(projectId);
-      assertPrimaryFolderAvailable(projectWorkspace, readLanguage(this.projectStorage));
+      try {
+        assertPrimaryFolderAvailable(projectWorkspace, readLanguage(this.projectStorage));
+      } catch (error) {
+        this.broadcastProjects();
+        throw error;
+      }
       const root = projectWorkspace.folders.find((folder) => folder.id === projectWorkspace.primaryFolderId)!.path;
       try {
         next = await this.createApp(root, threadId, nextPort, projectWorkspace);
@@ -518,9 +564,15 @@ export class EasyCodeWebServer {
       this.attachHost(next, nextPort);
       this.app = next;
       this.port = nextPort;
+      this.seen(next.sessionInfo().threadId);
     } finally {
       this.transitioning = false;
     }
+  }
+
+  /** Opening a conversation clears its end-of-request marker. */
+  private seen(threadId: string): void {
+    if (this.attention.delete(threadId)) this.broadcastStatus();
   }
 
   private async leaveCurrentSession(): Promise<void> {
@@ -531,7 +583,9 @@ export class EasyCodeWebServer {
   private deleteConversation(threadId: string): readonly string[] {
     const storage = createStorage(this.dataDir);
     try {
-      return deleteThreadTree(storage, new ThreadStore(storage), threadId);
+      const deleted = deleteThreadTree(storage, new ThreadStore(storage), threadId);
+      for (const id of deleted) this.attention.delete(id);
+      return deleted;
     } finally {
       storage.close();
     }
@@ -891,19 +945,22 @@ export class EasyCodeWebServer {
       const command = parseSlashCommand(input.text);
       if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
         throw new Error(`/${command.name} is not available as a Web command.`);
-      this.run(host, async () => {
-        const exit = await host.app.handleSlashCommand(input.text as string);
-        if (exit) host.port.info("Use Ctrl+C in the EASY CODE terminal to stop the Web server.");
-      });
+      this.run(
+        host,
+        async () => {
+          const exit = await host.app.handleSlashCommand(input.text as string);
+          if (exit) host.port.info("Use Ctrl+C in the EASY CODE terminal to stop the Web server.");
+        },
+        { request: true },
+      );
     } else {
       host.port.presentUser(input.text, images, resources);
-      this.run(host, async () => {
-        await host.app.submitUserMessage(
-          (input.text as string) || "Analyze the attached resource(s).",
-          images,
-          resources,
-        );
-      });
+      this.run(
+        host,
+        () =>
+          host.app.submitUserMessage((input.text as string) || "Analyze the attached resource(s).", images, resources),
+        { request: true },
+      );
     }
     json(response, 202, { accepted: true });
   }
@@ -957,7 +1014,7 @@ export class EasyCodeWebServer {
         ? { action: "adjust" as const, feedback: String(input.feedback ?? "").trim() }
         : ({ action: input.action } as { action: "approve" | "reject" });
     if (decision.action === "adjust" && !decision.feedback) throw new Error("Plan feedback is required.");
-    this.run(host, () => host.app.reviewHostedPlan(decision));
+    this.run(host, () => host.app.reviewHostedPlan(decision), { request: true });
     json(response, 202, { accepted: true });
   }
 

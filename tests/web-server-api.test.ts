@@ -182,3 +182,69 @@ describe("Web turn diffs", () => {
       );
     }));
 });
+
+describe("Web conversation status", () => {
+  it("marks how a request ended unless its conversation was on screen, and pushes folder changes", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-web-attention-"));
+    await writeFile(path.join(directory, "index.html"), "<!doctype html><title>test</title>");
+    const host = new WebInteraction();
+    let outcome: () => Promise<unknown> = async () => ({ reason: "success" });
+    const app = {
+      dataDirectory: () => directory,
+      sessionInfo: () => ({ workspaceRoot: directory, threadId: "thread_test" }),
+      closeAsync: async () => {},
+      startHostedSession() {},
+      cancelActiveRequest: () => false,
+      isRequestActive: () => false,
+      threadEvents: () => [],
+      pendingPlan: () => undefined,
+      submitUserMessage: () => outcome(),
+    } as unknown as EasyCodeApp;
+    const service = new EasyCodeWebServer(app, host, directory, directory);
+    try {
+      const origin = await service.start(false);
+      const cookie = (service as unknown as { cookie: string }).cookie;
+      const headers = { Cookie: `easy_code_web=${cookie}`, Origin: origin, "Content-Type": "application/json" };
+      const attention = async () =>
+        ((await (await fetch(`${origin}/api/state`, { headers })).json()) as { attention: Record<string, string> })
+          .attention;
+      const send = async () => {
+        const response = await fetch(`${origin}/api/message`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ threadId: "thread_test", text: "Run it" }),
+        });
+        assert.equal(response.status, 202);
+        const hosted = (service as unknown as { hosts: Map<string, { running?: Promise<unknown> }> }).hosts;
+        await until(() => hosted.get("thread_test")?.running === undefined);
+      };
+
+      // No page is open, so nobody saw these requests end.
+      await send();
+      assert.deepEqual(await attention(), { thread_test: "finished" });
+      outcome = async () => ({ reason: "failed" });
+      await send();
+      assert.deepEqual(await attention(), { thread_test: "failed" });
+      outcome = async () => {
+        throw new Error("provider unavailable");
+      };
+      await send();
+      assert.deepEqual(await attention(), { thread_test: "failed" });
+
+      // With a page showing the conversation, the end is seen and nothing is marked.
+      const page = openEvents(origin, service, true);
+      await until(() => page.events.includes("snapshot"));
+      outcome = async () => ({ reason: "success" });
+      await send();
+      assert.deepEqual(await attention(), {});
+
+      host.projectFoldersChanged();
+      await until(() => page.events.includes("projects"));
+      page.close();
+    } finally {
+      await service.stop().catch(() => undefined);
+      host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});

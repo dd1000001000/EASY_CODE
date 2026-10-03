@@ -37,6 +37,8 @@ export interface ProjectItem {
   primaryFolderId?: string;
   folders?: ProjectFolderItem[];
 }
+/** How a request ended in a conversation that was not on screen; cleared when it is opened. */
+export type ThreadAttention = "finished" | "failed";
 export interface WebSnapshot {
   language: Language;
   sequence: number;
@@ -45,6 +47,8 @@ export interface WebSnapshot {
   threads: ThreadItem[];
   projects: ProjectItem[];
   runningThreadIds: string[];
+  /** Conversations whose last request ended while they were not on screen. */
+  attention?: Record<string, ThreadAttention>;
   history: WebHistoryState;
 }
 

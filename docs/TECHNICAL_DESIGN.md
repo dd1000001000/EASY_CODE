@@ -128,6 +128,8 @@ Before each request, EASY CODE checks that every project folder still exists. A 
 
 Without its primary folder a project cannot be used. Requests are refused, and Web marks the project in the sidebar. Restore the folder, or choose another primary folder: in Web, in the project editor; in the CLI, with `/workspace primary <folder-id>` (add one first with `/workspace add` if needed). A folder that cannot be found cannot be made primary.
 
+In the Web sidebar, a project or conversation shows a spinner while it runs, a blue dot when a request finished while you were elsewhere, and a red warning triangle for a problem: a folder that cannot be found, or a request that ended with an error or without completing. Hover over the icon for the reason. The dot and the request triangle clear when you open that conversation. A conversation that finds a folder missing or back updates the sidebar on every open page.
+
 ### 3.3 Naming and deletion
 
 - A user or the main agent can set a conversation's title once. Repeated renaming is not supported in the current version.

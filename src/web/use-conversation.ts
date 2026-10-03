@@ -2,7 +2,14 @@ import { computed, ref, type Ref } from "vue";
 import type { PlanProposal } from "../core/types.js";
 import type { WebEntry, WebPatch } from "../web-contracts.js";
 import { parseLanguage } from "../i18n/language.js";
-import { bootstrap, request, type ProjectItem, type ThreadItem, type WebSnapshot } from "./api.js";
+import {
+  bootstrap,
+  request,
+  type ProjectItem,
+  type ThreadAttention,
+  type ThreadItem,
+  type WebSnapshot,
+} from "./api.js";
 import {
   groupConversationTurns,
   isNoticeEntry,
@@ -40,6 +47,7 @@ export function useConversation(transcript: Ref<HTMLElement | undefined>, hooks:
   const threads = ref<ThreadItem[]>([]);
   const projects = ref<ProjectItem[]>([]);
   const runningThreadIds = ref<Set<string>>(new Set());
+  const threadAttention = ref<Readonly<Record<string, ThreadAttention>>>({});
   const selectedProjectId = ref<string>();
   const plan = ref<PlanProposal | null>(null);
   const connected = ref(false);
@@ -75,6 +83,7 @@ export function useConversation(transcript: Ref<HTMLElement | undefined>, hooks:
     threads.value = snapshot.threads;
     projects.value = snapshot.projects;
     runningThreadIds.value = new Set(snapshot.runningThreadIds);
+    threadAttention.value = snapshot.attention ?? {};
     if (snapshot.view.session) {
       selectedProjectId.value =
         snapshot.view.session.projectId ??
@@ -169,11 +178,20 @@ export function useConversation(transcript: Ref<HTMLElement | undefined>, hooks:
       if ((before && !view.value.busy) || beforeThread !== view.value.session?.threadId) void refresh();
     });
     events.addEventListener("status", (event) => {
-      const ids = (JSON.parse((event as MessageEvent).data) as { runningThreadIds: string[] }).runningThreadIds;
+      const status = JSON.parse((event as MessageEvent).data) as {
+        runningThreadIds: string[];
+        attention?: Record<string, ThreadAttention>;
+      };
+      const ids = status.runningThreadIds;
+      threadAttention.value = status.attention ?? {};
       hooks.onRunningThreads(ids);
       const completed = [...runningThreadIds.value].some((id) => !ids.includes(id));
       runningThreadIds.value = new Set(ids);
       if (completed) void refresh();
+    });
+    // A conversation found that project folders went missing or came back.
+    events.addEventListener("projects", (event) => {
+      projects.value = (JSON.parse((event as MessageEvent).data) as { projects: ProjectItem[] }).projects;
     });
     events.addEventListener("language", (event) => {
       setLanguage(parseLanguage((JSON.parse((event as MessageEvent).data) as { language: string }).language));
@@ -209,6 +227,7 @@ export function useConversation(transcript: Ref<HTMLElement | undefined>, hooks:
     threads,
     projects,
     runningThreadIds,
+    threadAttention,
     selectedProjectId,
     plan,
     connected,

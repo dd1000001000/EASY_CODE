@@ -73,6 +73,7 @@ const {
   threads,
   projects,
   runningThreadIds,
+  threadAttention,
   selectedProjectId,
   plan,
   connected,
@@ -485,6 +486,7 @@ async function decidePlan(action: "approve" | "reject" | "adjust"): Promise<void
       :active-project-id="activeProject?.id"
       :active-thread-id="activeThread"
       :running-thread-ids="runningThreadIds"
+      :thread-attention="threadAttention"
       :expanded-projects="expandedProjects"
       :switching="switching"
       :connected="connected"

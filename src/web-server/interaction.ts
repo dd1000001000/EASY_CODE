@@ -184,6 +184,15 @@ export class WebInteraction implements AppInteractionPort {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
+  private readonly folderListeners = new Set<() => void>();
+  /** Called when this conversation finds that its project folders changed. */
+  onProjectFoldersChanged(listener: () => void): () => void {
+    this.folderListeners.add(listener);
+    return () => this.folderListeners.delete(listener);
+  }
+  projectFoldersChanged(): void {
+    for (const listener of this.folderListeners) listener();
+  }
   loadHistory(entries: readonly WebEntry[]): void {
     this.discardStreams();
     this.compaction = [...entries].reverse().find((entry) => entry.compaction)?.compaction ?? null;

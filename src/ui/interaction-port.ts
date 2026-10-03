@@ -199,6 +199,8 @@ export interface AgentDecisionPort {
 export interface SessionInteractionPort {
   /** Set by the Web host, whose users change project folders in its project editor; unset in the CLI. */
   readonly surface?: "web";
+  /** A project folder went missing or came back, or the primary folder cannot be found. */
+  projectFoldersChanged?(): void;
   setLanguage?(language: Language): void;
   configureStreaming(limits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number }): void;
   setContextTokensProvider(provider: (() => number) | undefined): void;
