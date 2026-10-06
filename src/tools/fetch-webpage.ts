@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
 import type { ThreadDocumentService } from "../resources/thread-document-service.js";
-import { fetchPublic, MAX_WEBPAGE_BYTES } from "../resources/web-content.js";
+import { MAX_WEBPAGE_BYTES } from "../resources/web-content.js";
+import { WebpageReader } from "../resources/web-reader.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
@@ -28,26 +29,31 @@ export class FetchWebpageTool implements AgentTool {
   constructor(
     private readonly workspace: WorkspaceManager,
     private readonly documents: ThreadDocumentService,
+    private readonly reader = new WebpageReader(),
   ) {}
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     try {
       await assertMatchingWorkspace(this.workspace, context);
       const parsed = schema.parse(input);
-      const response = await fetchPublic(parsed.url, {
+      const page = await this.reader.read(parsed.url, {
         signal: context.signal,
         maxBytes: Math.min(MAX_WEBPAGE_BYTES, this.documents.maxBytes),
       });
-      if (!new Set(["text/html", "application/xhtml+xml", "text/plain", "text/markdown"]).has(response.mediaType)) {
-        throw new Error(`Unsupported Web content type: ${response.mediaType}.`);
-      }
       const attachment = await this.documents.importWebpage({
         threadId: context.threadId,
-        url: response.url,
-        data: response.data,
-        mediaType: response.mediaType,
+        url: page.url,
+        data: page.data,
+        mediaType: page.mediaType,
+        ...(page.title ? { title: page.title } : {}),
         signal: context.signal,
       });
-      return toolSuccess(`Saved ${response.url} as read-only Thread resource ${attachment.uri}.`, attachment);
+      const via =
+        page.reader === "jina"
+          ? " through Jina Reader"
+          : page.fallbackReason
+            ? ` with a direct request (${page.fallbackReason})`
+            : "";
+      return toolSuccess(`Saved ${page.url}${via} as read-only Thread resource ${attachment.uri}.`, attachment);
     } catch (error) {
       return toolFailure(error, "Unable to fetch the Web page");
     }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { THINKING_EFFORTS, type EasyCodeConfig } from "../core/types.js";
+import { THINKING_EFFORTS, WEB_READERS, type EasyCodeConfig } from "../core/types.js";
 import { isProviderName } from "../models/catalog.js";
 import { runtimeLimitsSchema } from "./runtime-limits.js";
 
@@ -38,6 +38,7 @@ export const easyCodeConfigSchema = z.object({
   subagentIsolation: z.enum(["auto", "shared", "worktree"]),
   worktreeBaseMode: z.enum(["fresh", "head", "current-snapshot"]),
   worktreeRoot: nonEmptyString,
+  webReader: z.enum(WEB_READERS),
   providers: z.record(nonEmptyString, providerConfigSchema),
   modelRegistryHash: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
 });

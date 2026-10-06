@@ -44,6 +44,15 @@ describe("public Web transport", () => {
           response.writeHead(200, { "content-length": "100" });
           response.write("short");
           setImmediate(() => response.destroy());
+        } else if (pathname === "/challenge") {
+          response.writeHead(403, { "cf-mitigated": "challenge", "content-type": "text/html" });
+          response.end("<html></html>");
+        } else if (pathname === "/challenge-body") {
+          response.writeHead(503, { "content-type": "text/html" });
+          response.end('<html><head><title>Just a moment...</title></head><body><script src="/cdn-cgi/challenge-platform/h/b/x"></script></body></html>');
+        } else if (pathname === "/forbidden") {
+          response.writeHead(403, { "content-type": "text/plain" });
+          response.end("no");
         } else if (pathname === "/slow") {
           response.write("waiting");
         } else {
@@ -105,6 +114,10 @@ describe("public Web transport", () => {
         await assert.rejects(fetchPublic("http://user:password@allowed.example/"), /credentials/);
         await assert.rejects(fetchPublic("file:///tmp/file"), /Only HTTP/);
         await assert.rejects(fetchPublic("http://allowed.example/loop"), /too many/);
+        for (const challenge of ["challenge", "challenge-body"]) {
+          await assert.rejects(fetchPublic("http://allowed.example/" + challenge), (error) => error.name === "WebChallengeError" && /allowed.example returned a bot-protection challenge/.test(error.message));
+        }
+        await assert.rejects(fetchPublic("http://allowed.example/forbidden"), (error) => error.name === "WebHttpError" && error.status === 403 && error.message === "Web request failed with HTTP 403.");
         for (const maxBytes of [0, -1, NaN, Infinity, 1.5]) await assert.rejects(fetchPublic("http://allowed.example/", { maxBytes }), /positive safe integer/);
         for (const endpoint of ["http://slow-dns.example/", "http://allowed.example/slow"]) {
           const controller = new AbortController();

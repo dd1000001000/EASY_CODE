@@ -72,6 +72,7 @@ export function createDefaultEasyCodeConfig(
     subagentIsolation: "auto",
     worktreeBaseMode: "current-snapshot",
     worktreeRoot: path.join(path.resolve(paths.dataDir), "worktrees"),
+    webReader: "direct",
     providers,
     modelRegistryHash: ACTIVE_MODEL_REGISTRY_HASH,
   };

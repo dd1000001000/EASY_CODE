@@ -46,6 +46,7 @@ import { UpdateFileTool } from "./update-file.js";
 import { WriteMemoryTool } from "./write-memory.js";
 import { WebSearchTool } from "./web-search.js";
 import { FetchWebpageTool } from "./fetch-webpage.js";
+import type { WebpageReader } from "../resources/web-reader.js";
 import type { CoordinationStore } from "../coordination/store.js";
 import { FindFileEditorsTool, SendThreadMessageTool } from "./thread-coordination.js";
 
@@ -77,6 +78,8 @@ export interface BuiltinToolSourceOptions {
   readonly threadResourceStore?: ThreadResourceStore;
   readonly threadDocumentService?: ThreadDocumentService;
   readonly includePublicWebTools?: boolean;
+  /** How fetch_webpage reads pages; shared so a Jina Reader rate-limit pause spans conversations. */
+  readonly webpageReader?: WebpageReader;
   /** Offer ask_user: only an interactive main-agent session can answer it. */
   readonly userQuestions?: boolean;
 }
@@ -134,7 +137,7 @@ export class BuiltinToolSource implements ToolSource {
         ? [new WebSearchTool(workspace)]
         : []),
       ...(this.options.includePublicWebTools !== false && this.options.threadDocumentService
-        ? [new FetchWebpageTool(workspace, this.options.threadDocumentService)]
+        ? [new FetchWebpageTool(workspace, this.options.threadDocumentService, this.options.webpageReader)]
         : []),
       new ManageTasksTool(),
       ...(this.options.threadTitleStore ? [new NameThreadTool(this.options.threadTitleStore)] : []),

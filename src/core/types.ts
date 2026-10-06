@@ -13,6 +13,9 @@ export type CommandExecutionMode = "manual" | "auto_approve" | "unrestricted";
 export const THINKING_EFFORTS = ["none", "low", "medium", "high"] as const;
 export type ThinkingEffort = (typeof THINKING_EFFORTS)[number];
 export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
+/** How fetch_webpage reads a page: directly, or through Jina Reader with a direct fallback. */
+export const WEB_READERS = ["direct", "jina"] as const;
+export type WebReader = (typeof WEB_READERS)[number];
 
 /** Compile-time names for Runtime-owned tools. External tool sources use ToolName. */
 export type BuiltinToolName =
@@ -315,6 +318,8 @@ export interface EasyCodeConfig {
   worktreeBaseMode: WorktreeBaseMode;
   /** Trusted manager-owned root, always resolved outside model control. */
   worktreeRoot: string;
+  /** User-level choice only: "jina" sends fetched URLs to a third-party service. */
+  webReader: WebReader;
   /** Runtime provider settings keyed by the user registry provider id. */
   providers: Record<ProviderName, ProviderConfig>;
   /** Hash of the exact model registry used to create/resume the session. */

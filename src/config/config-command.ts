@@ -65,7 +65,7 @@ export function registerConfigCommands(program: Command, runtime: ConfigCommandR
           .join("\n");
       writeLine(
         resolveRuntime(runtime).output,
-        "orchestration_enabled = false\n\n" +
+        'orchestration_enabled = false\nweb_reader = "direct"\n\n' +
           table("limits", limits) +
           "\n\n" +
           table("limits.max_response_tokens", maxResponseTokens) +

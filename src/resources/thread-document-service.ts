@@ -82,6 +82,8 @@ export class ThreadDocumentService {
     data: Buffer;
     url: string;
     mediaType: string;
+    /** A title supplied by the reader, for Markdown that carries none of its own. */
+    title?: string;
     signal?: AbortSignal;
   }): Promise<ThreadResourceAttachment> {
     if (input.data.byteLength > this.maxBytes) {
@@ -100,7 +102,7 @@ export class ThreadDocumentService {
       html ? input.url : undefined,
     );
     input.signal?.throwIfAborted();
-    const title = (converted.title || new URL(input.url).hostname).replace(/\s+/gu, " ").trim();
+    const title = (input.title || converted.title || new URL(input.url).hostname).replace(/\s+/gu, " ").trim();
     const filename = `${title.replace(/[\\/:*?"<>|]/gu, " ").slice(0, 120) || "webpage"}.md`;
     const markdown = `# ${title}\n\nSource: ${input.url}\n\n${converted.markdown.trim()}\n`;
     return this.resources.create({

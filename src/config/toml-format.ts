@@ -24,6 +24,7 @@ export interface EasyCodeConfigLayer {
   subagentIsolation?: unknown;
   worktreeBaseMode?: unknown;
   worktreeRoot?: unknown;
+  webReader?: unknown;
   providers?: Record<string, ProviderConfigLayer>;
 }
 
@@ -102,6 +103,7 @@ export function normalizeCurrentTomlConfig(
     "subagent_isolation",
     "worktree_base_mode",
     "worktree_root",
+    "web_reader",
     "providers",
   ]);
   assertOnlyKeys(value, topLevel, "configuration");
@@ -132,6 +134,7 @@ export function normalizeCurrentTomlConfig(
     subagentIsolation: value.subagent_isolation,
     worktreeBaseMode: value.worktree_base_mode,
     worktreeRoot: value.worktree_root,
+    webReader: value.web_reader,
     providers,
   });
 }

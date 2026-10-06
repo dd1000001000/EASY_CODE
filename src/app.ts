@@ -75,6 +75,7 @@ import {
   ThreadResourceStore,
   type ThreadResourceAttachment,
 } from "./resources/index.js";
+import { WebpageReader } from "./resources/web-reader.js";
 import { AgentRuntime } from "./runtime/agent.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
 import { NativeSandboxBackend } from "./sandbox/native-backend.js";
@@ -128,6 +129,7 @@ export class EasyCodeApp {
   private readonly threadResourceStore: ThreadResourceStore;
   private readonly documentConverter: DocumentConverter;
   private readonly threadDocumentService: ThreadDocumentService;
+  private readonly webpageReader: WebpageReader;
   private readonly workspaceMutationLock: WorkspaceMutationLock;
   private readonly commandRuntimes = new Map<WorkspaceManager, CommandRuntime>();
   private localLayaClient?: LocalLayaClient;
@@ -239,6 +241,7 @@ export class EasyCodeApp {
     this.threadResourceStore = new ThreadResourceStore(config.dataDir, config.limits.threadResourceMaxBytes);
     this.documentConverter = new DocumentConverter(config.dataDir);
     this.threadDocumentService = new ThreadDocumentService(this.documentConverter, this.threadResourceStore);
+    this.webpageReader = new WebpageReader(config.webReader);
     this.pendingResumeRecovery = resumeRecovery;
     this.contextManager.configureTokenBudget(
       effectiveContextWindow(this.state.provider, this.state.model),
@@ -1065,6 +1068,7 @@ export class EasyCodeApp {
           threadTitleStore: this.threadTitles,
           threadResourceStore: this.threadResourceStore,
           threadDocumentService: this.threadDocumentService,
+          webpageReader: this.webpageReader,
           includePublicWebTools: this.trustedOuterSandbox !== "harbor",
           userQuestions: !this.trustedOuterSandbox && !this.oneShot && this.terminal.isInteractive(),
           ...(this.trustedOuterSandbox

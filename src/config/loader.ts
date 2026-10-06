@@ -63,6 +63,7 @@ function applyLayer(base: EasyCodeConfig, layer: EasyCodeConfigLayer): EasyCodeC
     subagentIsolation: layer.subagentIsolation,
     worktreeBaseMode: layer.worktreeBaseMode,
     worktreeRoot: layer.worktreeRoot,
+    webReader: layer.webReader,
   });
 
   const providers = Object.fromEntries(
@@ -156,6 +157,8 @@ function assertSafeWorkspaceLayer(layer: EasyCodeConfigLayer, configPath: string
   if (layer.dataDir !== undefined) forbidden.push("data_dir");
   if (layer.cacheDir !== undefined) forbidden.push("cache_dir");
   if (layer.worktreeRoot !== undefined) forbidden.push("worktree_root");
+  // A cloned repository must not decide to send fetched URLs to a third party.
+  if (layer.webReader !== undefined) forbidden.push("web_reader");
   if (layer.limits?.memoryProjectExpiryDays !== undefined) forbidden.push("limits.memory_project_expiry_days");
   if (layer.limits?.memoryGlobalExpiryDays !== undefined) forbidden.push("limits.memory_global_expiry_days");
   if (forbidden.length) {
@@ -230,6 +233,7 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
     subagentIsolation: envValue(env, "EASY_CODE_SUBAGENT_ISOLATION"),
     worktreeBaseMode: envValue(env, "EASY_CODE_WORKTREE_BASE_MODE"),
     worktreeRoot: envValue(env, "EASY_CODE_WORKTREE_ROOT"),
+    webReader: envValue(env, "EASY_CODE_WEB_READER"),
     providers: providerLayers,
   });
 }

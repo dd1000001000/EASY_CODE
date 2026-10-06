@@ -10,6 +10,10 @@
 orchestration_enabled = false
 subagent_isolation = "auto"
 worktree_base_mode = "current-snapshot"
+# How fetch_webpage reads pages. "jina" reads them through Jina Reader, which renders
+# JavaScript pages but sends every fetched URL to that service; on a rate limit or an
+# error it falls back to "direct". USER config or EASY_CODE_WEB_READER only.
+web_reader = "direct"
 # Optional approval_model belongs in USER config only; defaults to the active model.
 # approval_model = "glm-5.3-flash"
 

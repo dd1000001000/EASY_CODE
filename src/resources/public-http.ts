@@ -6,6 +6,17 @@ import { isIP } from "node:net";
 import { pipeline } from "node:stream/promises";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import { publicDownloadAddress } from "../downloads/broker.js";
+import { isChallengePage, WebChallengeError } from "./anti-bot.js";
+
+/** Bot-protection pages are small; a larger error body is not inspected. */
+const CHALLENGE_SCAN_BYTES = 256 * 1024;
+
+export class WebHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Web request failed with HTTP ${status}.`);
+    this.name = "WebHttpError";
+  }
+}
 
 function publicAddress(address: string): boolean {
   if (isIP(address) === 4) return publicDownloadAddress(address);
@@ -46,6 +57,11 @@ async function resolvePublic(url: URL, signal?: AbortSignal): Promise<LookupAddr
     throw new Error("Private or local network destinations are not allowed.");
   // Prefer IPv4 when both families are available on hosts without IPv6 routing.
   return addresses.find((item) => item.family === 4) ?? addresses[0]!;
+}
+
+/** Refuse what a direct request would refuse, before a URL is handed to a third-party reader. */
+export async function assertPublicDestination(url: URL, signal?: AbortSignal): Promise<void> {
+  await resolvePublic(url, signal);
 }
 
 async function readBody(response: IncomingMessage, maxBytes: number): Promise<Buffer> {
@@ -114,7 +130,16 @@ export async function requestPublic(
               resolve({ redirect: response.headers.location ?? "" });
               return;
             }
-            if (status < 200 || status >= 300) throw new Error(`Web request failed with HTTP ${status}.`);
+            if (status < 200 || status >= 300) {
+              if (response.headers["cf-mitigated"] === "challenge") throw new WebChallengeError(url.href);
+              if ([403, 429, 503].includes(status)) {
+                const body = await readBody(response, Math.min(options.maxBytes, CHALLENGE_SCAN_BYTES)).catch(
+                  () => undefined,
+                );
+                if (body && isChallengePage(body.toString("utf8"))) throw new WebChallengeError(url.href);
+              }
+              throw new WebHttpError(status);
+            }
             const data = await readBody(response, options.maxBytes);
             resolve({
               data,
