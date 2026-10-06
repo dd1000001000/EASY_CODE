@@ -2,7 +2,13 @@ import path from "node:path";
 import envPaths from "env-paths";
 import { defaultRuntimeLimits } from "./runtime-limits.js";
 
-import { DEFAULT_THINKING_EFFORT, type EasyCodeConfig, type ProviderConfig, type ProviderName } from "../core/types.js";
+import {
+  DEFAULT_THINKING_EFFORT,
+  DEFAULT_WEB_READER,
+  type EasyCodeConfig,
+  type ProviderConfig,
+  type ProviderName,
+} from "../core/types.js";
 import {
   ACTIVE_MODEL_REGISTRY_HASH,
   DEFAULT_PROVIDER_NAME,
@@ -72,7 +78,7 @@ export function createDefaultEasyCodeConfig(
     subagentIsolation: "auto",
     worktreeBaseMode: "current-snapshot",
     worktreeRoot: path.join(path.resolve(paths.dataDir), "worktrees"),
-    webReader: "direct",
+    webReader: DEFAULT_WEB_READER,
     providers,
     modelRegistryHash: ACTIVE_MODEL_REGISTRY_HASH,
   };

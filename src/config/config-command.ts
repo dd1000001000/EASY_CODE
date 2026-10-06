@@ -3,7 +3,7 @@ import { defaultRuntimeLimits } from "./runtime-limits.js";
 
 import type { Command } from "commander";
 
-import type { ProviderName } from "../core/types.js";
+import { DEFAULT_WEB_READER, type ProviderName } from "../core/types.js";
 import { PROVIDER_CATALOG, providerCredentialConfigKey } from "../models/catalog.js";
 import { loadEasyCodeConfig } from "./loader.js";
 import {
@@ -65,7 +65,7 @@ export function registerConfigCommands(program: Command, runtime: ConfigCommandR
           .join("\n");
       writeLine(
         resolveRuntime(runtime).output,
-        'orchestration_enabled = false\nweb_reader = "direct"\n\n' +
+        `orchestration_enabled = false\nweb_reader = "${DEFAULT_WEB_READER}"\n\n` +
           table("limits", limits) +
           "\n\n" +
           table("limits.max_response_tokens", maxResponseTokens) +

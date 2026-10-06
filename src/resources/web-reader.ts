@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { WebReader } from "../core/types.js";
+import { DEFAULT_WEB_READER, type WebReader } from "../core/types.js";
 import { isChallengePage, WebChallengeError } from "./anti-bot.js";
 import { assertPublicDestination, WebHttpError } from "./public-http.js";
 import { fetchPublic } from "./web-content.js";
@@ -59,7 +59,7 @@ export class WebpageReader {
   private jinaPausedUntil = 0;
 
   constructor(
-    readonly reader: WebReader = "direct",
+    readonly reader: WebReader = DEFAULT_WEB_READER,
     dependencies: WebpageReaderDependencies = {},
   ) {
     this.fetch = dependencies.fetch ?? fetchPublic;

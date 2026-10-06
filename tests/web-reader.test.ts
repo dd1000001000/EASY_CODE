@@ -292,24 +292,24 @@ describe("Web page reader", () => {
 });
 
 describe("web_reader configuration", () => {
-  it("defaults to direct reads and accepts Jina Reader only from the user or the environment", async () => {
+  it("defaults to Jina Reader and takes the choice only from the user or the environment", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-web-reader-config-"));
     try {
       const configDir = path.join(root, "config");
       await mkdir(configDir);
       const load = (env: NodeJS.ProcessEnv = {}) =>
         loadEasyCodeConfig({ workspaceRoot: root, configDir, env, credentialStore: false });
-      assert.equal((await load()).webReader, "direct");
-      assert.equal((await load({ EASY_CODE_WEB_READER: "jina" })).webReader, "jina");
-      await writeFile(path.join(configDir, "config.toml"), 'web_reader = "jina"\n');
       assert.equal((await load()).webReader, "jina");
       assert.equal((await load({ EASY_CODE_WEB_READER: "direct" })).webReader, "direct");
+      await writeFile(path.join(configDir, "config.toml"), 'web_reader = "direct"\n');
+      assert.equal((await load()).webReader, "direct");
+      assert.equal((await load({ EASY_CODE_WEB_READER: "jina" })).webReader, "jina");
       await assert.rejects(load({ EASY_CODE_WEB_READER: "exa" }), /webReader/u);
       await writeFile(path.join(configDir, "config.toml"), "web_reader = true\n");
       await assert.rejects(load(), /webReader/u);
       await writeFile(path.join(configDir, "config.toml"), "");
       await mkdir(path.join(root, ".easycode"));
-      await writeFile(path.join(root, ".easycode", "config.toml"), 'web_reader = "jina"\n');
+      await writeFile(path.join(root, ".easycode", "config.toml"), 'web_reader = "direct"\n');
       await assert.rejects(load(), /cannot set trust-root fields: web_reader/u);
     } finally {
       await rm(root, { recursive: true, force: true });

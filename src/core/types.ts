@@ -16,6 +16,7 @@ export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
 /** How fetch_webpage reads a page: directly, or through Jina Reader with a direct fallback. */
 export const WEB_READERS = ["direct", "jina"] as const;
 export type WebReader = (typeof WEB_READERS)[number];
+export const DEFAULT_WEB_READER: WebReader = "jina";
 
 /** Compile-time names for Runtime-owned tools. External tool sources use ToolName. */
 export type BuiltinToolName =
