@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "./harness.js";
 import { selectMemoryContext } from "../src/context/memory-controller.js";
+import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import { MemoryManager, GLOBAL_MEMORY_WORKSPACE_ID, projectMemoryIdFromRoot } from "../src/memory/memory-manager.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
@@ -150,7 +151,7 @@ describe("global and project long-term memory", () => {
       });
       const found = await f.manager.searchScoped(projectMemoryIdFromRoot(f.a), "database migration", {
         workspaceRoot: f.a,
-        includeGlobalPreferences: true,
+        includeStanding: true,
       });
       const state = new ThreadStore(f.storage).create({
         threadId: "thread_scoped",
@@ -199,14 +200,90 @@ describe("global and project long-term memory", () => {
       );
       // Delivering the oldest one again must not keep it ahead of newer preferences.
       f.manager.recordRecall("thread_alpha", "turn_later", [memoryIds[0]!]);
-      const found = await f.manager.searchScoped(projectMemoryIdFromRoot(f.a), "zzz", {
+      const capped = new MemoryManager(f.storage, { limits: { ...defaultRuntimeLimits(), memoryStandingMaxItems: 3 } });
+      const found = await capped.searchScoped(projectMemoryIdFromRoot(f.a), "zzz", {
         workspaceRoot: f.a,
-        includeGlobalPreferences: true,
+        includeStanding: true,
       });
       assert.deepEqual(
         found.map((memory) => memory.content),
         [contents[3], contents[2], contents[1]],
       );
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("offers every standing preference and project convention ahead of relevance, beside the relevance limit", async () => {
+    const f = fixture();
+    try {
+      const globalPreferences = Array.from(
+        { length: 5 },
+        (_, index) => `The user prefers style rule number ${index + 1}.`,
+      );
+      f.manager.applyModelMutations({
+        workspaceRoot: f.a,
+        threadId: "thread_alpha",
+        turnId: "turn_global",
+        outcome: "success",
+        mutations: globalPreferences.map((content) => ({
+          action: "remember" as const,
+          scope: "global" as const,
+          category: "preference" as const,
+          content,
+          reason: "Explicit user preference.",
+        })),
+      });
+      f.manager.applyModelMutations({
+        workspaceRoot: f.a,
+        threadId: "thread_alpha",
+        turnId: "turn_project",
+        outcome: "success",
+        mutations: [
+          {
+            action: "remember",
+            category: "convention",
+            content: "Run npm run format after changing code.",
+            reason: "Project rule.",
+          },
+          {
+            action: "remember",
+            category: "architecture",
+            content: "The database layer lives in src/storage.",
+            reason: "Observed.",
+          },
+        ],
+      });
+      const projectId = projectMemoryIdFromRoot(f.a);
+      const found = await f.manager.searchScoped(projectId, "where is the database layer", {
+        workspaceRoot: f.a,
+        includeStanding: true,
+        limit: 1,
+      });
+      const standing = found.filter((memory) => memory.standing);
+      // The project convention leads; all five global preferences follow, though none matches the query.
+      assert.equal(standing.length, 6);
+      assert.equal(standing[0]?.content, "Run npm run format after changing code.");
+      assert.equal(found.filter((memory) => !memory.standing).length, 1);
+      assert.match(found.at(-1)?.content ?? "", /database layer/u);
+
+      const state = new ThreadStore(f.storage).create({
+        threadId: "thread_standing",
+        workspaceRoot: f.a,
+        mode: "code",
+        provider: "deepseek",
+        model: "test",
+        thinkingEffort: "low",
+      });
+      const selected = selectMemoryContext({
+        state,
+        memories: found,
+        evidence: [],
+        tokenBudget: 4000,
+        limits: { ...defaultRuntimeLimits(), memoryMaxItems: 1 },
+      });
+      // Standing memories do not use up the relevance slots.
+      assert.equal(selected.memories.length, 7);
     } finally {
       f.dispose();
     }

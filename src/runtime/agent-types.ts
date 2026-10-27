@@ -141,9 +141,13 @@ export interface AgentRuntimeDependencies {
     workspaceRoot: string;
     threadId: string;
     turnId: string;
-    outcome: "success" | "planned";
+    outcome: "success" | "planned" | "needs_input";
     mutations: readonly MemoryMutationRequest[];
-  }) => Promise<{ applied: number; memoryIds: string[] }>;
+  }) => Promise<{
+    applied: number;
+    memoryIds: string[];
+    rejected: readonly { index: number; action: string; message: string }[];
+  }>;
   appendEvent: (
     event: Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp"> & {
       eventId?: string;

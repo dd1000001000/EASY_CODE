@@ -259,6 +259,23 @@ export class MemoryVectorIndex {
     });
   }
 
+  /** The highest cosine similarity between text and any of the candidates. */
+  async similarity(text: string, candidates: readonly string[]): Promise<number> {
+    if (!text || candidates.length === 0) return 0;
+    const [target, ...others] = (await this.prepareEmbeddings([text, ...candidates])).map((prepared) =>
+      decodeFloat32(prepared.embedding, this.provider.dimension),
+    );
+    const norm = (vector: Float32Array): number => Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+    const targetNorm = norm(target!);
+    let best = 0;
+    for (const other of others) {
+      const denominator = targetNorm * norm(other);
+      if (denominator === 0) continue;
+      best = Math.max(best, other.reduce((sum, value, index) => sum + value * target![index]!, 0) / denominator);
+    }
+    return best;
+  }
+
   /**
    * Persist an already-computed embedding. This method intentionally does not
    * start a transaction, so MemoryManager can call it inside its atomic memory

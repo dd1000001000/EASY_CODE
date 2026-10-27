@@ -87,6 +87,7 @@
   "subagentParentMessageMaxChars": 8000,
   "subagentSummaryMaxChars": 12000,
   "memoryMaxItems": 6,
+  "memoryStandingMaxItems": 8,
   "memoryMaxQueries": 3,
   "memorySearchLimit": 6,
   "memoryVectorMinSimilarity": 0.3,

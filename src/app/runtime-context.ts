@@ -39,7 +39,7 @@ export function runtimeContextDependencies(
         limit: options?.limit ?? limits.memorySearchLimit,
         includeInactive: options?.includeInactive,
         scope: options?.scope,
-        includeGlobalPreferences: options === undefined,
+        includeStanding: options === undefined,
       }),
     memoryGeneration: () => memoryManager.scopeGenerationKey(projectMemoryId),
     captureToolEvidence: (state, callId, tool, result) =>

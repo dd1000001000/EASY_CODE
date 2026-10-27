@@ -8,7 +8,12 @@ import {
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { redactSensitiveInformation } from "./sensitive.js";
-import { GLOBAL_MEMORY_WORKSPACE_ID, type MemoryManager, projectMemoryIdFromRoot } from "./memory-manager.js";
+import {
+  GLOBAL_MEMORY_WORKSPACE_ID,
+  type MemoryManager,
+  projectMemoryIdFromRoot,
+  USER_MEMORY_SOURCE,
+} from "./memory-manager.js";
 
 const MAX_CANDIDATES = 6;
 const IDLE_DELAY_MS = 2 * 60 * 1000;
@@ -39,7 +44,7 @@ const consolidationSchema = z
 interface JobRow {
   turn_id: string;
   thread_id: string;
-  result_reason: "success" | "planned";
+  result_reason: "success" | "planned" | "needs_input";
 }
 
 interface CandidateMemory {
@@ -89,7 +94,7 @@ export class MemoryMaintenance {
        SELECT DISTINCT t.id, t.thread_id, 'queued', ? FROM memories m
          JOIN turns t ON t.id = m.source_turn_id AND t.thread_id = m.source_thread_id
        WHERE m.workspace_id IN (?, ?) AND m.status = 'active'
-         AND t.status = 'completed' AND t.result_reason IN ('success', 'planned') AND t.completed_at <= ?
+         AND t.status = 'completed' AND t.result_reason IN ('success', 'planned', 'needs_input') AND t.completed_at <= ?
          AND NOT EXISTS (SELECT 1 FROM memory_maintenance_jobs j WHERE j.turn_id = t.id)
        ORDER BY t.completed_at DESC LIMIT 24`,
       )
@@ -224,15 +229,23 @@ export class MemoryMaintenance {
 
       const seen = new Set<number>();
       const mutations: MemoryMutationRequest[] = [];
+      const userAuthored = this.userAuthored(matches.flat().map((item) => item.id));
       for (const decision of consolidated.decisions) {
         if (seen.has(decision.index)) continue;
         seen.add(decision.index);
         const candidate = candidates[decision.index];
         const match = matches[decision.index]?.find((item) => item.id === decision.memoryId);
         if (!candidate || !match || decision.action === "skip") continue;
+        // The user's own wording is never rewritten by consolidation.
+        if (decision.action === "merge" && userAuthored.has(match.id)) continue;
         if (decision.action === "conflict") {
           // The newer statement is the likelier one; the older is offered as needing verification.
-          const older = match.createdAt < candidate.created_at ? match.id : candidate.id;
+          // A record the user wrote outranks any model statement, so the model's one is questioned instead.
+          const older = userAuthored.has(match.id)
+            ? candidate.id
+            : match.createdAt < candidate.created_at
+              ? match.id
+              : candidate.id;
           if (mutations.some((mutation) => "memoryId" in mutation && mutation.memoryId === older)) continue;
           if (mutations.length + 1 > MAX_MEMORY_MUTATIONS_PER_TURN) break;
           mutations.push({
@@ -269,6 +282,8 @@ export class MemoryMaintenance {
           turnId: job.turn_id,
           outcome: job.result_reason,
           mutations,
+          // A merge revises one record and expires the other; neither may land alone.
+          atomic: true,
         },
         () => this.complete(job.turn_id),
       );
@@ -290,6 +305,20 @@ export class MemoryMaintenance {
         .run(redactSensitiveInformation(message).slice(0, 500), new Date().toISOString(), job.turn_id);
       return true;
     }
+  }
+
+  /** The memories whose current wording the user wrote. */
+  private userAuthored(ids: readonly string[]): Set<string> {
+    if (!ids.length) return new Set();
+    const unique = [...new Set(ids)];
+    return new Set(
+      this.storage.db
+        .prepare<unknown[], { id: string }>(
+          `SELECT id FROM memories WHERE source_thread_id = ? AND id IN (${unique.map(() => "?").join(", ")})`,
+        )
+        .all(USER_MEMORY_SOURCE, ...unique)
+        .map((row) => row.id),
+    );
   }
 
   private complete(turnId: string): void {

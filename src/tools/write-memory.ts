@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
+import type {
+  AgentTool,
+  MemoryMutationRequest,
+  ToolContext,
+  ToolDefinition,
+  ToolExecutionResult,
+} from "../core/types.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { estimatedTokens } from "../context/token-budget.js";
 import { assertDurableMemory } from "../memory/admission.js";
@@ -114,23 +120,41 @@ export class WriteMemoryTool implements AgentTool {
         assertDurableMemory(writeContent, this.manager.limits);
       }
 
+      const check = (mutation: MemoryMutationRequest): MemoryMutationRequest => {
+        this.manager.checkModelMutation({
+          workspaceId: projectId,
+          threadId: context.threadId,
+          turnId: context.turnId,
+          outcome: context.mode === "plan" ? "planned" : "success",
+          mutations: [mutation],
+        });
+        return mutation;
+      };
+
       if (parsed.operation === "remember") {
         const content = writeContent!;
         const category = this.requireField(parsed.category, "category", parsed.operation);
-        const scope = parsed.scope ?? "project";
         this.assertSafeWrite(content, parsed.reason);
+        const userStated = await this.manager.statedByUser(content, context.userRequest);
+        // Global memory reaches every project, so only the user's own words may put something there.
+        const requested = parsed.scope ?? "project";
+        const scope = requested === "global" && !userStated ? "project" : requested;
+        const memoryMutation = check({
+          action: "remember",
+          scope,
+          content,
+          category,
+          reason: parsed.reason,
+          userStated,
+        });
         return {
           ok: true,
           summary:
-            "The long-term memory proposal was staged and will be committed only if this turn completes successfully.",
+            scope === requested
+              ? "The long-term memory proposal was staged and will be committed only if this turn completes successfully."
+              : "Staged as project memory: global memory needs the user's own message in this turn to state it. It commits only if this turn completes successfully.",
           data: { staged: true, operation: parsed.operation, scope, truncated: contentTruncated },
-          memoryMutation: {
-            action: "remember",
-            scope,
-            content,
-            category,
-            reason: parsed.reason,
-          },
+          memoryMutation,
         };
       }
 
@@ -149,11 +173,14 @@ export class WriteMemoryTool implements AgentTool {
         const scope = this.requireField(parsed.scope, "scope", parsed.operation);
         if (scope === existing.scope) throw new Error("Memory already belongs to the target scope");
         this.assertSafeWrite(undefined, parsed.reason);
+        if (scope === "global" && !(await this.manager.statedByUser(existing.content, context.userRequest))) {
+          throw new Error("Moving a memory to global scope needs the user's own message in this turn to ask for it");
+        }
         return {
           ok: true,
           summary: `Memory ${memoryId} scope change was staged until this turn succeeds.`,
           data: { staged: true, operation: parsed.operation, memoryId, scope },
-          memoryMutation: { action: "move", memoryId, scope, reason: parsed.reason },
+          memoryMutation: check({ action: "move", memoryId, scope, reason: parsed.reason }),
         };
       }
 
@@ -165,14 +192,15 @@ export class WriteMemoryTool implements AgentTool {
           ok: true,
           summary: `Revision of long-term memory ${memoryId} was staged and will commit only if this turn succeeds.`,
           data: { staged: true, operation: parsed.operation, memoryId, truncated: contentTruncated },
-          memoryMutation: {
+          memoryMutation: check({
             action: "revise",
             scope: existing.scope,
             memoryId,
             content,
             category,
             reason: parsed.reason,
-          },
+            userStated: await this.manager.statedByUser(content, context.userRequest),
+          }),
         };
       }
 
@@ -181,12 +209,12 @@ export class WriteMemoryTool implements AgentTool {
         ok: true,
         summary: `Expiration of long-term memory ${memoryId} was staged and will commit only if this turn succeeds.`,
         data: { staged: true, operation: parsed.operation, memoryId },
-        memoryMutation: {
+        memoryMutation: check({
           action: "forget",
           scope: existing.scope,
           memoryId,
           reason: parsed.reason,
-        },
+        }),
       };
     } catch (error) {
       return toolFailure(error, "Unable to write long-term memory");

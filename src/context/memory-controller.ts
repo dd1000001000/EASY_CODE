@@ -68,14 +68,17 @@ export function selectMemoryContext(input: {
   const limits = input.limits ?? DEFAULT_RUNTIME_LIMITS;
   const present = input.presentText ?? [];
   let estimatedTokens = 0;
-  const take = (key: string, content: string): boolean => {
+  let standingTaken = 0;
+  // Standing memories have their own count, set by retrieval; they share only the token budget.
+  const take = (key: string, content: string, standing = false): boolean => {
     if (seen.has(key)) {
       dropped.duplicate += 1;
       return false;
     }
     seen.add(key);
     const cost = estimateTextTokens(content) + 32;
-    if (memories.length + evidence.length >= limits.memoryMaxItems || estimatedTokens + cost > input.tokenBudget) {
+    const counted = memories.length - standingTaken + evidence.length;
+    if ((!standing && counted >= limits.memoryMaxItems) || estimatedTokens + cost > input.tokenBudget) {
       dropped.budget += 1;
       return false;
     }
@@ -120,9 +123,12 @@ export function selectMemoryContext(input: {
             content: memory.content,
             status: memory.status,
           }),
+          memory.standing,
         )
-      )
+      ) {
         memories.push(memory);
+        if (memory.standing) standingTaken += 1;
+      }
       continue;
     }
     if (!hit) continue;

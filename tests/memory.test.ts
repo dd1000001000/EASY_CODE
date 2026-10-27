@@ -231,8 +231,8 @@ describe("model-managed long-term memory", () => {
       assert.throws(() => manager.editByUser("workspace_a", build!, "Tests run with npm test."), /already holds/u);
       assert.throws(() => manager.editByUser("workspace_b", build!, "Builds use pnpm."), /not found/u);
 
-      assert.equal(manager.forgetByUser("workspace_a", tests!).status, "expired");
-      assert.throws(() => manager.forgetByUser("workspace_a", tests!), /already expired/u);
+      assert.equal(manager.forgetByUser("workspace_a", tests!).status, "forgotten");
+      assert.throws(() => manager.forgetByUser("workspace_a", tests!), /already forgotten/u);
       // Editing a forgotten memory brings it back.
       assert.equal(manager.editByUser("workspace_a", tests!, "Tests run with npm run test:unit.").status, "active");
       assert.deepEqual(
@@ -442,7 +442,7 @@ describe("model-managed long-term memory", () => {
     }
   });
 
-  it("rolls back sensitive or cross-workspace batches and lets the model choose plan memories", () => {
+  it("rejects sensitive, cross-workspace and unfinished-work mutations one at a time", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
     try {
@@ -451,6 +451,7 @@ describe("model-managed long-term memory", () => {
         () =>
           manager.applyModelMutations({
             ...mutationContext(),
+            atomic: true,
             mutations: [
               {
                 action: "remember",
@@ -469,6 +470,32 @@ describe("model-managed long-term memory", () => {
         /sensitive information/iu,
       );
       assert.equal(manager.list("workspace_a").length, 0);
+
+      // Without atomic, the valid preference stands and only the credential is refused.
+      const separate = manager.applyModelMutations({
+        ...mutationContext({ workspaceId: "workspace_separate" }),
+        mutations: [
+          {
+            action: "remember",
+            category: "preference",
+            content: "The user prefers concise terminal status updates.",
+            reason: "The user explicitly stated this durable preference.",
+          },
+          {
+            action: "remember",
+            category: "environment",
+            content: "The deployment uses api_key=sk-abcdefghijklmnop.",
+            reason: "A credential appeared in command output.",
+          },
+        ],
+      });
+      assert.equal(separate.applied, 1);
+      assert.deepEqual(
+        separate.rejected.map(({ index, action }) => ({ index, action })),
+        [{ index: 1, action: "remember" }],
+      );
+      assert.match(separate.rejected[0]!.message, /sensitive information/iu);
+      assert.equal(manager.list("workspace_separate").length, 1);
 
       const plannedWithoutCue = manager.applyModelMutations({
         ...mutationContext({ workspaceId: "workspace_plan_no_cue", outcome: "planned" }),
@@ -514,8 +541,26 @@ describe("model-managed long-term memory", () => {
           },
         ],
       });
-      assert.equal(plannedArchitecture.applied, 2);
-      assert.equal(manager.list("workspace_plan").length, 2);
+      // An unexecuted plan or an open question is no evidence for repository facts.
+      assert.equal(plannedArchitecture.applied, 1);
+      assert.match(plannedArchitecture.rejected[0]?.message ?? "", /only maintain preferences and conventions/iu);
+      assert.deepEqual(
+        manager.list("workspace_plan").map((memory) => memory.category),
+        ["preference"],
+      );
+      const waiting = manager.applyModelMutations({
+        ...mutationContext({ workspaceId: "workspace_waiting", outcome: "needs_input" }),
+        mutations: [
+          {
+            action: "remember",
+            category: "decision",
+            content: "The project will migrate to PostgreSQL.",
+            reason: "Proposed while waiting for the user's answer.",
+          },
+        ],
+      });
+      assert.equal(waiting.applied, 0);
+      assert.equal(manager.list("workspace_waiting").length, 0);
 
       const seeded = manager.applyModelMutations({
         ...mutationContext(),
@@ -528,20 +573,18 @@ describe("model-managed long-term memory", () => {
           },
         ],
       });
-      assert.throws(
-        () =>
-          manager.applyModelMutations({
-            ...mutationContext({ workspaceId: "workspace_b", turnId: "turn_b" }),
-            mutations: [
-              {
-                action: "forget",
-                memoryId: seeded.memoryIds[0]!,
-                reason: "Attempt to modify a memory from another workspace.",
-              },
-            ],
-          }),
-        /not found in this workspace/iu,
-      );
+      const crossWorkspace = manager.applyModelMutations({
+        ...mutationContext({ workspaceId: "workspace_b", turnId: "turn_b" }),
+        mutations: [
+          {
+            action: "forget",
+            memoryId: seeded.memoryIds[0]!,
+            reason: "Attempt to modify a memory from another workspace.",
+          },
+        ],
+      });
+      assert.equal(crossWorkspace.applied, 0);
+      assert.match(crossWorkspace.rejected[0]?.message ?? "", /not found in this workspace/iu);
       assert.equal(manager.get("workspace_a", seeded.memoryIds[0]!)?.status, "active");
     } finally {
       storage.close();

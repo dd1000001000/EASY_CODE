@@ -105,11 +105,14 @@ max_read_result_tokens = 24000
 memory_auto_tokens = 2000
 memory_recall_tokens = 12000
 memory_max_items = 6
+# Preferences and conventions offered with every request, in addition to memory_max_items.
+memory_standing_max_items = 8
 memory_max_queries = 3
 memory_search_limit = 6
 memory_vector_min_similarity = 0.3
 memory_consolidation_match_limit = 6
 # User-level config.toml only: a project cannot change shared-memory expiry policy.
+# Counted in days the project (or, for global memory, any project) was in use, not calendar days.
 memory_project_expiry_days = 90
 memory_global_expiry_days = 180
 max_durable_memory_tokens = 400

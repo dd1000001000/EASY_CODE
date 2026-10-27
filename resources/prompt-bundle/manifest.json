@@ -419,8 +419,8 @@
       "bytes": 647
     },
     "tools/read_memory.json": {
-      "sha256": "sha256:8a35fb589cdb10dbce836aba100098ae01481a6ad7bfaa052958ba7ec6dc1fd3",
-      "bytes": 1273
+      "sha256": "sha256:d7381430265f472e08cb4d4154283070621a7281ec80d9bceb6c5a9922472946",
+      "bytes": 1300
     },
     "tools/read_skill.json": {
       "sha256": "sha256:14c298c66dcd2ff13294c61e430642a2a68095db6196f50f0b558c2f06a10b32",
@@ -495,8 +495,8 @@
       "bytes": 579
     },
     "tools/write_memory.json": {
-      "sha256": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049",
-      "bytes": 2276
+      "sha256": "sha256:de4a1cf4be3fe65719560b2ca3ab77f4affb03bd1894eab1f76ff91014697c47",
+      "bytes": 2698
     }
   },
   "tools": {
@@ -618,7 +618,7 @@
     "read_memory": {
       "path": "tools/read_memory.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:8a35fb589cdb10dbce836aba100098ae01481a6ad7bfaa052958ba7ec6dc1fd3"
+      "contentHash": "sha256:d7381430265f472e08cb4d4154283070621a7281ec80d9bceb6c5a9922472946"
     },
     "read_skill": {
       "path": "tools/read_skill.json",
@@ -713,8 +713,8 @@
     "write_memory": {
       "path": "tools/write_memory.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049"
+      "contentHash": "sha256:de4a1cf4be3fe65719560b2ca3ab77f4affb03bd1894eab1f76ff91014697c47"
     }
   },
-  "bundleHash": "sha256:65b522bc0cd5db676e13f0ae651f1f44ea1043c46aba1b8fdbd57f58f7589a85"
+  "bundleHash": "sha256:9310a25b71c94f0989658f645f7d3d8f54d3f72018a65a1e1e01ec2e1a256e71"
 }

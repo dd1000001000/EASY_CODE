@@ -549,7 +549,7 @@ function reviewerToolContext(run: ReviewerRun): ToolContext {
         limit: options?.limit ?? deps.limits.memorySearchLimit,
         includeInactive: options?.includeInactive,
         scope: options?.scope,
-        includeGlobalPreferences: options === undefined,
+        includeStanding: options === undefined,
       }),
     recallContext: async (value) => {
       try {

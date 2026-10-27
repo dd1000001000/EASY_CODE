@@ -133,7 +133,7 @@ In the Web sidebar, a project or conversation shows a spinner while it runs, a b
 ### 3.3 Naming and deletion
 
 - A user or the main agent can set a conversation's title once. Repeated renaming is not supported in the current version.
-- Deleting a conversation removes its history, associated child conversations and memory contributions; shared memories may return to an earlier revision.
+- Deleting a conversation removes its history, associated child conversations and the memory content it wrote; a memory it changed returns to its earlier revision. A later edit of that memory, by you or by another conversation, is kept.
 - Deleting a project also removes project memory, project Skills and project-owned runtime data.
 - **Deleting a project or conversation, or detaching a folder, neither reverts existing file changes nor deletes the actual project directory.**
 
@@ -392,8 +392,8 @@ training; the original full-SFT ONNX has a local backup and archived evaluation.
 | Conversation history | Retain requirements, responses and execution history | No |
 | Active context/short-term working memory | Supply relevant recent exchanges, summaries and evidence to the next request | Only the currently assembled subset |
 | Tool evidence and attachments | Retain reads, command output and other material for inspection | Usually recalled on demand |
-| Project long-term memory | Keep project conventions, environment knowledge and decisions across conversations | Selected by relevance |
-| Global long-term memory | Carry common preferences across projects | Selected by relevance |
+| Project long-term memory | Keep project conventions, environment knowledge and decisions across conversations | Preferences and conventions always; the rest by relevance |
+| Global long-term memory | Carry common preferences across projects | Preferences and conventions always; the rest by relevance |
 | Retrieval indexes | Help locate the above material | Not a complete source of truth |
 
 JSONL journals append task events. SQLite manages structured project, conversation, memory and retrieval records. Checkpoints snapshot recoverable execution state. They are different views of related work: no single file represents all history, and deleting one independently can break recovery.
@@ -432,7 +432,7 @@ Inspect memory with:
 /memory long project <memory-id>
 ```
 
-These are inspection commands, not direct editing controls. Ask the main agent to save or adjust memory:
+`/memory edit <memory-id> <content>` rewrites a memory in your own words, and `/memory forget <memory-id>` deletes one; the agent will not store deleted content again unless you ask for it. Ask the main agent to save or adjust memory:
 
 > Remember this project's convention: API errors need human-readable explanations. Save it as project memory, not as a rule for other projects.
 
@@ -440,9 +440,9 @@ These are inspection commands, not direct editing controls. Ask the main agent t
 
 > The deployment environment memory is outdated. Update it and stop relying on the old address.
 
-Memory mutations are staged and committed after the current turn succeeds. Only the main agent can propose long-term mutations. Children and reviewers can read long-term memory within their allowed scope but maintain private short-term histories; they cannot freely read the main agent's entire conversation.
+Memory mutations are staged and committed after the current turn succeeds; each change commits on its own, so one invalid change does not discard the others. A turn that ends with a plan or a question to you can only save preferences and conventions, not facts about the repository. Global memory reaches every project, so the agent saves something there only when your own message in that turn says it; otherwise it stays project memory. Only the main agent can propose long-term mutations. Children and reviewers can read long-term memory within their allowed scope but maintain private short-term histories; they cannot freely read the main agent's entire conversation.
 
-Memories should be short, stable, reusable facts or preferences, not full logs or secret backups. Oversized content may be retained only as explicitly lossy historical material rather than committed as a long-term fact. Background consolidation processes already-saved memories and may consume additional model tokens. Project/global memory default to 90/180-day freshness and expiry management, not permanent authority.
+Memories should be short, stable, reusable facts or preferences, not full logs or secret backups. Oversized content may be retained only as explicitly lossy historical material rather than committed as a long-term fact. Background consolidation processes already-saved memories and may consume additional model tokens; it never rewrites a memory you edited. Preferences and conventions (up to `limits.memory_standing_max_items`, 8 by default) go with every request; other memories are chosen by relevance. A memory expires after 90 (project) or 180 (global) days of use without being needed. Only days the project, or for global memory any project, was in use count, so returning to a project after months away finds its memory intact; memory is still not permanent authority.
 
 ## 8. DAGs, child agents and independent review
 

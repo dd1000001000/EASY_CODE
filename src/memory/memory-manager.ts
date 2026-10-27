@@ -54,6 +54,7 @@ export interface MemorySemanticSearchIndex {
     options?: MemoryVectorSearchOptions,
   ): Promise<ReadonlyArray<Readonly<MemoryVectorSearchHit>>>;
   prepareEmbeddings?(contents: readonly string[]): Promise<readonly PreparedMemoryEmbedding[]>;
+  similarity?(text: string, candidates: readonly string[]): Promise<number>;
   writePreparedEmbedding?(memoryId: string, prepared: PreparedMemoryEmbedding, updatedAt?: string): void;
   invalidate?(workspaceId: string): void;
 }
@@ -85,12 +86,26 @@ export interface ApplyModelMemoryMutationsInput {
   readonly turnId: string;
   readonly outcome: AgentRunResult["reason"];
   readonly mutations: readonly MemoryMutationRequest[];
+  /** All mutations commit or none do, for changes that only make sense together. Otherwise each one stands alone. */
+  readonly atomic?: boolean;
+}
+
+export interface RejectedMemoryMutation {
+  readonly index: number;
+  readonly action: MemoryMutationRequest["action"];
+  readonly message: string;
 }
 
 export interface ApplyModelMemoryMutationsResult {
   readonly applied: number;
   readonly memoryIds: string[];
+  readonly rejected: readonly RejectedMemoryMutation[];
 }
+
+/** Categories a turn that did not finish implementation work may maintain. */
+const STANDING_CATEGORIES: readonly LongTermMemory["category"][] = ["preference", "convention"];
+/** The user deleted the memory; nothing but the user's own statement brings it back. */
+const FORGOTTEN_MESSAGE = "The user deleted this memory; store it again only when the user asks for it in this turn";
 
 interface ModelMemoryEvidence {
   readonly threadId: string;
@@ -148,12 +163,14 @@ const MAX_EVIDENCE_HISTORY_ENTRIES = 24;
 const MAX_EVIDENCE_BYTES = 64 * 1024;
 const MAX_FTS_TERMS = 16;
 /** Thread recorded for the user's own edits, so deleting a conversation never reverts them. */
-const USER_MEMORY_SOURCE = "user";
+export const USER_MEMORY_SOURCE = "user";
 /** Measured with the bundled multilingual MiniLM: related memory/query pairs
  * scored 0.48-0.67 and unrelated ones up to 0.29. */
 const CONFIDENT_SEMANTIC_SCORE = 0.45;
 /** At least half of the query's terms appear in the memory. */
 const CONFIDENT_LEXICAL_COVERAGE = 0.5;
+const MAX_USER_STATEMENT_CHARS = 8000;
+const MAX_USER_STATEMENT_SENTENCES = 24;
 
 interface LexicalMatch {
   readonly memory: Readonly<LongTermMemory>;
@@ -356,6 +373,8 @@ function ftsExpression(query: string): string | undefined {
 interface ModelMutationBatch {
   readonly threadId: string;
   readonly turnId: string;
+  /** A planned or waiting turn may maintain only preferences and conventions. */
+  readonly standingOnly: boolean;
   readonly ownerId: (scope: LongTermMemoryScope) => string;
   readonly statements: ReturnType<typeof prepareMutationStatements>;
   readonly preparedByContent: ReadonlyMap<string, PreparedMemoryEmbedding> | undefined;
@@ -431,6 +450,38 @@ export class MemoryManager {
     return this.searchLexical(workspaceId, query, options);
   }
 
+  /**
+   * Whether the user's own message states this content: most of its terms
+   * appear there, or one of its sentences means the same. Text the agent read
+   * from files or tools is not the user's message, so it never passes.
+   */
+  async statedByUser(content: string, userText: string | undefined): Promise<boolean> {
+    const request = userText?.trim().slice(0, MAX_USER_STATEMENT_CHARS);
+    if (!request) return false;
+    const terms = memorySearchTerms(normalizeContent(content));
+    if (terms.length) {
+      const said = new Set(memorySearchTerms(request));
+      if (terms.filter((term) => said.has(term)).length / terms.length >= CONFIDENT_LEXICAL_COVERAGE) return true;
+    }
+    const similarity = this.vectorIndex?.similarity;
+    if (!similarity) return false;
+    const sentences = [
+      ...new Set([
+        request.slice(0, MAX_MEMORY_SEARCH_CHARS),
+        ...request
+          .split(/[\n。！？；!?;]+|(?<=\.)\s+/u)
+          .map((sentence) => sentence.trim())
+          .filter((sentence) => sentence.length >= MIN_MEMORY_CONTENT_CHARS),
+      ]),
+    ].slice(0, MAX_USER_STATEMENT_SENTENCES);
+    try {
+      return (await similarity.call(this.vectorIndex, content, sentences)) >= CONFIDENT_SEMANTIC_SCORE;
+    } catch (error) {
+      this.reportVectorError(error);
+      return false;
+    }
+  }
+
   scopeGenerationKey(projectId: string): string {
     const read = this.storage.db.prepare<[string], { generation: number }>(
       "SELECT generation FROM memory_vector_state WHERE workspace_id = ?",
@@ -475,7 +526,7 @@ export class MemoryManager {
   async searchScoped(
     projectId: string,
     query: string,
-    options: MemorySearchOptions & { scope?: MemoryScopeFilter; includeGlobalPreferences?: boolean } = {},
+    options: MemorySearchOptions & { scope?: MemoryScopeFilter; includeStanding?: boolean } = {},
   ): Promise<ReadonlyArray<Readonly<LongTermMemory>>> {
     const limit = safeLimit(options.limit, 6, 50);
     const scope = options.scope ?? "all";
@@ -501,32 +552,45 @@ export class MemoryManager {
           limit,
           workspaceRoot: undefined,
         });
-    const preferences =
-      !hasGlobal || !options.includeGlobalPreferences
-        ? []
-        : this.storage.db
-            // Standing preferences apply to every request, so delivering one is
-            // a use. Choosing them by last use would let the same three renew
-            // each other forever; the most recently stated ones lead instead.
-            .prepare<[string], MemoryRow>(
-              `SELECT * FROM memories WHERE workspace_id = ? AND status = 'active'
-           AND category IN ('preference', 'convention')
-         ORDER BY updated_at DESC LIMIT 3`,
-            )
-            .all(GLOBAL_MEMORY_WORKSPACE_ID)
-            .map((row) => recalled(toMemory(row), true));
-    const globalCandidates = [...new Map([...preferences, ...global].map((memory) => [memory.id, memory])).values()];
-    const reservedGlobal = Math.min(2, globalCandidates.length, limit);
-    const seen = new Set<string>();
-    return Object.freeze(
-      [...project.slice(0, limit - reservedGlobal), ...globalCandidates]
+    const standing = options.includeStanding ? this.standingMemories(projectId, scope) : [];
+    const seen = new Set(standing.map((memory) => memory.id));
+    const projectMatches = project.filter((memory) => !seen.has(memory.id));
+    const globalMatches = global.filter((memory) => !seen.has(memory.id));
+    const reservedGlobal = Math.min(2, globalMatches.length, limit);
+    // Standing memories come first and are not counted against the relevance limit.
+    return Object.freeze([
+      ...standing,
+      ...[...projectMatches.slice(0, limit - reservedGlobal), ...globalMatches]
         .filter((memory) => {
           if (seen.has(memory.id)) return false;
           seen.add(memory.id);
           return true;
         })
         .slice(0, limit),
-    );
+    ]);
+  }
+
+  /**
+   * Preferences and conventions apply to every request whatever it asks, so
+   * they are offered without having to match it, and delivering one is a use.
+   * Project ones lead, being more specific; within a scope the most recently
+   * stated lead, so the same few cannot renew each other while newer ones age.
+   */
+  private standingMemories(projectId: string, scope: MemoryScopeFilter): Readonly<LongTermMemory>[] {
+    const owners =
+      scope === "all"
+        ? [projectId, GLOBAL_MEMORY_WORKSPACE_ID]
+        : [scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : projectId];
+    const maximum = this.limits.memoryStandingMaxItems;
+    if (maximum === 0) return [];
+    return this.storage.db
+      .prepare<unknown[], MemoryRow>(
+        `SELECT * FROM memories WHERE workspace_id IN (${owners.map(() => "?").join(", ")}) AND status = 'active'
+           AND category IN ('preference', 'convention')
+         ORDER BY workspace_id = ?, updated_at DESC LIMIT ?`,
+      )
+      .all(...owners.map(assertWorkspaceId), GLOBAL_MEMORY_WORKSPACE_ID, maximum)
+      .map((row) => Object.freeze({ ...recalled(toMemory(row), true), standing: true }));
   }
 
   /**
@@ -599,6 +663,7 @@ export class MemoryManager {
         : []
       ).map((row) => [row.id, row] as const),
     );
+    const freshnessOf = this.freshnessOf(workspaceId);
     for (const hit of semantic) {
       const semanticScore = Math.max(0, Math.min(hit.score, 1));
       const existing = candidates.get(hit.id);
@@ -610,7 +675,7 @@ export class MemoryManager {
       if (!row || (!includeInactive && row.status !== "active" && row.status !== "needs_verification")) continue;
       const memory = toMemory(row);
       if (!this.matchesSearchFilter(memory, resolvedOptions.filter)) continue;
-      const freshness = this.rowFreshness(row);
+      const freshness = freshnessOf(row);
       if (ranking === "recall" && !includeInactive && freshness === 0) continue;
       candidates.set(hit.id, { memory, freshness, semanticScore });
     }
@@ -637,8 +702,29 @@ export class MemoryManager {
     return Object.freeze(ranked.slice(0, limit));
   }
 
-  private rowFreshness(row: MemoryRow): number {
-    return memoryFreshnessWeight(row.last_accessed_at, row.created_at, memoryExpiryDays(row.scope, this.limits));
+  /** The days this owner was in use, oldest first; undefined ages by the calendar where no turn is on record. */
+  private activeDays(workspaceId: string): readonly string[] | undefined {
+    const rows =
+      workspaceId === GLOBAL_MEMORY_WORKSPACE_ID
+        ? this.storage.db
+            .prepare<[], { day: string }>("SELECT DISTINCT substr(started_at, 1, 10) AS day FROM turns ORDER BY day")
+            .all()
+        : this.storage.db
+            .prepare<[string], { day: string }>(
+              `SELECT DISTINCT substr(t.started_at, 1, 10) AS day
+                 FROM turns t JOIN threads th ON th.id = t.thread_id
+                WHERE th.workspace_id = ? ORDER BY day`,
+            )
+            .all(workspaceId);
+    return rows.length ? rows.map((row) => row.day) : undefined;
+  }
+
+  /** Freshness for rows of one owner, aged by the days that owner was in use. */
+  private freshnessOf(workspaceId: string): (row: MemoryRow) => number {
+    const days = this.activeDays(workspaceId);
+    const now = Date.now();
+    return (row) =>
+      memoryFreshnessWeight(row.last_accessed_at, row.created_at, memoryExpiryDays(row.scope, this.limits), now, days);
   }
 
   private appendRevision(memoryId: string, threadId: string, turnId: string): void {
@@ -733,6 +819,7 @@ export class MemoryManager {
 
     const normalizedQuery = normalizeContent(boundedQuery);
     const queryTerms = memorySearchTerms(normalizedQuery);
+    const freshnessOf = this.freshnessOf(workspaceId);
     const scored = [...candidateRows.values()]
       .map((row) => {
         const content = row.normalized_content;
@@ -742,7 +829,7 @@ export class MemoryManager {
             : queryTerms.length === 0
               ? 0
               : queryTerms.filter((term) => content.includes(term)).length / queryTerms.length;
-        const freshness = this.rowFreshness(row);
+        const freshness = freshnessOf(row);
         return { row, score: ranking === "consolidation" ? coverage : coverage * freshness, coverage, freshness };
       })
       .filter(
@@ -812,7 +899,8 @@ export class MemoryManager {
         "SELECT * FROM memories WHERE workspace_id = ? AND status IN ('active', 'needs_verification')",
       )
       .all(workspaceId);
-    const due = rows.filter((row) => this.rowFreshness(row) === 0);
+    const freshnessOf = this.freshnessOf(workspaceId);
+    const due = rows.filter((row) => freshnessOf(row) === 0);
     if (!due.length) return 0;
     this.storage.db.transaction(() => {
       for (const row of due) {
@@ -886,13 +974,14 @@ export class MemoryManager {
     });
   }
 
+  /** Unlike expiry, a deletion by the user keeps the model from storing the same content again on its own. */
   forgetByUser(projectId: string, memoryId: string): Readonly<LongTermMemory> {
     return this.changeByUser(projectId, memoryId, (row, statements, evidence, now) => {
-      if (row.status === "expired" || row.status === "superseded") {
+      if (row.status === "forgotten" || row.status === "superseded") {
         throw new Error(`Memory ${row.id} is already ${row.status}`);
       }
       statements.updateStatus.run(
-        "expired",
+        "forgotten",
         evidence("forget", "Forgotten by the user"),
         now,
         row.workspace_id,
@@ -937,10 +1026,10 @@ export class MemoryManager {
   }
 
   /**
-   * Atomically commit model-proposed mutations after a successful turn. A
-   * failed validation rolls back the entire batch, so no partial memory state
-   * can survive. Planned turns may maintain user preferences/conventions only;
-   * repository facts require a successful implementation turn.
+   * Commit model-proposed mutations after a turn. Each mutation commits or is
+   * rejected on its own, leaving no partial state of its own; atomic batches
+   * commit together or not at all. Planned and waiting turns may maintain user
+   * preferences/conventions only; repository facts require a successful implementation turn.
    */
   applyModelMutations(
     input: ApplyModelMemoryMutationsInput,
@@ -969,7 +1058,13 @@ export class MemoryManager {
       ...new Set(
         input.mutations.flatMap((mutation) => {
           if (mutation.action === "forget" || mutation.action === "move" || mutation.action === "flag") return [];
-          const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
+          let content: string;
+          try {
+            content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
+          } catch {
+            // The commit rejects this mutation alone and reports why.
+            return [];
+          }
           if (mutation.action === "remember") {
             const targetId = mutation.scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : workspaceId;
             const existing = this.storage.db
@@ -997,11 +1092,11 @@ export class MemoryManager {
     return this.commitModelMutations(input, preparedByContent);
   }
 
-  private commitModelMutations(
-    input: ApplyModelMemoryMutationsInput,
-    preparedByContent?: ReadonlyMap<string, PreparedMemoryEmbedding>,
-    onCommitted?: () => void,
-  ): ApplyModelMemoryMutationsResult {
+  /** Validate the batch's identity and outcome and prepare its statements. */
+  private mutationBatch(
+    input: Omit<ApplyModelMemoryMutationsInput, "atomic">,
+    preparedByContent: ReadonlyMap<string, PreparedMemoryEmbedding> | undefined,
+  ): ModelMutationBatch {
     // Logical projects own memory independently from any one attached folder.
     // Legacy/root-only callers still derive an identity from workspaceRoot,
     // while project-aware callers provide the durable project ID explicitly.
@@ -1012,20 +1107,16 @@ export class MemoryManager {
     );
     const threadId = assertContextId(input.threadId, "threadId");
     const turnId = assertContextId(input.turnId, "turnId");
-    if (input.outcome !== "success" && input.outcome !== "planned") {
-      throw new Error("Model memory mutations require a successful or planned turn");
+    if (input.outcome !== "success" && input.outcome !== "planned" && input.outcome !== "needs_input") {
+      throw new Error("Model memory mutations require a successful, planned or waiting turn");
     }
     if (input.mutations.length > MAX_MEMORY_MUTATIONS_PER_TURN) {
       throw new Error(`A turn can commit at most ${MAX_MEMORY_MUTATIONS_PER_TURN} memory mutations`);
     }
-    if (input.mutations.length === 0) {
-      if (onCommitted) this.storage.db.transaction(onCommitted)();
-      return Object.freeze({ applied: 0, memoryIds: [] });
-    }
-
-    const batch: ModelMutationBatch = {
+    return {
       threadId,
       turnId,
+      standingOnly: input.outcome !== "success",
       ownerId: (scope) => (scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : projectId),
       statements: prepareMutationStatements(this.storage.db),
       preparedByContent,
@@ -1033,11 +1124,52 @@ export class MemoryManager {
       affectedScopes: new Set<string>(),
       applied: 0,
     };
+  }
+
+  private applyMutation(batch: ModelMutationBatch, mutation: MemoryMutationRequest): void {
+    const now = new Date().toISOString();
+    if (mutation.action === "remember") this.rememberMemory(batch, mutation, now);
+    else this.changeMemory(batch, mutation, now);
+  }
+
+  private commitModelMutations(
+    input: ApplyModelMemoryMutationsInput,
+    preparedByContent?: ReadonlyMap<string, PreparedMemoryEmbedding>,
+    onCommitted?: () => void,
+  ): ApplyModelMemoryMutationsResult {
+    const batch = this.mutationBatch(input, preparedByContent);
+    if (input.mutations.length === 0) {
+      if (onCommitted) this.storage.db.transaction(onCommitted)();
+      return Object.freeze({ applied: 0, memoryIds: [], rejected: [] });
+    }
+
+    const rejected: RejectedMemoryMutation[] = [];
+    const db = this.storage.db;
     this.storage.db.transaction(() => {
-      for (const mutation of input.mutations) {
-        const now = new Date().toISOString();
-        if (mutation.action === "remember") this.rememberMemory(batch, mutation, now);
-        else this.changeMemory(batch, mutation, now);
+      for (const [index, mutation] of input.mutations.entries()) {
+        if (input.atomic) {
+          this.applyMutation(batch, mutation);
+          continue;
+        }
+        // One invalid change must not cost the turn its other, valid ones.
+        const before = { applied: batch.applied, memoryIds: batch.memoryIds.length, scopes: [...batch.affectedScopes] };
+        db.exec("SAVEPOINT memory_mutation");
+        try {
+          this.applyMutation(batch, mutation);
+          db.exec("RELEASE memory_mutation");
+        } catch (error) {
+          db.exec("ROLLBACK TO memory_mutation");
+          db.exec("RELEASE memory_mutation");
+          batch.applied = before.applied;
+          batch.memoryIds.length = before.memoryIds;
+          batch.affectedScopes.clear();
+          for (const scope of before.scopes) batch.affectedScopes.add(scope);
+          rejected.push({
+            index,
+            action: mutation.action,
+            message: redactSensitiveInformation(error instanceof Error ? error.message : String(error)),
+          });
+        }
       }
       onCommitted?.();
     })();
@@ -1046,7 +1178,36 @@ export class MemoryManager {
       for (const scopeId of batch.affectedScopes) this.vectorIndex?.invalidate?.(scopeId);
     }
 
-    return Object.freeze({ applied: batch.applied, memoryIds: [...batch.memoryIds] });
+    return Object.freeze({
+      applied: batch.applied,
+      memoryIds: [...batch.memoryIds],
+      rejected: Object.freeze(rejected),
+    });
+  }
+
+  /**
+   * Check one proposed mutation against current memory without keeping any
+   * change, so write_memory can report a conflict while the model can still act on it.
+   */
+  checkModelMutation(input: Omit<ApplyModelMemoryMutationsInput, "atomic">): void {
+    const batch = this.mutationBatch(input, undefined);
+    const discard = new Error("memory mutation check");
+    try {
+      this.storage.db.transaction(() => {
+        for (const mutation of input.mutations) this.applyMutation(batch, mutation);
+        throw discard;
+      })();
+    } catch (error) {
+      if (error !== discard) throw error;
+    }
+  }
+
+  private assertStandingAllowed(batch: ModelMutationBatch, category: LongTermMemory["category"]): void {
+    if (batch.standingOnly && !STANDING_CATEGORIES.includes(category)) {
+      throw new Error(
+        "A turn that ends without finished implementation work may only maintain preferences and conventions",
+      );
+    }
   }
 
   /** Count a mutation of this memory and record the revision for the turn. */
@@ -1084,13 +1245,19 @@ export class MemoryManager {
     const scope = mutation.scope ?? "project";
     const workspaceId = batch.ownerId(scope);
     const category = assertCategory(mutation.category);
+    this.assertStandingAllowed(batch, category);
     const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
     const normalized = normalizeContent(content);
     const reason = memoryReason(mutation.reason);
     const existing = statements.selectByContent.get(workspaceId, normalized);
-    if (existing?.status === "superseded") {
-      throw new Error(`Memory ${existing.id} is superseded; revise its active replacement instead`);
-    }
+    // A deletion holds in either scope, so moving the words to the other scope does not bring them back.
+    const otherScope = batch.ownerId(scope === "global" ? "project" : "global");
+    const forgotten =
+      existing?.status === "forgotten" ||
+      statements.selectByContent.get(otherScope, normalized)?.status === "forgotten";
+    if (forgotten && !mutation.userStated) throw new Error(FORGOTTEN_MESSAGE);
+    // A superseded, expired or forgotten record holding the same words becomes current again below,
+    // for example when a setting returns to an earlier value.
     if (existing?.status === "active" && existing.category === category) {
       // Exact normalized content that is already active is not a durable
       // state change. Record its use without rewriting the memory,
@@ -1168,6 +1335,8 @@ export class MemoryManager {
     if (!existing) {
       throw new Error("Long-term memory was not found in this workspace");
     }
+    this.assertStandingAllowed(batch, existing.category);
+    if (existing.status === "forgotten" && mutation.action !== "forget") throw new Error(FORGOTTEN_MESSAGE);
     batch.affectedScopes.add(workspaceId);
 
     if (mutation.action === "move") {
@@ -1200,7 +1369,7 @@ export class MemoryManager {
     }
 
     if (mutation.action === "forget") {
-      if (existing.status === "expired" || existing.status === "superseded") return;
+      if (existing.status === "expired" || existing.status === "superseded" || existing.status === "forgotten") return;
       const reason = memoryReason(mutation.reason);
       const evidence = appendEvidence(
         existing.evidence,
@@ -1232,12 +1401,18 @@ export class MemoryManager {
       throw new Error(`Only active memories can be revised; current status is ${existing.status}`);
     }
     const category = assertCategory(mutation.category);
+    this.assertStandingAllowed(batch, category);
     const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
     const normalized = normalizeContent(content);
     const reason = memoryReason(mutation.reason);
     const conflict = statements.selectByContent.get(workspaceId, normalized);
     if (conflict && conflict.id !== existing.id) {
-      throw new Error(`Replacement content already belongs to memory ${conflict.id}`);
+      if (conflict.status === "active" || conflict.status === "needs_verification") {
+        throw new Error(`Replacement content already belongs to memory ${conflict.id}`);
+      }
+      if (conflict.status === "forgotten" && !mutation.userStated) throw new Error(FORGOTTEN_MESSAGE);
+      this.supersedeWith(batch, existing, conflict, { category, content, normalized, reason }, workspaceId, now);
+      return;
     }
 
     if (normalized === existing.normalized_content) {
@@ -1307,5 +1482,57 @@ export class MemoryManager {
       throw new Error("Memory supersession verification failed");
     }
     this.recordMutation(batch, replacementId);
+  }
+
+  /** Revise to words an inactive record already holds: that record becomes the current replacement. */
+  private supersedeWith(
+    batch: ModelMutationBatch,
+    existing: MemoryRow,
+    replacement: MemoryRow,
+    revision: { category: LongTermMemory["category"]; content: string; normalized: string; reason: string },
+    workspaceId: string,
+    now: string,
+  ): void {
+    const { statements, threadId, turnId } = batch;
+    const { category, content, normalized, reason } = revision;
+    statements.updateStatus.run(
+      "superseded",
+      appendEvidence(
+        existing.evidence,
+        modelEvidence({ threadId, turnId, reason }, "supersede", now, {
+          relatedMemoryId: replacement.id,
+          previous: snapshot(existing),
+        }),
+      ),
+      now,
+      workspaceId,
+      existing.id,
+    );
+    this.appendRevision(existing.id, threadId, turnId);
+    statements.updateActive.run(
+      category,
+      content,
+      normalized,
+      memorySearchText(content),
+      "active",
+      appendEvidence(
+        replacement.evidence,
+        modelEvidence({ threadId, turnId, reason }, "revise", now, {
+          relatedMemoryId: existing.id,
+          previous: snapshot(replacement),
+        }),
+      ),
+      threadId,
+      turnId,
+      now,
+      workspaceId,
+      replacement.id,
+    );
+    statements.confirmRevision.run(now, workspaceId, replacement.id);
+    this.storeMutationEmbedding(batch, replacement.id, content, now);
+    if (statements.selectById.get(workspaceId, existing.id)?.status !== "superseded") {
+      throw new Error("Memory supersession verification failed");
+    }
+    this.recordMutation(batch, replacement.id);
   }
 }

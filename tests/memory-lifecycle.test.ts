@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "./harness.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
-import { memoryFreshnessWeight } from "../src/memory/lifecycle.js";
+import { activeDaysSince, memoryFreshnessWeight } from "../src/memory/lifecycle.js";
 import { MemoryManager, GLOBAL_MEMORY_WORKSPACE_ID, projectMemoryIdFromRoot } from "../src/memory/memory-manager.js";
-import { createStorage } from "../src/storage/database.js";
+import { createStorage, workspaceIdFromRoot } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 
 const DAY_MS = 86_400_000;
@@ -226,6 +226,64 @@ describe("long-term memory lifecycle", () => {
       f.limits.memoryProjectExpiryDays = 365;
       assert.equal(f.manager.expireDueMemories("workspace_project"), 0);
       assert.equal(f.manager.get("workspace_project", created.memoryIds[0]!)?.status, "expired");
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("ages by the days the project was in use, not by calendar days", () => {
+    const days = ["2026-01-01", "2026-01-05", "2026-02-01", "2026-03-01"];
+    assert.equal(activeDaysSince(days, Date.parse("2025-12-31T12:00:00Z")), 4);
+    assert.equal(activeDaysSince(days, Date.parse("2026-01-05T08:00:00Z")), 2);
+    assert.equal(activeDaysSince(days, Date.parse("2026-03-01T23:00:00Z")), 0);
+    const now = Date.parse("2026-10-01T00:00:00Z");
+    assert.equal(memoryFreshnessWeight(null, "2025-12-31T00:00:00Z", 90, now, days), 1 - (4 / 90) ** 2);
+  });
+
+  it("keeps a long-idle project's memory and expires it only after enough days of use", () => {
+    const f = fixture();
+    try {
+      const state = new ThreadStore(f.storage).create({
+        threadId: "thread_idle",
+        workspaceRoot: f.root,
+        mode: "code",
+        provider: "deepseek",
+        model: "test",
+        thinkingEffort: "low",
+      });
+      const workspaceId = workspaceIdFromRoot(f.root);
+      const created = f.manager.applyModelMutations({
+        workspaceId,
+        threadId: state.threadId,
+        turnId: "turn_idle",
+        outcome: "success",
+        mutations: [
+          {
+            action: "remember",
+            category: "architecture",
+            content: "The API server lives in packages/api.",
+            reason: "Observed",
+          },
+        ],
+      });
+      const id = created.memoryIds[0]!;
+      const start = Date.now() - 400 * DAY_MS;
+      f.storage.db
+        .prepare("UPDATE memories SET created_at = ?, last_accessed_at = NULL WHERE id = ?")
+        .run(new Date(start).toISOString(), id);
+      const addTurns = (count: number, from: number) => {
+        for (let day = 0; day < count; day += 1)
+          f.storage.db
+            .prepare("INSERT INTO turns(id, thread_id, status, started_at) VALUES (?, ?, 'completed', ?)")
+            .run(`turn_day_${from + day}`, state.threadId, new Date(start + (from + day + 1) * DAY_MS).toISOString());
+      };
+      // Ten days of work spread over more than a year of calendar time.
+      addTurns(10, 0);
+      assert.equal(f.manager.expireDueMemories(workspaceId), 0);
+      assert.equal(f.manager.search(workspaceId, "API server packages").length, 1);
+      addTurns(85, 10);
+      assert.equal(f.manager.expireDueMemories(workspaceId), 1);
+      assert.equal(f.manager.get(workspaceId, id)?.status, "expired");
     } finally {
       f.dispose();
     }

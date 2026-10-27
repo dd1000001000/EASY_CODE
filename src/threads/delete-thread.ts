@@ -6,12 +6,37 @@ import { sha256 } from "../utils/hash.js";
 import type { ThreadLease, ThreadStore, ThreadSummary } from "./thread-store.js";
 
 interface RevisionRow {
-  memory_id: string;
-  first_sequence: number;
-}
-interface SnapshotRow {
+  sequence: number;
+  thread_id: string;
   snapshot_json: string;
 }
+
+interface SnapshotMemory {
+  workspace_id: string;
+  scope: string;
+  category: string;
+  content: string;
+  normalized_content: string;
+  status: string;
+  evidence: string | null;
+  source_thread_id: string | null;
+  source_turn_id: string | null;
+  updated_at: string;
+}
+
+interface Revision {
+  readonly sequence: number;
+  readonly threadId: string;
+  readonly memory: SnapshotMemory | undefined;
+  /** The thread whose words the memory holds at this revision: the latest one that set its content or category. */
+  readonly author: string;
+}
+
+/** What deleting the threads does to one memory they touched. */
+type MemoryPlan =
+  | { readonly kind: "delete" }
+  | { readonly kind: "keep"; readonly removeAfter: number }
+  | { readonly kind: "restore"; readonly revision: Revision };
 
 function removePrivateDirectory(root: string, ...parts: string[]): void {
   const target = path.resolve(root, ...parts);
@@ -21,7 +46,64 @@ function removePrivateDirectory(root: string, ...parts: string[]): void {
   rmSync(target, { recursive: true, force: true });
 }
 
-/** Delete journal-owned sessions, their private files, and every memory contribution after its first revision. */
+function snapshotMemory(json: string): SnapshotMemory | undefined {
+  try {
+    const memory = (JSON.parse(json) as { memory?: Record<string, unknown> }).memory;
+    if (
+      memory &&
+      typeof memory.workspace_id === "string" &&
+      typeof memory.scope === "string" &&
+      typeof memory.content === "string" &&
+      typeof memory.normalized_content === "string" &&
+      typeof memory.category === "string" &&
+      typeof memory.status === "string" &&
+      typeof memory.updated_at === "string"
+    )
+      return memory as unknown as SnapshotMemory;
+  } catch {
+    /* A damaged revision cannot be restored. */
+  }
+  return undefined;
+}
+
+/** Each revision with the thread that authored the content it holds; status-only changes keep the earlier author. */
+function revisionHistory(rows: readonly RevisionRow[]): Revision[] {
+  const history: Revision[] = [];
+  for (const row of rows) {
+    const memory = snapshotMemory(row.snapshot_json);
+    const previous = history.at(-1);
+    const sameText =
+      previous?.memory &&
+      memory &&
+      previous.memory.content === memory.content &&
+      previous.memory.category === memory.category;
+    history.push({
+      sequence: row.sequence,
+      threadId: row.thread_id,
+      memory,
+      author: sameText ? previous.author : row.thread_id,
+    });
+  }
+  return history;
+}
+
+/**
+ * The latest state no deleted thread wrote or changed survives. A later change
+ * by another conversation or by the user is kept; only what the deleted threads
+ * authored, and states built on it, is removed.
+ */
+function planMemory(history: readonly Revision[], deleted: ReadonlySet<string>): MemoryPlan {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const revision = history[index]!;
+    if (deleted.has(revision.threadId) || deleted.has(revision.author) || !revision.memory) continue;
+    return index === history.length - 1
+      ? { kind: "keep", removeAfter: revision.sequence }
+      : { kind: "restore", revision };
+  }
+  return { kind: "delete" };
+}
+
+/** Delete journal-owned sessions, their private files, and the memory content they contributed. */
 export function deleteStoredThreads(
   storage: EasyCodeStorage,
   threads: readonly { threadId: string; workspaceId: string }[],
@@ -31,67 +113,71 @@ export function deleteStoredThreads(
     if (!/^[A-Za-z0-9._-]+$/u.test(thread.threadId)) throw new Error("Invalid conversation ID.");
   }
   const ids = threads.map((thread) => thread.threadId);
+  const deleted = new Set(ids);
   storage.db.transaction(() => {
-    const firstRevision = storage.db.prepare<[string], RevisionRow>(
-      "SELECT memory_id, MIN(sequence) AS first_sequence FROM memory_revisions WHERE thread_id = ? GROUP BY memory_id",
-    );
-    const priorSnapshot = storage.db.prepare<[string, number], SnapshotRow>(
-      "SELECT snapshot_json FROM memory_revisions WHERE memory_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT 1",
-    );
-    const memoryIds = new Map<string, number>();
+    const touched = new Set<string>();
     for (const id of ids) {
-      for (const row of firstRevision.all(id)) {
-        memoryIds.set(row.memory_id, Math.min(row.first_sequence, memoryIds.get(row.memory_id) ?? Infinity));
-      }
       for (const row of storage.db
-        .prepare<[string], { id: string }>("SELECT id FROM memories WHERE source_thread_id = ?")
-        .all(id))
-        if (!memoryIds.has(row.id)) memoryIds.set(row.id, 0);
+        .prepare<[string, string], { memory_id: string }>(
+          `SELECT DISTINCT memory_id FROM memory_revisions WHERE thread_id = ?
+           UNION SELECT id FROM memories WHERE source_thread_id = ?`,
+        )
+        .all(id, id))
+        touched.add(row.memory_id);
     }
-    for (const [memoryId, first] of memoryIds) {
-      const prior = first ? priorSnapshot.get(memoryId, first) : undefined;
-      let restored = false;
-      if (prior) {
-        try {
-          const snapshot = JSON.parse(prior.snapshot_json) as { memory?: Record<string, unknown> };
-          const memory = snapshot.memory;
-          if (
-            memory &&
-            typeof memory.workspace_id === "string" &&
-            typeof memory.scope === "string" &&
-            typeof memory.content === "string" &&
-            typeof memory.normalized_content === "string" &&
-            typeof memory.category === "string"
-          ) {
-            storage.db
-              .prepare(
-                `UPDATE memories SET workspace_id = ?, scope = ?, category = ?, content = ?, normalized_content = ?,
-                 search_text = ?, status = ?, evidence = ?, source_thread_id = ?, source_turn_id = ?, updated_at = ? WHERE id = ?`,
-              )
-              .run(
-                memory.workspace_id,
-                memory.scope,
-                memory.category,
-                memory.content,
-                memory.normalized_content,
-                memorySearchText(memory.content),
-                memory.status,
-                memory.evidence,
-                memory.source_thread_id,
-                memory.source_turn_id,
-                memory.updated_at,
-                memoryId,
-              );
-            storage.db
-              .prepare("DELETE FROM memory_revisions WHERE memory_id = ? AND sequence >= ?")
-              .run(memoryId, first);
-            restored = true;
-          }
-        } catch {
-          /* A damaged or conflicting prior revision cannot retain deleted-thread content. */
-        }
+    const revisions = storage.db.prepare<[string], RevisionRow>(
+      "SELECT sequence, thread_id, snapshot_json FROM memory_revisions WHERE memory_id = ? ORDER BY sequence",
+    );
+    const plans = new Map<string, MemoryPlan>();
+    for (const memoryId of touched) plans.set(memoryId, planMemory(revisionHistory(revisions.all(memoryId)), deleted));
+
+    for (const [memoryId, plan] of plans) {
+      if (plan.kind === "delete") {
+        storage.db.prepare("DELETE FROM memories WHERE id = ?").run(memoryId);
+        continue;
       }
-      if (!restored) storage.db.prepare("DELETE FROM memories WHERE id = ?").run(memoryId);
+      let removeAfter = plan.kind === "keep" ? plan.removeAfter : plan.revision.sequence;
+      // A memory superseded by a deleted thread stays superseded while its replacement survives.
+      const current = storage.db
+        .prepare<[string], { status: string; evidence: string | null }>(
+          "SELECT status, evidence FROM memories WHERE id = ?",
+        )
+        .get(memoryId);
+      const replacement = current?.status === "superseded" ? supersededBy(current.evidence) : undefined;
+      const keepSuperseded =
+        plan.kind === "restore" &&
+        plan.revision.memory!.status !== "superseded" &&
+        replacement !== undefined &&
+        plans.get(replacement)?.kind !== "delete" &&
+        !!storage.db.prepare<[string], { id: string }>("SELECT id FROM memories WHERE id = ?").get(replacement);
+      if (plan.kind === "restore" && !keepSuperseded) {
+        const memory = plan.revision.memory!;
+        storage.db
+          .prepare(
+            `UPDATE memories SET workspace_id = ?, scope = ?, category = ?, content = ?, normalized_content = ?,
+             search_text = ?, status = ?, evidence = ?, source_thread_id = ?, source_turn_id = ?, updated_at = ? WHERE id = ?`,
+          )
+          .run(
+            memory.workspace_id,
+            memory.scope,
+            memory.category,
+            memory.content,
+            memory.normalized_content,
+            memorySearchText(memory.content),
+            memory.status,
+            memory.evidence,
+            memory.source_thread_id,
+            memory.source_turn_id,
+            memory.updated_at,
+            memoryId,
+          );
+      } else if (keepSuperseded) removeAfter = Number.MAX_SAFE_INTEGER;
+      // Later revisions hold the deleted threads' content; their own earlier revisions do too.
+      storage.db
+        .prepare("DELETE FROM memory_revisions WHERE memory_id = ? AND sequence > ?")
+        .run(memoryId, removeAfter);
+      for (const id of ids)
+        storage.db.prepare("DELETE FROM memory_revisions WHERE memory_id = ? AND thread_id = ?").run(memoryId, id);
     }
     for (const id of ids) {
       storage.db.prepare("DELETE FROM memory_recall_events WHERE thread_id = ?").run(id);
@@ -106,6 +192,18 @@ export function deleteStoredThreads(
       path.join(storage.artifactsDir, "command-output", sha256(thread.workspaceId)),
       sha256(thread.threadId),
     );
+  }
+}
+
+/** The replacement named by a memory's latest supersession. */
+function supersededBy(evidence: string | null): string | undefined {
+  if (!evidence) return undefined;
+  try {
+    const history = (JSON.parse(evidence) as { history?: { action?: string; relatedMemoryId?: string }[] }).history;
+    const entry = [...(history ?? [])].reverse().find((item) => item.action === "supersede");
+    return typeof entry?.relatedMemoryId === "string" ? entry.relatedMemoryId : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -290,4 +290,37 @@ describe("idle memory maintenance", () => {
       f.dispose();
     }
   });
+
+  it("never rewrites a memory the user wrote, and questions the model's contradicting one instead", async () => {
+    const f = fixture();
+    try {
+      const projectId = projectMemoryIdFromRoot(f.root);
+      const userId = f.write("This project formats code with tabs.", "turn_seed");
+      f.manager.editByUser(projectId, userId, "This project formats code with tab characters.");
+      const mergeId = f.write("This project formats code with tab characters only.");
+      const merge = model(
+        JSON.stringify({
+          decisions: [{ index: 0, action: "merge", memoryId: userId, content: "Code uses tab characters only." }],
+        }),
+      );
+      f.enqueue();
+      assert.equal(await f.maintenance.processNext(f.state, merge), true);
+      assert.equal(merge.calls, 1);
+      assert.equal(f.manager.get(projectId, userId)?.content, "This project formats code with tab characters.");
+      assert.equal(f.manager.get(projectId, userId)?.status, "active");
+      assert.equal(f.manager.get(projectId, mergeId)?.status, "active");
+
+      const { turnId } = f.store.startTurn(f.state.threadId, "Check the formatter");
+      f.store.completeTurn(f.state.threadId, turnId, { role: "assistant", content: "Done." }, "success");
+      const conflictId = f.write("This project formats code with two spaces.", turnId);
+      const conflict = model(JSON.stringify({ decisions: [{ index: 0, action: "conflict", memoryId: userId }] }));
+      f.enqueue();
+      assert.equal(await f.maintenance.processNext(f.state, conflict), true);
+      assert.equal(conflict.calls, 1);
+      assert.equal(f.manager.get(projectId, userId)?.status, "active");
+      assert.equal(f.manager.get(projectId, conflictId)?.status, "needs_verification");
+    } finally {
+      f.dispose();
+    }
+  });
 });

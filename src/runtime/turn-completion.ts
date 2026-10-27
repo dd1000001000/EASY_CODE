@@ -547,7 +547,7 @@ export class TurnCompletion {
           workspaceRoot: state.workspaceRoot,
           threadId: state.threadId,
           turnId,
-          outcome: reason === "planned" ? "planned" : "success",
+          outcome: reason,
           mutations: memoryContext.mutations,
         });
         await this.ctx.dependencies

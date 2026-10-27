@@ -852,8 +852,8 @@ describe("memory commands", () => {
 
       const forgotten = fixture.output().length;
       await fixture.app.handleSlashCommand(`/memory forget ${memoryId}`);
-      assert.equal((JSON.parse(fixture.output().slice(forgotten)) as { status: string }).status, "expired");
-      await assert.rejects(fixture.app.handleSlashCommand(`/memory forget ${memoryId}`), /already expired/u);
+      assert.equal((JSON.parse(fixture.output().slice(forgotten)) as { status: string }).status, "forgotten");
+      await assert.rejects(fixture.app.handleSlashCommand(`/memory forget ${memoryId}`), /already forgotten/u);
       await assert.rejects(fixture.app.handleSlashCommand(`/memory move ${memoryId} global`), /Usage: \/memory/u);
     } finally {
       fixture.close();

@@ -436,6 +436,8 @@ export type MemoryMutationRequest =
       category: LongTermMemoryCategory;
       content: string;
       reason: string;
+      /** Runtime-set, never model-set: the user's own message in this turn states the content. */
+      userStated?: boolean;
     }
   | {
       action: "revise";
@@ -444,6 +446,8 @@ export type MemoryMutationRequest =
       category: LongTermMemoryCategory;
       content: string;
       reason: string;
+      /** Runtime-set, never model-set: the user's own message in this turn states the content. */
+      userStated?: boolean;
     }
   | {
       action: "forget";
@@ -618,6 +622,8 @@ export interface ToolContext {
   ) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
   /** A returned read_memory result counts as one genuine recall per memory and turn. */
   recordMemoryRecall?: (memoryIds: readonly string[]) => void;
+  /** The user's own message for this turn; memory writes that need the user's word are checked against it. */
+  userRequest?: string;
   recordCommand?: (entry: CommandAuditEntry) => void;
   attachImage?: (input: { absolutePath: string; sourceName?: string }) => Promise<ImageAttachment>;
 }
@@ -1039,12 +1045,15 @@ export interface LongTermMemory {
   scope: LongTermMemoryScope;
   category: LongTermMemoryCategory;
   content: string;
-  status: "active" | "needs_verification" | "superseded" | "expired";
+  /** forgotten: the user deleted it; the model may store it again only when the user states it anew. */
+  status: "active" | "needs_verification" | "superseded" | "expired" | "forgotten";
   evidence?: string;
   createdAt: string;
   updatedAt: string;
   /** Set by retrieval when delivering this memory to the model counts as using it, which defers its expiry. */
   countsAsUse?: boolean;
+  /** Set by retrieval for a preference or convention offered with every request rather than for matching it. */
+  standing?: boolean;
 }
 
 export interface AgentRunResult {

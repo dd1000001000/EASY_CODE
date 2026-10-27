@@ -125,6 +125,7 @@ export const runtimeLimitsSchema = z
     subagentParentMessageMaxChars: integer(1024, 64000),
     subagentSummaryMaxChars: integer(1024, 64000),
     memoryMaxItems: integer(0, 30),
+    memoryStandingMaxItems: integer(0, 30),
     memoryMaxQueries: integer(1, 4),
     memorySearchLimit: integer(1, 20),
     memoryVectorMinSimilarity: z.number().finite().min(0).max(1),
