@@ -345,6 +345,7 @@ export class ToolCalls {
       toolCallId: call.id,
       searchProjectMemory: this.ctx.dependencies.searchMemories,
       userRequest: ctx.memoryContext.userInput,
+      deliveredMemoryIds: ctx.memoryContext.deliveredMemoryIds,
       recordMemoryRecall: (memoryIds: readonly string[]) =>
         this.ctx.dependencies.recordMemoryRecall?.(state.threadId, turnId, memoryIds),
       recallContext: async (input: { evidenceId: string; offset: number; limit: number }) =>

@@ -450,7 +450,7 @@ export class AgentRuntime {
       userMessage,
       turnImages,
       turnHistoryStart,
-      memoryContext: { userInput, mutations: [], approvedPlanReview: undefined },
+      memoryContext: { userInput, mutations: [], approvedPlanReview: undefined, deliveredMemoryIds: new Set() },
       outstandingSubagentsAtRoute: [],
       effectiveMode: options.modeOverride ?? state.mode,
     };
@@ -717,11 +717,13 @@ export class AgentRuntime {
       const usedMemoryIds = (selectedForStep?.memories ?? [])
         .filter((memory) => memory.countsAsUse)
         .map((memory) => memory.id);
-      if (
-        agentIdentity.role === "main_agent" &&
-        usedMemoryIds.length &&
-        messages.some((message) => message.role === "user" && message.content === stepRuntimeContext)
-      ) {
+      const memoryDelivered = messages.some(
+        (message) => message.role === "user" && message.content === stepRuntimeContext,
+      );
+      if (memoryDelivered) {
+        for (const memory of selectedForStep?.memories ?? []) memoryContext.deliveredMemoryIds.add(memory.id);
+      }
+      if (agentIdentity.role === "main_agent" && usedMemoryIds.length && memoryDelivered) {
         try {
           this.dependencies.recordMemoryRecall?.(state.threadId, turnId, usedMemoryIds);
         } catch {

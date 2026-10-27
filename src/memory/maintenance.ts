@@ -31,7 +31,7 @@ const consolidationSchema = z
               .int()
               .min(0)
               .max(MAX_CANDIDATES - 1),
-            action: z.enum(["merge", "conflict", "skip"]),
+            action: z.enum(["merge", "duplicate", "conflict", "skip"]),
             memoryId: z.string().optional(),
             content: z.string().min(8).max(16_000).optional(),
           })
@@ -180,21 +180,28 @@ export class MemoryMaintenance {
         this.complete(job.turn_id);
         return true;
       }
+      const limit = this.manager.limits.memoryConsolidationMatchLimit;
       const matches = await Promise.all(
         candidates.map(async (candidate) => {
           const owner = candidate.scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : this.projectId;
+          // The same statement may have been filed under another category.
           const found = await this.manager.searchHybrid(owner, candidate.content, {
-            limit: this.manager.limits.memoryConsolidationMatchLimit,
+            limit,
             ranking: "consolidation",
-            filter: {
-              scope: candidate.scope,
-              category: candidate.category,
-              status: "active",
-              excludeMemoryId: candidate.id,
-            },
+            filter: { scope: candidate.scope, status: "active", excludeMemoryId: candidate.id },
           });
-          return found.map((item) => ({
+          // A project memory may only repeat a global one; global memory is never changed from here.
+          const global =
+            candidate.scope === "project"
+              ? await this.manager.searchHybrid(GLOBAL_MEMORY_WORKSPACE_ID, candidate.content, {
+                  limit: Math.min(limit, 3),
+                  ranking: "consolidation",
+                  filter: { scope: "global", status: "active" },
+                })
+              : [];
+          return [...found, ...global].map((item) => ({
             id: item.id,
+            scope: item.scope,
             category: item.category,
             content: item.content,
             createdAt: item.createdAt,
@@ -210,7 +217,9 @@ export class MemoryMaintenance {
           job.turn_id,
           provider,
           "Consolidate only memories already created by the agent's write_memory tool. Never create a new memory or change its scope. " +
-            'Return only JSON {"decisions":[{"index":0,"action":"merge|conflict|skip","memoryId":"matching existing ID","content":"concise merged statement"}]}. ' +
+            'Return only JSON {"decisions":[{"index":0,"action":"merge|duplicate|conflict|skip","memoryId":"matching existing ID","content":"concise merged statement"}]}. ' +
+            "Use duplicate, naming the matching record, when the candidate says nothing that record does not already say; the candidate expires. " +
+            "A match in another scope allows only duplicate or skip; a project-specific exception to a global preference is not a duplicate or a conflict. " +
             "Merge only equivalent or compatible statements and preserve both qualifications: name the matching record to revise and give the merged content; the candidate expires. " +
             "Use conflict, naming the matching record, when the candidate and that record cannot both be true; the older of the two is flagged for verification. " +
             "Skip anything else. Each index appears at most once.",
@@ -236,8 +245,29 @@ export class MemoryMaintenance {
         const candidate = candidates[decision.index];
         const match = matches[decision.index]?.find((item) => item.id === decision.memoryId);
         if (!candidate || !match || decision.action === "skip") continue;
+        if (decision.action === "duplicate") {
+          // Two candidates repeating each other must not both expire.
+          if (
+            mutations.some((mutation) => "memoryId" in mutation && [candidate.id, match.id].includes(mutation.memoryId))
+          )
+            continue;
+          if (mutations.length + 1 > MAX_MEMORY_MUTATIONS_PER_TURN) break;
+          mutations.push({
+            action: "forget",
+            memoryId: candidate.id,
+            scope: candidate.scope,
+            reason:
+              match.scope === candidate.scope
+                ? "Already stated by an existing memory"
+                : "Already stated by a global memory",
+          });
+          continue;
+        }
+        if (match.scope !== candidate.scope) continue;
         // The user's own wording is never rewritten by consolidation.
         if (decision.action === "merge" && userAuthored.has(match.id)) continue;
+        // A turn that did not finish implementation work may only maintain preferences and conventions.
+        if (job.result_reason !== "success" && !["preference", "convention"].includes(match.category)) continue;
         if (decision.action === "conflict") {
           // The newer statement is the likelier one; the older is offered as needing verification.
           // A record the user wrote outranks any model statement, so the model's one is questioned instead.
@@ -262,7 +292,7 @@ export class MemoryMaintenance {
           action: "revise",
           memoryId: match.id,
           scope: candidate.scope,
-          category: candidate.category,
+          category: match.category,
           content: decision.content,
           reason: "Background consolidation of existing memory",
         });

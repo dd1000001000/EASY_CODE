@@ -132,14 +132,15 @@ describe("idle memory maintenance", () => {
       f.enqueue();
       assert.equal(await f.maintenance.processNext(f.state, provider), true);
       assert.equal(provider.calls, 1);
-      assert.deepEqual(observedLimits, [2]);
+      // One search in the candidate's scope across categories, one for global memory it may repeat.
+      assert.deepEqual(observedLimits, [2, 2]);
       assert.equal(observedOptions[0]?.ranking, "consolidation");
       assert.deepEqual(observedOptions[0]?.filter, {
         scope: "project",
-        category: "convention",
         status: "active",
         excludeMemoryId: candidateId,
       });
+      assert.deepEqual(observedOptions[1]?.filter, { scope: "global", status: "active" });
       assert.equal(f.manager.get(projectMemoryIdFromRoot(f.root), oldId)?.status, "superseded");
       const active = f.manager.list(projectMemoryIdFromRoot(f.root));
       assert.equal(active.length, 1);
@@ -243,12 +244,17 @@ describe("idle memory maintenance", () => {
   it("does not merge the same statement across project and global scope", async () => {
     const f = fixture();
     try {
-      f.write("Use strict TypeScript across projects.", "turn_seed", "global");
+      const globalId = f.write("Use strict TypeScript across projects.", "turn_seed", "global");
       f.write("Use strict TypeScript across projects.");
-      const provider = model();
+      // The global record is offered so a repeat can be recognized, but a merge into it is refused.
+      const provider = model(
+        JSON.stringify({
+          decisions: [{ index: 0, action: "merge", memoryId: globalId, content: "Strict TypeScript." }],
+        }),
+      );
       f.enqueue();
       await f.maintenance.processNext(f.state, provider);
-      assert.equal(provider.calls, 0);
+      assert.equal(provider.calls, 1);
       assert.equal(f.manager.list(projectMemoryIdFromRoot(f.root)).length, 1);
       assert.equal(f.manager.list(GLOBAL_MEMORY_WORKSPACE_ID).length, 1);
     } finally {
@@ -319,6 +325,75 @@ describe("idle memory maintenance", () => {
       assert.equal(conflict.calls, 1);
       assert.equal(f.manager.get(projectId, userId)?.status, "active");
       assert.equal(f.manager.get(projectId, conflictId)?.status, "needs_verification");
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("expires a project memory that only repeats a global one, without changing the global one", async () => {
+    const f = fixture();
+    try {
+      const globalId = f.write("The user prefers concise explanations.", "turn_seed", "global");
+      const repeatId = f.write("Keep explanations concise for this user.");
+      const provider = model(
+        JSON.stringify({
+          decisions: [{ index: 0, action: "merge", memoryId: globalId, content: "Explanations stay concise." }],
+        }),
+        JSON.stringify({ decisions: [{ index: 0, action: "duplicate", memoryId: globalId }] }),
+      );
+      f.enqueue();
+      // A merge into global memory is refused: consolidation never changes global memory from a project.
+      assert.equal(await f.maintenance.processNext(f.state, provider), true);
+      const projectId = projectMemoryIdFromRoot(f.root);
+      assert.equal(f.manager.get(projectId, repeatId)?.status, "active");
+      assert.equal(
+        f.manager.get(GLOBAL_MEMORY_WORKSPACE_ID, globalId)?.content,
+        "The user prefers concise explanations.",
+      );
+
+      f.storage.db.prepare("UPDATE memory_maintenance_jobs SET status = 'queued' WHERE turn_id = ?").run(f.turnId);
+      assert.equal(await f.maintenance.processNext(f.state, provider), true);
+      assert.equal(f.manager.get(projectId, repeatId)?.status, "expired");
+      assert.equal(f.manager.get(GLOBAL_MEMORY_WORKSPACE_ID, globalId)?.status, "active");
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("merges a statement filed under another category into the existing record's category", async () => {
+    const f = fixture();
+    try {
+      const existing = f.manager.applyModelMutations({
+        workspaceRoot: f.root,
+        threadId: f.state.threadId,
+        turnId: "turn_seed",
+        outcome: "success",
+        mutations: [
+          {
+            action: "remember",
+            category: "environment",
+            content: "This project installs packages with pnpm.",
+            reason: "Observed",
+          },
+        ],
+      }).memoryIds[0]!;
+      const candidateId = f.write("Install this project's packages with pnpm.");
+      const provider = model(
+        JSON.stringify({
+          decisions: [
+            { index: 0, action: "merge", memoryId: existing, content: "This project installs packages with pnpm." },
+          ],
+        }),
+      );
+      f.enqueue();
+      assert.equal(await f.maintenance.processNext(f.state, provider), true);
+      const projectId = projectMemoryIdFromRoot(f.root);
+      assert.equal(f.manager.get(projectId, candidateId)?.status, "expired");
+      const active = f.manager.list(projectId);
+      assert.deepEqual(
+        active.map((memory) => [memory.category, memory.content]),
+        [["environment", "This project installs packages with pnpm."]],
+      );
     } finally {
       f.dispose();
     }

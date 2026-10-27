@@ -299,6 +299,8 @@ export interface TurnMemoryContext {
   userInput: string;
   mutations: MemoryMutationRequest[];
   approvedPlanReview: PlanReviewState | undefined;
+  /** Long-term memories shown to the model in this turn's runtime context; write_memory may change them directly. */
+  deliveredMemoryIds: Set<string>;
 }
 
 /** One AgentRuntime.run turn: the claimed user request and the state its phases share. */

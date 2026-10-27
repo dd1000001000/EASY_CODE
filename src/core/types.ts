@@ -624,6 +624,8 @@ export interface ToolContext {
   recordMemoryRecall?: (memoryIds: readonly string[]) => void;
   /** The user's own message for this turn; memory writes that need the user's word are checked against it. */
   userRequest?: string;
+  /** Long-term memories already shown to the model in this turn's runtime context. */
+  deliveredMemoryIds?: ReadonlySet<string>;
   recordCommand?: (entry: CommandAuditEntry) => void;
   attachImage?: (input: { absolutePath: string; sourceName?: string }) => Promise<ImageAttachment>;
 }

@@ -29,7 +29,9 @@ export class MemoryToolSession {
   assertReturned(turnId: string, memoryId: string): void {
     this.beginTurn(turnId);
     if (!this.returnedIds.has(memoryId)) {
-      throw new Error("revise and forget require a memory ID returned by read_memory in this turn");
+      throw new Error(
+        "revise and forget require a memory ID returned by read_memory or shown in runtime context in this turn",
+      );
     }
   }
 }

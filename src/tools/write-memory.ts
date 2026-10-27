@@ -8,7 +8,6 @@ import type {
   ToolExecutionResult,
 } from "../core/types.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
-import { estimatedTokens } from "../context/token-budget.js";
 import { assertDurableMemory } from "../memory/admission.js";
 import {
   MAX_MEMORY_REASON_CHARS,
@@ -18,7 +17,7 @@ import {
 } from "../memory/memory-manager.js";
 import { containsSensitiveInformation, redactSensitiveInformation } from "../memory/sensitive.js";
 import { projectMemoryIdFromRoot } from "../memory/memory-manager.js";
-import { displayTextSchema, projectHeadTailText } from "../utils/bounded-text.js";
+import { displayTextSchema } from "../utils/bounded-text.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
@@ -105,19 +104,20 @@ export class WriteMemoryTool implements AgentTool {
       this.session.beginTurn(context.turnId);
       const projectId = this.workspace.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
       let writeContent: string | undefined;
-      let contentTruncated = false;
       if (parsed.operation === "remember" || parsed.operation === "revise") {
         const content = this.requireField(parsed.content, "content", parsed.operation);
         this.assertSafeWrite(content, parsed.reason);
         const limits = context.limits ?? DEFAULT_RUNTIME_LIMITS;
         const maxChars = Math.min(limits.memoryContentMaxChars, this.manager.limits.memoryContentMaxChars);
-        const maxTokens = Math.min(limits.maxDurableMemoryTokens, this.manager.limits.maxDurableMemoryTokens);
-        const byChars = projectHeadTailText(content, maxChars);
-        const byTokens = projectHeadTailText(byChars.text, maxTokens, estimatedTokens);
-        writeContent = byTokens.text;
-        contentTruncated = byChars.truncated || byTokens.truncated;
-        assertDurableMemory(writeContent, limits);
-        assertDurableMemory(writeContent, this.manager.limits);
+        // A shortened fact can lose the qualification that made it true, so an oversized one is refused, not cut.
+        if (content.length > maxChars) {
+          throw new Error(
+            `Memory content has ${content.length} characters; the limit is ${maxChars}. Store one fact per memory: split it or shorten it.`,
+          );
+        }
+        assertDurableMemory(content, limits);
+        assertDurableMemory(content, this.manager.limits);
+        writeContent = content;
       }
 
       const check = (mutation: MemoryMutationRequest): MemoryMutationRequest => {
@@ -153,13 +153,14 @@ export class WriteMemoryTool implements AgentTool {
             scope === requested
               ? "The long-term memory proposal was staged and will be committed only if this turn completes successfully."
               : "Staged as project memory: global memory needs the user's own message in this turn to state it. It commits only if this turn completes successfully.",
-          data: { staged: true, operation: parsed.operation, scope, truncated: contentTruncated },
+          data: { staged: true, operation: parsed.operation, scope },
           memoryMutation,
         };
       }
 
       const memoryId = this.requireField(parsed.memoryId, "memoryId", parsed.operation);
-      this.session.assertReturned(context.turnId, memoryId);
+      // A memory already shown in this turn's runtime context needs no second search.
+      if (!context.deliveredMemoryIds?.has(memoryId)) this.session.assertReturned(context.turnId, memoryId);
       const existing = this.manager.getAccessible(projectId, memoryId);
       if (!existing) {
         throw new Error("Long-term memory was not found in the current project or global scope");
@@ -191,7 +192,7 @@ export class WriteMemoryTool implements AgentTool {
         return {
           ok: true,
           summary: `Revision of long-term memory ${memoryId} was staged and will commit only if this turn succeeds.`,
-          data: { staged: true, operation: parsed.operation, memoryId, truncated: contentTruncated },
+          data: { staged: true, operation: parsed.operation, memoryId },
           memoryMutation: check({
             action: "revise",
             scope: existing.scope,

@@ -170,7 +170,7 @@ context_safety_reserve_ratio = 0.05
 # Additional content budgets. Storage/display clipping never authorizes partial execution.
 command_archive_max_bytes = 33554432
 command_thread_archive_max_bytes = 268435456
-memory_content_max_chars = 1200
+memory_content_max_chars = 300
 evidence_recall_default_chars = 8000
 evidence_recall_max_chars = 32000
 artifact_index_batch_chars = 96000

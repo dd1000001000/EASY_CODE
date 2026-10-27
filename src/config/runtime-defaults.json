@@ -76,7 +76,7 @@
   "maxReadResultTokens": 24000,
   "memoryAutoTokens": 2000,
   "memoryRecallTokens": 12000,
-  "memoryContentMaxChars": 1200,
+  "memoryContentMaxChars": 300,
   "evidenceRecallDefaultChars": 8000,
   "evidenceRecallMaxChars": 32000,
   "artifactIndexBatchChars": 96000,
